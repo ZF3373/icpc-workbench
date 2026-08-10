@@ -131,7 +131,12 @@ export default function Problems() {
       width: 110,
       render: (v: string, r) => (r.url ? <a href={r.url} target="_blank" rel="noreferrer">{v}</a> : v),
     },
-    { title: '标题', dataIndex: 'title', ellipsis: true },
+    {
+      title: '标题',
+      dataIndex: 'title',
+      ellipsis: true,
+      render: (v: string, r) => (r.url ? <a href={r.url} target="_blank" rel="noreferrer">{v}</a> : v),
+    },
     { title: '难度', dataIndex: 'difficulty', width: 80, render: (v: number | null) => v ?? '-' },
     {
       title: '标签',

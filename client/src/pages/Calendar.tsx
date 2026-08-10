@@ -123,7 +123,13 @@ export default function CalendarPage() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
                       <Tag color={KIND_COLOR[t.kind]}>{KIND_LABEL[t.kind]}</Tag>
-                      <b>{t.title}</b>
+                      {link ? (
+                        <a href={link} target="_blank" rel="noreferrer">
+                          <b>{t.title}</b>
+                        </a>
+                      ) : (
+                        <b>{t.title}</b>
+                      )}
                       {t.problem_key && <Tag style={{ marginLeft: 4 }}>{t.problem_key}</Tag>}
                     </div>
                     <Button size="small" type={done ? 'default' : 'primary'} onClick={() => toggle(t)}>

@@ -111,7 +111,13 @@ export default function Plans() {
                 <Card key={t.id} size="small" style={{ marginBottom: 8 }}>
                   <Space wrap>
                     {kindTag(t.kind)}
-                    <b>{t.title}</b>
+                    {link ? (
+                      <a href={link} target="_blank" rel="noreferrer">
+                        <b>{t.title}</b>
+                      </a>
+                    ) : (
+                      <b>{t.title}</b>
+                    )}
                     {t.problem_key && <Tag>{t.problem_key}</Tag>}
                     {link && (
                       <a href={link} target="_blank" rel="noreferrer">
