@@ -14,9 +14,12 @@ function router(
       if (u.includes(prefix)) {
         const v = handler(u);
         if (typeof v === 'string') return new Response(v, { status: 200 });
-        if (v && typeof v === 'object' && 'status' in v && 'body' in v) {
-          const r = v as { status: number; body: string };
-          return new Response(r.body, { status: r.status });
+        if (v && typeof v === 'object' && 'status' in v) {
+          const r = v as { status: number; body: string; headers?: Record<string, string> };
+          return new Response(r.body, {
+            status: r.status,
+            headers: r.headers ?? {},
+          });
         }
         return new Response(JSON.stringify(v), { status: 200 });
       }
@@ -137,6 +140,44 @@ test('luogu: 302 redirect (not logged in) throws clear login-required error', as
   );
 });
 
+test('luogu: C3VK challenge — 302 with new cookie then retry succeeds', async () => {
+  let calls = 0;
+  const fetchFn = router({
+    'record/list': () => {
+      calls += 1;
+      if (calls === 1) {
+        // 首次：302 + 下发新 C3VK（反爬挑战）
+        return {
+          status: 302,
+          body: '<html><head><title>302 Found</title></head></html>',
+          headers: { 'set-cookie': 'C3VK=118e41; Max-Age=300; Path=/' },
+        };
+      }
+      if (calls === 2) {
+        // 重试：带新 C3VK 后放行（第 1 页数据）
+        return {
+          code: 200,
+          currentData: {
+            records: {
+              result: [{ id: 9001, status: 2, submitTime: 1700000000000, problem: { pid: 'P1001' } }],
+            },
+          },
+        };
+      }
+      // 后续页为空 → 分页终止
+      return { code: 200, currentData: { records: { result: [] } } };
+    },
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  const rows = await adapter.fetchUserSubmissions('100000001', {
+    cookie: '__client_id=x; _uid=100000001; C3VK=old',
+    csrf: 'tok',
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].externalId, '9001');
+  assert.ok(calls >= 2); // 挑战后重试过
+});
+
 // ---------- 牛客 ----------
 
 /** 构造牛客 practice-coding 页 HTML（表头 <th> + 数据行） */
@@ -244,6 +285,48 @@ test('nowcoder: unknown result maps to SKIPPED, short rows skipped', async () =>
   assert.equal(rows.length, 1); // 6002（8 列异常行）被跳过
   assert.equal(rows[0].externalId, '6001');
   assert.equal(rows[0].verdict, 'SKIPPED'); // 未知状态 → SKIPPED
+});
+
+test('luogu: C3VK challenge retry carries fresh cookie in request', async () => {
+  const seenCookies: string[] = [];
+  const fetchFn = router({
+    'record/list': () => {
+      return {
+        status: 302,
+        body: '',
+        headers: { 'set-cookie': 'C3VK=118e41; Max-Age=300; Path=/' },
+      };
+    },
+  });
+  // 拦截 fetch 记录 Cookie 头
+  const recordFetch: typeof fetch = async (input, init) => {
+    const headers = init?.headers as Record<string, string> | undefined;
+    seenCookies.push(headers?.Cookie ?? '');
+    return fetchFn(input, init);
+  };
+  const adapter = createLuoguAdapter(recordFetch);
+  // mock 每次 302 都下发新 C3VK → 挑战重试耗尽后 504
+  await assert.rejects(
+    () => adapter.fetchUserSubmissions('100000001', { cookie: '__client_id=x; _uid=100000001; C3VK=old', csrf: 'tok' }),
+    /HTTP 504/,
+  );
+  // 重试请求的 Cookie 中 C3VK 已从 old 替换为 118e41
+  assert.ok(seenCookies.some((c) => c.includes('C3VK=118e41')));
+});
+
+test('luogu: C3VK challenge exhaustion (always 302) reports HTTP 504', async () => {
+  const fetchFn = router({
+    'record/list': () => ({
+      status: 302,
+      body: '',
+      headers: { 'set-cookie': 'C3VK=abc; Max-Age=300; Path=/' },
+    }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  await assert.rejects(
+    () => adapter.fetchUserSubmissions('100000001', { cookie: '__client_id=x; _uid=1; C3VK=old', csrf: 'tok' }),
+    /HTTP 504/,
+  );
 });
 
 test('manual-required error carries code MANUAL_REQUIRED', () => {

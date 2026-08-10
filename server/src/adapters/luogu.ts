@@ -60,6 +60,38 @@ function requestHeaders(cookie: string, csrf?: string): Record<string, string> {
 }
 
 /**
+ * 洛谷 C3VK 反爬挑战处理：
+ * 首次请求（无有效 C3VK）会被 302 重定向回自身，同时 Set-Cookie 下发新 C3VK（5 分钟有效）；
+ * 带新 C3VK 重试后放行返回 200。此函数自动保存 set-cookie 中的新 C3VK 并重试（最多 2 次）。
+ * 返回的 Response 状态：200=正常；302/303=未登录（无新 C3VK 下发）；504=挑战重试超限。
+ */
+async function fetchWithChallenge(
+  fetchFn: typeof fetch,
+  url: string,
+  cookie: string,
+  csrf?: string,
+): Promise<Response> {
+  let current = cookie;
+  for (let attempt = 0; attempt <= 2; attempt += 1) {
+    const res = await fetchFn(url, {
+      headers: requestHeaders(current, csrf),
+      redirect: 'manual', // 不跟随：302 循环会耗尽 Node fetch 默认重定向次数（抛 fetch failed）
+      signal: AbortSignal.timeout(20000),
+    });
+    if (![301, 302, 303].includes(res.status)) return res;
+    // 尝试从 set-cookie 提取新 C3VK 并更新后重试
+    const fresh = (res.headers.getSetCookie?.() ?? [])
+      .map((c) => c.split(';')[0])
+      .find((kv) => kv.startsWith('C3VK='));
+    if (!fresh) return res; // 无新 C3VK → 真未登录
+    current = current.includes('C3VK=')
+      ? current.replace(/C3VK=[^;]*/, fresh)
+      : `${current}; ${fresh}`;
+  }
+  return new Response(null, { status: 504 });
+}
+
+/**
  * 洛谷适配器（需登录 Cookie + CSRF）：
  * - 提交列表：GET /record/list?user={uid}&page={n}&_contentOnly=1
  * - 题目信息（难度/标签）：GET /problem/{pid}?_contentOnly=1（进程内缓存，并发受限）
@@ -77,11 +109,8 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
     if (hit) return hit;
     const empty = { tags: [] };
     try {
-      const res = await fetchFn(`${API}/problem/${pid}?_contentOnly=1`, {
-        headers: requestHeaders(cookie, csrf),
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!res.ok) {
+      const res = await fetchWithChallenge(fetchFn, `${API}/problem/${pid}?_contentOnly=1`, cookie, csrf);
+      if ([301, 302, 303, 504].includes(res.status) || !res.ok) {
         problemCache.set(pid, empty);
         return empty;
       }
@@ -119,12 +148,8 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
       const raws: LuoguRecord[] = [];
       for (let page = 1; page <= MAX_PAGES; page += 1) {
         const url = `${API}/record/list?user=${encodeURIComponent(handle)}&page=${page}&_contentOnly=1`;
-        const res = await fetchFn(url, {
-          headers: requestHeaders(cookie, opts.csrf),
-          redirect: 'manual', // 不跟随：未登录时洛谷会 302 循环重定向（Node fetch 默认跟随 20 次后抛 fetch failed）
-          signal: AbortSignal.timeout(20000),
-        });
-        // 302 = 未登录 / Cookie 无效（洛谷重定向到登录页）
+        const res = await fetchWithChallenge(fetchFn, url, cookie, opts.csrf);
+        // 302 且无新 C3VK = 未登录 / Cookie 无效（洛谷重定向到登录页）
         if ([301, 302, 303].includes(res.status)) {
           throw new Error('洛谷返回登录跳转：Cookie 无效或已过期，请在设置中重新填写（需登录洛谷后复制最新 Cookie）');
         }
