@@ -81,10 +81,18 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     if (typeof handle !== 'string' || handle.trim() === '') {
       return res.status(400).json({ error: 'handle 必填' });
     }
+    // 换账号语义：handle 变化时重置 last_sync_at（NULL → 下次同步全量重拉并清空旧数据），
+    // 否则保留增量起点（同 handle 重新绑定不破坏增量）。
     db.prepare(
       `INSERT INTO platform_accounts (user_id, platform, handle, enabled)
        VALUES (?, ?, ?, 1)
-       ON CONFLICT(user_id, platform) DO UPDATE SET handle = excluded.handle, enabled = 1`,
+       ON CONFLICT(user_id, platform) DO UPDATE SET
+         handle = excluded.handle,
+         enabled = 1,
+         last_sync_at = CASE
+           WHEN platform_accounts.handle = excluded.handle THEN platform_accounts.last_sync_at
+           ELSE NULL
+         END`,
     ).run(DEFAULT_USER_ID, platform, handle.trim());
     res.json({ ok: true });
   });

@@ -45,10 +45,16 @@ export async function syncPlatform(
   const account = db
     .prepare('SELECT handle, last_sync_at FROM platform_accounts WHERE user_id = ? AND platform = ?')
     .get(userId, platform) as { handle: string; last_sync_at: string | null } | undefined;
-  const handleChanged = account !== undefined && account.handle !== handle;
+  // 换账号判定：handle 不同，或从未成功同步过（last_sync_at 为空，如设置页改绑后）。
+  // 两种情况都要求全量重拉 + 清空该平台旧数据，避免跨账号数据混入或增量起点错乱。
+  // 注意：同 handle 首次成功同步时也会清空该平台旧数据（含手动导入记录）——
+  // 语义是"同步以平台数据为准"，手动导入数据会被平台数据取代。
+  const handleChanged =
+    account !== undefined &&
+    (account.handle !== handle || !account.last_sync_at);
 
   try {
-    // 换 handle 时全量重拉（不沿用旧账号的增量起点，避免跨账号数据混入）
+    // 换账号/未成功同步过：全量重拉（不沿用可能属于旧账号的增量起点）
     const since =
       !handleChanged && account?.last_sync_at ? account.last_sync_at : undefined;
     // 需登录平台：从 settings 读取 Cookie / CSRF 注入适配器

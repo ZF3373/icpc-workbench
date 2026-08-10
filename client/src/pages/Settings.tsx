@@ -71,7 +71,7 @@ export default function Settings() {
     }
     try {
       await post('/api/settings/accounts', { platform, handle })
-      message.success(`${PLATFORMS.find((p) => p.id === platform)?.name} 已绑定`)
+      message.success(`${PLATFORMS.find((p) => p.id === platform)?.name} 已绑定；请到「题目管理 → 导入 → 平台同步」填入同一用户名完成同步`)
       load()
     } catch (e) {
       message.error((e as Error).message)

@@ -143,6 +143,24 @@ test('switching to account with zero submissions clears old data', async () => {
   assert.equal(c.c, 0); // 旧账号数据被清空
 });
 
+test('rebound account (settings handle change, last_sync_at NULL) does full sync + clears old data', async () => {
+  makeFake([sub('1919A', 'e1')]);
+  await syncPlatform(db, 'codeforces', 'alice');
+  // 模拟设置页改绑：handle 已更新但 last_sync_at 被重置为 NULL
+  db.prepare("UPDATE platform_accounts SET handle = 'alice2', last_sync_at = NULL WHERE platform = 'codeforces'").run();
+  makeFake([sub('2048A', 'x1')]);
+  const result = await syncPlatform(db, 'codeforces', 'alice2');
+  assert.equal(result.imported, 1);
+  assert.equal(fakeCalls[0].since, undefined); // 全量重拉而非沿用旧起点
+  const rows = db
+    .prepare(
+      `SELECT p.problem_key FROM submissions s JOIN problems p ON s.problem_id = p.id
+       ORDER BY p.problem_key`,
+    )
+    .all() as Array<{ problem_key: string }>;
+  assert.deepEqual(rows.map((r) => r.problem_key), ['2048A']); // 旧账号数据被清空
+});
+
 test('disabled platform is skipped via settings', async () => {
   db.prepare("INSERT INTO settings (key, value) VALUES ('adapter.codeforces.enabled', 'false')").run();
   makeFake([sub('1919A', 'e1')]);
