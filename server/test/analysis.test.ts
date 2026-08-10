@@ -76,6 +76,9 @@ test('computeOverall aggregates attempts/ac/rate/solved', () => {
   assert.deepEqual(cf, { platform: 'codeforces', attempts: 5, ac: 3, acRate: 60, solved: 2 });
   const luogu = s.byPlatform.find((p) => p.platform === 'luogu')!;
   assert.equal(luogu.solved, 1);
+  // 无数据的接入平台也显示（attempts=0），避免平台列表中缺失
+  const atcoder = s.byPlatform.find((p) => p.platform === 'atcoder')!;
+  assert.deepEqual(atcoder, { platform: 'atcoder', attempts: 0, ac: 0, acRate: 0, solved: 0 });
 
   const dp = s.byTag.find((t) => t.tag === 'dp')!;
   assert.deepEqual(dp, { tag: 'dp', attempts: 5, ac: 3, acRate: 60, solved: 2 });

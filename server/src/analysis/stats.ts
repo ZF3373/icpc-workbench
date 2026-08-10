@@ -1,4 +1,5 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
+import { PLATFORMS } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 
 export function bucketForDifficulty(difficulty: number | null | undefined): string {
@@ -89,6 +90,10 @@ export function computeOverall(
 ): OverallStats {
   const rows = fetchRows(db, userId, filter);
   const byPlatform = new Map<PlatformId, MutableStat>();
+  // 始终显示全部接入平台（含 0 数据），避免平台列表中缺失（如洛谷未同步时仍展示）
+  for (const p of PLATFORMS) {
+    byPlatform.set(p.id, { attempts: 0, ac: 0 });
+  }
   const byDifficulty = new Map<string, MutableStat>();
   const byTag = new Map<string, MutableStat>();
   const solvedSet = new Set<string>();
