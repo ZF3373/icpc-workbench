@@ -87,6 +87,28 @@ test('luogu: with cookie normalizes records and problem info', async () => {
   assert.equal(rows[2].verdict, 'SKIPPED'); // status 9 → SKIPPED
 });
 
+test('luogu: non-success code throws (cookie invalid/risk control)', async () => {
+  const fetchFn = router({
+    'record/list': () => ({ code: 401, message: 'invalid token' }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  await assert.rejects(
+    () => adapter.fetchUserSubmissions('123', { cookie: 'bad' }),
+    /响应异常/,
+  );
+});
+
+test('luogu: missing structure throws instead of silent empty', async () => {
+  const fetchFn = router({
+    'record/list': () => ({ code: 200 }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  await assert.rejects(
+    () => adapter.fetchUserSubmissions('123', { cookie: 'c' }),
+    /响应异常/,
+  );
+});
+
 // ---------- 牛客 ----------
 
 test('nowcoder: without cookie throws ManualImportRequiredError, url works', async () => {
@@ -128,6 +150,17 @@ test('nowcoder: with cookie normalizes submission list', async () => {
   assert.equal(rows[1].verdict, 'WA');
   assert.equal(rows[2].verdict, 'TLE');
   assert.ok(rows[2].externalId.startsWith('nc:10003:TLE:')); // 无 id 用稳定组合
+});
+
+test('nowcoder: non-success code throws (cookie invalid/risk control)', async () => {
+  const fetchFn = router({
+    'submission/list': () => ({ code: 401, message: 'unauthorized' }),
+  });
+  const adapter = createNowcoderAdapter(fetchFn);
+  await assert.rejects(
+    () => adapter.fetchUserSubmissions('123', { cookie: 'bad' }),
+    /响应异常/,
+  );
 });
 
 test('manual-required error carries code MANUAL_REQUIRED', () => {
