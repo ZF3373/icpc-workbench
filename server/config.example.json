@@ -1,0 +1,11 @@
+{
+  "port": 3001,
+  "dbPath": "data/icpc.db",
+  "dataDir": "data",
+  "ai": {
+    "enabled": false,
+    "baseURL": "https://api.deepseek.com/v1",
+    "apiKey": "",
+    "model": "deepseek-chat"
+  }
+}
