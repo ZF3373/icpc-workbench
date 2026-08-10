@@ -132,6 +132,17 @@ test('sync failure keeps old data when handle changed', async () => {
   assert.equal(c.c, 1);
 });
 
+test('switching to account with zero submissions clears old data', async () => {
+  makeFake([sub('1919A', 'e1')]);
+  await syncPlatform(db, 'codeforces', 'alice');
+  makeFake([]); // 新账号确实无提交（适配器正常返回空）
+  const result = await syncPlatform(db, 'codeforces', 'empty');
+  assert.equal(result.imported, 0);
+  assert.equal(result.errors.length, 0);
+  const c = db.prepare('SELECT COUNT(*) AS c FROM submissions').get() as { c: number };
+  assert.equal(c.c, 0); // 旧账号数据被清空
+});
+
 test('disabled platform is skipped via settings', async () => {
   db.prepare("INSERT INTO settings (key, value) VALUES ('adapter.codeforces.enabled', 'false')").run();
   makeFake([sub('1919A', 'e1')]);

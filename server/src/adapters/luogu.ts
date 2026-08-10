@@ -127,7 +127,10 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
           throw new Error(`洛谷 API HTTP ${res.status}（Cookie 可能已过期或触发风控）`);
         }
         const data = (await res.json()) as LuoguListResp;
-        const records = data?.currentData?.records?.result;
+        if (![0, 200].includes(data.code ?? -1) || !data.currentData?.records) {
+          throw new Error('洛谷 API 响应异常（Cookie 可能已过期或触发风控）');
+        }
+        const records = data.currentData.records.result;
         if (!Array.isArray(records) || records.length === 0) break;
         for (const rec of records) {
           // 过滤等待/评测中的非最终状态
@@ -137,8 +140,14 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
         await sleep(300);
       }
 
-      // 按需补充题目难度/标签（并发受限，失败静默降级）
-      const pids = [...new Set(raws.map((r) => r.problem?.pid).filter((p): p is string => Boolean(p)))];
+      // 按需补充题目难度/标签（并发受限，失败静默降级）；仅对合法 pid 查询
+      const pids = [
+        ...new Set(
+          raws
+            .map((r) => r.problem?.pid)
+            .filter((p): p is string => typeof p === 'string' && /^[A-Za-z0-9]+$/.test(p)),
+        ),
+      ];
       for (let i = 0; i < pids.length; i += PROBLEM_FETCH_CONCURRENCY) {
         await Promise.allSettled(
           pids.slice(i, i + PROBLEM_FETCH_CONCURRENCY).map((pid) => fetchProblemInfo(pid, cookie, opts.csrf)),

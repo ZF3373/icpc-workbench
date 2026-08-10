@@ -81,7 +81,10 @@ export function createNowcoderAdapter(fetchFn: typeof fetch = fetch): PlatformAd
           throw new Error(`牛客 API HTTP ${res.status}（Cookie 可能已过期或触发风控）`);
         }
         const data = (await res.json()) as NcListResp;
-        const list = data?.data?.list;
+        if (![0, 200].includes(data.code ?? -1) || !data.data) {
+          throw new Error('牛客 API 响应异常（Cookie 可能已过期或触发风控）');
+        }
+        const list = data.data.list;
         if (!Array.isArray(list) || list.length === 0) break;
         for (const s of list) {
           const key = String(s.problemId ?? '');

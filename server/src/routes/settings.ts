@@ -48,8 +48,15 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     const upsert = db.prepare(
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     );
-    if (typeof cookie === 'string') upsert.run(`cookie.${platform}`, cookie);
-    if (typeof csrf === 'string') upsert.run(`csrf.${platform}`, csrf);
+    const remove = db.prepare('DELETE FROM settings WHERE key = ?');
+    if (typeof cookie === 'string') {
+      if (cookie === '') remove.run(`cookie.${platform}`);
+      else upsert.run(`cookie.${platform}`, cookie);
+    }
+    if (typeof csrf === 'string') {
+      if (csrf === '') remove.run(`csrf.${platform}`);
+      else upsert.run(`csrf.${platform}`, csrf);
+    }
     res.json({ ok: true });
   });
 
