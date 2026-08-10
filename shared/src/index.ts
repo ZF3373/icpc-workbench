@@ -19,7 +19,7 @@ export const PLATFORMS: PlatformMeta[] = [
   { id: 'codeforces', name: 'Codeforces', nameEn: 'Codeforces', hasOfficialApi: true, homepage: 'https://codeforces.com', sync: 'auto' },
   { id: 'atcoder', name: 'AtCoder', nameEn: 'AtCoder', hasOfficialApi: false, homepage: 'https://atcoder.jp', sync: 'auto' },
   { id: 'luogu', name: '洛谷', nameEn: 'Luogu', hasOfficialApi: false, homepage: 'https://www.luogu.com.cn', sync: 'cookie' },
-  { id: 'nowcoder', name: '牛客', nameEn: 'Nowcoder', hasOfficialApi: false, homepage: 'https://ac.nowcoder.com', sync: 'cookie' },
+  { id: 'nowcoder', name: '牛客', nameEn: 'Nowcoder', hasOfficialApi: false, homepage: 'https://ac.nowcoder.com', sync: 'auto' },
 ];
 
 export function platformMeta(id: PlatformId): PlatformMeta {

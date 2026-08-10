@@ -12,7 +12,13 @@ function router(
     const u = String(input);
     for (const [prefix, handler] of Object.entries(handlers)) {
       if (u.includes(prefix)) {
-        return new Response(JSON.stringify(handler(u)), { status: 200 });
+        const v = handler(u);
+        if (typeof v === 'string') return new Response(v, { status: 200 });
+        if (v && typeof v === 'object' && 'status' in v && 'body' in v) {
+          const r = v as { status: number; body: string };
+          return new Response(r.body, { status: r.status });
+        }
+        return new Response(JSON.stringify(v), { status: 200 });
       }
     }
     return new Response(JSON.stringify({ message: 'not found' }), { status: 404 });
@@ -109,58 +115,135 @@ test('luogu: missing structure throws instead of silent empty', async () => {
   );
 });
 
+test('luogu: HTML login page (302 follow) throws clear not-logged-in error', async () => {
+  const fetchFn = router({
+    'record/list': () => ({ status: 200, body: '<!DOCTYPE html><html><head><title>登录</title></head><body>登录洛谷</body></html>' }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  await assert.rejects(
+    () => adapter.fetchUserSubmissions('123', { cookie: '__client_id=test; _uid=1' }),
+    /未登录页面.*Cookie 无效或已过期/,
+  );
+});
+
+test('luogu: 302 redirect (not logged in) throws clear login-required error', async () => {
+  const fetchFn = router({
+    'record/list': () => ({ status: 302, body: '' }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  await assert.rejects(
+    () => adapter.fetchUserSubmissions('123', { cookie: '__client_id=test; _uid=1' }),
+    /登录跳转.*Cookie 无效或已过期/,
+  );
+});
+
 // ---------- 牛客 ----------
 
-test('nowcoder: without cookie throws ManualImportRequiredError, url works', async () => {
-  const adapter = createNowcoderAdapter();
-  await assert.rejects(() => adapter.fetchUserSubmissions('uid'), ManualImportRequiredError);
+/** 构造牛客 practice-coding 页 HTML（表头 <th> + 数据行） */
+function ncPage(rows: Array<[sid: string, pid: string, title: string, result: string, lang: string, time: string]>): string {
+  const trs = rows
+    .map(
+      ([sid, pid, title, result, lang, time]) =>
+        `<tr>
+          <td><a href="/acm/contest/view-submission?submissionId=${sid}&uid=123">${sid}</a></td>
+          <td><a href="/acm/problem/${pid}">${title}</a></td>
+          <td><span>${result}</span></td>
+          <td>30</td><td>1000</td><td>0</td><td>528</td>
+          <td>${lang}</td><td>${time}</td>
+        </tr>`,
+    )
+    .join('');
+  return `<table><thead><tr><th>运行ID</th><th>题目</th><th>运行结果</th><th>得分</th><th>运行时间(ms)</th><th>使用内存(KB)</th><th>代码长度</th><th>使用语言</th><th>提交时间</th></tr></thead><tbody>${trs}</tbody></table>`;
+}
+
+test('nowcoder: parses practice-coding HTML without cookie, url works', async () => {
+  const fetchFn = router({
+    'practice-coding': (url) => {
+      const page = new URL(url).searchParams.get('page');
+      if (page !== '1') return ncPage([]); // 第二页空 → 停止
+      return ncPage([
+        ['5001', '10001', 'A+B', '答案正确', 'C++', '2026-08-02 20:29:23'],
+        ['5002', '10002', 'B+C', '答案错误', 'Java', '2026-08-02 20:20:00'],
+        ['5003', '10003', 'C+D', '运行超时', 'Python', '2026-08-02 19:59:55'],
+      ]);
+    },
+  });
+  const adapter = createNowcoderAdapter(fetchFn);
+  // 无需 cookie（公开页面）
+  const rows = await adapter.fetchUserSubmissions('100000002', {});
+
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].verdict, 'AC');
+  assert.equal(rows[0].problem.problemKey, '10001');
+  assert.equal(rows[0].problem.title, 'A+B');
+  assert.equal(rows[0].problem.url, 'https://ac.nowcoder.com/acm/problem/10001');
+  assert.equal(rows[0].externalId, '5001');
+  assert.equal(rows[0].language, 'C++');
+  assert.equal(rows[0].submittedAt, '2026-08-02T12:29:23.000Z'); // +08:00 → UTC
+  assert.equal(rows[1].verdict, 'WA');
+  assert.equal(rows[2].verdict, 'TLE');
   assert.equal(
     adapter.problemUrl({ problemKey: 'P1001' }),
     'https://ac.nowcoder.com/acm/problem/P1001',
   );
 });
 
-test('nowcoder: with cookie normalizes submission list', async () => {
+test('nowcoder: incremental sync stops when page is older than since', async () => {
   const fetchFn = router({
-    'submission/list': (url) => {
-      const page = new URL(url).searchParams.get('page');
-      if (page !== '1') {
-        return { code: 0, data: { list: [] } };
-      }
-      return {
-        code: 0,
-        data: {
-          list: [
-            { id: 5001, problemId: 10001, result: 'Accepted', submitTime: 1700000000000, language: 'C++' },
-            { id: 5002, problemId: 10002, result: 'Wrong Answer', submitTime: 1700000100000, language: 'Java' },
-            { problemId: 10003, result: 'Time Limit Exceeded', submitTime: 1700000200000 },
-          ],
-        },
-      };
-    },
+    'practice-coding': () =>
+      ncPage([['5001', '10001', 'A+B', '答案正确', 'C++', '2026-08-01 10:00:00']]),
   });
   const adapter = createNowcoderAdapter(fetchFn);
-  const rows = await adapter.fetchUserSubmissions('123', { cookie: COOKIE });
-
-  assert.equal(rows.length, 3);
-  assert.equal(rows[0].verdict, 'AC');
-  assert.equal(rows[0].problem.problemKey, '10001');
-  assert.equal(rows[0].problem.url, 'https://ac.nowcoder.com/acm/problem/10001');
-  assert.equal(rows[0].externalId, '5001'); // 有 id 用 id
-  assert.equal(rows[1].verdict, 'WA');
-  assert.equal(rows[2].verdict, 'TLE');
-  assert.ok(rows[2].externalId.startsWith('nc:10003:TLE:')); // 无 id 用稳定组合
+  // since 晚于页内最早提交 → 首条已旧 → 停止，返回空
+  const rows = await adapter.fetchUserSubmissions('100000002', {
+    since: '2026-08-02T00:00:00.000Z',
+  });
+  assert.equal(rows.length, 0);
 });
 
-test('nowcoder: non-success code throws (cookie invalid/risk control)', async () => {
+test('nowcoder: HTTP failure throws', async () => {
   const fetchFn = router({
-    'submission/list': () => ({ code: 401, message: 'unauthorized' }),
+    'practice-coding': () => ({ status: 403, body: '<html>blocked</html>' }),
   });
   const adapter = createNowcoderAdapter(fetchFn);
   await assert.rejects(
-    () => adapter.fetchUserSubmissions('123', { cookie: 'bad' }),
-    /响应异常/,
+    () => adapter.fetchUserSubmissions('100000002', {}),
+    /HTTP 403/,
   );
+});
+
+test('nowcoder: first page with no rows throws (structure changed / risk control)', async () => {
+  const fetchFn = router({
+    'practice-coding': () => ncPage([]),
+  });
+  const adapter = createNowcoderAdapter(fetchFn);
+  await assert.rejects(
+    () => adapter.fetchUserSubmissions('100000002', {}),
+    /未解析到提交记录/,
+  );
+});
+
+test('nowcoder: unknown result maps to SKIPPED, short rows skipped', async () => {
+  const html =
+    '<table><tbody>' +
+    // 正常行：未知状态
+    '<tr><td><a href="/acm/contest/view-submission?submissionId=6001&uid=1">6001</a></td>' +
+    '<td><a href="/acm/problem/20001">X</a></td><td>系统异常状态</td><td>0</td><td>1</td><td>2</td><td>3</td><td>C++</td><td>2026-08-01 10:00:00</td></tr>' +
+    // 异常行：仅 8 列（缺提交时间）→ 应跳过不崩溃
+    '<tr><td><a href="/acm/contest/view-submission?submissionId=6002&uid=1">6002</a></td>' +
+    '<td><a href="/acm/problem/20002">Y</a></td><td>答案正确</td><td>0</td><td>1</td><td>2</td><td>3</td><td>C++</td></tr>' +
+    '</tbody></table>';
+  const fetchFn = router({
+    'practice-coding': (url) => {
+      const page = new URL(url).searchParams.get('page');
+      return page === '1' ? html : ncPage([]);
+    },
+  });
+  const adapter = createNowcoderAdapter(fetchFn);
+  const rows = await adapter.fetchUserSubmissions('100000002', {});
+  assert.equal(rows.length, 1); // 6002（8 列异常行）被跳过
+  assert.equal(rows[0].externalId, '6001');
+  assert.equal(rows[0].verdict, 'SKIPPED'); // 未知状态 → SKIPPED
 });
 
 test('manual-required error carries code MANUAL_REQUIRED', () => {

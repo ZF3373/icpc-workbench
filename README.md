@@ -75,15 +75,15 @@ npm run dev:client   # 仅前端
 |------|---------|------|------|
 | Codeforces | ✅ | 官方公开 API `user.status` | 无需登录；全量拉取最近提交，按提交号去重 |
 | AtCoder | ✅ | 社区 API `kenkoooo.com` v3 | 支持增量（from_second）；题目资源 24h 磁盘缓存；官方要求页间 ≥1s |
-| 洛谷 | ✅（需 Cookie） | `record/list` 非官方 API | 设置页填写登录 Cookie（+CSRF）后自动同步；未配置时提示手动导入 |
-| 牛客 | ✅（需 Cookie） | `submission/list` 非官方 API | 设置页填写登录 Cookie 后自动同步；未配置时提示手动导入 |
+| 洛谷 | ✅（需 Cookie） | `record/list` 非官方 API | 设置页填写登录 Cookie（+CSRF）后自动同步；未配置/失效时明确提示并引导手动导入 |
+| 牛客 | ✅ | 公开 HTML `acm/contest/profile/{uid}/practice-coding` | 无需登录/Cookie（牛客已下线 JSON API）；解析提交表格，支持增量与分页 |
 
-> 洛谷/牛客基于社区维护的非官方 API（参考 NekoOS-Group/luogu-api-python、nowcoder/nowcoder-api-python 等），接口结构可能随平台变更；若同步失败请更新 Cookie 重试。Cookie 仅保存在本机数据库，请勿外泄。
+> 洛谷基于社区维护的非官方 API，接口结构可能随平台变更；若同步失败请更新 Cookie 重试。Cookie 仅保存在本机数据库，请勿外泄。
 
-## Cookie 配置方法
+## Cookie 配置方法（仅洛谷需要）
 
-1. 浏览器登录洛谷/牛客后，F12 → Network → 任选一个请求 → 复制 `Cookie` 请求头
-2. 「设置」→ 对应平台 → 粘贴 Cookie 保存；洛谷可一并填写 `x-csrf-token`（可选）
+1. 浏览器登录洛谷后，F12 → Network → 任选一个请求 → 复制 `Cookie` 请求头
+2. 「设置」→ 洛谷 → 粘贴 Cookie 保存；可一并填写 `x-csrf-token`（可选）
 3. 到「题目管理」→ 平台同步 → 输入用户名/uid → 同步
 4. 换绑账号时，新同步会自动清空该平台旧账号的提交数据
 

@@ -121,12 +121,27 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
         const url = `${API}/record/list?user=${encodeURIComponent(handle)}&page=${page}&_contentOnly=1`;
         const res = await fetchFn(url, {
           headers: requestHeaders(cookie, opts.csrf),
+          redirect: 'manual', // 不跟随：未登录时洛谷会 302 循环重定向（Node fetch 默认跟随 20 次后抛 fetch failed）
           signal: AbortSignal.timeout(20000),
         });
+        // 302 = 未登录 / Cookie 无效（洛谷重定向到登录页）
+        if ([301, 302, 303].includes(res.status)) {
+          throw new Error('洛谷返回登录跳转：Cookie 无效或已过期，请在设置中重新填写（需登录洛谷后复制最新 Cookie）');
+        }
         if (!res.ok) {
           throw new Error(`洛谷 API HTTP ${res.status}（Cookie 可能已过期或触发风控）`);
         }
-        const data = (await res.json()) as LuoguListResp;
+        const text = await res.text();
+        if (!text.trim().startsWith('{')) {
+          // 防御：异常时返回登录页 HTML
+          throw new Error('洛谷返回未登录页面：Cookie 无效或已过期，请在设置中重新填写（需登录洛谷后复制最新 Cookie）');
+        }
+        let data: LuoguListResp;
+        try {
+          data = JSON.parse(text) as LuoguListResp;
+        } catch {
+          throw new Error('洛谷 API 响应解析失败（页面异常或结构变化）');
+        }
         if (![0, 200].includes(data.code ?? -1) || !data.currentData?.records) {
           throw new Error('洛谷 API 响应异常（Cookie 可能已过期或触发风控）');
         }
