@@ -75,17 +75,17 @@ npm run dev:client   # 仅前端
 |------|---------|------|------|
 | Codeforces | ✅ | 官方公开 API `user.status` | 无需登录；全量拉取最近提交，按提交号去重 |
 | AtCoder | ✅ | 社区 API `kenkoooo.com` v3 | 支持增量（from_second）；题目资源 24h 磁盘缓存；官方要求页间 ≥1s |
-| 洛谷 | ❌ | 手动导入 | 无公开提交 API（需登录 cookie）；详见下方增强路线 |
-| 牛客 | ❌ | 手动导入 | 无公开提交 API（需登录）；详见下方增强路线 |
+| 洛谷 | ✅（需 Cookie） | `record/list` 非官方 API | 设置页填写登录 Cookie（+CSRF）后自动同步；未配置时提示手动导入 |
+| 牛客 | ✅（需 Cookie） | `submission/list` 非官方 API | 设置页填写登录 Cookie 后自动同步；未配置时提示手动导入 |
 
-## 洛谷 / 牛客增强路线（cookie 方案）
+> 洛谷/牛客基于社区维护的非官方 API（参考 NekoOS-Group/luogu-api-python、nowcoder/nowcoder-api-python 等），接口结构可能随平台变更；若同步失败请更新 Cookie 重试。Cookie 仅保存在本机数据库，请勿外泄。
 
-当前两平台为受限适配器（同步时提示手动导入）。社区已有基于登录 cookie 的 API 方案（调研已存档）：
+## Cookie 配置方法
 
-- **洛谷**：登录后取 `csrf-token` + `x-csrf-token`，`GET /record/list` 分页拉取；参考 [NekoOS-Group/luogu-api-python](https://github.com/NekoOS-Group/luogu-api-python)
-- **牛客**：登录后 `GET /api/v1/user/submission/list?uid={uid}&page={n}`；参考 [nowcoder/nowcoder-api-python](https://github.com/nowcoder/nowcoder-api-python)
-
-实现方式：在 `settings` 表存 cookie（仅本机），适配器 `fetchUserSubmissions` 携带 cookie 调上述 API；未配置 cookie 时维持手动导入引导。注意频率限制与请求头伪装。
+1. 浏览器登录洛谷/牛客后，F12 → Network → 任选一个请求 → 复制 `Cookie` 请求头
+2. 「设置」→ 对应平台 → 粘贴 Cookie 保存；洛谷可一并填写 `x-csrf-token`（可选）
+3. 到「题目管理」→ 平台同步 → 输入用户名/uid → 同步
+4. 换绑账号时，新同步会自动清空该平台旧账号的提交数据
 
 ## API 一览
 

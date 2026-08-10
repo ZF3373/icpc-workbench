@@ -1,4 +1,4 @@
-import type { NormalizedSubmission } from '../../../shared/src/index.ts';
+import type { NormalizedSubmission, PlatformId } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 
 export interface InsertResult {
@@ -7,15 +7,17 @@ export interface InsertResult {
 }
 
 /**
- * 将统一 Submission 结构写入数据库：
+ * 将统一 Submission 结构写入数据库（单事务）：
  * - problems 按 (platform, problem_key) upsert（标题/难度/链接更新）
  * - submissions 按 (user_id, platform, external_id) INSERT OR IGNORE 去重
- * 供平台同步与手动导入共用。整个批次在事务中执行。
+ * - opts.clearPlatform：先删除该平台旧提交再插入（换账号场景，保证原子性）
+ * 供平台同步与手动导入共用。
  */
 export function insertNormalized(
   db: Db,
   userId: number,
   subs: NormalizedSubmission[],
+  opts: { clearPlatform?: PlatformId } = {},
 ): InsertResult {
   const upsertProblem = db.prepare(
     `INSERT INTO problems (platform, problem_key, title, difficulty, url, tags)
@@ -36,6 +38,12 @@ export function insertNormalized(
   let skipped = 0;
   db.exec('BEGIN');
   try {
+    if (opts.clearPlatform) {
+      db.prepare('DELETE FROM submissions WHERE user_id = ? AND platform = ?').run(
+        userId,
+        opts.clearPlatform,
+      );
+    }
     for (const s of subs) {
       upsertProblem.run(
         s.problem.platform,

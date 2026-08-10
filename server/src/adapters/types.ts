@@ -12,6 +12,15 @@ export class ManualImportRequiredError extends Error {
   }
 }
 
+export interface FetchOptions {
+  /** 增量同步起点（ISO8601 UTC，平台支持时使用；不支持则忽略） */
+  since?: string;
+  /** 平台登录 Cookie（洛谷/牛客等需登录平台使用） */
+  cookie?: string;
+  /** 平台 CSRF token（洛谷需 x-csrf-token） */
+  csrf?: string;
+}
+
 /**
  * 平台适配器统一接口。
  * 新增平台只需实现本接口并在 adapters/index.ts 注册。
@@ -22,11 +31,11 @@ export interface PlatformAdapter {
   /**
    * 拉取用户在平台上的提交记录（含题目信息），输出统一结构。
    * @param handle 平台用户名 / uid
-   * @param opts.since 增量同步起点（ISO8601 UTC，平台支持时使用；不支持则忽略）
+   * @param opts.since / opts.cookie / opts.csrf 同步参数（同步层从 settings 注入）
    */
   fetchUserSubmissions(
     handle: string,
-    opts?: { since?: string },
+    opts?: FetchOptions,
   ): Promise<NormalizedSubmission[]>;
 
   /** 构造题目跳转链接（桌面挂件 / 计划任务跳转使用）。 */

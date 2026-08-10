@@ -8,7 +8,7 @@ import { DEFAULT_USER_ID } from '../constants.ts';
 export function settingsRoutes(db: Db, config: AppConfig): Router {
   const r = Router();
 
-  // GET /api/settings → AI 配置 + 平台账号 + 适配器开关
+  // GET /api/settings → AI 配置 + 平台账号 + 适配器开关 + Cookie 配置
   r.get('/', (_req, res) => {
     const ai = aiConfigFromDb(db, config);
     const accounts = db
@@ -17,13 +17,40 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       )
       .all(DEFAULT_USER_ID);
     const adapterEnabled: Record<string, boolean> = {};
+    const cookies: Record<string, { cookie?: string; csrf?: string }> = {};
     for (const p of PLATFORMS) {
       const row = db
         .prepare('SELECT value FROM settings WHERE key = ?')
         .get(`adapter.${p.id}.enabled`) as { value: string } | undefined;
       adapterEnabled[p.id] = row?.value !== 'false';
+      const c = db
+        .prepare('SELECT value FROM settings WHERE key = ?')
+        .get(`cookie.${p.id}`) as { value: string } | undefined;
+      const csrf = db
+        .prepare('SELECT value FROM settings WHERE key = ?')
+        .get(`csrf.${p.id}`) as { value: string } | undefined;
+      if (c || csrf) {
+        cookies[p.id] = {
+          ...(c ? { cookie: c.value } : {}),
+          ...(csrf ? { csrf: csrf.value } : {}),
+        };
+      }
     }
-    res.json({ ai, accounts, adapterEnabled, platforms: PLATFORMS });
+    res.json({ ai, accounts, adapterEnabled, platforms: PLATFORMS, cookies });
+  });
+
+  // POST /api/settings/cookies  body: { platform, cookie?, csrf? }（空串可清除）
+  r.post('/cookies', (req, res) => {
+    const { platform, cookie, csrf } = req.body ?? {};
+    if (!isPlatform(platform)) {
+      return res.status(400).json({ error: `platform 非法: ${String(platform)}` });
+    }
+    const upsert = db.prepare(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    );
+    if (typeof cookie === 'string') upsert.run(`cookie.${platform}`, cookie);
+    if (typeof csrf === 'string') upsert.run(`csrf.${platform}`, csrf);
+    res.json({ ok: true });
   });
 
   // POST /api/settings/ai  body: { enabled?, baseURL?, apiKey?, model? }

@@ -21,12 +21,14 @@ interface SettingsData {
   accounts: Array<{ platform: PlatformId; handle: string; last_sync_at: string | null; enabled: number }>
   adapterEnabled: Record<string, boolean>
   platforms: typeof PLATFORMS
+  cookies: Record<string, { cookie?: string; csrf?: string }>
 }
 
 export default function Settings() {
   const [data, setData] = useState<SettingsData | null>(null)
   const [aiForm] = Form.useForm()
   const [handleInputs, setHandleInputs] = useState<Record<string, string>>({})
+  const [cookieInputs, setCookieInputs] = useState<Record<string, { cookie: string; csrf: string }>>({})
 
   const load = () => {
     get<SettingsData>('/api/settings')
@@ -34,8 +36,13 @@ export default function Settings() {
         setData(d)
         aiForm.setFieldsValue(d.ai)
         const handles: Record<string, string> = {}
+        const cookies: Record<string, { cookie: string; csrf: string }> = {}
         for (const a of d.accounts) handles[a.platform] = a.handle
+        for (const [platform, c] of Object.entries(d.cookies)) {
+          cookies[platform] = { cookie: c.cookie ?? '', csrf: c.csrf ?? '' }
+        }
         setHandleInputs(handles)
+        setCookieInputs(cookies)
       })
       .catch((e: Error) => message.error(e.message))
   }
@@ -80,6 +87,17 @@ export default function Settings() {
     }
   }
 
+  const saveCookie = async (platform: PlatformId) => {
+    const v = cookieInputs[platform] ?? { cookie: '', csrf: '' }
+    try {
+      await post('/api/settings/cookies', { platform, cookie: v.cookie, csrf: v.csrf })
+      message.success(`${PLATFORMS.find((p) => p.id === platform)?.name} Cookie 已保存`)
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
   return (
     <Row gutter={[16, 16]}>
       <Col span={12}>
@@ -108,6 +126,9 @@ export default function Settings() {
           {data.platforms.map((p) => {
             const account = data.accounts.find((a) => a.platform === p.id)
             const enabled = data.adapterEnabled[p.id] !== false
+            const syncNote =
+              p.sync === 'auto' ? '自动同步' : p.sync === 'cookie' ? '配置 Cookie 后自动同步' : '仅手动导入'
+            const c = cookieInputs[p.id] ?? { cookie: '', csrf: '' }
             return (
               <div key={p.id} style={{ marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid #f0f0f0' }}>
                 <Space wrap>
@@ -123,11 +144,43 @@ export default function Settings() {
                   </Button>
                   {account && (
                     <span style={{ color: '#888', fontSize: 12 }}>
-                      已绑定 {account.handle}
-                      {p.hasOfficialApi === false && '（无公开 API，需手动导入）'}
+                      已绑定 {account.handle} · {syncNote}
                     </span>
                   )}
                 </Space>
+                {p.sync === 'cookie' && (
+                  <div style={{ marginTop: 6 }}>
+                    <Space wrap>
+                      <Input.Password
+                        placeholder="登录 Cookie"
+                        style={{ width: 260 }}
+                        value={c.cookie}
+                        onChange={(e) =>
+                          setCookieInputs((s) => ({
+                            ...s,
+                            [p.id]: { ...(s[p.id] ?? { csrf: '' }), cookie: e.target.value },
+                          }))
+                        }
+                      />
+                      {p.id === 'luogu' && (
+                        <Input
+                          placeholder="CSRF（x-csrf-token，可选）"
+                          style={{ width: 200 }}
+                          value={c.csrf}
+                          onChange={(e) =>
+                            setCookieInputs((s) => ({
+                              ...s,
+                              [p.id]: { ...(s[p.id] ?? { cookie: '' }), csrf: e.target.value },
+                            }))
+                          }
+                        />
+                      )}
+                      <Button size="small" onClick={() => saveCookie(p.id)}>
+                        保存 Cookie
+                      </Button>
+                    </Space>
+                  </div>
+                )}
                 <div style={{ marginTop: 6 }}>
                   <Space>
                     <span style={{ fontSize: 12, color: '#888' }}>自动同步</span>
@@ -142,7 +195,7 @@ export default function Settings() {
             )
           })}
           <p style={{ color: '#999', fontSize: 12 }}>
-            说明：Codeforces / AtCoder 支持自动同步；洛谷 / 牛客无公开 API，请在「题目管理」中手动导入。
+            说明：Codeforces / AtCoder 自动同步；洛谷 / 牛客在填写登录 Cookie 后可自动同步（未配置时请在「题目管理」手动导入）。
           </p>
         </Card>
       </Col>

@@ -3,19 +3,23 @@
 
 export type PlatformId = 'codeforces' | 'atcoder' | 'luogu' | 'nowcoder';
 
+export type PlatformSync = 'auto' | 'cookie' | 'manual';
+
 export interface PlatformMeta {
   id: PlatformId;
   name: string;
   nameEn: string;
   hasOfficialApi: boolean;
   homepage: string;
+  /** 刷题数据获取方式：auto=公开 API 自动同步；cookie=需配置登录 Cookie 后自动同步；manual=仅手动导入 */
+  sync: PlatformSync;
 }
 
 export const PLATFORMS: PlatformMeta[] = [
-  { id: 'codeforces', name: 'Codeforces', nameEn: 'Codeforces', hasOfficialApi: true, homepage: 'https://codeforces.com' },
-  { id: 'atcoder', name: 'AtCoder', nameEn: 'AtCoder', hasOfficialApi: false, homepage: 'https://atcoder.jp' },
-  { id: 'luogu', name: '洛谷', nameEn: 'Luogu', hasOfficialApi: false, homepage: 'https://www.luogu.com.cn' },
-  { id: 'nowcoder', name: '牛客', nameEn: 'Nowcoder', hasOfficialApi: false, homepage: 'https://ac.nowcoder.com' },
+  { id: 'codeforces', name: 'Codeforces', nameEn: 'Codeforces', hasOfficialApi: true, homepage: 'https://codeforces.com', sync: 'auto' },
+  { id: 'atcoder', name: 'AtCoder', nameEn: 'AtCoder', hasOfficialApi: false, homepage: 'https://atcoder.jp', sync: 'auto' },
+  { id: 'luogu', name: '洛谷', nameEn: 'Luogu', hasOfficialApi: false, homepage: 'https://www.luogu.com.cn', sync: 'cookie' },
+  { id: 'nowcoder', name: '牛客', nameEn: 'Nowcoder', hasOfficialApi: false, homepage: 'https://ac.nowcoder.com', sync: 'cookie' },
 ];
 
 export function platformMeta(id: PlatformId): PlatformMeta {

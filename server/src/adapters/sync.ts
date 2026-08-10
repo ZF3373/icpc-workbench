@@ -45,15 +45,31 @@ export async function syncPlatform(
   const account = db
     .prepare('SELECT handle, last_sync_at FROM platform_accounts WHERE user_id = ? AND platform = ?')
     .get(userId, platform) as { handle: string; last_sync_at: string | null } | undefined;
+  const handleChanged = account !== undefined && account.handle !== handle;
 
   try {
     // 换 handle 时全量重拉（不沿用旧账号的增量起点，避免跨账号数据混入）
     const since =
-      account && account.handle === handle && account.last_sync_at
-        ? account.last_sync_at
-        : undefined;
-    const rows = await adapter.fetchUserSubmissions(handle, since ? { since } : undefined);
-    const r = insertNormalized(db, userId, rows);
+      !handleChanged && account?.last_sync_at ? account.last_sync_at : undefined;
+    // 需登录平台：从 settings 读取 Cookie / CSRF 注入适配器
+    const readSetting = (key: string): string | undefined => {
+      const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+        | { value: string }
+        | undefined;
+      return row?.value;
+    };
+    const cookie = readSetting(`cookie.${platform}`);
+    const csrf = readSetting(`csrf.${platform}`);
+    const rows = await adapter.fetchUserSubmissions(handle, {
+      ...(since ? { since } : {}),
+      ...(cookie ? { cookie } : {}),
+      ...(csrf ? { csrf } : {}),
+    });
+
+    // 换账号：全量重拉，并在同一事务内清空该平台旧提交再写入新数据
+    const r = insertNormalized(db, userId, rows, {
+      clearPlatform: handleChanged ? platform : undefined,
+    });
     result.imported = r.imported;
     result.skipped = r.skipped;
 

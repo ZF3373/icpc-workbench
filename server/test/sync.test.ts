@@ -35,13 +35,13 @@ function sub(key: string, externalId: string): NormalizedSubmission {
   };
 }
 
-let fakeCalls: Array<{ handle: string; since?: string }> = [];
+let fakeCalls: Array<{ handle: string; since?: string; cookie?: string; csrf?: string }> = [];
 function makeFake(rows: NormalizedSubmission[], mode: 'normal' | 'manual-required' = 'normal') {
   fakeCalls = [];
   const fake: PlatformAdapter = {
     platform: 'codeforces',
     async fetchUserSubmissions(handle, opts) {
-      fakeCalls.push({ handle, since: opts?.since });
+      fakeCalls.push({ handle, since: opts?.since, cookie: opts?.cookie, csrf: opts?.csrf });
       if (mode === 'manual-required') {
         throw new ManualImportRequiredError('codeforces', '需要手动导入');
       }
@@ -88,6 +88,48 @@ test('manual-required error becomes guidance in errors, no account created', asy
   assert.match(result.errors[0], /手动导入/);
   const acc = db.prepare("SELECT COUNT(*) AS c FROM platform_accounts WHERE platform='codeforces'").get() as { c: number };
   assert.equal(acc.c, 0);
+});
+
+test('switching handle clears old submissions and does full sync', async () => {
+  makeFake([sub('1919A', 'e1'), sub('1919B', 'e2')]);
+  await syncPlatform(db, 'codeforces', 'alice');
+  const before = db.prepare('SELECT COUNT(*) AS c FROM submissions').get() as { c: number };
+  assert.equal(before.c, 2);
+
+  makeFake([sub('2048A', 'x1'), sub('2048B', 'x2')]);
+  const result = await syncPlatform(db, 'codeforces', 'bob');
+  assert.equal(result.imported, 2);
+  assert.equal(fakeCalls[0].since, undefined); // 换账号全量重拉
+  // 旧账号数据已清空，只剩新账号的 2 条
+  const rows = db
+    .prepare(
+      `SELECT p.problem_key FROM submissions s JOIN problems p ON s.problem_id = p.id
+       ORDER BY p.problem_key`,
+    )
+    .all() as Array<{ problem_key: string }>;
+  assert.deepEqual(rows.map((r) => r.problem_key), ['2048A', '2048B']);
+  const acc = db.prepare("SELECT handle FROM platform_accounts WHERE platform='codeforces'").get() as { handle: string };
+  assert.equal(acc.handle, 'bob');
+});
+
+test('sync injects cookie/csrf from settings into adapter', async () => {
+  db.prepare("INSERT INTO settings (key, value) VALUES ('cookie.codeforces', 'session=abc')").run();
+  db.prepare("INSERT INTO settings (key, value) VALUES ('csrf.codeforces', 'tok123')").run();
+  makeFake([sub('1919A', 'e1')]);
+  await syncPlatform(db, 'codeforces', 'u');
+  assert.equal(fakeCalls[0].cookie, 'session=abc');
+  assert.equal(fakeCalls[0].csrf, 'tok123');
+});
+
+test('sync failure keeps old data when handle changed', async () => {
+  makeFake([sub('1919A', 'e1')]);
+  await syncPlatform(db, 'codeforces', 'alice');
+  // 换账号但拉取失败：不得清空旧数据（原子性）
+  makeFake([], 'manual-required');
+  const result = await syncPlatform(db, 'codeforces', 'bob');
+  assert.equal(result.errors.length, 1);
+  const c = db.prepare('SELECT COUNT(*) AS c FROM submissions').get() as { c: number };
+  assert.equal(c.c, 1);
 });
 
 test('disabled platform is skipped via settings', async () => {

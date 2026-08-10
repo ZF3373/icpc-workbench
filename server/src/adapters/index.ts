@@ -16,6 +16,5 @@ export function initAdapters(dataDir?: string): void {
   register(createLuoguAdapter());
   register(createNowcoderAdapter());
 }
-
 export * from './registry.ts';
 export type { PlatformAdapter } from './types.ts';
