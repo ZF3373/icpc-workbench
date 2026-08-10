@@ -96,7 +96,7 @@ export function savePlan(
       kind,
       platform: t.platform,
       problemKey: t.problemKey?.trim(),
-      url: t.url?.trim(),
+      url: t.url?.trim() || undefined,
       note: t.note,
     };
   });
@@ -125,13 +125,16 @@ export function savePlan(
     );
     for (const t of tasks) {
       let problemId: number | null = null;
+      let finalUrl = t.url ?? null;
       if (t.platform && t.problemKey) {
         const p = db
-          .prepare('SELECT id FROM problems WHERE platform = ? AND problem_key = ?')
-          .get(t.platform, t.problemKey) as { id: number } | undefined;
+          .prepare('SELECT id, url FROM problems WHERE platform = ? AND problem_key = ?')
+          .get(t.platform, t.problemKey) as { id: number; url: string | null } | undefined;
         problemId = p?.id ?? null;
+        // url 兜底：任务未带链接但题目有链接 → 用题目链接，保证可点击跳转
+        if (!finalUrl && p?.url) finalUrl = p.url;
       }
-      insTask.run(planId, t.date, t.title, t.kind, problemId, t.url ?? null, t.note ?? null);
+      insTask.run(planId, t.date, t.title, t.kind, problemId, finalUrl, t.note ?? null);
     }
     db.exec('COMMIT');
     return planId;
@@ -168,7 +171,7 @@ export async function generatePlan(
       console.warn(`[plans] AI 生成失败，降级为模板计划: ${(e as Error).message}`);
     }
   }
-  const tpl = templatePlan(pkg.profile, startDate, days);
+  const tpl = templatePlan(db, pkg.profile, startDate, days);
   const planId = savePlan(db, userId, tpl, 'template');
   return { planId, source: 'template', title: tpl.title };
 }
@@ -269,25 +272,66 @@ export function parsePlanJson(raw: string, _startDate: string, _days: number): P
   };
 }
 
-/** 无 AI 时的降级模板：按弱项标签轮换安排每日练习，定期回顾/模拟。 */
+/** 无 AI 时的降级模板：为每日练习任务挑选具体题目（可点击跳转），定期回顾/模拟。 */
 export function templatePlan(
+  db: Db,
   profile: WeaknessProfile,
   startDate: string,
   days: number,
 ): PlanInput {
   const weakTags = profile.items.map((i) => i.tag);
   const tags = weakTags.length > 0 ? weakTags : ['综合练习'];
+  const pool = practicePool(db, weakTags);
+  // 每个 tag 一个候选队列：优先含弱项标签、未 AC、有链接的题目；题目用尽后该 tag 回退为抽象任务。
+  // 同一道题只会被选中一次（跨 tag 全局去重，避免计划内重复刷同一题）
+  const queue = new Map<string, RecommendProblem[]>();
+  for (const t of tags) {
+    queue.set(t, t === '综合练习' ? [...pool] : pool.filter((p) => p.tags.includes(t)));
+  }
+  const used = new Set<string>();
+  const takeNext = (q: RecommendProblem[]): RecommendProblem | undefined => {
+    while (q.length > 0) {
+      const pb = q.shift();
+      if (!pb) return undefined;
+      const key = `${pb.platform}:${pb.problemKey}`;
+      if (used.has(key)) continue;
+      used.add(key);
+      return pb;
+    }
+    return undefined;
+  };
   const tasks: PlanTaskInput[] = [];
   for (let d = 0; d < days; d += 1) {
     const date = addDays(startDate, d);
-    const dayOfWeek = new Date(`${date}T00:00:00Z`).getUTCDay();
-    const tag = tags[d % tags.length];
-    tasks.push({
-      date,
-      title: d % 7 === 6 ? '模拟比赛（虚拟参赛）' : `练习：${tag}`,
-      kind: d % 7 === 6 ? 'contest' : 'practice',
-      note: d % 7 === 6 ? '完整 2 小时虚拟参赛，赛后补题' : `重点突破弱项：${tag}`,
-    });
+    if (d % 7 === 6) {
+      tasks.push({
+        date,
+        title: '模拟比赛（虚拟参赛）',
+        kind: 'contest',
+        note: '完整 2 小时虚拟参赛，赛后补题',
+      });
+    } else {
+      const tag = tags[d % tags.length];
+      const pb = takeNext(queue.get(tag) ?? []);
+      tasks.push(
+        pb
+          ? {
+              date,
+              title: pb.title,
+              kind: 'practice',
+              platform: pb.platform,
+              problemKey: pb.problemKey,
+              url: pb.url ?? undefined,
+              note: `重点突破弱项：${tag}`,
+            }
+          : {
+              date,
+              title: `练习：${tag}`,
+              kind: 'practice',
+              note: `重点突破弱项：${tag}`,
+            },
+      );
+    }
     if ((d + 1) % 4 === 0) {
       tasks.push({ date, title: `回顾与错题重做（前 ${Math.min(d + 1, 7)} 天）`, kind: 'review' });
     }
@@ -297,4 +341,46 @@ export function templatePlan(
       ? `针对性突破弱项：${weakTags.slice(0, 3).join('、')}，保持每日练习节奏。`
       : '保持每日练习节奏，稳步提升。';
   return { title: `模板训练计划（${days} 天）`, goal, startDate, days, tasks };
+}
+
+/** 训练候选池：未 AC 且带链接的题目，按弱项标签命中数排序（同分按难度升序）。 */
+export function practicePool(db: Db, weakTags: string[]): RecommendProblem[] {
+  const rows = db
+    .prepare(
+      `SELECT p.platform, p.problem_key, p.title, p.difficulty, p.url, p.tags
+       FROM problems p
+       LEFT JOIN submissions s
+         ON s.problem_id = p.id AND s.user_id = ? AND s.verdict = 'AC'
+       WHERE s.id IS NULL AND p.url IS NOT NULL
+       ORDER BY p.difficulty IS NULL, p.difficulty
+       LIMIT 500`,
+    )
+    .all(DEFAULT_USER_ID) as Array<{
+    platform: PlatformId;
+    problem_key: string;
+    title: string;
+    difficulty: number | null;
+    url: string | null;
+    tags: string;
+  }>;
+  const weak = new Set(weakTags);
+  return rows
+    .map((p) => {
+      let tags: string[] = [];
+      try {
+        tags = JSON.parse(p.tags) as string[];
+      } catch {
+        tags = [];
+      }
+      return {
+        platform: p.platform,
+        problemKey: p.problem_key,
+        title: p.title,
+        difficulty: p.difficulty,
+        tags,
+        url: p.url,
+        score: tags.filter((t) => weak.has(t)).length,
+      };
+    })
+    .sort((a, b) => b.score - a.score || (a.difficulty ?? 0) - (b.difficulty ?? 0));
 }

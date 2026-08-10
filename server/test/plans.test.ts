@@ -26,9 +26,9 @@ afterEach(() => {
 
 const AI_DISABLED = { enabled: false, baseURL: 'https://x/v1', apiKey: '', model: 'm' };
 
-function sub(platform: 'codeforces', key: string, verdict: 'AC' | 'WA', tags: string[], difficulty: number, submittedAt: string): NormalizedSubmission {
+function sub(platform: 'codeforces', key: string, verdict: 'AC' | 'WA', tags: string[], difficulty: number, submittedAt: string, url?: string): NormalizedSubmission {
   return {
-    problem: { platform, problemKey: key, title: `T ${key}`, difficulty, tags },
+    problem: { platform, problemKey: key, title: `T ${key}`, difficulty, tags, ...(url ? { url } : {}) },
     verdict,
     submittedAt,
     externalId: `${key}-${verdict}-${submittedAt}`,
@@ -37,10 +37,12 @@ function sub(platform: 'codeforces', key: string, verdict: 'AC' | 'WA', tags: st
 
 function seed(): void {
   insertNormalized(db, 1, [
-    sub('codeforces', 'A', 'WA', ['dp', 'greedy'], 1500, '2026-07-28T10:00:00.000Z'),
-    sub('codeforces', 'A', 'AC', ['dp', 'greedy'], 1500, '2026-07-28T11:00:00.000Z'),
-    sub('codeforces', 'B', 'AC', ['dp', 'graphs'], 1800, '2026-07-28T12:00:00.000Z'),
-    sub('codeforces', 'C', 'AC', ['greedy'], 1200, '2026-07-28T13:00:00.000Z'),
+    sub('codeforces', 'A', 'WA', ['dp', 'greedy'], 1500, '2026-07-28T10:00:00.000Z', 'https://codeforces.com/contest/A'),
+    sub('codeforces', 'A', 'AC', ['dp', 'greedy'], 1500, '2026-07-28T11:00:00.000Z', 'https://codeforces.com/contest/A'),
+    sub('codeforces', 'B', 'AC', ['dp', 'graphs'], 1800, '2026-07-28T12:00:00.000Z', 'https://codeforces.com/contest/B'),
+    sub('codeforces', 'C', 'AC', ['greedy'], 1200, '2026-07-28T13:00:00.000Z', 'https://codeforces.com/contest/C'),
+    // D 只有 WA（未 AC）→ 模板选题候选
+    sub('codeforces', 'D', 'WA', ['dp'], 1600, '2026-07-28T14:00:00.000Z', 'https://codeforces.com/contest/D'),
   ]);
 }
 
@@ -90,12 +92,57 @@ test('parsePlanJson tolerates markdown fences and validates shape', () => {
 });
 
 test('templatePlan covers each day with periodic review/contest', () => {
-  const p = templatePlan({ items: [{ tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 14);
+  const p = templatePlan(db, { items: [{ tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 14);
   assert.equal(p.days, 14);
   assert.equal(p.tasks.length >= 14, true);
   assert.ok(p.tasks.some((t) => t.kind === 'review'));
   assert.ok(p.tasks.some((t) => t.kind === 'contest'));
   assert.match(p.tasks[0].title, /dp/);
+});
+
+test('templatePlan picks concrete problems with clickable links', () => {
+  seed();
+  const p = templatePlan(db, { items: [{ tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 7);
+  const practice = p.tasks.filter((t) => t.kind === 'practice');
+  assert.ok(practice.length > 0);
+  // 每日练习任务优先关联具体题目与可点击链接（仅未 AC 的题可入选：D）；
+  // 池中题目用尽后回退为抽象任务（计划仍完整生成）
+  assert.equal(practice[0].problemKey, 'D');
+  assert.equal(practice[0].url, 'https://codeforces.com/contest/D');
+});
+
+test('templatePlan does not repeat the same problem across weak tags', () => {
+  seed();
+  // 两个弱项 tag 都命中同一道题（D: dp）与各自独立题（E: graphs）
+  insertNormalized(db, 1, [
+    sub('codeforces', 'E', 'WA', ['graphs'], 1700, '2026-07-28T15:00:00.000Z', 'https://codeforces.com/contest/E'),
+  ]);
+  const profile = {
+    items: [
+      { tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 },
+      { tag: 'graphs', attempts: 4, ac: 1, acRate: 25, avgAcRate: 60, gap: 35, solved: 1 },
+    ],
+    byDifficulty: [],
+    generatedAt: '',
+  };
+  const p = templatePlan(db, profile, '2026-08-10', 6);
+  const picked = p.tasks
+    .filter((t) => t.kind === 'practice' && t.problemKey)
+    .map((t) => `${t.platform}:${t.problemKey}`);
+  assert.equal(new Set(picked).size, picked.length); // 无重复
+});
+
+test('savePlan falls back to problem url when task lacks url', () => {
+  seed();
+  const planId = savePlan(db, 1, {
+    title: '兜底',
+    goal: '',
+    startDate: '2026-08-10',
+    days: 1,
+    tasks: [{ date: '2026-08-10', title: '练习', kind: 'practice', platform: 'codeforces', problemKey: 'A' }],
+  }, 'manual');
+  const t = db.prepare('SELECT url FROM plan_tasks WHERE plan_id = ?').get(planId) as { url: string | null };
+  assert.equal(t.url, 'https://codeforces.com/contest/A'); // 任务未带链接 → 用题目链接
 });
 
 test('generatePlan falls back to template when AI disabled', async () => {
