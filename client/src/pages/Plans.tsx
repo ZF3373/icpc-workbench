@@ -17,7 +17,7 @@ import {
 } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { get, post } from '../api'
+import { del, get, post } from '../api'
 import type { GenerateResult, PlanDetail, PlanListItem, PlanTask } from '../types'
 
 function sourceTag(s: PlanListItem['source']) {
@@ -65,7 +65,7 @@ export default function Plans() {
   const toggleCheckin = async (task: PlanTask) => {
     try {
       if (task.checked) {
-        await fetch(`/api/checkins/${task.id}`, { method: 'DELETE' })
+        await del(`/api/checkins/${task.id}`)
       } else {
         await post('/api/checkins', { taskId: task.id })
       }

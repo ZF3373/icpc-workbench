@@ -39,9 +39,10 @@ export function parseManualRow(
         .map((t) => t.trim())
         .filter(Boolean);
   const difficulty = row.difficulty !== undefined ? Number(row.difficulty) : NaN;
-  // 缺省 externalId：稳定组合，重复导入同一条记录自动去重
+  // 缺省 externalId：稳定组合（平台+题号+结果），重复导入同一条记录自动去重；
+  // 同一题不同结果（WA/AC）会保留多条
   const externalId =
-    row.externalId ?? `manual:${platform}:${problemKey}:${verdictRaw}:${submittedAt}`;
+    row.externalId ?? `manual:${platform}:${problemKey}:${verdictRaw}`;
 
   return {
     problem: {

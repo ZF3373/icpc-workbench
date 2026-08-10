@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Badge, Button, Calendar, Card, Col, Empty, message, Row, Spin, Tag } from 'antd'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import { get, post } from '../api'
+import { get, post, del } from '../api'
 import type { DayPlanInfo, DayTask } from '../types'
 
 const KIND_LABEL: Record<DayTask['kind'], string> = {
@@ -54,7 +54,7 @@ export default function CalendarPage() {
   const toggle = async (t: DayTask) => {
     try {
       if (t.checked) {
-        await fetch(`/api/checkins/${t.id}`, { method: 'DELETE' })
+        await del(`/api/checkins/${t.id}`)
         message.success('已取消打卡')
       } else {
         await post('/api/checkins', { taskId: t.id })

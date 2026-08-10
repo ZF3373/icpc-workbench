@@ -92,6 +92,10 @@ export default function Problems() {
 
   const uploadProps = {
     beforeUpload: (file: File) => {
+      if (!platform) {
+        message.warning('请先选择平台')
+        return false
+      }
       const reader = new FileReader()
       reader.onload = async () => {
         const text = String(reader.result ?? '')

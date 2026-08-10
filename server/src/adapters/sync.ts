@@ -47,7 +47,11 @@ export async function syncPlatform(
     .get(userId, platform) as { handle: string; last_sync_at: string | null } | undefined;
 
   try {
-    const since = account?.last_sync_at ?? undefined;
+    // 换 handle 时全量重拉（不沿用旧账号的增量起点，避免跨账号数据混入）
+    const since =
+      account && account.handle === handle && account.last_sync_at
+        ? account.last_sync_at
+        : undefined;
     const rows = await adapter.fetchUserSubmissions(handle, since ? { since } : undefined);
     const r = insertNormalized(db, userId, rows);
     result.imported = r.imported;

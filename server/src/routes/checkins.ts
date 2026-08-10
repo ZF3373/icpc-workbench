@@ -8,7 +8,7 @@ export function checkinsRoutes(db: Db): Router {
   // GET /api/checkins?month=YYYY-MM → 月视图 [{ date, total, checked }]
   r.get('/', (req, res) => {
     const month = String(req.query.month ?? '');
-    if (!/^\d{4}-\d{2}$/.test(month)) {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
       return res.status(400).json({ error: 'month 格式需为 YYYY-MM' });
     }
     const rows = db

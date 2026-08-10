@@ -25,7 +25,7 @@ test('parseManualRow: basic conversion with defaults', () => {
   assert.equal(sub.problem.title, 'P1001'); // 无 title 用 key
   assert.equal(sub.verdict, 'AC');
   assert.deepEqual(sub.problem.tags, ['入门', '模拟']);
-  assert.ok(sub.externalId.startsWith('manual:luogu:P1001:AC:'));
+  assert.equal(sub.externalId, 'manual:luogu:P1001:AC'); // 稳定组合，便于去重
   assert.ok(!Number.isNaN(Date.parse(sub.submittedAt)));
 });
 
@@ -88,6 +88,16 @@ test('insertNormalized: inserts problems+submissions, dedupes on rerun', () => {
   assert.equal(subs.c, 3);
   const problems = db.prepare('SELECT COUNT(*) AS c FROM problems').get() as { c: number };
   assert.equal(problems.c, 3);
+});
+
+test('manual rows without externalId dedupe on re-import', () => {
+  const mk = () => parseManualRow('luogu', { problemKey: 'P1', verdict: 'AC' }, 0);
+  assert.deepEqual(insertNormalized(db, 1, [mk()]), { imported: 1, skipped: 0 });
+  // 同平台同题同结果再次导入 → 稳定 externalId 触发去重（防止统计膨胀）
+  assert.deepEqual(insertNormalized(db, 1, [mk()]), { imported: 0, skipped: 1 });
+  // 不同结果保留多条
+  const wa = parseManualRow('luogu', { problemKey: 'P1', verdict: 'WA' }, 0);
+  assert.deepEqual(insertNormalized(db, 1, [wa]), { imported: 1, skipped: 0 });
 });
 
 test('insertNormalized: upsert updates problem title/tags', () => {

@@ -8,14 +8,14 @@ export function exportRoutes(db: Db): Router {
 
   // GET /api/export/plan-package?days=&startDate= → 数据包（profile/trend/problems/prompt）
   r.get('/plan-package', (req, res) => {
-    const days = num(req.query.days, 14);
+    const days = num(req.query.days, 14, 1, 90);
     const startDate = str(req.query.startDate) ?? today();
     res.json(buildPlanPackage(db, DEFAULT_USER_ID, { days, startDate }));
   });
 
   // GET /api/export/plan-prompt.md?days=&startDate= → 渲染好的提示词（可下载喂给任意 AI）
   r.get('/plan-prompt.md', (req, res) => {
-    const days = num(req.query.days, 14);
+    const days = num(req.query.days, 14, 1, 90);
     const startDate = str(req.query.startDate) ?? today();
     const pkg = buildPlanPackage(db, DEFAULT_USER_ID, { days, startDate });
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
@@ -30,7 +30,8 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' && v !== '' ? v : undefined;
 }
 
-function num(v: unknown, fallback: number): number {
+function num(v: unknown, fallback: number, min: number, max: number): number {
   const n = Number(v);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(n)));
 }

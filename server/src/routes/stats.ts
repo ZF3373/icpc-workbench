@@ -27,14 +27,14 @@ export function statsRoutes(db: Db): Router {
 
   // GET /api/stats/weakness?minAttempts=&topN=
   r.get('/weakness', (req, res) => {
-    const minAttempts = num(req.query.minAttempts, 5);
-    const topN = num(req.query.topN, 10);
+    const minAttempts = num(req.query.minAttempts, 5, 1, 1000);
+    const topN = num(req.query.topN, 10, 1, 100);
     res.json(computeWeakness(db, DEFAULT_USER_ID, { minAttempts, topN }));
   });
 
   // GET /api/stats/trend?weeks=
   r.get('/trend', (req, res) => {
-    const weeks = num(req.query.weeks, 12);
+    const weeks = num(req.query.weeks, 12, 1, 52);
     res.json(computeTrend(db, DEFAULT_USER_ID, weeks));
   });
 
@@ -45,7 +45,8 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' && v !== '' ? v : undefined;
 }
 
-function num(v: unknown, fallback: number): number {
+function num(v: unknown, fallback: number, min: number, max: number): number {
   const n = Number(v);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(n)));
 }

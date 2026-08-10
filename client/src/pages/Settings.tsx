@@ -118,7 +118,7 @@ export default function Settings() {
                     value={handleInputs[p.id] ?? ''}
                     onChange={(e) => setHandleInputs((s) => ({ ...s, [p.id]: e.target.value }))}
                   />
-                  <Button onClick={() => bindAccount(p.id)} disabled={!account}>
+                  <Button onClick={() => bindAccount(p.id)}>
                     保存
                   </Button>
                   {account && (

@@ -17,7 +17,7 @@ const db = createDb(config.dbPath);
 initAdapters(config.dataDir);
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 
 app.use('/api/import', importRoutes(db));
 app.use('/api/sync', syncRoutes(db));
