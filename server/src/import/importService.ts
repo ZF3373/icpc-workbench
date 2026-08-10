@@ -33,6 +33,13 @@ export function insertNormalized(
        (user_id, platform, problem_id, verdict, language, submitted_at, external_id)
      VALUES (?, ?, (SELECT id FROM problems WHERE platform = ? AND problem_key = ?), ?, ?, ?, ?)`,
   );
+  // 手动导入（externalId 以 manual: 开头）与平台同步数据协调：
+  // 同平台同题同结果已存在（无论来源是同步还是手动）→ 跳过，避免重复计数
+  const manualDup = db.prepare(
+    `SELECT 1 FROM submissions s JOIN problems p ON s.problem_id = p.id
+     WHERE s.user_id = ? AND s.platform = ? AND p.problem_key = ? AND s.verdict = ?
+     LIMIT 1`,
+  );
 
   let imported = 0;
   let skipped = 0;
@@ -53,6 +60,19 @@ export function insertNormalized(
         s.problem.url ?? null,
         JSON.stringify(s.problem.tags),
       );
+      // 手动导入协调：同题同结果已存在 → 跳过（不再重复计入）
+      if (String(s.externalId).startsWith('manual:')) {
+        const dup = manualDup.get(
+          userId,
+          s.problem.platform,
+          s.problem.problemKey,
+          s.verdict,
+        );
+        if (dup) {
+          skipped += 1;
+          continue;
+        }
+      }
       const r = insertSub.run(
         userId,
         s.problem.platform,

@@ -113,3 +113,26 @@ test('insertNormalized: upsert updates problem title/tags', () => {
   assert.equal(p.title, 'New Title');
   assert.deepEqual(JSON.parse(p.tags), ['a', 'b']);
 });
+
+test('manual import coordinates with synced data (same problem+verdict skipped)', () => {
+  // 先模拟平台同步数据（externalId 为平台提交号）
+  const synced = (key: string, verdict: string, externalId: string) =>
+    parseManualRow('codeforces', { problemKey: key, verdict, externalId }, 0);
+  assert.deepEqual(insertNormalized(db, 1, [synced('1919A', 'AC', '370117070')]), {
+    imported: 1,
+    skipped: 0,
+  });
+  // 手动导入同题同结果（无 externalId）→ 协调去重，不再重复计数
+  const manual = () => parseManualRow('codeforces', { problemKey: '1919A', verdict: 'AC' }, 0);
+  assert.deepEqual(insertNormalized(db, 1, [manual()]), { imported: 0, skipped: 1 });
+  // 同题不同结果（WA）→ 仍保留
+  const wa = () => parseManualRow('codeforces', { problemKey: '1919A', verdict: 'WA' }, 0);
+  assert.deepEqual(insertNormalized(db, 1, [wa()]), { imported: 1, skipped: 0 });
+  // 不同题 → 正常导入
+  assert.deepEqual(
+    insertNormalized(db, 1, [parseManualRow('codeforces', { problemKey: '1919B', verdict: 'AC' }, 0)]),
+    { imported: 1, skipped: 0 },
+  );
+  const subs = db.prepare('SELECT COUNT(*) AS c FROM submissions').get() as { c: number };
+  assert.equal(subs.c, 3); // 370117070-AC / 1919A-WA / 1919B-AC
+});
