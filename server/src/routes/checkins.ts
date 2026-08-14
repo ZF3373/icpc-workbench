@@ -2,8 +2,50 @@ import { Router } from 'express';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 
+export interface StreakInfo {
+  current: number;
+  longest: number;
+  totalDays: number;
+}
+
+function toDate(str: string): number {
+  return Number(new Date(`${str}T00:00:00Z`).getTime() / 86_400_000) | 0;
+}
+
+/** 由已打卡日期集合（YYYY-MM-DD 升序去重）计算连续打卡：current 从今天（或昨天）往前数，longest 为历史最长。 */
+export function computeStreak(dates: string[], todayStr: string): StreakInfo {
+  const days = [...new Set(dates)].map(toDate).sort((a, b) => a - b);
+  if (days.length === 0) return { current: 0, longest: 0, totalDays: 0 };
+
+  let longest = 1;
+  let run = 1;
+  for (let i = 1; i < days.length; i += 1) {
+    run = days[i] - days[i - 1] === 1 ? run + 1 : 1;
+    if (run > longest) longest = run;
+  }
+
+  const today = toDate(todayStr);
+  const set = new Set(days);
+  let cursor = set.has(today) ? today : today - 1; // 今天尚未打卡不打断连续（以昨天为终点）
+  let current = 0;
+  while (set.has(cursor)) {
+    current += 1;
+    cursor -= 1;
+  }
+  return { current, longest, totalDays: days.length };
+}
+
 export function checkinsRoutes(db: Db): Router {
   const r = Router();
+
+  // GET /api/checkins/streak → 连续打卡统计（桌面挂件亦可用）
+  r.get('/streak', (_req, res) => {
+    const rows = db
+      .prepare('SELECT DISTINCT task_date FROM checkins WHERE user_id = ? ORDER BY task_date')
+      .all(DEFAULT_USER_ID) as Array<{ task_date: string }>;
+    const todayStr = new Date().toISOString().slice(0, 10);
+    res.json(computeStreak(rows.map((r2) => r2.task_date), todayStr));
+  });
 
   // GET /api/checkins?month=YYYY-MM → 月视图 [{ date, total, checked }]
   r.get('/', (req, res) => {

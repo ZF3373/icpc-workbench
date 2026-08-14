@@ -111,3 +111,9 @@ export interface DayPlanInfo {
   total: number
   checked: number
 }
+
+export interface StreakInfo {
+  current: number
+  longest: number
+  totalDays: number
+}

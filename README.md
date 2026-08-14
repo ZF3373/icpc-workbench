@@ -99,8 +99,11 @@ GET  /api/stats/weakness          # 弱项画像（minAttempts/topN）
 GET  /api/stats/trend             # 周趋势（weeks）
 GET  /api/problems                # 题目列表（platform/difficulty/tag/q 过滤）
 GET  /api/plans | POST /api/plans/generate | GET /api/plans/:id | DELETE /api/plans/:id
+PATCH /api/plans/tasks/:taskId    # 编辑单条任务（taskDate/title/kind/url/note，仅更新提交字段）
+DELETE /api/plans/tasks/:taskId   # 删除单条任务（打卡记录级联删除）
 GET  /api/checkins?month=YYYY-MM  # 月打卡视图
 GET  /api/checkins/date/:date     # 当天任务（桌面挂件复用）
+GET  /api/checkins/streak         # 连续打卡统计（current/longest/totalDays）
 POST /api/checkins { taskId }     # 打卡 | DELETE /api/checkins/:taskId 取消
 GET  /api/settings                # 设置（AI/账号/适配器开关）
 GET  /api/export/plan-package     # 数据包（弱项+趋势+题目+提示词）

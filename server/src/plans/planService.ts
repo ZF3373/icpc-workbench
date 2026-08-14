@@ -253,22 +253,50 @@ export function recommendProblems(
     .map(({ score: _score, ...p }) => p);
 }
 
-/** 解析 AI 输出的 JSON（容忍 ```json 围栏），校验基本结构。 */
+/** 解析 AI 输出的 JSON，校验基本结构。容错：围栏、前后解释性文字、尾逗号、畸形任务条目。 */
 export function parsePlanJson(raw: string, _startDate: string, _days: number): PlanInput {
-  const text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
-  const obj = JSON.parse(text) as {
-    title?: unknown;
-    goal?: unknown;
-    tasks?: unknown;
-  };
+  let text = raw.trim();
+  // 去掉任意位置的 ``` / ```json 围栏（模型偶尔在围栏外补一句说明）
+  if (text.includes('```')) {
+    text = text.replace(/```[a-zA-Z]*\s*/g, '').trim();
+  }
+  // 截取首个 { 到最后一个 }（容忍 JSON 前后的自然语言包装）
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start !== -1 && end > start) text = text.slice(start, end + 1);
+  let obj: { title?: unknown; goal?: unknown; tasks?: unknown };
+  try {
+    obj = JSON.parse(text) as typeof obj;
+  } catch (e) {
+    // 二次容错：模型常见错误——对象/数组末尾多余逗号
+    try {
+      obj = JSON.parse(text.replace(/,\s*([}\]])/g, '$1')) as typeof obj;
+    } catch {
+      throw new Error(`AI 输出不是合法 JSON: ${(e as Error).message}`);
+    }
+  }
   if (typeof obj.title !== 'string' || !obj.title.trim()) throw new Error('AI 输出缺少 title');
   if (!Array.isArray(obj.tasks) || obj.tasks.length === 0) throw new Error('AI 输出缺少 tasks');
+  // 逐条清洗：丢弃缺 title/date 的条目，未知 kind 回退为 practice
+  const tasks = (obj.tasks as unknown[])
+    .filter((t): t is Record<string, unknown> => typeof t === 'object' && t !== null)
+    .filter((t) => typeof t.title === 'string' && t.title.trim() && typeof t.date === 'string')
+    .map((t) => ({
+      date: t.date as string,
+      title: t.title as string,
+      kind: TASK_KINDS.includes(t.kind as TaskKind) ? (t.kind as string) : 'practice',
+      platform: t.platform as PlatformId | undefined,
+      problemKey: t.problemKey as string | undefined,
+      url: t.url as string | undefined,
+      note: t.note as string | undefined,
+    }));
+  if (tasks.length === 0) throw new Error('AI 输出 tasks 中没有有效任务');
   return {
     title: obj.title,
     goal: typeof obj.goal === 'string' ? obj.goal : '',
     startDate: _startDate,
     days: _days,
-    tasks: obj.tasks as PlanTaskInput[],
+    tasks,
   };
 }
 

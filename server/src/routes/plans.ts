@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { AiConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
-import { generatePlan } from '../plans/planService.ts';
+import { generatePlan, TASK_KINDS } from '../plans/planService.ts';
 
 export function plansRoutes(db: Db, getAiConfig: () => AiConfig): Router {
   const r = Router();
@@ -57,6 +57,91 @@ export function plansRoutes(db: Db, getAiConfig: () => AiConfig): Router {
       )
       .all(id);
     res.json({ ...plan, tasks });
+  });
+
+  // PATCH /api/plans/tasks/:taskId → 编辑单条任务（仅更新提交的字段；url/note 传 null 可清空）
+  r.patch('/tasks/:taskId', (req, res) => {
+    const taskId = Number(req.params.taskId);
+    if (!Number.isInteger(taskId)) {
+      return res.status(400).json({ error: 'taskId 非法' });
+    }
+    const task = db
+      .prepare(
+        `SELECT t.id FROM plan_tasks t JOIN plans p ON p.id = t.plan_id
+          WHERE t.id = ? AND p.user_id = ?`,
+      )
+      .get(taskId, DEFAULT_USER_ID) as { id: number } | undefined;
+    if (!task) return res.status(404).json({ error: '任务不存在' });
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const sets: string[] = [];
+    const args: (string | number | null)[] = [];
+    if ('taskDate' in body) {
+      const d = body.taskDate;
+      if (typeof d !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+        return res.status(400).json({ error: 'taskDate 格式需为 YYYY-MM-DD' });
+      }
+      sets.push('task_date = ?');
+      args.push(d);
+    }
+    if ('title' in body) {
+      const t = body.title;
+      if (typeof t !== 'string' || !t.trim()) {
+        return res.status(400).json({ error: 'title 不能为空' });
+      }
+      sets.push('title = ?');
+      args.push(t.trim());
+    }
+    if ('kind' in body) {
+      const k = body.kind;
+      if (typeof k !== 'string' || !(TASK_KINDS as readonly string[]).includes(k)) {
+        return res.status(400).json({ error: `kind 非法，需为 ${TASK_KINDS.join(' / ')}` });
+      }
+      sets.push('kind = ?');
+      args.push(k);
+    }
+    for (const field of ['url', 'note'] as const) {
+      if (field in body) {
+        const v = body[field];
+        if (v !== null && typeof v !== 'string') {
+          return res.status(400).json({ error: `${field} 需为字符串或 null` });
+        }
+        sets.push(`${field} = ?`);
+        args.push(v?.trim() ? v.trim() : null);
+      }
+    }
+    if (sets.length === 0) {
+      return res.status(400).json({ error: '没有可更新字段（taskDate/title/kind/url/note）' });
+    }
+    args.push(taskId);
+    try {
+      db.prepare(`UPDATE plan_tasks SET ${sets.join(', ')} WHERE id = ?`).run(...args);
+    } catch (e) {
+      // UNIQUE(plan_id, task_date, title) 冲突时给出友好提示
+      if (String((e as Error).message).includes('UNIQUE')) {
+        return res.status(400).json({ error: '同一天已存在同名任务' });
+      }
+      throw e;
+    }
+    res.json({ ok: true });
+  });
+
+  // DELETE /api/plans/tasks/:taskId → 删除单条任务（打卡记录由外键级联删除）
+  r.delete('/tasks/:taskId', (req, res) => {
+    const taskId = Number(req.params.taskId);
+    if (!Number.isInteger(taskId)) {
+      return res.status(400).json({ error: 'taskId 非法' });
+    }
+    const result = db
+      .prepare(
+        `DELETE FROM plan_tasks WHERE id = ?
+          AND plan_id IN (SELECT id FROM plans WHERE user_id = ?)`,
+      )
+      .run(taskId, DEFAULT_USER_ID);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: '任务不存在' });
+    }
+    res.json({ ok: true });
   });
 
   // DELETE /api/plans/:id → 删除计划（plan_tasks 与 checkins 由外键级联删除）

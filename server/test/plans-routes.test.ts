@@ -53,3 +53,80 @@ test('DELETE /api/plans/:id returns 404 for missing plan', async () => {
     assert.match(body.error, /不存在/);
   });
 });
+
+async function seedTask(db: Db): Promise<number> {
+  db.prepare(
+    "INSERT INTO plans (user_id, title, goal, start_date, end_date, source) VALUES (1, 'p', '', '2026-08-10', '2026-08-12', 'template')",
+  ).run();
+  const planId = (db.prepare('SELECT id FROM plans').get() as { id: number }).id;
+  db.prepare(
+    "INSERT INTO plan_tasks (plan_id, task_date, title, kind, url, note) VALUES (?, '2026-08-10', 't1', 'practice', 'https://x', 'n')",
+  ).run(planId);
+  return (db.prepare('SELECT id FROM plan_tasks').get() as { id: number }).id;
+}
+
+test('PATCH /api/plans/tasks/:taskId updates provided fields only', async () => {
+  await withServer(async (db, base) => {
+    const taskId = await seedTask(db);
+    const res = await fetch(`${base}/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: '改名', kind: 'review', url: null }),
+    });
+    assert.equal(res.status, 200);
+    const row = db
+      .prepare('SELECT task_date, title, kind, url, note FROM plan_tasks WHERE id = ?')
+      .get(taskId) as { task_date: string; title: string; kind: string; url: string | null; note: string };
+    assert.equal(row.title, '改名');
+    assert.equal(row.kind, 'review');
+    assert.equal(row.url, null); // 传 null 清空
+    assert.equal(row.note, 'n'); // 未提交字段不动
+    assert.equal(row.task_date, '2026-08-10');
+  });
+});
+
+test('PATCH /api/plans/tasks/:taskId validates inputs and 404s', async () => {
+  await withServer(async (db, base) => {
+    const taskId = await seedTask(db);
+    const bad = await fetch(`${base}/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'xxx' }),
+    });
+    assert.equal(bad.status, 400);
+    const badDate = await fetch(`${base}/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskDate: '2026/08/11' }),
+    });
+    assert.equal(badDate.status, 400);
+    const empty = await fetch(`${base}/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(empty.status, 400);
+    const missing = await fetch(`${base}/tasks/999`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'x' }),
+    });
+    assert.equal(missing.status, 404);
+  });
+});
+
+test('DELETE /api/plans/tasks/:taskId removes task and its checkins', async () => {
+  await withServer(async (db, base) => {
+    const taskId = await seedTask(db);
+    db.prepare('INSERT INTO checkins (user_id, task_id, task_date) VALUES (1, ?, ?)').run(
+      taskId,
+      '2026-08-10',
+    );
+    const res = await fetch(`${base}/tasks/${taskId}`, { method: 'DELETE' });
+    assert.equal(res.status, 200);
+    assert.equal(db.prepare('SELECT COUNT(*) AS c FROM plan_tasks').get()!.c, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS c FROM checkins').get()!.c, 0); // 级联
+    const again = await fetch(`${base}/tasks/${taskId}`, { method: 'DELETE' });
+    assert.equal(again.status, 404);
+  });
+});

@@ -91,6 +91,41 @@ test('parsePlanJson tolerates markdown fences and validates shape', () => {
   assert.throws(() => parsePlanJson('not json', '2026-08-10', 1), /JSON/);
 });
 
+test('parsePlanJson tolerates prose around JSON', () => {
+  const raw =
+    '好的，以下是计划：\n{"title":"P","goal":"G","tasks":[{"date":"2026-08-10","title":"t","kind":"practice"}]}\n希望对你有帮助！';
+  const p = parsePlanJson(raw, '2026-08-10', 1);
+  assert.equal(p.title, 'P');
+  assert.equal(p.tasks.length, 1);
+});
+
+test('parsePlanJson tolerates trailing commas inside fences', () => {
+  const raw = '```json\n{"title":"P","tasks":[{"date":"2026-08-10","title":"t","kind":"practice",},],}\n```';
+  const p = parsePlanJson(raw, '2026-08-10', 1);
+  assert.equal(p.tasks.length, 1);
+});
+
+test('parsePlanJson sanitizes malformed task entries', () => {
+  const raw = JSON.stringify({
+    title: 'P',
+    tasks: [
+      { date: '2026-08-10', title: 'ok', kind: 'review' },
+      { date: '2026-08-11', title: 'bad kind', kind: '不知名类型' },
+      'not an object',
+      { date: '2026-08-12' },
+      null,
+    ],
+  });
+  const p = parsePlanJson(raw, '2026-08-10', 3);
+  assert.equal(p.tasks.length, 2);
+  assert.equal(p.tasks[0].kind, 'review');
+  assert.equal(p.tasks[1].kind, 'practice'); // 未知 kind 回退
+  assert.throws(
+    () => parsePlanJson('{"title":"P","tasks":["x", 1]}', '2026-08-10', 1),
+    /有效任务/,
+  );
+});
+
 test('templatePlan covers each day with periodic review/contest', () => {
   const p = templatePlan(db, { items: [{ tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 14);
   assert.equal(p.days, 14);

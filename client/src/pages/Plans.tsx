@@ -6,19 +6,22 @@ import {
   Drawer,
   Empty,
   Form,
+  Input,
   InputNumber,
   message,
   Modal,
   Popconfirm,
   Progress,
+  Select,
   Space,
   Spin,
   Table,
   Tag,
 } from 'antd'
-import { PlusOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
+import dayjs, { type Dayjs } from 'dayjs'
 import type { ColumnsType } from 'antd/es/table'
-import { del, get, post } from '../api'
+import { del, get, patch, post } from '../api'
 import type { GenerateResult, PlanDetail, PlanListItem, PlanTask } from '../types'
 
 function sourceTag(s: PlanListItem['source']) {
@@ -33,12 +36,21 @@ function kindTag(k: PlanTask['kind']) {
   return <Tag color={color}>{label}</Tag>
 }
 
+const KIND_OPTIONS = [
+  { value: 'practice', label: '练习' },
+  { value: 'review', label: '回顾' },
+  { value: 'topic', label: '专题' },
+  { value: 'contest', label: '模拟赛' },
+]
+
 export default function Plans() {
   const [plans, setPlans] = useState<PlanListItem[]>([])
   const [loading, setLoading] = useState(false)
   const [genOpen, setGenOpen] = useState(false)
   const [detail, setDetail] = useState<PlanDetail | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
+  const [editing, setEditing] = useState<PlanTask | null>(null)
+  const [editForm] = Form.useForm()
   const [genForm] = Form.useForm()
 
   const load = useCallback(() => {
@@ -80,6 +92,55 @@ export default function Plans() {
     try {
       await del(`/api/plans/${id}`)
       message.success('计划已删除')
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  const openEdit = (t: PlanTask) => {
+    setEditing(t)
+    editForm.setFieldsValue({
+      taskDate: dayjs(t.task_date),
+      title: t.title,
+      kind: t.kind,
+      url: t.url ?? '',
+      note: t.note ?? '',
+    })
+  }
+
+  const submitEdit = async () => {
+    if (!editing) return
+    const v = (await editForm.validateFields().catch(() => null)) as unknown as {
+      taskDate: Dayjs
+      title: string
+      kind: PlanTask['kind']
+      url: string
+      note: string
+    } | null
+    if (!v) return
+    try {
+      await patch(`/api/plans/tasks/${editing.id}`, {
+        taskDate: v.taskDate.format('YYYY-MM-DD'),
+        title: v.title,
+        kind: v.kind,
+        url: v.url || null, // 留空即清除
+        note: v.note || null,
+      })
+      message.success('任务已更新')
+      setEditing(null)
+      if (detail) openDetail(detail.id)
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  const removeTask = async (t: PlanTask) => {
+    try {
+      await del(`/api/plans/tasks/${t.id}`)
+      message.success('任务已删除')
+      if (detail) openDetail(detail.id)
       load()
     } catch (e) {
       message.error((e as Error).message)
@@ -155,6 +216,16 @@ export default function Plans() {
                     <Button size="small" type={t.checked ? 'default' : 'primary'} onClick={() => toggleCheckin(t)}>
                       {t.checked ? '已打卡 ✓' : '打卡'}
                     </Button>
+                    <Button size="small" type="text" icon={<EditOutlined />} title="编辑任务" onClick={() => openEdit(t)} />
+                    <Popconfirm
+                      title="删除任务"
+                      description="将删除该任务及其打卡记录"
+                      okText="删除"
+                      cancelText="取消"
+                      onConfirm={() => removeTask(t)}
+                    >
+                      <Button size="small" type="text" danger icon={<DeleteOutlined />} title="删除任务" />
+                    </Popconfirm>
                   </Space>
                   {t.note && <p style={{ marginTop: 8, color: '#888' }}>{t.note}</p>}
                 </Card>
@@ -165,6 +236,34 @@ export default function Plans() {
           <Spin />
         )}
       </Drawer>
+
+      <Modal
+        title="编辑任务"
+        open={editing !== null}
+        onCancel={() => setEditing(null)}
+        onOk={submitEdit}
+        okText="保存"
+        cancelText="取消"
+        destroyOnHidden
+      >
+        <Form form={editForm} layout="vertical">
+          <Form.Item name="taskDate" label="日期" rules={[{ required: true }]}>
+            <DatePicker style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="title" label="标题" rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="kind" label="类型" rules={[{ required: true }]}>
+            <Select options={KIND_OPTIONS} />
+          </Form.Item>
+          <Form.Item name="url" label="链接（留空清除）">
+            <Input placeholder="https://..." allowClear />
+          </Form.Item>
+          <Form.Item name="note" label="备注（留空清除）">
+            <Input.TextArea rows={2} />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <GenerateModal
         open={genOpen}
