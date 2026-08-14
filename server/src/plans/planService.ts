@@ -8,6 +8,7 @@ import { DEFAULT_USER_ID } from '../constants.ts';
 import { AiProvider } from '../ai/provider.ts';
 import { computeTrend } from '../analysis/trend.ts';
 import { computeWeakness, type WeaknessProfile } from '../analysis/weakness.ts';
+import { filterNoiseTags } from '../analysis/tags.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PROMPT_TEMPLATE = fs.readFileSync(
@@ -49,6 +50,7 @@ export interface PlanPackage {
   profile: WeaknessProfile;
   trend: ReturnType<typeof computeTrend>;
   problems: RecommendProblem[];
+  level: UserLevel;
   prompt: string;
   meta: { startDate: string; days: number; generatedAt: string };
 }
@@ -184,13 +186,16 @@ export function buildPlanPackage(
 ): PlanPackage {
   const days = opts.days ?? 14;
   const startDate = opts.startDate ?? today();
-  const profile = computeWeakness(db, userId, { minAttempts: 2, topN: 8 });
+  // minAttempts=5：过小的样本（如 3 次提交 0AC）不足以支撑"弱项"结论
+  const profile = computeWeakness(db, userId, { minAttempts: 5, topN: 8 });
   const trend = computeTrend(db, userId, 12);
-  const problems = recommendProblems(db, profile);
+  const level = computeUserLevel(db, userId);
+  const problems = recommendProblems(db, profile, { level });
 
   const prompt = renderTemplate(PROMPT_TEMPLATE, {
     days: String(days),
     startDate,
+    level: JSON.stringify(level),
     weakness: JSON.stringify(profile.items),
     trend: JSON.stringify(trend),
     problems: JSON.stringify(problems.slice(0, 50)),
@@ -200,37 +205,93 @@ export function buildPlanPackage(
     profile,
     trend,
     problems,
+    level,
     prompt,
     meta: { startDate, days, generatedAt: new Date().toISOString() },
   };
 }
 
-/** 推荐题目：优先含弱项标签，其次有难度的题，按难度升序（由易到难）。 */
+/** 用户当前水平画像（供 AI 锚定训练难度）：已 AC 题难度分位。 */
+export interface UserLevel {
+  /** 已 AC 且有难度的题数 */
+  solvedCount: number;
+  /** AC 难度中位数（P50） */
+  medianDifficulty: number | null;
+  /** AC 难度 P75 */
+  p75Difficulty: number | null;
+  /** 建议训练区间 [下限, 上限]（中位数 ~ P75+200，向上适度挑战） */
+  suggestedRange: [number, number] | null;
+}
+
+/** 计算用户 AC 难度分位（CF rating 统一标尺）；样本不足时返回 null。 */
+export function computeUserLevel(db: Db, userId: number, minSample = 10): UserLevel {
+  // 注意按"题"去重而非难度值去重：同一难度下多道 AC 题各计一次
+  const diffs = (
+    db
+      .prepare(
+        `SELECT p.difficulty AS difficulty
+           FROM problems p
+          WHERE p.difficulty IS NOT NULL
+            AND EXISTS (SELECT 1 FROM submissions s
+                         WHERE s.problem_id = p.id AND s.user_id = ? AND s.verdict = 'AC')`,
+      )
+      .all(userId) as Array<{ difficulty: number }>
+  )
+    .map((r) => r.difficulty)
+    .sort((a, b) => a - b);
+  if (diffs.length < minSample) {
+    return { solvedCount: diffs.length, medianDifficulty: null, p75Difficulty: null, suggestedRange: null };
+  }
+  const q = (p: number): number => {
+    const idx = Math.min(diffs.length - 1, Math.floor(p * (diffs.length - 1)));
+    return diffs[idx];
+  };
+  const median = q(0.5);
+  const p75 = q(0.75);
+  return {
+    solvedCount: diffs.length,
+    medianDifficulty: median,
+    p75Difficulty: p75,
+    suggestedRange: [Math.max(800, median - 100), p75 + 200],
+  };
+}
+
+/** 推荐题目：未 AC 优先，命中弱项标签加权；难度限制在用户水平附近（可挑战，不推水题/远超水平的题）。 */
 export function recommendProblems(
   db: Db,
   profile: WeaknessProfile,
-  limit = 80,
+  opts: { limit?: number; level?: UserLevel | null } = {},
 ): RecommendProblem[] {
+  const limit = opts.limit ?? 80;
+  const level = opts.level === undefined ? computeUserLevel(db, DEFAULT_USER_ID) : opts.level;
+
   const all = db
     .prepare(
-      `SELECT platform, problem_key, title, difficulty, url, tags
-       FROM problems ORDER BY difficulty IS NULL, difficulty`,
+      `SELECT p.platform, p.problem_key, p.title, p.difficulty, p.url, p.tags,
+              EXISTS (SELECT 1 FROM submissions s
+                       WHERE s.problem_id = p.id AND s.user_id = ? AND s.verdict = 'AC') AS aced
+       FROM problems p`,
     )
-    .all() as Array<{
+    .all(DEFAULT_USER_ID) as Array<{
     platform: PlatformId;
     problem_key: string;
     title: string;
     difficulty: number | null;
     url: string | null;
     tags: string;
+    aced: number;
   }>;
 
   const weakTags = new Set(profile.items.map((i) => i.tag));
-  const score = (tags: string[]): number => {
-    const hit = tags.filter((t) => weakTags.has(t)).length;
-    return hit;
+  const inRange = (d: number | null): boolean => {
+    if (!level?.suggestedRange) return true; // 样本不足：不过滤难度
+    const [lo, hi] = level.suggestedRange;
+    return d !== null && d >= lo && d <= hi;
   };
   return all
+    .filter((p) => !p.aced)
+    .filter((p) => p.url !== null)
+    .filter((p) => inRange(p.difficulty))
     .map((p) => {
       let tags: string[] = [];
       try {
@@ -243,12 +304,12 @@ export function recommendProblems(
         problemKey: p.problem_key,
         title: p.title,
         difficulty: p.difficulty,
-        tags,
+        tags: filterNoiseTags(tags),
         url: p.url,
-        score: score(tags),
+        score: tags.filter((t) => weakTags.has(t)).length,
       };
     })
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.score - a.score || (a.difficulty ?? 9999) - (b.difficulty ?? 9999))
     .slice(0, limit)
     .map(({ score: _score, ...p }) => p);
 }
@@ -277,10 +338,18 @@ export function parsePlanJson(raw: string, _startDate: string, _days: number): P
   }
   if (typeof obj.title !== 'string' || !obj.title.trim()) throw new Error('AI 输出缺少 title');
   if (!Array.isArray(obj.tasks) || obj.tasks.length === 0) throw new Error('AI 输出缺少 tasks');
-  // 逐条清洗：丢弃缺 title/date 的条目，未知 kind 回退为 practice
+  // 计划期边界（闭区间）：AI 输出的日期必须落在期内，否则丢弃该条目
+  const startMs = Date.parse(`${_startDate}T00:00:00Z`);
+  const endMs = startMs + (_days - 1) * 86_400_000;
+  const inRange = (d: string): boolean => {
+    const ms = Date.parse(`${d}T00:00:00Z`);
+    return Number.isFinite(ms) && ms >= startMs && ms <= endMs;
+  };
+  // 逐条清洗：丢弃缺 title/date 或日期在计划期外的条目，未知 kind 回退为 practice
   const tasks = (obj.tasks as unknown[])
     .filter((t): t is Record<string, unknown> => typeof t === 'object' && t !== null)
     .filter((t) => typeof t.title === 'string' && t.title.trim() && typeof t.date === 'string')
+    .filter((t) => inRange(t.date as string))
     .map((t) => ({
       date: t.date as string,
       title: t.title as string,
@@ -405,7 +474,7 @@ export function practicePool(db: Db, weakTags: string[]): RecommendProblem[] {
         problemKey: p.problem_key,
         title: p.title,
         difficulty: p.difficulty,
-        tags,
+        tags: filterNoiseTags(tags),
         url: p.url,
         score: tags.filter((t) => weak.has(t)).length,
       };

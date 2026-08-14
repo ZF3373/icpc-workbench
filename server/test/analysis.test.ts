@@ -112,6 +112,24 @@ test('computeWeakness ranks tags by gap below average', () => {
   assert.equal(w.byDifficulty[0].bucket, '1400-1599');
 });
 
+test('computeWeakness excludes noise tags (year/contest/source)', () => {
+  // 即使噪声标签提交量最大、AC 率最低，也不进入弱项画像
+  insertNormalized(db, 1, [
+    sub('luogu', 'N1', 'WA', '2026-01-01T00:00:00.000Z', ['2026', '蓝桥杯省赛', '贪心']),
+    sub('luogu', 'N2', 'WA', '2026-01-02T00:00:00.000Z', ['2026', 'NOIP 普及组', '贪心']),
+    sub('luogu', 'N3', 'WA', '2026-01-03T00:00:00.000Z', ['洛谷原创', '*special', '贪心']),
+    sub('codeforces', 'N4', 'AC', '2026-01-04T00:00:00.000Z', ['dp']),
+    sub('codeforces', 'N5', 'AC', '2026-01-05T00:00:00.000Z', ['dp']),
+  ]);
+  const w = computeWeakness(db, 1, { minAttempts: 3, topN: 10 });
+  const tags = w.items.map((i) => i.tag);
+  assert.ok(!tags.includes('2026'), `年份标签不应入画像: ${tags}`);
+  assert.ok(!tags.includes('蓝桥杯省赛'), `赛事标签不应入画像: ${tags}`);
+  assert.ok(!tags.includes('NOIP 普及组') && !tags.includes('洛谷原创') && !tags.includes('*special'));
+  // 真实算法标签（贪心 0/3 AC）仍在且排最弱
+  assert.equal(w.items[0].tag, '贪心');
+});
+
 test('computeTrend aggregates by ISO week', () => {
   seed();
   const t = computeTrend(db, 1, 12);

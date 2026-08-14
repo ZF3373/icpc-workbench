@@ -6,6 +6,7 @@ import type { NormalizedSubmission } from '../../shared/src/index.ts';
 import { AiProvider } from '../src/ai/provider.ts';
 import {
   buildPlanPackage,
+  computeUserLevel,
   generatePlan,
   parsePlanJson,
   recommendProblems,
@@ -126,6 +127,22 @@ test('parsePlanJson sanitizes malformed task entries', () => {
   );
 });
 
+test('parsePlanJson drops tasks outside the plan window', () => {
+  const raw = JSON.stringify({
+    title: 'P',
+    tasks: [
+      { date: '2026-08-10', title: 'in' },        // 期内首日
+      { date: '2026-08-12', title: 'last' },      // 期内末日（3 天计划：10/11/12）
+      { date: '2026-08-13', title: 'after' },     // 期外 → 丢弃
+      { date: '2026-08-09', title: 'before' },    // 期外 → 丢弃
+      { date: 'not-a-date', title: 'bad' },       // 非法日期 → 丢弃
+    ],
+  });
+  const p = parsePlanJson(raw, '2026-08-10', 3);
+  assert.equal(p.tasks.length, 2);
+  assert.deepEqual(p.tasks.map((t) => t.title), ['in', 'last']);
+});
+
 test('templatePlan covers each day with periodic review/contest', () => {
   const p = templatePlan(db, { items: [{ tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 14);
   assert.equal(p.days, 14);
@@ -216,14 +233,48 @@ test('generatePlan falls back to template when AI call fails', async () => {
   assert.equal(result.source, 'template');
 });
 
-test('recommendProblems prioritizes weak-tag problems', () => {
+test('recommendProblems prioritizes weak-tag problems, excludes AC-ed and anchors difficulty', () => {
   seed();
   const pkg = buildPlanPackage(db, 1, { days: 7, startDate: today() });
   // 弱项应为 greedy（1/2 AC 率低）或 dp
-  const recs = recommendProblems(db, pkg.profile, 10);
+  const recs = recommendProblems(db, pkg.profile, { limit: 10 });
   assert.ok(recs.length >= 1);
   const firstTags = new Set(recs[0].tags);
   assert.ok(firstTags.has('greedy') || firstTags.has('dp'), `首个推荐应含弱项 tag: ${JSON.stringify(recs[0].tags)}`);
+  // 排除已 AC：seed 中 A/B/C 已 AC，只有 D 未 AC → 推荐不应包含 A/B/C
+  const keys = recs.map((r) => r.problemKey);
+  assert.ok(!keys.includes('A') && !keys.includes('B') && !keys.includes('C'), `不应推荐已 AC 题: ${keys}`);
+});
+
+test('recommendProblems filters difficulty to suggested range when level provided', () => {
+  seed();
+  const pkg = buildPlanPackage(db, 1, { days: 7, startDate: today() });
+  // 显式指定水平区间 1500-1700：区间外（无难度题/1200 题）被过滤
+  const recs = recommendProblems(db, pkg.profile, {
+    limit: 10,
+    level: { solvedCount: 10, medianDifficulty: 1500, p75Difficulty: 1500, suggestedRange: [1500, 1700] },
+  });
+  for (const r of recs) {
+    assert.ok(r.difficulty !== null && r.difficulty >= 1500 && r.difficulty <= 1700, `难度应在区间内: ${r.problemKey}=${r.difficulty}`);
+  }
+  // level=null（样本不足）→ 不按难度过滤，仅排除已 AC
+  const recsNoLevel = recommendProblems(db, pkg.profile, { limit: 10, level: null });
+  assert.ok(recsNoLevel.some((r) => r.problemKey === 'D'));
+});
+
+test('computeUserLevel returns percentiles from AC-ed difficulties', () => {
+  assert.equal(computeUserLevel(db, 1).medianDifficulty, null); // 空 db：样本不足
+  // 构造 12 道 AC 题，难度 800..1900（步长100）：中位 1300/1350 落点、P75 1600/1650
+  const rows: NormalizedSubmission[] = [];
+  for (let i = 0; i < 12; i += 1) {
+    rows.push(sub('codeforces', `K${i}`, 'AC', ['dp'], 800 + i * 100, '2026-07-28T10:00:00.000Z'));
+  }
+  insertNormalized(db, 1, rows);
+  const lv = computeUserLevel(db, 1);
+  assert.equal(lv.solvedCount, 12);
+  assert.equal(lv.medianDifficulty, 1300);
+  assert.equal(lv.p75Difficulty, 1600);
+  assert.deepEqual(lv.suggestedRange, [1200, 1800]);
 });
 
 test('buildPlanPackage prompt has placeholders rendered', () => {

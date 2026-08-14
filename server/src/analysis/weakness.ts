@@ -13,6 +13,7 @@ import {
   safeTags,
   type MutableStat,
 } from './stats.ts';
+import { filterNoiseTags } from './tags.ts';
 
 export type { DifficultyWeakness, WeaknessItem, WeaknessProfile };
 
@@ -41,7 +42,8 @@ export function computeWeakness(
   const solvedByTag = new Map<string, Set<string>>();
   for (const r of rows) {
     const isAc = r.verdict === 'AC';
-    for (const tag of safeTags(r.tags)) {
+    // 只统计算法能力维度标签：来源/赛事/年份等噪声标签不参与弱项画像
+    for (const tag of filterNoiseTags(safeTags(r.tags))) {
       bump(tagMap, tag, isAc);
       if (isAc) {
         if (!solvedByTag.has(tag)) solvedByTag.set(tag, new Set());
