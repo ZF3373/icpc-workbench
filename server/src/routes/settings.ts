@@ -4,6 +4,7 @@ import { PLATFORMS } from '../../../shared/src/index.ts';
 import { aiConfigFromDb, saveAiConfig, type AppConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
+import { getAdapter } from '../adapters/registry.ts';
 
 export function settingsRoutes(db: Db, config: AppConfig): Router {
   const r = Router();
@@ -58,6 +59,40 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       else upsert.run(`csrf.${platform}`, csrf);
     }
     res.json({ ok: true });
+  });
+
+  // POST /api/settings/cookies/check  body: { platform, cookie?, csrf? }
+  // 检测 Cookie 登录态；cookie 缺省时检测已保存的（适配器需实现 checkAuth，否则提示不支持）
+  r.post('/cookies/check', async (req, res) => {
+    const { platform, cookie, csrf } = req.body ?? {};
+    if (!isPlatform(platform)) {
+      return res.status(400).json({ error: `platform 非法: ${String(platform)}` });
+    }
+    const adapter = getAdapter(platform);
+    if (!adapter?.checkAuth) {
+      return res.json({ ok: false, message: '该平台无需登录或暂不支持检测' });
+    }
+    const cookieVal =
+      typeof cookie === 'string' && cookie.trim()
+        ? cookie.trim()
+        : (
+            db.prepare('SELECT value FROM settings WHERE key = ?').get(`cookie.${platform}`) as
+              | { value: string }
+              | undefined
+          )?.value;
+    if (!cookieVal) {
+      return res.json({ ok: false, message: '尚未填写 Cookie，请先填写并保存' });
+    }
+    const csrfVal =
+      typeof csrf === 'string' && csrf.trim()
+        ? csrf.trim()
+        : (
+            db.prepare('SELECT value FROM settings WHERE key = ?').get(`csrf.${platform}`) as
+              | { value: string }
+              | undefined
+          )?.value;
+    const result = await adapter.checkAuth({ cookie: cookieVal, ...(csrfVal ? { csrf: csrfVal } : {}) });
+    res.json(result);
   });
 
   // POST /api/settings/ai  body: { enabled?, baseURL?, apiKey?, model? }

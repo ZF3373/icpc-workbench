@@ -310,5 +310,29 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
     problemUrl({ problemKey }) {
       return `https://www.luogu.com.cn/problem/${String(problemKey)}`;
     },
+
+    /** 校验 Cookie 登录态：请求 /user/info 自检接口，302/未登录结构 = Cookie 失效。 */
+    async checkAuth(opts: { cookie: string; csrf?: string }): Promise<{ ok: boolean; message: string }> {
+      try {
+        const res = await fetchWithChallenge(fetchFn, `${API}/user/info`, opts.cookie, opts.csrf, {
+          'x-lentille-request': 'content-only',
+          Accept: 'application/json',
+          Referer: `${API}/`,
+        });
+        if ([301, 302, 303].includes(res.status)) {
+          return { ok: false, message: 'Cookie 无效或已过期（洛谷返回登录跳转），请重新登录洛谷后复制最新 Cookie' };
+        }
+        if (!res.ok) {
+          return { ok: false, message: `洛谷 HTTP ${res.status}（可能触发风控），请稍后重试` };
+        }
+        const text = await res.text();
+        if (!text.trim().startsWith('{')) {
+          return { ok: false, message: '返回非 JSON（Cookie 无效或已过期），请重新登录洛谷后复制最新 Cookie' };
+        }
+        return { ok: true, message: 'Cookie 有效 ✓（登录态正常）' };
+      } catch (e) {
+        return { ok: false, message: `检测失败（网络异常）: ${(e as Error).message}` };
+      }
+    },
   };
 }

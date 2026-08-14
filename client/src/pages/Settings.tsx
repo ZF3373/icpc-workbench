@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
+  Alert,
   Button,
   Card,
   Form,
@@ -29,6 +30,7 @@ export default function Settings() {
   const [aiForm] = Form.useForm()
   const [handleInputs, setHandleInputs] = useState<Record<string, string>>({})
   const [cookieInputs, setCookieInputs] = useState<Record<string, { cookie: string; csrf: string }>>({})
+  const [cookieCheck, setCookieCheck] = useState<Record<string, { ok: boolean; message: string } | 'checking'>>({})
 
   const load = () => {
     get<SettingsData>('/api/settings')
@@ -98,6 +100,22 @@ export default function Settings() {
     }
   }
 
+  const checkCookie = async (platform: PlatformId) => {
+    const v = cookieInputs[platform] ?? { cookie: '', csrf: '' }
+    setCookieCheck((s) => ({ ...s, [platform]: 'checking' }))
+    try {
+      // 未填写输入框时检测已保存的 Cookie（后端兜底读取 settings）
+      const r = await post<{ ok: boolean; message: string }>('/api/settings/cookies/check', {
+        platform,
+        ...(v.cookie.trim() ? { cookie: v.cookie.trim() } : {}),
+        ...(v.csrf.trim() ? { csrf: v.csrf.trim() } : {}),
+      })
+      setCookieCheck((s) => ({ ...s, [platform]: r }))
+    } catch (e) {
+      setCookieCheck((s) => ({ ...s, [platform]: { ok: false, message: (e as Error).message } }))
+    }
+  }
+
   return (
     <Row gutter={[16, 16]}>
       <Col span={12}>
@@ -150,35 +168,54 @@ export default function Settings() {
                 </Space>
                 {p.sync === 'cookie' && (
                   <div style={{ marginTop: 6 }}>
-                    <Space wrap>
-                      <Input.Password
-                        placeholder="登录 Cookie"
-                        style={{ width: 260 }}
-                        value={c.cookie}
-                        onChange={(e) =>
-                          setCookieInputs((s) => ({
-                            ...s,
-                            [p.id]: { ...(s[p.id] ?? { csrf: '' }), cookie: e.target.value },
-                          }))
-                        }
-                      />
-                      {p.id === 'luogu' && (
-                        <Input
-                          placeholder="CSRF（x-csrf-token，可选）"
-                          style={{ width: 200 }}
-                          value={c.csrf}
-                          onChange={(e) =>
-                            setCookieInputs((s) => ({
-                              ...s,
-                              [p.id]: { ...(s[p.id] ?? { cookie: '' }), csrf: e.target.value },
-                            }))
-                          }
-                        />
-                      )}
-                      <Button size="small" onClick={() => saveCookie(p.id)}>
-                        保存 Cookie
-                      </Button>
-                    </Space>
+                    {(() => {
+                      const check = cookieCheck[p.id]
+                      return (
+                        <>
+                          <Space wrap>
+                            <Input.Password
+                              placeholder="登录 Cookie"
+                              style={{ width: 260 }}
+                              value={c.cookie}
+                              onChange={(e) =>
+                                setCookieInputs((s) => ({
+                                  ...s,
+                                  [p.id]: { ...(s[p.id] ?? { csrf: '' }), cookie: e.target.value },
+                                }))
+                              }
+                            />
+                            {p.id === 'luogu' && (
+                              <Input
+                                placeholder="CSRF（x-csrf-token，可选）"
+                                style={{ width: 200 }}
+                                value={c.csrf}
+                                onChange={(e) =>
+                                  setCookieInputs((s) => ({
+                                    ...s,
+                                    [p.id]: { ...(s[p.id] ?? { cookie: '' }), csrf: e.target.value },
+                                  }))
+                                }
+                              />
+                            )}
+                            <Button size="small" onClick={() => saveCookie(p.id)}>
+                              保存 Cookie
+                            </Button>
+                            <Button size="small" loading={check === 'checking'} onClick={() => checkCookie(p.id)}>
+                              检测 Cookie
+                            </Button>
+                          </Space>
+                          {check && check !== 'checking' && (
+                            <Alert
+                              style={{ marginTop: 6, width: 480 }}
+                              type={check.ok ? 'success' : 'warning'}
+                              showIcon
+                              closable
+                              message={check.message}
+                            />
+                          )}
+                        </>
+                      )
+                    })()}
                   </div>
                 )}
                 <div style={{ marginTop: 6 }}>

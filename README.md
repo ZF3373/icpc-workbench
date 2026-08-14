@@ -106,6 +106,7 @@ GET  /api/checkins/date/:date     # 当天任务（桌面挂件复用）
 GET  /api/checkins/streak         # 连续打卡统计（current/longest/totalDays）
 POST /api/checkins { taskId }     # 打卡 | DELETE /api/checkins/:taskId 取消
 GET  /api/settings                # 设置（AI/账号/适配器开关）
+POST /api/settings/cookies/check  # 检测 Cookie 登录态（洛谷：302/非 JSON 判定过期）
 GET  /api/export/plan-package     # 数据包（弱项+趋势+题目+提示词）
 GET  /api/export/plan-prompt.md   # 渲染好的提示词下载
 ```

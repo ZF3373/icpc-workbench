@@ -41,6 +41,45 @@ test('luogu: without cookie throws ManualImportRequiredError, url works', async 
   );
 });
 
+test('luogu: checkAuth reports valid cookie', async () => {
+  const fetchFn = router({
+    'user/info': () => ({ code: 200, currentData: { user: { uid: 123, name: 'me' } } }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  const r = await adapter.checkAuth!({ cookie: COOKIE, csrf: 'tok' });
+  assert.equal(r.ok, true);
+});
+
+test('luogu: checkAuth reports expired cookie on 302 without fresh C3VK', async () => {
+  const fetchFn = router({
+    'user/info': () => ({ status: 302, body: '' }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  const r = await adapter.checkAuth!({ cookie: 'bad' });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /Cookie 无效或已过期/);
+});
+
+test('luogu: checkAuth reports non-JSON response as invalid', async () => {
+  const fetchFn = router({
+    'user/info': () => ({ status: 200, body: '<html>login page</html>' }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  const r = await adapter.checkAuth!({ cookie: 'bad' });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /返回非 JSON/);
+});
+
+test('luogu: checkAuth tolerates network failure', async () => {
+  const fetchFn = (async () => {
+    throw new Error('fetch failed');
+  }) as typeof fetch;
+  const adapter = createLuoguAdapter(fetchFn);
+  const r = await adapter.checkAuth!({ cookie: 'c' });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /网络异常/);
+});
+
 test('luogu: with cookie normalizes records and problem info', async () => {
   const fetchFn = router({
     'record/list': (url) => {

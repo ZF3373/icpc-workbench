@@ -43,4 +43,10 @@ export interface PlatformAdapter {
     problemKey: string;
     [k: string]: unknown;
   }): string;
+
+  /**
+   * 校验登录凭据（需登录平台实现；公开 API 平台无需实现）。
+   * 设置页「检测 Cookie」按钮调用，用于在同步前发现 Cookie 过期。
+   */
+  checkAuth?(opts: { cookie: string; csrf?: string }): Promise<{ ok: boolean; message: string }>;
 }

@@ -84,3 +84,87 @@ test('first-time binding creates account with null last_sync_at', async () => {
     assert.equal(acc.last_sync_at, null);
   });
 });
+
+// ---------- Cookie 检测接口 ----------
+
+import { register, getAdapter } from '../src/adapters/registry.ts';
+import type { PlatformAdapter } from '../src/adapters/types.ts';
+
+function fakeLuoguAdapter(
+  checkAuth: PlatformAdapter['checkAuth'],
+): PlatformAdapter {
+  return {
+    platform: 'luogu',
+    async fetchUserSubmissions() {
+      return [];
+    },
+    problemUrl: () => 'https://www.luogu.com.cn/problem/P1001',
+    ...(checkAuth ? { checkAuth } : {}),
+  };
+}
+
+test('POST /cookies/check uses body cookie when provided', async () => {
+  const original = getAdapter('luogu');
+  register(fakeLuoguAdapter(async (opts) => ({
+    ok: opts.cookie === 'fresh',
+    message: opts.cookie === 'fresh' ? 'Cookie 有效' : '过期',
+  })));
+  await withServer(async (_db, base) => {
+    const res = await fetch(`${base}/cookies/check`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'luogu', cookie: 'fresh' }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, message: 'Cookie 有效' });
+  });
+  if (original) register(original);
+});
+
+test('POST /cookies/check falls back to saved cookie in settings', async () => {
+  const original = getAdapter('luogu');
+  let seenCookie = '';
+  register(
+    fakeLuoguAdapter(async (opts) => {
+      seenCookie = opts.cookie;
+      return { ok: true, message: 'ok' };
+    }),
+  );
+  await withServer(async (db, base) => {
+    db.prepare("INSERT INTO settings (key, value) VALUES ('cookie.luogu', 'saved-cookie')").run();
+    const res = await fetch(`${base}/cookies/check`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'luogu' }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(seenCookie, 'saved-cookie'); // 未传 cookie 时读已保存的
+  });
+  if (original) register(original);
+});
+
+test('POST /cookies/check reports missing cookie and unsupported platform', async () => {
+  const original = getAdapter('luogu');
+  register(fakeLuoguAdapter(async () => ({ ok: true, message: 'ok' })));
+  await withServer(async (_db, base) => {
+    const missing = await fetch(`${base}/cookies/check`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'luogu' }),
+    });
+    const body = (await missing.json()) as { ok: boolean; message: string };
+    assert.equal(body.ok, false);
+    assert.match(body.message, /尚未填写/);
+
+    // codeforces 无 checkAuth（公开 API 平台）→ 提示不支持（不报错）
+    const cf = await fetch(`${base}/cookies/check`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', cookie: 'x' }),
+    });
+    const cfBody = (await cf.json()) as { ok: boolean; message: string };
+    assert.equal(cf.status, 200);
+    assert.match(cfBody.message, /无需登录|不支持/);
+  });
+  if (original) register(original);
+});
