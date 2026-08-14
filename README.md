@@ -75,7 +75,7 @@ npm run dev:client   # 仅前端
 |------|---------|------|------|
 | Codeforces | ✅ | 官方公开 API `user.status` | 无需登录；全量拉取最近提交，按提交号去重 |
 | AtCoder | ✅ | 社区 API `kenkoooo.com` v3 | 支持增量（from_second）；题目资源 24h 磁盘缓存；官方要求页间 ≥1s |
-| 洛谷 | ✅（需 Cookie） | `record/list` 非官方 API | 设置页填写登录 Cookie（+CSRF）后自动同步；未配置/失效时明确提示；难度分级（0-8）自动映射为 CF rating 统一标尺 |
+| 洛谷 | ✅（需 Cookie） | `record/list` 非官方 API | 设置页填写登录 Cookie（+CSRF）后自动同步；难度分级（0-8）自动映射为 CF rating；标签经 `x-lentille-request` 头 + `/_lfe/tags` 字典获取 |
 | 牛客 | ✅ | 公开 HTML `acm/contest/profile/{uid}/practice-coding` | 无需登录/Cookie（牛客已下线 JSON API）；解析提交表格，支持增量与分页；题目无难度/标签字段（数据源限制） |
 
 > 洛谷基于社区维护的非官方 API，接口结构可能随平台变更；若同步失败请更新 Cookie 重试。Cookie 仅保存在本机数据库，请勿外泄。

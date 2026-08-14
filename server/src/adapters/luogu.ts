@@ -47,7 +47,26 @@ interface LuoguProblem {
   pid?: string;
   title?: string;
   difficulty?: number;
-  tags?: Array<{ name?: string }>;
+  /** 新版 Lentille 接口返回 tag id 数组；旧结构为对象数组 */
+  tags?: Array<{ name?: string } | number>;
+}
+
+/** 解析题目标签：tag id 数组经字典转名称；对象数组直接取 name；兼容两种结构 */
+function resolveTags(
+  tags: Array<{ name?: string } | number> | undefined,
+  dict: Map<number, string>,
+): string[] {
+  if (!Array.isArray(tags)) return [];
+  const names: string[] = [];
+  for (const t of tags) {
+    if (typeof t === 'number') {
+      const name = dict.get(t);
+      if (name) names.push(name);
+    } else if (t && typeof t.name === 'string') {
+      names.push(t.name);
+    }
+  }
+  return names;
 }
 
 interface LuoguRecord {
@@ -93,11 +112,12 @@ async function fetchWithChallenge(
   url: string,
   cookie: string,
   csrf?: string,
+  extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
   let current = cookie;
   for (let attempt = 0; attempt <= 2; attempt += 1) {
     const res = await fetchFn(url, {
-      headers: requestHeaders(current, csrf),
+      headers: { ...requestHeaders(current, csrf), ...extraHeaders },
       redirect: 'manual', // 不跟随：302 循环会耗尽 Node fetch 默认重定向次数（抛 fetch failed）
       signal: AbortSignal.timeout(20000),
     });
@@ -122,6 +142,34 @@ async function fetchWithChallenge(
  */
 export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapter {
   const problemCache = new Map<string, { difficulty?: number; title?: string; tags: string[] }>();
+  // tag id → 名称字典（/_lfe/tags，无需登录；进程内缓存，失败 5 分钟退避）
+  const tagDict = new Map<number, string>();
+  let tagDictPromise: Promise<void> | null = null;
+  let tagDictFailedAt = 0;
+
+  async function ensureTagDict(cookie: string): Promise<void> {
+    if (tagDict.size > 0) return;
+    if (tagDictPromise) {
+      await tagDictPromise;
+      return;
+    }
+    // 上次拉取失败后 5 分钟内不重试（避免每道题都触发一次字典请求）
+    if (Date.now() - tagDictFailedAt < 5 * 60 * 1000) return;
+    tagDictPromise = (async () => {
+      try {
+        const res = await fetchWithChallenge(fetchFn, `${API}/_lfe/tags`, cookie);
+        if (res.ok) {
+          const d = (await res.json()) as { tags?: Array<{ id: number; name: string }> };
+          for (const t of d.tags ?? []) tagDict.set(t.id, t.name);
+        }
+      } catch {
+        tagDictFailedAt = Date.now(); // 失败：退避重试
+      } finally {
+        tagDictPromise = null;
+      }
+    })();
+    await tagDictPromise;
+  }
 
   async function fetchProblemInfo(
     pid: string,
@@ -132,19 +180,33 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
     if (hit) return hit;
     const empty = { tags: [] };
     try {
-      const res = await fetchWithChallenge(fetchFn, `${API}/problem/${pid}?_contentOnly=1`, cookie, csrf);
+      // 洛谷题目页已迁移到 LentilleDataResponse 管线：需请求头 x-lentille-request: content-only
+      // （_contentOnly=1 参数已失效）；响应 tags 为 tag id 数组，经 /_lfe/tags 字典转名称
+      const res = await fetchWithChallenge(fetchFn, `${API}/problem/${pid}`, cookie, csrf, {
+        'x-lentille-request': 'content-only',
+        Accept: 'application/json',
+        Referer: `${API}/problem/${pid}`,
+      });
       if ([301, 302, 303, 504].includes(res.status) || !res.ok) {
         problemCache.set(pid, empty);
         return empty;
       }
       const data = (await res.json()) as {
         currentData?: { problem?: LuoguProblem };
+        data?: { problem?: LuoguProblem };
+        problem?: LuoguProblem;
       };
-      const p = data?.currentData?.problem;
+      const p = data?.currentData?.problem ?? data?.data?.problem ?? data?.problem;
+      if (!p) {
+        problemCache.set(pid, empty);
+        return empty;
+      }
+      await ensureTagDict(cookie);
+      const tags = resolveTags(p?.tags, tagDict);
       const info = {
         ...(typeof p?.difficulty === 'number' ? { difficulty: p.difficulty } : {}),
         ...(typeof p?.title === 'string' ? { title: p.title } : {}),
-        tags: (p?.tags ?? []).map((t) => t.name).filter((t): t is string => Boolean(t)),
+        tags,
       };
       problemCache.set(pid, info);
       return info;

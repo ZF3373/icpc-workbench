@@ -64,6 +64,7 @@ test('luogu: with cookie normalizes records and problem info', async () => {
     },
     '/problem/': (url) => {
       const pid = url.includes('P1001') ? 'P1001' : url.includes('P1002') ? 'P1002' : 'P1003';
+      // 新版 Lentille 接口：tags 为 tag id 数组
       return {
         code: 200,
         currentData: {
@@ -71,11 +72,17 @@ test('luogu: with cookie normalizes records and problem info', async () => {
             pid,
             title: pid === 'P1001' ? 'A+B Problem' : `T ${pid}`,
             difficulty: pid === 'P1001' ? 2 : undefined,
-            tags: pid === 'P1001' ? [{ name: '入门' }, { name: '模拟' }] : [],
+            tags: pid === 'P1001' ? [42, 108] : [],
           },
         },
       };
     },
+    '_lfe/tags': () => ({
+      tags: [
+        { id: 42, name: '入门' },
+        { id: 108, name: '模拟' },
+      ],
+    }),
   });
   const adapter = createLuoguAdapter(fetchFn);
   const rows = await adapter.fetchUserSubmissions('123', { cookie: COOKIE, csrf: 'tok' });
