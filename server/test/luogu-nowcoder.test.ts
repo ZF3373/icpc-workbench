@@ -176,8 +176,8 @@ test('luogu: C3VK challenge — 302 with new cookie then retry succeeds', async 
     },
   });
   const adapter = createLuoguAdapter(fetchFn);
-  const rows = await adapter.fetchUserSubmissions('100000001', {
-    cookie: '__client_id=x; _uid=100000001; C3VK=old',
+  const rows = await adapter.fetchUserSubmissions('12345678', {
+    cookie: '__client_id=x; _uid=12345678; C3VK=old',
     csrf: 'tok',
   });
   assert.equal(rows.length, 1);
@@ -218,7 +218,7 @@ test('nowcoder: parses practice-coding HTML without cookie, url works', async ()
   });
   const adapter = createNowcoderAdapter(fetchFn);
   // 无需 cookie（公开页面）
-  const rows = await adapter.fetchUserSubmissions('100000002', {});
+  const rows = await adapter.fetchUserSubmissions('87654321', {});
 
   assert.equal(rows.length, 3);
   assert.equal(rows[0].verdict, 'AC');
@@ -243,7 +243,7 @@ test('nowcoder: incremental sync stops when page is older than since', async () 
   });
   const adapter = createNowcoderAdapter(fetchFn);
   // since 晚于页内最早提交 → 首条已旧 → 停止，返回空
-  const rows = await adapter.fetchUserSubmissions('100000002', {
+  const rows = await adapter.fetchUserSubmissions('87654321', {
     since: '2026-08-02T00:00:00.000Z',
   });
   assert.equal(rows.length, 0);
@@ -255,7 +255,7 @@ test('nowcoder: HTTP failure throws', async () => {
   });
   const adapter = createNowcoderAdapter(fetchFn);
   await assert.rejects(
-    () => adapter.fetchUserSubmissions('100000002', {}),
+    () => adapter.fetchUserSubmissions('87654321', {}),
     /HTTP 403/,
   );
 });
@@ -266,7 +266,7 @@ test('nowcoder: first page with no rows throws (structure changed / risk control
   });
   const adapter = createNowcoderAdapter(fetchFn);
   await assert.rejects(
-    () => adapter.fetchUserSubmissions('100000002', {}),
+    () => adapter.fetchUserSubmissions('87654321', {}),
     /未解析到提交记录/,
   );
 });
@@ -288,7 +288,7 @@ test('nowcoder: unknown result maps to SKIPPED, short rows skipped', async () =>
     },
   });
   const adapter = createNowcoderAdapter(fetchFn);
-  const rows = await adapter.fetchUserSubmissions('100000002', {});
+  const rows = await adapter.fetchUserSubmissions('87654321', {});
   assert.equal(rows.length, 1); // 6002（8 列异常行）被跳过
   assert.equal(rows[0].externalId, '6001');
   assert.equal(rows[0].verdict, 'SKIPPED'); // 未知状态 → SKIPPED
@@ -314,7 +314,7 @@ test('luogu: C3VK challenge retry carries fresh cookie in request', async () => 
   const adapter = createLuoguAdapter(recordFetch);
   // mock 每次 302 都下发新 C3VK → 挑战重试耗尽后 504
   await assert.rejects(
-    () => adapter.fetchUserSubmissions('100000001', { cookie: '__client_id=x; _uid=100000001; C3VK=old', csrf: 'tok' }),
+    () => adapter.fetchUserSubmissions('12345678', { cookie: '__client_id=x; _uid=12345678; C3VK=old', csrf: 'tok' }),
     /HTTP 504/,
   );
   // 重试请求的 Cookie 中 C3VK 已从 old 替换为 118e41
@@ -331,7 +331,7 @@ test('luogu: C3VK challenge exhaustion (always 302) reports HTTP 504', async () 
   });
   const adapter = createLuoguAdapter(fetchFn);
   await assert.rejects(
-    () => adapter.fetchUserSubmissions('100000001', { cookie: '__client_id=x; _uid=1; C3VK=old', csrf: 'tok' }),
+    () => adapter.fetchUserSubmissions('12345678', { cookie: '__client_id=x; _uid=1; C3VK=old', csrf: 'tok' }),
     /HTTP 504/,
   );
 });
