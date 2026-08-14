@@ -53,9 +53,9 @@ test('luogu: with cookie normalizes records and problem info', async () => {
         currentData: {
           records: {
             result: [
-              { id: 9001, status: 2, submitTime: 1700000000000, language: 'C++17', problem: { pid: 'P1001', title: 'A+B Problem' } },
-              { id: 9002, status: 3, submitTime: 1700000100000, language: 'Python3', problem: { pid: 'P1002' } },
-              { id: 9003, status: 9, submitTime: 1700000200000, problem: { pid: 'P1003' } },
+              { id: 9001, status: 12, submitTime: 1700000000000, language: 'C++17', problem: { pid: 'P1001', title: 'A+B Problem', difficulty: 2 } },
+              { id: 9002, status: 14, submitTime: 1700000100000, language: 'Python3', problem: { pid: 'P1002' } },
+              { id: 9003, status: 11, submitTime: 1700000200000, problem: { pid: 'P1003' } },
               { id: 9004, status: 1, submitTime: 1700000300000, problem: { pid: 'P1004' } }, // 评测中：应被过滤
             ],
           },
@@ -82,18 +82,18 @@ test('luogu: with cookie normalizes records and problem info', async () => {
 
   assert.equal(rows.length, 3); // 9004（评测中）被过滤
   const r0 = rows[0];
-  assert.equal(r0.verdict, 'AC');
+  assert.equal(r0.verdict, 'AC'); // status 12 = AC
   assert.equal(r0.problem.problemKey, 'P1001');
   assert.equal(r0.problem.title, 'A+B Problem');
-  assert.equal(r0.problem.difficulty, 2);
+  assert.equal(r0.problem.difficulty, 1300); // 洛谷难度 2（普及-）→ CF 1300
   assert.deepEqual(r0.problem.tags, ['入门', '模拟']);
   assert.equal(r0.problem.url, 'https://www.luogu.com.cn/problem/P1001');
   assert.equal(r0.externalId, '9001');
   assert.equal(new Date(r0.submittedAt).toISOString(), new Date(1700000000000).toISOString());
-  assert.equal(rows[1].verdict, 'WA');
-  assert.equal(rows[1].problem.title, 'T P1002'); // 题目信息接口无 difficulty 时不写入
-  assert.equal('difficulty' in rows[1].problem, false);
-  assert.equal(rows[2].verdict, 'SKIPPED'); // status 9 → SKIPPED
+  assert.equal(rows[1].verdict, 'WA'); // status 14 = Unaccepted → WA
+  assert.equal(rows[1].problem.title, 'T P1002');
+  assert.equal('difficulty' in rows[1].problem, false); // 无难度时不写入
+  assert.equal(rows[2].verdict, 'RE'); // status 11 = UKE → RE
 });
 
 test('luogu: non-success code throws (cookie invalid/risk control)', async () => {

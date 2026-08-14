@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS problems (
   platform    TEXT NOT NULL REFERENCES platforms(id),
   problem_key TEXT NOT NULL,                   -- 平台内唯一标识，如 1919C / abc321_a
   title       TEXT NOT NULL,
-  difficulty  INTEGER,                         -- CF rating；洛谷难度数值；AtCoder 映射分值
+  difficulty  INTEGER,                         -- CF rating 统一标尺（洛谷分级 0-8 已映射为 rating；AtCoder 为映射分值）
   url         TEXT,
   tags        TEXT NOT NULL DEFAULT '[]',      -- JSON 数组字符串
   UNIQUE (platform, problem_key)

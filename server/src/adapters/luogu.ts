@@ -10,15 +10,38 @@ const API = 'https://www.luogu.com.cn';
 const MAX_PAGES = 100;
 const PROBLEM_FETCH_CONCURRENCY = 6;
 
-// 洛谷提交状态数字枚举 → 统一 Verdict
+// 洛谷提交状态数字枚举 → 统一 Verdict（官方 /_lfe/config 现行枚举，2026 验证）
+// 12=AC，13/14=Unaccepted（未通过/部分正确），2=CE，3=OLE，4=MLE，5=TLE，6=WA，7=RE，11=UKE
+// 注意：这是 2019 改版后的枚举（旧版 2=AC/3=WA/4=TLE/5=MLE/6=RE/7=CE 已废弃）
 const STATUS_MAP: Record<number, Verdict> = {
-  2: 'AC',
-  3: 'WA',
-  4: 'TLE',
-  5: 'MLE',
-  6: 'RE',
-  7: 'CE',
+  2: 'CE',
+  3: 'RE', // OLE → 按 OJ 惯例归为 RE（与 AtCoder 适配器一致）
+  4: 'MLE',
+  5: 'TLE',
+  6: 'WA',
+  7: 'RE',
+  11: 'RE', // UKE 未知错误 → RE
+  12: 'AC',
+  13: 'WA', // Unaccepted
+  14: 'WA', // Unaccepted（含部分正确）
 };
+
+const LUOGU_DIFFICULTY_TO_RATING: Record<number, number> = {
+  1: 1000, // 入门
+  2: 1300, // 普及-
+  3: 1500, // 普及/提高-
+  4: 1700, // 普及+/提高
+  5: 2000, // 提高+/省选-
+  6: 2300, // 省选/NOI-
+  7: 2600, // NOI/NOI+
+  8: 3000, // 高级
+};
+
+/** 洛谷难度分级（0-8）→ CF rating 近似值（社区公认对照），供统一难度标尺 */
+export function luoguDifficultyToRating(d: number): number | null {
+  if (d <= 0 || !Number.isFinite(d)) return null;
+  return LUOGU_DIFFICULTY_TO_RATING[d] ?? null;
+}
 
 interface LuoguProblem {
   pid?: string;
@@ -173,8 +196,8 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
         const records = data.currentData.records.result;
         if (!Array.isArray(records) || records.length === 0) break;
         for (const rec of records) {
-          // 过滤等待/评测中的非最终状态
-          if (rec.status === 0 || rec.status === 1) continue;
+          // 过滤等待/评测中/隐藏的非最终状态
+          if (rec.status === 0 || rec.status === 1 || rec.status === -1) continue;
           raws.push(rec);
         }
         await sleep(300);
@@ -197,12 +220,20 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
       return raws.map((rec) => {
         const pid = rec.problem?.pid ?? `luogu-${rec.id}`;
         const info = problemCache.get(pid) ?? { tags: [] };
+        // 洛谷难度分级（0-8，record 自带或题目信息补充）→ 映射为 CF rating 统一标尺
+        const recDiff = rec.problem?.difficulty;
+        const rawDifficulty =
+          recDiff !== undefined && recDiff > 0 ? recDiff : info.difficulty;
+        const difficulty =
+          typeof rawDifficulty === 'number' && rawDifficulty > 0
+            ? luoguDifficultyToRating(rawDifficulty)
+            : null;
         return {
           problem: {
             platform: 'luogu' as PlatformId,
             problemKey: pid,
             title: info.title ?? rec.problem?.title ?? pid,
-            ...(info.difficulty !== undefined ? { difficulty: info.difficulty } : {}),
+            ...(difficulty !== null ? { difficulty } : {}),
             url: `https://www.luogu.com.cn/problem/${pid}`,
             tags: info.tags,
           },

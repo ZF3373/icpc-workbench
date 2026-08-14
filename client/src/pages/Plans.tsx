@@ -9,6 +9,7 @@ import {
   InputNumber,
   message,
   Modal,
+  Popconfirm,
   Progress,
   Space,
   Spin,
@@ -75,6 +76,16 @@ export default function Plans() {
     }
   }
 
+  const removePlan = async (id: number) => {
+    try {
+      await del(`/api/plans/${id}`)
+      message.success('计划已删除')
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
   const cols: ColumnsType<PlanListItem> = [
     {
       title: '计划',
@@ -85,6 +96,23 @@ export default function Plans() {
     { title: '周期', width: 210, render: (_v, r) => `${r.start_date} ~ ${r.end_date}` },
     { title: '进度', width: 160, render: (_v, r) => <Progress percent={r.task_count ? Math.round((r.checked_count / r.task_count) * 100) : 0} size="small" /> },
     { title: '任务', dataIndex: 'task_count', width: 70, render: (_v, r) => `${r.checked_count}/${r.task_count}` },
+    {
+      title: '操作',
+      width: 80,
+      render: (_v, r) => (
+        <Popconfirm
+          title="删除计划"
+          description="将删除该计划及其全部任务与打卡记录"
+          okText="删除"
+          cancelText="取消"
+          onConfirm={() => removePlan(r.id)}
+        >
+          <Button size="small" danger type="link">
+            删除
+          </Button>
+        </Popconfirm>
+      ),
+    },
   ]
 
   return (

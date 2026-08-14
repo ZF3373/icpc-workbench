@@ -59,5 +59,20 @@ export function plansRoutes(db: Db, getAiConfig: () => AiConfig): Router {
     res.json({ ...plan, tasks });
   });
 
+  // DELETE /api/plans/:id → 删除计划（plan_tasks 与 checkins 由外键级联删除）
+  r.delete('/:id', (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'id 非法' });
+    }
+    const result = db
+      .prepare('DELETE FROM plans WHERE id = ? AND user_id = ?')
+      .run(id, DEFAULT_USER_ID);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: '计划不存在' });
+    }
+    res.json({ ok: true });
+  });
+
   return r;
 }
