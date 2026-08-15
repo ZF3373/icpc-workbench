@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { AiConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
-import { generatePlan, TASK_KINDS } from '../plans/planService.ts';
+import { generatePlan, parsePlanJson, savePlan, TASK_KINDS, today } from '../plans/planService.ts';
 
 export function plansRoutes(db: Db, getAiConfig: () => AiConfig): Router {
   const r = Router();
@@ -18,6 +18,28 @@ export function plansRoutes(db: Db, getAiConfig: () => AiConfig): Router {
       res.json(result);
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  // POST /api/plans/import  body: { raw, startDate?, days? }
+  // 「导出提示词 → 手动喂给任意 AI」通道的导入入口：raw 为 AI 返回的完整文本
+  // （容忍围栏/前后解释文字），解析入库为 source=ai 的计划；任务缺链接自动按题库回退补链。
+  r.post('/import', (req, res) => {
+    const { raw, startDate, days } = req.body ?? {};
+    if (typeof raw !== 'string' || raw.trim() === '') {
+      return res.status(400).json({ error: 'raw 必填：粘贴 AI 返回的计划 JSON 文本' });
+    }
+    const sd = typeof startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(startDate)
+      ? startDate
+      : today();
+    const d = Number.isInteger(days) && days! > 0 && days! <= 90 ? days! : 14;
+    try {
+      const parsed = parsePlanJson(raw, sd, d);
+      const planId = savePlan(db, DEFAULT_USER_ID, parsed, 'ai', raw);
+      const plan = db.prepare('SELECT title FROM plans WHERE id = ?').get(planId) as { title: string };
+      res.json({ ok: true, planId, title: plan.title, taskCount: parsed.tasks.length });
+    } catch (e) {
+      res.status(400).json({ error: `导入失败：${(e as Error).message}` });
     }
   });
 

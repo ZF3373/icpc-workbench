@@ -130,3 +130,79 @@ test('DELETE /api/plans/tasks/:taskId removes task and its checkins', async () =
     assert.equal(again.status, 404);
   });
 });
+
+// ---------- POST /api/plans/import（导出提示词 → 手动喂 AI → 导入） ----------
+
+test('POST /import saves AI-returned plan with fenced JSON and auto-links tasks', async () => {
+  await withServer(async (db, base) => {
+    // 模拟真实 AI 输出：围栏 + 前后解释文字；任务缺 url 由 savePlan 按题库补链
+    db.prepare(
+      `INSERT INTO problems (platform, problem_key, title, difficulty, url, tags)
+       VALUES ('codeforces', '1900F', 'Fancy Problem', 1600, 'https://codeforces.com/contest/1900/problem/F', '["dp"]')`,
+    ).run();
+    const raw = [
+      '好的，这是你的训练计划：',
+      '```json',
+      '{',
+      '  "title": "AI 定制 14 天冲刺",',
+      '  "goal": "突破 dp 与图论",',
+      '  "tasks": [',
+      '    { "date": "2026-08-10", "title": "Fancy Problem 巩固练习", "kind": "practice", "platform": "codeforces", "problemKey": "1900F" },',
+      '    { "date": "2026-08-11", "title": "回顾总结", "kind": "review" },',
+      '  ]',
+      '}',
+      '```',
+      '祝训练顺利！',
+    ].join('\n');
+    const res = await fetch(`${base}/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw, startDate: '2026-08-10', days: 14 }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { ok: boolean; planId: number; title: string; taskCount: number };
+    assert.equal(body.ok, true);
+    assert.equal(body.title, 'AI 定制 14 天冲刺');
+    assert.equal(body.taskCount, 2);
+    const plan = db.prepare('SELECT source, raw_prompt FROM plans WHERE id = ?').get(body.planId) as { source: string; raw_prompt: string };
+    assert.equal(plan.source, 'ai'); // 手动喂 AI 的产物同样标记为 ai 来源
+    assert.ok(plan.raw_prompt.includes('```json')); // 原始 AI 输出留存
+    const task = db
+      .prepare('SELECT url, problem_id FROM plan_tasks WHERE plan_id = ? AND kind = ?')
+      .get(body.planId, 'practice') as { url: string | null; problem_id: number | null };
+    assert.equal(task.url, 'https://codeforces.com/contest/1900/problem/F'); // 缺 url 自动补链
+    assert.ok((task.problem_id ?? 0) > 0);
+  });
+});
+
+test('POST /import rejects missing raw, invalid JSON, and out-of-range dates', async () => {
+  await withServer(async (_db, base) => {
+    const missing = await fetch(`${base}/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(missing.status, 400);
+    assert.match(((await missing.json()) as { error: string }).error, /raw 必填/);
+
+    const badJson = await fetch(`${base}/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw: '这不是 JSON' }),
+    });
+    assert.equal(badJson.status, 400);
+    assert.match(((await badJson.json()) as { error: string }).error, /导入失败/);
+
+    // 任务日期在计划期外 → 全部被清洗 → "没有有效任务" 400
+    const outOfRange = await fetch(`${base}/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        raw: JSON.stringify({ title: 'x', goal: '', tasks: [{ date: '2025-01-01', title: '过期任务' }] }),
+        startDate: '2026-08-10',
+        days: 3,
+      }),
+    });
+    assert.equal(outOfRange.status, 400);
+  });
+});

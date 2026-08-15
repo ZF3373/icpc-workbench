@@ -8,7 +8,7 @@
 - **弱项分析**：按标签 / 难度区间 / 平台统计 AC 率，输出相对自身平均的弱项画像；近 12 周趋势
 - **AI 训练计划（双通道）**：
   - 内置生成：配置 OpenAI 兼容 API Key 一键生成（DeepSeek / OpenAI / 智谱 / Ollama 等）
-  - 导出通道：无 Key 也可下载数据包 + 提示词 `.md`，手动喂给任意 AI
+  - 导出通道：无 Key 也可下载数据包 + 提示词 `.md`，手动喂给任意 AI，返回的 JSON 通过设置页「导入 AI 计划」粘贴/上传即可入库（自动清洗围栏与解释文字）
   - 任务全部附带可点击的题目链接：练习任务直接跳题目页；回顾/模拟赛任务跳 CF 提交记录/题集入口；AI 输出缺链接时自动按题库回退补链
 - **日历打卡**：月历查看每天训练任务、跳转做题链接、逐任务打卡；打卡数据与计划页联动；连续打卡统计
 - **打卡提醒**：设置页配置每日提醒时间，应用打开期间到点若当天仍有未打卡任务，弹浏览器系统通知 + 页面内通知，点击直达日历
@@ -100,7 +100,8 @@ GET  /api/stats                   # 总体统计（from/to/platform 过滤）
 GET  /api/stats/weakness          # 弱项画像（minAttempts/topN）
 GET  /api/stats/trend             # 周趋势（weeks）
 GET  /api/problems                # 题目列表（platform/difficulty/tag/q 过滤）
-GET  /api/plans | POST /api/plans/generate | GET /api/plans/:id | DELETE /api/plans/:id
+GET  /api/plans | POST /api/plans/generate | POST /api/plans/import | GET /api/plans/:id | DELETE /api/plans/:id
+                                   # import body: { raw, startDate?, days? } ← 任意 AI 返回的计划 JSON 文本
 PATCH /api/plans/tasks/:taskId    # 编辑单条任务（taskDate/title/kind/url/note，仅更新提交字段）
 DELETE /api/plans/tasks/:taskId   # 删除单条任务（打卡记录级联删除）
 GET  /api/checkins?month=YYYY-MM  # 月打卡视图
