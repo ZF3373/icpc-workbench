@@ -4,6 +4,7 @@ import { createDb, type Db } from '../src/db/index.ts';
 import { insertNormalized } from '../src/import/importService.ts';
 import type { NormalizedSubmission } from '../../shared/src/index.ts';
 import { AiProvider } from '../src/ai/provider.ts';
+import { initAdapters } from '../src/adapters/index.ts';
 import {
   buildPlanPackage,
   computeUserLevel,
@@ -195,6 +196,67 @@ test('savePlan falls back to problem url when task lacks url', () => {
   }, 'manual');
   const t = db.prepare('SELECT url FROM plan_tasks WHERE plan_id = ?').get(planId) as { url: string | null };
   assert.equal(t.url, 'https://codeforces.com/contest/A'); // 任务未带链接 → 用题目链接
+});
+
+test('templatePlan attaches clickable urls to every task kind (practice/contest/review)', () => {
+  seed();
+  const p = templatePlan(db, { items: [{ tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 14);
+  // contest（第 7/14 天）与 review（第 4/8/12 天）任务都应有链接；practice 落到具体题
+  const contest = p.tasks.filter((t) => t.kind === 'contest');
+  const review = p.tasks.filter((t) => t.kind === 'review');
+  assert.ok(contest.length >= 2);
+  assert.ok(review.length >= 3);
+  for (const t of [...contest, ...review]) {
+    assert.ok(t.url, `任务 ${t.title} 应带可点击链接`);
+  }
+  const firstContest = contest[0];
+  assert.ok(firstContest && firstContest.url?.startsWith('https://codeforces.com/'));
+});
+
+test('templatePlan keeps picking concrete problems after per-tag pool drains', () => {
+  seed();
+  // 单弱项 dp：池中未 AC 题只有 D 一道；7 天计划里 6 个 practice 日，D 用尽后应继续从全库兜底
+  // （seed 数据只有 D，兜底池也空 → 抽象任务；补充 F 验证兜底确实生效）
+  insertNormalized(db, 1, [
+    sub('codeforces', 'F', 'WA', ['math'], 1550, '2026-07-28T16:00:00.000Z', 'https://codeforces.com/contest/F'),
+  ]);
+  const p = templatePlan(db, { items: [{ tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 7);
+  const practice = p.tasks.filter((t) => t.kind === 'practice');
+  const withProblem = practice.filter((t) => t.problemKey && t.url);
+  // D（dp 队列）+ F（dp 用尽后的全库兜底）都被选中且带链接
+  const keys = withProblem.map((t) => t.problemKey);
+  assert.ok(keys.includes('D'), `应选中 D: ${keys}`);
+  assert.ok(keys.includes('F'), `dp 池耗尽后应兜底选中 F: ${keys}`);
+  for (const t of withProblem) assert.ok(t.url, `${t.title} 应带链接`);
+});
+
+test('savePlan fuzzy-matches problem by title when AI omits url and key is wrong', () => {
+  seed();
+  const planId = savePlan(db, 1, {
+    title: '模糊匹配',
+    goal: '',
+    startDate: '2026-08-10',
+    days: 1,
+    // AI 编造 problemKey、未带 url，但标题含题库题名（T D）→ 应按标题匹配补链接
+    tasks: [{ date: '2026-08-10', title: '刷一道 T D 巩固 dp', kind: 'practice', platform: 'codeforces', problemKey: 'FAKE-KEY' }],
+  }, 'manual');
+  const t = db.prepare('SELECT url, problem_id FROM plan_tasks WHERE plan_id = ?').get(planId) as { url: string | null; problem_id: number | null };
+  assert.equal(t.url, 'https://codeforces.com/contest/D');
+  assert.ok((t.problem_id ?? 0) > 0); // 同时关联到题库记录
+});
+
+test('savePlan builds url from adapter when problem unknown in db', () => {
+  initAdapters();
+  const planId = savePlan(db, 1, {
+    title: '适配器兜底',
+    goal: '',
+    startDate: '2026-08-10',
+    days: 1,
+    // 题库匹配不到（题名不含任何题库题名）→ 用 codeforces 适配器按 key 构造链接
+    tasks: [{ date: '2026-08-10', title: '全新题目', kind: 'practice', platform: 'codeforces', problemKey: '1900F' }],
+  }, 'manual');
+  const t = db.prepare('SELECT url FROM plan_tasks WHERE plan_id = ?').get(planId) as { url: string | null };
+  assert.equal(t.url, 'https://codeforces.com/contest/1900/problem/F');
 });
 
 test('generatePlan falls back to template when AI disabled', async () => {

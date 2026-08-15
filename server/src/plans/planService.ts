@@ -9,6 +9,7 @@ import { AiProvider } from '../ai/provider.ts';
 import { computeTrend } from '../analysis/trend.ts';
 import { computeWeakness, type WeaknessProfile } from '../analysis/weakness.ts';
 import { filterNoiseTags } from '../analysis/tags.ts';
+import { getAdapter } from '../adapters/registry.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PROMPT_TEMPLATE = fs.readFileSync(
@@ -133,8 +134,32 @@ export function savePlan(
           .prepare('SELECT id, url FROM problems WHERE platform = ? AND problem_key = ?')
           .get(t.platform, t.problemKey) as { id: number; url: string | null } | undefined;
         problemId = p?.id ?? null;
-        // url 兜底：任务未带链接但题目有链接 → 用题目链接，保证可点击跳转
+        // url 兜底 1：任务未带链接但题目有链接 → 用题目链接，保证可点击跳转
         if (!finalUrl && p?.url) finalUrl = p.url;
+      }
+      // url 兜底 2：platform/problemKey 没匹配上（AI 编造 key 或只给标题）→
+      // 反向模糊匹配：题名出现在任务标题里（instr(taskTitle, title)）即视为同一题；
+      // 仍找不到再用平台适配器按 key 构造链接（用户要求任务可点击跳转）
+      if (!finalUrl && t.platform) {
+        const p = db
+          .prepare(
+            `SELECT id, url FROM problems
+              WHERE platform = ?
+                AND url IS NOT NULL
+                AND (problem_key = ? COLLATE NOCASE
+                     OR (length(title) >= 3 AND instr(?, title) > 0))
+              LIMIT 1`,
+          )
+          .get(t.platform, t.problemKey ?? '', t.title) as
+          | { id: number; url: string }
+          | undefined;
+        if (p) {
+          problemId = p.id;
+          finalUrl = p.url;
+        }
+      }
+      if (!finalUrl && t.platform) {
+        finalUrl = getAdapter(t.platform)?.problemUrl({ problemKey: t.problemKey ?? '' }) ?? null;
       }
       insTask.run(planId, t.date, t.title, t.kind, problemId, finalUrl, t.note ?? null);
     }
@@ -369,7 +394,7 @@ export function parsePlanJson(raw: string, _startDate: string, _days: number): P
   };
 }
 
-/** 无 AI 时的降级模板：为每日练习任务挑选具体题目（可点击跳转），定期回顾/模拟。 */
+/** 无 AI 时的降级模板：每日练习任务均挑选具体题目（可点击跳转），定期回顾/模拟。 */
 export function templatePlan(
   db: Db,
   profile: WeaknessProfile,
@@ -379,12 +404,15 @@ export function templatePlan(
   const weakTags = profile.items.map((i) => i.tag);
   const tags = weakTags.length > 0 ? weakTags : ['综合练习'];
   const pool = practicePool(db, weakTags);
-  // 每个 tag 一个候选队列：优先含弱项标签、未 AC、有链接的题目；题目用尽后该 tag 回退为抽象任务。
-  // 同一道题只会被选中一次（跨 tag 全局去重，避免计划内重复刷同一题）
+  // 每个 tag 一个候选队列：优先含弱项标签、未 AC、有链接的题目。
+  // 同一道题只会被选中一次（跨 tag 全局去重，避免计划内重复刷同一题）；
+  // tag 队列耗尽后回退到全库剩余候选（fallbackPool）——每日练习尽量落到具体题目，
+  // 只有全库候选都用尽时才生成抽象任务（此时库里确实无题可选，链接无从谈起）。
   const queue = new Map<string, RecommendProblem[]>();
   for (const t of tags) {
     queue.set(t, t === '综合练习' ? [...pool] : pool.filter((p) => p.tags.includes(t)));
   }
+  const fallbackPool = [...pool];
   const used = new Set<string>();
   const takeNext = (q: RecommendProblem[]): RecommendProblem | undefined => {
     while (q.length > 0) {
@@ -397,6 +425,10 @@ export function templatePlan(
     }
     return undefined;
   };
+  const takeAny = (): RecommendProblem | undefined => takeNext(fallbackPool);
+  // 模拟赛链接：CF 主题题库页（难度分级），挑战性接近实战
+  const CONTEST_URL = 'https://codeforces.com/problemset?order=BY_SOLVED_DESC';
+  const REVIEW_URL = 'https://codeforces.com/submissions/me';
   const tasks: PlanTaskInput[] = [];
   for (let d = 0; d < days; d += 1) {
     const date = addDays(startDate, d);
@@ -405,11 +437,12 @@ export function templatePlan(
         date,
         title: '模拟比赛（虚拟参赛）',
         kind: 'contest',
+        url: CONTEST_URL,
         note: '完整 2 小时虚拟参赛，赛后补题',
       });
     } else {
       const tag = tags[d % tags.length];
-      const pb = takeNext(queue.get(tag) ?? []);
+      const pb = takeNext(queue.get(tag) ?? []) ?? takeAny();
       tasks.push(
         pb
           ? {
@@ -430,7 +463,12 @@ export function templatePlan(
       );
     }
     if ((d + 1) % 4 === 0) {
-      tasks.push({ date, title: `回顾与错题重做（前 ${Math.min(d + 1, 7)} 天）`, kind: 'review' });
+      tasks.push({
+        date,
+        title: `回顾与错题重做（前 ${Math.min(d + 1, 7)} 天）`,
+        kind: 'review',
+        url: REVIEW_URL,
+      });
     }
   }
   const goal =

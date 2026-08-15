@@ -34,7 +34,8 @@
 - 计划从 {startDate} 开始，共 {days} 天，每天 1-3 个任务
 - 优先覆盖用户弱项标签（见弱项画像，gap 越大越弱）
 - 题目难度以「建议训练区间」（suggestedRange）为准：以区间中位为主，穿插少量上限题做挑战；不要安排远低于区间的水题
-- 尽量从题目清单中选题（带 problemKey/url）；清单外选题需确保难度在建议区间内
+- **practice/topic 任务必须从题目清单选题，并原样复制清单中的 problemKey 与 url**（用户要靠 url 点击跳转做题）；只有 review/contest 类泛任务可以不带题目
+- 清单外选题时也必须给出可访问的题目链接（该平台的题目页 URL）
 - 每 3-4 天安排一次 kind=review 的回顾任务
-- 每周安排一次 kind=contest 的模拟比赛任务
+- 每周安排一次 kind=contest 的模拟比赛任务，url 给虚拟赛入口（如 https://codeforces.com/problemset?order=BY_SOLVED_DESC）
 - task 里的 date 必须是计划期内（{startDate} 起 {days} 天）的具体日期
