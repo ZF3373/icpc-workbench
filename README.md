@@ -9,7 +9,8 @@
 - **AI 训练计划（双通道）**：
   - 内置生成：配置 OpenAI 兼容 API Key 一键生成（DeepSeek / OpenAI / 智谱 / Ollama 等）
   - 导出通道：无 Key 也可下载数据包 + 提示词 `.md`，手动喂给任意 AI
-- **日历打卡**：月历查看每天训练任务、跳转做题链接、逐任务打卡；打卡数据与计划页联动
+- **日历打卡**：月历查看每天训练任务、跳转做题链接、逐任务打卡；打卡数据与计划页联动；连续打卡统计
+- **打卡提醒**：设置页配置每日提醒时间，应用打开期间到点若当天仍有未打卡任务，弹浏览器系统通知 + 页面内通知，点击直达日历
 - 桌面透明挂件为**后续扩展**：打卡/任务 API 均为纯 JSON 且按日期维度设计，未来接 Electron/Tauri 挂件无需改后端
 
 ## 技术架构
@@ -105,7 +106,8 @@ GET  /api/checkins?month=YYYY-MM  # 月打卡视图
 GET  /api/checkins/date/:date     # 当天任务（桌面挂件复用）
 GET  /api/checkins/streak         # 连续打卡统计（current/longest/totalDays）
 POST /api/checkins { taskId }     # 打卡 | DELETE /api/checkins/:taskId 取消
-GET  /api/settings                # 设置（AI/账号/适配器开关）
+GET  /api/settings                # 设置（AI/账号/适配器开关/打卡提醒）
+POST /api/settings/reminder       # 打卡提醒配置（body: enabled?, time? "HH:MM"）
 POST /api/settings/cookies/check  # 检测 Cookie 登录态（洛谷：302/非 JSON 判定过期）
 GET  /api/export/plan-package     # 数据包（弱项+趋势+题目+提示词）
 GET  /api/export/plan-prompt.md   # 渲染好的提示词下载

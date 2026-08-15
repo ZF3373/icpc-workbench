@@ -6,10 +6,23 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { getAdapter } from '../adapters/registry.ts';
 
+const DEFAULT_REMINDER_TIME = '20:00';
+
+function readReminder(db: Db): { enabled: boolean; time: string } {
+  const get = (key: string): string | undefined =>
+    (db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)
+      ?.value;
+  const time = get('reminder.time');
+  return {
+    enabled: get('reminder.enabled') === 'true',
+    time: time && /^([01]\d|2[0-3]):[0-5]\d$/.test(time) ? time : DEFAULT_REMINDER_TIME,
+  };
+}
+
 export function settingsRoutes(db: Db, config: AppConfig): Router {
   const r = Router();
 
-  // GET /api/settings → AI 配置 + 平台账号 + 适配器开关 + Cookie 配置
+  // GET /api/settings → AI 配置 + 平台账号 + 适配器开关 + Cookie 配置 + 打卡提醒
   r.get('/', (_req, res) => {
     const ai = aiConfigFromDb(db, config);
     const accounts = db
@@ -37,7 +50,28 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
         };
       }
     }
-    res.json({ ai, accounts, adapterEnabled, platforms: PLATFORMS, cookies });
+    res.json({ ai, accounts, adapterEnabled, platforms: PLATFORMS, cookies, reminder: readReminder(db) });
+  });
+
+  // POST /api/settings/reminder  body: { enabled?, time? }  time 格式 HH:MM
+  r.post('/reminder', (req, res) => {
+    const { enabled, time } = req.body ?? {};
+    const upsert = db.prepare(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    );
+    if (enabled !== undefined) {
+      if (typeof enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled 需为布尔值' });
+      }
+      upsert.run('reminder.enabled', String(enabled));
+    }
+    if (time !== undefined) {
+      if (typeof time !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+        return res.status(400).json({ error: 'time 格式需为 HH:MM（24 小时制）' });
+      }
+      upsert.run('reminder.time', time);
+    }
+    res.json(readReminder(db));
   });
 
   // POST /api/settings/cookies  body: { platform, cookie?, csrf? }（空串可清除）

@@ -12,10 +12,14 @@ import {
   Space,
   Spin,
   Switch,
+  TimePicker,
 } from 'antd'
+import type { Dayjs } from 'dayjs'
+import dayjs from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
 import { PLATFORMS } from '../../../shared/src/index.ts'
 import { get, post } from '../api'
+import type { ReminderConfig } from '../types'
 
 interface SettingsData {
   ai: { enabled: boolean; baseURL: string; apiKey: string; model: string }
@@ -23,6 +27,7 @@ interface SettingsData {
   adapterEnabled: Record<string, boolean>
   platforms: typeof PLATFORMS
   cookies: Record<string, { cookie?: string; csrf?: string }>
+  reminder: ReminderConfig
 }
 
 export default function Settings() {
@@ -31,6 +36,8 @@ export default function Settings() {
   const [handleInputs, setHandleInputs] = useState<Record<string, string>>({})
   const [cookieInputs, setCookieInputs] = useState<Record<string, { cookie: string; csrf: string }>>({})
   const [cookieCheck, setCookieCheck] = useState<Record<string, { ok: boolean; message: string } | 'checking'>>({})
+  const [reminderEnabled, setReminderEnabled] = useState(false)
+  const [reminderTime, setReminderTime] = useState<Dayjs>(dayjs('20:00', 'HH:mm'))
 
   const load = () => {
     get<SettingsData>('/api/settings')
@@ -45,6 +52,8 @@ export default function Settings() {
         }
         setHandleInputs(handles)
         setCookieInputs(cookies)
+        setReminderEnabled(d.reminder.enabled)
+        setReminderTime(dayjs(d.reminder.time, 'HH:mm'))
       })
       .catch((e: Error) => message.error(e.message))
   }
@@ -114,6 +123,32 @@ export default function Settings() {
     } catch (e) {
       setCookieCheck((s) => ({ ...s, [platform]: { ok: false, message: (e as Error).message } }))
     }
+  }
+
+  const saveReminder = async (enabled: boolean, time: Dayjs) => {
+    try {
+      await post('/api/settings/reminder', { enabled, time: time.format('HH:mm') })
+      setReminderEnabled(enabled)
+      message.success(enabled ? `打卡提醒已开启，每天 ${time.format('HH:mm')} 提醒` : '打卡提醒已关闭')
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  const toggleReminder = async (enabled: boolean) => {
+    if (!enabled) {
+      await saveReminder(false, reminderTime)
+      return
+    }
+    // 开启需授权浏览器系统通知（点击开关即用户手势，授权弹窗不会被浏览器拦截）
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      const perm = await Notification.requestPermission()
+      if (perm !== 'granted') {
+        message.warning('未授权系统通知，仅会在页面内弹出提醒')
+      }
+    }
+    await saveReminder(true, reminderTime)
   }
 
   return (
@@ -233,6 +268,38 @@ export default function Settings() {
           })}
           <p style={{ color: '#999', fontSize: 12 }}>
             说明：Codeforces / AtCoder 自动同步；洛谷 / 牛客在填写登录 Cookie 后可自动同步（未配置时请在「题目管理」手动导入）。
+          </p>
+        </Card>
+      </Col>
+      <Col span={24}>
+        <Card title="打卡提醒" size="small">
+          <Space wrap>
+            <span>每日提醒</span>
+            <Switch checked={reminderEnabled} onChange={toggleReminder} />
+            <span>提醒时间</span>
+            <TimePicker
+              format="HH:mm"
+              minuteStep={5}
+              value={reminderTime}
+              disabled={!reminderEnabled}
+              onChange={(v) => v && saveReminder(reminderEnabled, v)}
+            />
+            {(() => {
+              if (typeof Notification === 'undefined') {
+                return <span style={{ color: '#888', fontSize: 12 }}>当前浏览器不支持系统通知，仅页面内提醒</span>
+              }
+              if (Notification.permission === 'granted') {
+                return <span style={{ color: '#52c41a', fontSize: 12 }}>系统通知已授权 ✓</span>
+              }
+              return (
+                <span style={{ color: '#fa8c16', fontSize: 12 }}>
+                  系统通知未授权（关闭再开启开关可重新授权，否则仅页面内提醒）
+                </span>
+              )
+            })()}
+          </Space>
+          <p style={{ color: '#999', fontSize: 12, marginBottom: 0 }}>
+            应用保持打开时，到达提醒时间若当天仍有未打卡任务，会弹出系统通知与页面内通知，点击跳转日历打卡；当天任务全部完成或无任务则不打扰。
           </p>
         </Card>
       </Col>

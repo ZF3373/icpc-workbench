@@ -117,3 +117,8 @@ export interface StreakInfo {
   longest: number
   totalDays: number
 }
+
+export interface ReminderConfig {
+  enabled: boolean
+  time: string // HH:MM（24 小时制）
+}

@@ -12,6 +12,7 @@ import Problems from './pages/Problems'
 import Plans from './pages/Plans'
 import CalendarPage from './pages/Calendar'
 import Settings from './pages/Settings'
+import Reminder from './Reminder'
 
 const { Sider, Content } = Layout
 
@@ -31,6 +32,7 @@ export default function App() {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
+      <Reminder />
       <Sider theme="dark" width={200}>
         <div
           style={{
