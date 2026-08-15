@@ -5,3 +5,6 @@ server/config.json
 *.log
 .DS_Store
 .reasonix/
+
+# 本地内部文档，不入库
+icpc-workbench-*.md
