@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ICPC 挂件</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: rgba(18, 20, 28, 0.86);
+      --fg: #e8eaf0;
+      --dim: #8b93a7;
+      --accent: #4096ff;
+      --ok: #52c41a;
+      --card: rgba(255, 255, 255, 0.05);
+      --card-hover: rgba(255, 255, 255, 0.09);
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { background: transparent; }
+    body { font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; padding: 10px; }
+    #panel {
+      width: 320px;
+      max-height: 480px;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 14px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+      color: var(--fg);
+      overflow: hidden;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    header .logo { font-weight: 700; font-size: 14px; }
+    header #date { color: var(--dim); font-size: 12px; flex: 1; }
+    header #streak { font-size: 12px; color: #ffa940; white-space: nowrap; }
+    main { padding: 8px; overflow-y: auto; flex: 1; }
+    main::-webkit-scrollbar { width: 6px; }
+    main::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
+    .task {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: var(--card);
+      margin-bottom: 6px;
+      transition: background .15s;
+    }
+    .task:hover { background: var(--card-hover); }
+    .task .body { flex: 1; min-width: 0; }
+    .task a { color: var(--fg); text-decoration: none; font-weight: 600; }
+    .task a:hover { color: var(--accent); }
+    .task .plain { font-weight: 600; }
+    .task.done .body a, .task.done .body .plain { color: var(--dim); text-decoration: line-through; }
+    .task .kind {
+      display: inline-block;
+      font-size: 11px;
+      padding: 0 6px;
+      border-radius: 6px;
+      margin-bottom: 2px;
+      background: rgba(64, 150, 255, 0.18);
+      color: #8cc8ff;
+    }
+    .task .key { font-size: 11px; color: var(--dim); margin-left: 6px; }
+    .task button {
+      flex-shrink: 0;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      background: transparent;
+      color: var(--fg);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .task button:hover { transform: scale(1.12); }
+    .task.done button {
+      background: var(--ok);
+      border-color: var(--ok);
+      color: #0b1a05;
+    }
+    .empty { text-align: center; color: var(--dim); padding: 28px 0; }
+    footer {
+      padding: 6px 14px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--dim);
+      font-size: 11px;
+      display: flex;
+      justify-content: space-between;
+    }
+    footer a { color: var(--dim); }
+  </style>
+</head>
+<body>
+  <div id="panel">
+    <header>
+      <span class="logo">⚔️ ICPC</span>
+      <span id="date"></span>
+      <span id="streak"></span>
+    </header>
+    <main id="tasks"><div class="empty">加载中…</div></main>
+    <footer>
+      <span id="updated"></span>
+      <a href="/" target="_blank" title="打开主应用">工作台 ↗</a>
+    </footer>
+  </div>
+  <script>
+    var KIND_LABEL = { practice: '练习', review: '回顾', topic: '专题', contest: '模拟赛' };
+    var WEEK = ['日', '一', '二', '三', '四', '五', '六'];
+
+    function pad(n) { return String(n).padStart(2, '0'); }
+    function todayStr() {
+      var d = new Date();
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    }
+
+    function renderHeader(streak) {
+      var d = new Date();
+      document.getElementById('date').textContent =
+        (d.getMonth() + 1) + '月' + d.getDate() + '日 周' + WEEK[d.getDay()];
+      document.getElementById('streak').textContent =
+        streak && streak.current > 0 ? '🔥 连续 ' + streak.current + ' 天' : '';
+    }
+
+    function render(tasks) {
+      var main = document.getElementById('tasks');
+      if (!tasks.length) {
+        main.innerHTML = '<div class="empty">今天没有计划任务</div>';
+        return;
+      }
+      main.innerHTML = '';
+      tasks.forEach(function (t) {
+        var row = document.createElement('div');
+        row.className = 'task' + (t.checked ? ' done' : '');
+
+        var body = document.createElement('div');
+        body.className = 'body';
+        var kind = document.createElement('span');
+        kind.className = 'kind';
+        kind.textContent = KIND_LABEL[t.kind] || t.kind;
+        body.appendChild(kind);
+
+        var title = document.createElement(t.url || t.problem_url ? 'a' : 'span');
+        var link = t.problem_url || t.url;
+        if (link) {
+          title.href = link;
+          title.target = '_blank';
+          title.rel = 'noreferrer';
+        } else {
+          title.className = 'plain';
+        }
+        title.textContent = t.title;
+        body.appendChild(title);
+        if (t.problem_key) {
+          var key = document.createElement('span');
+          key.className = 'key';
+          key.textContent = t.problem_key;
+          body.appendChild(key);
+        }
+        if (t.note) {
+          var note = document.createElement('div');
+          note.style.cssText = 'font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+          note.title = t.note;
+          note.textContent = t.note;
+          body.appendChild(note);
+        }
+
+        var btn = document.createElement('button');
+        btn.title = t.checked ? '取消打卡' : '打卡';
+        btn.textContent = t.checked ? '✓' : '';
+        btn.onclick = function () { toggle(t.id, !t.checked); };
+
+        row.appendChild(body);
+        row.appendChild(btn);
+        main.appendChild(row);
+      });
+    }
+
+    function toggle(id, check) {
+      if (check) {
+        fetch('/api/checkins', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ taskId: id }),
+        }).then(load, load);
+      } else {
+        fetch('/api/checkins/' + id, { method: 'DELETE' }).then(load, load);
+      }
+    }
+
+    function load() {
+      Promise.all([
+        fetch('/api/checkins/date/' + todayStr()),
+        fetch('/api/checkins/streak'),
+      ]).then(function (rs) {
+        if (!rs[0].ok || !rs[1].ok) throw new Error('HTTP error');
+        return Promise.all([rs[0].json(), rs[1].json()]);
+      }).then(function (data) {
+        renderHeader(data[1]);
+        render(data[0]);
+        var d = new Date();
+        document.getElementById('updated').textContent =
+          '已更新 ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+      }).catch(function () {
+        document.getElementById('tasks').innerHTML =
+          '<div class="empty">⚠ 无法连接服务器，稍后重试</div>';
+      });
+    }
+
+    load();
+    setInterval(load, 60000); // 每分钟刷新，跨天自动切换日期
+  </script>
+</body>
+</html>

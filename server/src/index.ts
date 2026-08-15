@@ -10,6 +10,7 @@ import { problemsRoutes } from './routes/problems.ts';
 import { settingsRoutes } from './routes/settings.ts';
 import { statsRoutes } from './routes/stats.ts';
 import { syncRoutes } from './routes/sync.ts';
+import { widgetRoutes } from './routes/widget.ts';
 import { PLATFORMS } from '../../shared/src/index.ts';
 
 const config = loadConfig();
@@ -27,6 +28,7 @@ app.use('/api/export', exportRoutes(db));
 app.use('/api/problems', problemsRoutes(db));
 app.use('/api/checkins', checkinsRoutes(db));
 app.use('/api/settings', settingsRoutes(db, config));
+app.use('/widget', widgetRoutes());
 
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -40,4 +42,5 @@ app.get('/api/health', (_req, res) => {
 const port = Number(process.env.PORT ?? config.port);
 app.listen(port, () => {
   console.log(`[server] listening on http://localhost:${port}`);
+  console.log(`[server] widget page: http://localhost:${port}/widget`);
 });
