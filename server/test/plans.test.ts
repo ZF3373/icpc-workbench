@@ -460,3 +460,70 @@ test('buildPlanPackage renders grouped problem list in prompt markdown', () => {
   // 未出现旧版大 JSON 数组形态
   assert.ok(!pkg.prompt.includes('[{"platform"'));
 });
+
+// ---------- 新题总量下限（minNewProblems 轮转扩充） ----------
+
+test('recommendProblemsByWeakTag refills round-robin to reach minNewProblems', () => {
+  seedGrouped();
+  // 基础选取：dp 组区间内新题仅 D（1 道）→ minNew=3 时应从组内剩余扩充
+  const groups = recommendProblemsByWeakTag(db, PROFILE(['dp']) as never, {
+    perTag: 1,
+    reviewPerTag: 0,
+    minNewProblems: 3,
+    level: null,
+  });
+  const newCount = groups.reduce((n, g) => n + g.problems.filter((p) => p.role === 'weak').length, 0);
+  assert.equal(newCount, 3, `新题应扩充到 3 道: ${JSON.stringify(groups)}`);
+});
+
+test('recommendProblemsByWeakTag relaxes difficulty range only after in-range exhausted', () => {
+  // 只有 dp 一个弱项组：A(AC)、D(区间内 1500)、DP9(区间外 2500)，无综合练习候选
+  insertNormalized(db, 1, [
+    sub('codeforces', 'A', 'AC', ['dp'], 1500, '2026-07-20T10:00:00.000Z', 'https://codeforces.com/contest/A'),
+    sub('codeforces', 'A', 'AC', ['dp'], 1500, '2026-07-21T10:00:00.000Z', 'https://codeforces.com/contest/A'),
+    sub('codeforces', 'A', 'AC', ['dp'], 1500, '2026-07-22T10:00:00.000Z', 'https://codeforces.com/contest/A'),
+    sub('codeforces', 'A', 'AC', ['dp'], 1500, '2026-07-23T10:00:00.000Z', 'https://codeforces.com/contest/A'),
+    sub('codeforces', 'A', 'AC', ['dp'], 1500, '2026-07-24T10:00:00.000Z', 'https://codeforces.com/contest/A'),
+    sub('codeforces', 'D', 'WA', ['dp'], 1500, '2026-07-28T10:00:00.000Z', 'https://codeforces.com/contest/D'),
+    sub('codeforces', 'DP9', 'WA', ['dp'], 2500, '2026-07-30T10:00:00.000Z', 'https://codeforces.com/contest/DP9'),
+  ]);
+  const groups = recommendProblemsByWeakTag(db, PROFILE(['dp']) as never, {
+    perTag: 1,
+    reviewPerTag: 0,
+    minNewProblems: 2,
+    level: { solvedCount: 10, medianDifficulty: 1500, p75Difficulty: 1550, suggestedRange: [1500, 1600] },
+  });
+  const keys = groups.flatMap((g) => g.problems.map((p) => p.problemKey));
+  // 区间内 D 优先入选；区间外 DP9 仅在区间内补尽后放宽补入
+  assert.deepEqual(keys.sort(), ['D', 'DP9']);
+});
+
+test('recommendProblemsByWeakTag stops when candidates exhausted (no crash)', () => {
+  seedGrouped();
+  // minNew 远超候选总量 → 返回全部可用新题，不死循环
+  const groups = recommendProblemsByWeakTag(db, PROFILE(['dp']) as never, {
+    perTag: 1,
+    reviewPerTag: 0,
+    minNewProblems: 999,
+    level: null,
+  });
+  const newCount = groups.reduce((n, g) => n + g.problems.filter((p) => p.role === 'weak').length, 0);
+  assert.ok(newCount >= 1 && newCount < 999);
+});
+
+test('buildPlanPackage guarantees days*2 new problems when candidates suffice', () => {
+  // 构造 20 道未 AC 新题（难度区间 1500 内），7 天计划 → 新题应 ≥14
+  const rows: NormalizedSubmission[] = [];
+  for (let i = 0; i < 20; i += 1) {
+    rows.push(sub('codeforces', `N${i}`, 'WA', ['dp'], 1500, '2026-07-28T10:00:00.000Z', `https://codeforces.com/contest/N${i}`));
+  }
+  insertNormalized(db, 1, rows);
+  const pkg = buildPlanPackage(db, 1, { days: 7, startDate: '2026-08-10' });
+  const newCount = pkg.problemGroups.reduce(
+    (n, g) => n + g.problems.filter((p) => p.role !== 'review').length,
+    0,
+  );
+  assert.ok(newCount >= 14, `7 天计划新题应 ≥14，实际 ${newCount}`);
+  // 摘要行
+  assert.match(pkg.prompt, /（新题 \d+ 道、已 AC 复习题 \d+ 道）/);
+});

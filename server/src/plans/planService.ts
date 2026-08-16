@@ -228,7 +228,11 @@ export function buildPlanPackage(
   const profile = computeWeakness(db, userId, { minAttempts: 5, topN: 8 });
   const trend = computeTrend(db, userId, 12);
   const level = computeUserLevel(db, userId);
-  const problems = recommendProblemsByWeakTag(db, profile, { level });
+  const problems = recommendProblemsByWeakTag(db, profile, {
+    level,
+    // 新题冗余：计划每天约 1 道练习题，×2 保证 AI 选漏/剔除某题后仍有充足余量
+    minNewProblems: days * 2,
+  });
 
   const prompt = renderTemplate(PROMPT_TEMPLATE, {
     days: String(days),
@@ -356,17 +360,25 @@ export function recommendProblems(
 /**
  * 按弱项 tag 分组选题（导出提示词 / AI 生成用）：
  * - 每个弱项 tag 一组，组内未 AC 优先（role=weak）、难度锚定用户水平区间
- * - 已 AC 的题默认不选，仅每组保留少量作复习参考（role=review，取 AC 时间最近的）
+ * - 已 AC 的题默认不选，仅每组保留少量作复习参考（role=review，取 AC 时间最久的）
  * - 弱项 tag 覆盖不到的候选（无标签/标签不在弱项内）归入「综合练习」组兜底
- * - 总量控制在每组 4-6 题（perTag），组数默认取画像 topN，避免清单过长稀释 AI 注意力
+ * - 每组基础 perTag 题（默认 5），新题总量不足 minNewProblems 时按弱项优先轮转补齐
+ *   （优先补难度区间内的题，仍不足则放宽难度限制），确保计划天数 × 2 的选题冗余
  */
 export function recommendProblemsByWeakTag(
   db: Db,
   profile: WeaknessProfile,
-  opts: { perTag?: number; reviewPerTag?: number; level?: UserLevel | null } = {},
+  opts: {
+    perTag?: number;
+    reviewPerTag?: number;
+    /** 未 AC 新题总量下限（如计划 14 天 → 28 题）；不传则仅按 perTag 基础量选取 */
+    minNewProblems?: number;
+    level?: UserLevel | null;
+  } = {},
 ): WeakTagGroup[] {
   const perTag = opts.perTag ?? 5;
   const reviewPerTag = opts.reviewPerTag ?? 1;
+  const minNew = opts.minNewProblems ?? 0;
   const level = opts.level === undefined ? computeUserLevel(db, DEFAULT_USER_ID) : opts.level;
 
   const all = db
@@ -440,30 +452,69 @@ export function recommendProblemsByWeakTag(
     }
   }
 
-  const pick = (list: Candidate[]): { weak: Candidate[]; review: Candidate[] } => {
-    const weak = list
-      .filter((c) => c.role === 'weak' && inRange(c.difficulty))
-      .sort((a, b) => (a.difficulty ?? 9999) - (b.difficulty ?? 9999))
-      .slice(0, perTag);
+  /** 组内新题候选排序：难度区间内按难度升序在前，区间外（扩充兜底用）靠后 */
+  const orderedWeak = (list: Candidate[]): Candidate[] =>
+    [...list]
+      .filter((c) => c.role === 'weak')
+      .sort((a, b) => {
+        const aIn = inRange(a.difficulty) ? 0 : 1;
+        const bIn = inRange(b.difficulty) ? 0 : 1;
+        return aIn - bIn || (a.difficulty ?? 9999) - (b.difficulty ?? 9999);
+      });
+
+  const pickReview = (list: Candidate[]): Candidate[] =>
     // 复习位：该组内已 AC、且 AC 时间较久的题（久未重做优先）
-    const review = list
+    [...list]
       .filter((c) => c.role === 'review')
       .sort((a, b) => (a.lastAcAt ?? '').localeCompare(b.lastAcAt ?? ''))
       .slice(0, reviewPerTag);
-    return { weak, review };
-  };
 
-  const out: WeakTagGroup[] = [];
-  for (const [tag, list] of groups) {
-    const { weak, review } = pick(list);
-    if (weak.length + review.length === 0) continue;
-    out.push({ tag, gap: gapByTag.get(tag) ?? 0, problems: [...weak, ...review] });
+  // 第 1 轮：每组按基础量选取（仅区间内新题）
+  interface Picked {
+    tag: string;
+    gap: number;
+    weak: Candidate[];
+    review: Candidate[];
+    rest: Candidate[]; // 组内剩余新题候选（扩充轮转用）
   }
-  if (misc.length > 0) {
-    const { weak } = pick(misc);
-    if (weak.length > 0) out.push({ tag: '综合练习', gap: 0, problems: weak });
-  }
-  return out;
+  const pickedList: Picked[] = [];
+  const consider = (tag: string, gap: number, list: Candidate[]): Picked | undefined => {
+    const ordered = orderedWeak(list);
+    const weak = ordered.filter((c) => inRange(c.difficulty)).slice(0, perTag);
+    const rest = ordered.filter((c) => !weak.includes(c));
+    const review = pickReview(list);
+    if (weak.length + review.length === 0) return undefined;
+    const picked: Picked = { tag, gap, weak, review, rest };
+    pickedList.push(picked);
+    return picked;
+  };
+  for (const [tag, list] of groups) consider(tag, gapByTag.get(tag) ?? 0, list);
+  const miscPicked = consider('综合练习', 0, misc);
+
+  // 第 2 轮：新题总量不足 minNew 时补齐——先跨组轮转补难度区间内的剩余候选
+  // （弱项组优先，按 gap 降序），区间内补尽后才放宽到区间外题（仍按组轮转）。
+  // rest 中区间内候选已排在区间外之前，inRange 分桶后两轮各取各的。
+  const weakGroups = [...pickedList].sort((a, b) => b.gap - a.gap);
+  const refill = [...weakGroups, ...(miscPicked ? [miscPicked] : [])];
+  const totalWeak = (): number => pickedList.reduce((n, p) => n + p.weak.length, 0);
+  const takeRound = (inRangeOnly: boolean): void => {
+    for (let i = 0; totalWeak() < minNew; i += 1) {
+      const g = refill[i % refill.length];
+      if (!g || refill.every((x) => !x.rest.some((c) => inRangeOnly === inRange(c.difficulty)))) break;
+      const idx = g.rest.findIndex((c) => inRangeOnly === inRange(c.difficulty));
+      if (idx === -1) continue;
+      const [next] = g.rest.splice(idx, 1);
+      g.weak.push(next);
+    }
+  };
+  takeRound(true); // 区间内优先
+  takeRound(false); // 仍不足 → 放宽难度限制
+
+  return pickedList.map((p) => ({
+    tag: p.tag,
+    gap: p.gap,
+    problems: [...p.weak, ...p.review],
+  }));
 }
 
 /** 分组候选渲染为提示词用 Markdown 列表（AI 对结构化分组的遵循度高于大 JSON 数组）。 */
@@ -471,7 +522,9 @@ export function renderProblemGroups(groups: WeakTagGroup[]): string {
   if (groups.length === 0) {
     return '（暂无候选：题库为空或所有候选均已 AC，可自行安排平台选题）';
   }
-  const lines: string[] = [];
+  const weakCount = groups.reduce((n, g) => n + g.problems.filter((p) => p.role !== 'review').length, 0);
+  const reviewCount = groups.reduce((n, g) => n + g.problems.filter((p) => p.role === 'review').length, 0);
+  const lines: string[] = [`（新题 ${weakCount} 道、已 AC 复习题 ${reviewCount} 道）`];
   for (const g of groups) {
     lines.push(`### ${g.tag}${g.gap > 0 ? `（弱项 gap=${g.gap}）` : ''}`);
     for (const p of g.problems) {
