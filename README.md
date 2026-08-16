@@ -51,6 +51,21 @@ npm run dev:server   # 仅后端
 npm run dev:client   # 仅前端
 ```
 
+## Windows 单文件 exe 打包（双击即用）
+
+```bash
+node server/scripts/build-exe.mjs
+```
+
+产物在 `server/release/`：`icpc-workbench.exe`（约 90MB，Node SEA 单文件）+ `使用说明.txt`，
+整个文件夹拷给用户即可。面向零基础用户的运行体验：
+
+- 双击 exe → 自动打开默认浏览器进入软件页面（仅监听 127.0.0.1，不触发防火墙弹窗）
+- 端口被占自动顺延（默认 3001 → 3002…），重复双击复用已运行实例并直接打开页面
+- 启动失败时窗口不闪退，停留展示报错等待按键
+- 数据库落在 exe 旁 `data/icpc.db`，exe 与 data 同文件夹整体搬迁即可
+
+
 ## 配置
 
 - `server/config.json`（可选，参考 `server/config.example.json`）：端口、数据库路径、AI 默认值

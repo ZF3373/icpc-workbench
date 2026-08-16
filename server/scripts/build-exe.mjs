@@ -3,14 +3,15 @@
  *
  * 步骤：
  * 1. npm run build（client dist）
- * 2. esbuild bundle server/src/sea.ts → dist/sea-bundle.js（CJS，全依赖打入）
+ * 2. esbuild bundle server/src/sea.ts → dist/sea-bundle.cjs（CJS，全依赖打入）
  * 3. 生成 SEA 配置 sea-config.json：主脚本 + 内嵌资源
  *    （schema.sql / plan-prompt.md / widget.html / client-dist/**）
  * 4. node --experimental-sea-config 生成 blob → postject 注入 node.exe 副本
+ * 5. release/ 发布目录：exe + 使用说明.txt（整个文件夹直接拷给用户）
  *
- * 产物：dist/icpc-workbench.exe（约 80-120MB），旁置 config.json 可选。
- * 运行：双击或命令行启动，访问 http://localhost:3001，
- * 数据库落在 exe 同目录 data/icpc.db。
+ * 产物面向“电脑小白”双击即用：自动打开默认浏览器（127.0.0.1，
+ * 不触发防火墙弹窗）、端口被占自动顺延、重复双击复用已运行实例、
+ * 启动报错窗口不闪退。数据库落在 exe 同目录 data/icpc.db。
  */
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -120,5 +121,49 @@ try {
 }
 
 const sizeMb = (fs.statSync(exePath).size / 1024 / 1024).toFixed(1);
-console.log(`\n完成: ${exePath} (${sizeMb} MB)`);
-console.log('运行后访问 http://localhost:3001（数据库在 exe 旁 data/ 目录）');
+
+const README_TXT = `
+======================================
+ ICPC 备赛工作台 · 使用说明
+======================================
+
+【怎么打开】
+  双击 icpc-workbench.exe 就可以了。
+  会出现一个黑色窗口，随后浏览器自动打开软件页面，即可开始使用。
+
+【重要：先解压！】
+  如果你拿到的是 zip 压缩包，请先把整个压缩包解压到任意文件夹再双击运行，
+  不要直接在压缩包里双击（那样数据会丢失）。
+
+【使用期间】
+  1. 黑色窗口代表软件正在运行，请不要关闭它（最小化没有影响）。
+     关闭黑色窗口 = 退出软件。
+  2. 如果浏览器没有自动打开：手动打开浏览器，在地址栏输入
+     http://localhost:3001
+  3. 你的全部练习数据都保存在本文件夹的 data 子文件夹里。
+     换电脑时，把整个文件夹一起拷过去即可。
+
+【如果 Windows 拦截】
+  首次运行可能提示"Windows 已保护你的电脑"：
+  点击「更多信息」→「仍要运行」即可。
+  （本软件未购买代码签名证书，属于正常提示，软件不联网上传任何数据。）
+  部分杀毒软件可能误报，请选择"信任/允许运行"。
+
+【其他情况】
+  - 提示端口被占用：软件会自动换一个端口，以黑色窗口里显示的网址为准。
+  - 双击后窗口一闪而过：说明启动出错，请把 exe 拖到命令行窗口里运行查看报错。
+  - 重复双击：软件只会运行一份，直接为你打开正在运行的页面。
+`;
+
+// ---- 发布目录：只放 exe + 使用说明，直接整个文件夹拷给用户 ----
+console.log('[6/6] 生成发布目录 release/ ...');
+const releaseDir = path.join(serverRoot, 'release');
+fs.rmSync(releaseDir, { recursive: true, force: true });
+fs.mkdirSync(releaseDir, { recursive: true });
+fs.copyFileSync(exePath, path.join(releaseDir, 'icpc-workbench.exe'));
+// 带 BOM 的 UTF-8，保证旧版记事本也不乱码
+fs.writeFileSync(path.join(releaseDir, '使用说明.txt'), `\ufeff${README_TXT}`, 'utf8');
+
+console.log(`\n完成: ${path.join(releaseDir, 'icpc-workbench.exe')} (${sizeMb} MB)`);
+console.log(`发布目录: ${releaseDir}（含 使用说明.txt，整个文件夹拷给用户即可）`);
+console.log('双击 exe 即用：自动打开默认浏览器，数据落在 exe 旁 data/ 目录。');

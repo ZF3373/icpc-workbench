@@ -8,3 +8,7 @@ server/config.json
 
 # 本地内部文档，不入库
 icpc-workbench-*.md
+
+# SEA 打包产物（90MB exe），本地构建生成
+server/release/
+.zcode/
