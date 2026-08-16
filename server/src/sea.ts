@@ -27,6 +27,7 @@ import { problemsRoutes } from './routes/problems.ts';
 import { settingsRoutes } from './routes/settings.ts';
 import { statsRoutes } from './routes/stats.ts';
 import { syncRoutes } from './routes/sync.ts';
+import { updateRoutes, APP_VERSION } from './routes/update.ts';
 import { widgetRoutes, setWidgetPublicDir } from './routes/widget.ts';
 import { setSchemaSql } from './db/index.ts';
 import { setPromptTemplate } from './plans/planService.ts';
@@ -56,6 +57,7 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
   app.use('/api/problems', problemsRoutes(db));
   app.use('/api/checkins', checkinsRoutes(db));
   app.use('/api/settings', settingsRoutes(db, config));
+  app.use('/api/update', updateRoutes());
   // widget 静态目录必须先注入再创建 router（express.static 创建时捕获目录值）
   setWidgetPublicDir(resolveWidgetDir());
   app.use('/widget', widgetRoutes());
@@ -75,6 +77,7 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
       time: new Date().toISOString(),
       platforms: PLATFORMS.map((p) => p.id),
       dbPath: config.dbPath,
+      version: APP_VERSION,
       sea: isSea(),
     });
   });
@@ -225,7 +228,7 @@ async function bootSea(app: Express, config: AppConfig, desiredPort: number): Pr
     console.log(`提示：默认端口 ${desiredPort} 被其他程序占用，已自动改用 ${port}。`);
   }
   const url = `http://localhost:${port}`;
-  console.log(banner(url));
+  console.log(banner(url, APP_VERSION));
   openBrowser(url);
 }
 
@@ -270,7 +273,7 @@ function openBrowser(url: string): void {
   }
 }
 
-function banner(url: string): string {
+function banner(url: string, version: string): string {
   const line = '='.repeat(54);
   return [
     '',
@@ -280,6 +283,7 @@ function banner(url: string): string {
     `   软件页面：${url}`,
     '   （浏览器没有自动打开？把上面网址复制到浏览器即可）',
     '',
+    `   当前版本：${version}（可在 设置 → 软件更新 中检查新版本）`,
     '   [1] 使用期间请保留本窗口，可以最小化；关闭窗口 = 退出软件',
     '   [2] 练习数据保存在本软件旁的 data 文件夹，请勿删除',
     `   [3] widget 挂件页面：${url}/widget`,

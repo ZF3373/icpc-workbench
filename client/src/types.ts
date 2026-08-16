@@ -122,3 +122,13 @@ export interface ReminderConfig {
   enabled: boolean
   time: string // HH:MM（24 小时制）
 }
+
+export interface UpdateInfo {
+  ok: boolean
+  current: string
+  latest: string | null
+  hasUpdate: boolean
+  releasePage: string | null
+  notes: string | null
+  message?: string
+}

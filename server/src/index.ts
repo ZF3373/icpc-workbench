@@ -10,6 +10,7 @@ import { problemsRoutes } from './routes/problems.ts';
 import { settingsRoutes } from './routes/settings.ts';
 import { statsRoutes } from './routes/stats.ts';
 import { syncRoutes } from './routes/sync.ts';
+import { updateRoutes, APP_VERSION } from './routes/update.ts';
 import { widgetRoutes } from './routes/widget.ts';
 import { PLATFORMS } from '../../shared/src/index.ts';
 
@@ -28,6 +29,7 @@ app.use('/api/export', exportRoutes(db));
 app.use('/api/problems', problemsRoutes(db));
 app.use('/api/checkins', checkinsRoutes(db));
 app.use('/api/settings', settingsRoutes(db, config));
+app.use('/api/update', updateRoutes());
 app.use('/widget', widgetRoutes());
 
 app.get('/api/health', (_req, res) => {
@@ -36,6 +38,7 @@ app.get('/api/health', (_req, res) => {
     time: new Date().toISOString(),
     platforms: PLATFORMS.map((p) => p.id),
     dbPath: config.dbPath,
+    version: APP_VERSION,
   });
 });
 

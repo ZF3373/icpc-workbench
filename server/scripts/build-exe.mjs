@@ -30,6 +30,15 @@ execSync('npm run build', { cwd: repoRoot, stdio: 'inherit' });
 
 console.log('[2/5] esbuild bundle server/src/sea.ts ...');
 fs.mkdirSync(outDir, { recursive: true });
+// 版本号：取 HEAD 可达的最近 git tag（如 v0.2.1）注入 APP_VERSION，
+// 供「软件更新」与 /api/health 显示与比对；无 tag 时回退 dev。
+let appVersion = 'dev';
+try {
+  appVersion = execSync('git describe --tags --abbrev=0').toString().trim();
+} catch {
+  console.log('      （未找到 git tag，APP_VERSION=dev）');
+}
+console.log(`      APP_VERSION = ${appVersion}`);
 // CJS bundle：SEA 主脚本按 CJS 执行（embedderRunCjs）。
 // 源码普遍在模块顶层用 fileURLToPath(import.meta.url) 定位资源，
 // CJS 下 import.meta 为空对象会当场抛错 —— 打包期重写为 __filename/__dirname。
@@ -57,6 +66,7 @@ await build({
   external: ['node:*'],
   minify: true,
   plugins: [importMetaPlugin],
+  define: { 'process.env.APP_VERSION': JSON.stringify(appVersion) },
 });
 
 // ---- 收集内嵌资源 ----
@@ -153,16 +163,27 @@ const README_TXT = `
   - 提示端口被占用：软件会自动换一个端口，以黑色窗口里显示的网址为准。
   - 双击后窗口一闪而过：说明启动出错，请把 exe 拖到命令行窗口里运行查看报错。
   - 重复双击：软件只会运行一份，直接为你打开正在运行的页面。
+  - 检查更新：设置页底部有「检查更新」按钮，有新版本时按提示下载 zip，
+    解压后用新 exe 替换旧文件即可，data 文件夹不用动。
 `;
 
 // ---- 发布目录：只放 exe + 使用说明，直接整个文件夹拷给用户 ----
 console.log('[6/6] 生成发布目录 release/ ...');
 const releaseDir = path.join(serverRoot, 'release');
-fs.rmSync(releaseDir, { recursive: true, force: true });
-fs.mkdirSync(releaseDir, { recursive: true });
-fs.copyFileSync(exePath, path.join(releaseDir, 'icpc-workbench.exe'));
-// 带 BOM 的 UTF-8，保证旧版记事本也不乱码
-fs.writeFileSync(path.join(releaseDir, '使用说明.txt'), `\ufeff${README_TXT}`, 'utf8');
+const releaseExe = path.join(releaseDir, 'icpc-workbench.exe');
+try {
+  fs.rmSync(releaseDir, { recursive: true, force: true });
+  fs.mkdirSync(releaseDir, { recursive: true });
+  fs.copyFileSync(exePath, releaseExe);
+  // 带 BOM 的 UTF-8，保证旧版记事本也不乱码
+  fs.writeFileSync(path.join(releaseDir, '使用说明.txt'), `\ufeff${README_TXT}`, 'utf8');
+} catch (e) {
+  // 常见原因：用户还在运行 release 里的 exe（Windows 锁定运行中的 exe，无法删除/覆盖）
+  console.error(`\n[发布目录失败] ${e instanceof Error ? e.message : String(e)}`);
+  console.error(`请先关闭正在运行的 ${releaseExe}（黑色窗口）后重新打包。`);
+  console.error(`本次构建的 exe 仍可用: ${exePath}`);
+  process.exit(1);
+}
 
 console.log(`\n完成: ${path.join(releaseDir, 'icpc-workbench.exe')} (${sizeMb} MB)`);
 console.log(`发布目录: ${releaseDir}（含 使用说明.txt，整个文件夹拷给用户即可）`);

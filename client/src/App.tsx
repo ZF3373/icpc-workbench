@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Layout, Menu } from 'antd'
 import {
   CalendarOutlined,
@@ -13,6 +14,8 @@ import Plans from './pages/Plans'
 import CalendarPage from './pages/Calendar'
 import Settings from './pages/Settings'
 import Reminder from './Reminder'
+import UpdateChecker from './UpdateChecker'
+import { get } from './api'
 
 const { Sider, Content } = Layout
 
@@ -28,6 +31,14 @@ export default function App() {
   const nav = useNavigate()
   const loc = useLocation()
   const selected = MENU.some((m) => m.key === loc.pathname) ? loc.pathname : '/'
+  const [version, setVersion] = useState('')
+
+  useEffect(() => {
+    // 侧边栏版本号取自后端（exe 打包时注入 git tag；源码运行为 dev）
+    get<{ version?: string }>('/api/health')
+      .then((h) => setVersion(h.version ?? ''))
+      .catch(() => {})
+  }, [])
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -53,10 +64,11 @@ export default function App() {
         />
         <div className="sider-footer">
           <span className="sider-footer-dot" />
-          v0.1.0 · 本地运行
+          {version ? `${version} · ` : ''}本地运行
         </div>
       </Sider>
       <Content style={{ padding: 24, background: 'transparent' }}>
+        <UpdateChecker />
         <div className="content-container page-content" key={loc.pathname}>
           <Routes>
             <Route path="/" element={<Dashboard />} />

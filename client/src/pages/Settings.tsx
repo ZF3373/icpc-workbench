@@ -18,7 +18,7 @@ import {
   TimePicker,
   Upload,
 } from 'antd'
-import { ImportOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined } from '@ant-design/icons'
+import { ImportOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, AppstoreOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
@@ -26,7 +26,7 @@ import { PLATFORMS } from '../../../shared/src/index.ts'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
 import { get, post } from '../api'
-import type { ReminderConfig } from '../types'
+import type { ReminderConfig, UpdateInfo } from '../types'
 
 interface SettingsData {
   ai: { enabled: boolean; baseURL: string; apiKey: string; model: string }
@@ -53,6 +53,9 @@ export default function Settings() {
   const [reminderTime, setReminderTime] = useState<Dayjs>(dayjs('20:00', 'HH:mm'))
   const [importOpen, setImportOpen] = useState(false)
   const [exportDays, setExportDays] = useState(14)
+  const [appVersion, setAppVersion] = useState('')
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [updateChecking, setUpdateChecking] = useState(false)
 
   const load = () => {
     get<SettingsData>('/api/settings')
@@ -74,6 +77,23 @@ export default function Settings() {
   }
 
   useEffect(load, [aiForm])
+
+  useEffect(() => {
+    get<{ version?: string }>('/api/health')
+      .then((h) => setAppVersion(h.version ?? ''))
+      .catch(() => {})
+  }, [])
+
+  const checkUpdate = async () => {
+    setUpdateChecking(true)
+    try {
+      setUpdateInfo(await get<UpdateInfo>('/api/update/check'))
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setUpdateChecking(false)
+    }
+  }
 
   if (!data) return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />
 
@@ -348,6 +368,43 @@ export default function Settings() {
               下载后把内容粘贴给任何 AI，再把返回的 JSON 计划通过「导入 AI 计划」粘贴进来即可入库。
             </span>
           </Space>
+        </Card>
+      </Col>
+
+      <Col span={24}>
+        <Card title={<span className="settings-section-title"><AppstoreOutlined />软件更新</span>} size="small">
+          <Space wrap>
+            <span>
+              当前版本：<b>{appVersion || '未知'}</b>
+            </span>
+            <Button loading={updateChecking} onClick={checkUpdate}>
+              检查更新
+            </Button>
+            {updateInfo?.ok && updateInfo.hasUpdate && updateInfo.releasePage && (
+              <Button type="primary" onClick={() => window.open(updateInfo.releasePage!, '_blank')}>
+                前往下载 {updateInfo.latest}
+              </Button>
+            )}
+          </Space>
+          {updateInfo && (
+            <Alert
+              style={{ marginTop: 12, maxWidth: 720 }}
+              type={updateInfo.ok ? (updateInfo.hasUpdate ? 'warning' : 'success') : 'info'}
+              showIcon
+              message={
+                updateInfo.ok
+                  ? updateInfo.hasUpdate
+                    ? `发现新版本 ${updateInfo.latest}（当前 ${updateInfo.current}）`
+                    : `已是最新版本（${updateInfo.current}）`
+                  : `检查更新失败：${updateInfo.message ?? '网络异常'}，可稍后重试`
+              }
+              description={
+                updateInfo.ok && updateInfo.hasUpdate
+                  ? '到下载页下载 zip 并解压，用新的 exe 替换旧文件即可完成升级；练习数据（data 文件夹）不受影响。'
+                  : undefined
+              }
+            />
+          )}
         </Card>
       </Col>
 
