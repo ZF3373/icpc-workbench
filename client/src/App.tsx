@@ -1,4 +1,4 @@
-import { Layout, Menu, theme } from 'antd'
+import { Layout, Menu } from 'antd'
 import {
   CalendarOutlined,
   DashboardOutlined,
@@ -27,40 +27,45 @@ const MENU = [
 export default function App() {
   const nav = useNavigate()
   const loc = useLocation()
-  const { token } = theme.useToken()
   const selected = MENU.some((m) => m.key === loc.pathname) ? loc.pathname : '/'
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Reminder />
-      <Sider theme="dark" width={200}>
-        <div
-          style={{
-            color: '#fff',
-            padding: '16px',
-            fontWeight: 600,
-            fontSize: 16,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          ICPC Workbench
+      <Sider theme="dark" width={216} className="app-sider">
+        <div className="sider-logo">
+          <span className="sider-logo-badge">
+            <img src="/favicon.svg" alt="logo" />
+          </span>
+          <span className="sider-logo-text">
+            ICPC Workbench
+            <span className="sider-logo-sub">COMPETITIVE PROGRAMMING</span>
+          </span>
         </div>
+        <div className="sider-divider" />
         <Menu
+          className="sider-menu"
           theme="dark"
           mode="inline"
           selectedKeys={[selected]}
           items={MENU}
           onClick={({ key }) => nav(key)}
         />
+        <div className="sider-footer">
+          <span className="sider-footer-dot" />
+          v0.1.0 · 本地运行
+        </div>
       </Sider>
-      <Content style={{ padding: 24, background: token.colorBgLayout }}>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/problems" element={<Problems />} />
-          <Route path="/plans" element={<Plans />} />
-          <Route path="/calendar" element={<CalendarPage />} />
-          <Route path="/settings" element={<Settings />} />
-        </Routes>
+      <Content style={{ padding: 24, background: 'transparent' }}>
+        <div className="content-container page-content" key={loc.pathname}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/problems" element={<Problems />} />
+            <Route path="/plans" element={<Plans />} />
+            <Route path="/calendar" element={<CalendarPage />} />
+            <Route path="/settings" element={<Settings />} />
+          </Routes>
+        </div>
       </Content>
     </Layout>
   )

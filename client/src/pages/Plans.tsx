@@ -18,14 +18,15 @@ import {
   Table,
   Tag,
 } from 'antd'
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
+import { CheckOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import type { ColumnsType } from 'antd/es/table'
+import PageHeader from '../components/PageHeader'
 import { del, get, patch, post } from '../api'
 import type { GenerateResult, PlanDetail, PlanListItem, PlanTask } from '../types'
 
 function sourceTag(s: PlanListItem['source']) {
-  if (s === 'ai') return <Tag color="blue">AI</Tag>
+  if (s === 'ai') return <Tag className="ai-tag-shimmer">AI</Tag>
   if (s === 'template') return <Tag color="orange">模板</Tag>
   return <Tag>手动</Tag>
 }
@@ -154,9 +155,9 @@ export default function Plans() {
       render: (v: string, r) => <a onClick={() => openDetail(r.id)}>{v}</a>,
     },
     { title: '来源', dataIndex: 'source', width: 80, render: (v: PlanListItem['source']) => sourceTag(v) },
-    { title: '周期', width: 210, render: (_v, r) => `${r.start_date} ~ ${r.end_date}` },
-    { title: '进度', width: 160, render: (_v, r) => <Progress percent={r.task_count ? Math.round((r.checked_count / r.task_count) * 100) : 0} size="small" /> },
-    { title: '任务', dataIndex: 'task_count', width: 70, render: (_v, r) => `${r.checked_count}/${r.task_count}` },
+    { title: '周期', width: 210, render: (_v, r) => <span className="mono">{r.start_date} ~ {r.end_date}</span> },
+    { title: '进度', width: 160, render: (_v, r) => <Progress className="gradient-progress" percent={r.task_count ? Math.round((r.checked_count / r.task_count) * 100) : 0} size="small" /> },
+    { title: '任务', dataIndex: 'task_count', width: 70, align: 'right', render: (_v, r) => <span className="mono">{r.checked_count}/{r.task_count}</span> },
     {
       title: '操作',
       width: 80,
@@ -176,61 +177,113 @@ export default function Plans() {
     },
   ]
 
+  // 按日期分组（仅展示排序，不改动数据本身）
+  const groups: Array<{ date: string; tasks: PlanTask[] }> = []
+  if (detail) {
+    for (const t of [...detail.tasks].sort((a, b) => (a.task_date < b.task_date ? -1 : a.task_date > b.task_date ? 1 : 0))) {
+      const last = groups[groups.length - 1]
+      if (last && last.date === t.task_date) last.tasks.push(t)
+      else groups.push({ date: t.task_date, tasks: [t] })
+    }
+  }
+  const checkedCount = detail ? detail.tasks.filter((t) => t.checked).length : 0
+
   return (
     <div>
-      <Space style={{ marginBottom: 16 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setGenOpen(true)}>
-          生成新计划
-        </Button>
-        <span style={{ color: '#888' }}>AI 生成（需在设置中配置 API Key）；未配置时自动生成模板计划。也可到「题目管理 → 导出提示词」手动喂给任意 AI。</span>
-      </Space>
+      <PageHeader
+        title="训练计划"
+        description="AI 生成（需在设置中配置 API Key）；未配置时自动生成模板计划。也可到「设置 → 导出提示词」手动喂给任意 AI。"
+        extra={
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setGenOpen(true)}>
+            生成新计划
+          </Button>
+        }
+      />
       <Table rowKey="id" size="small" loading={loading} columns={cols} dataSource={plans} pagination={{ pageSize: 10 }} />
-      {!loading && plans.length === 0 && <Empty description="暂无计划 —— 点击「生成新计划」开始" />}
+      {!loading && plans.length === 0 && (
+        <Card style={{ marginTop: 16 }}>
+          <Empty description="暂无计划 —— 点击「生成新计划」开始" style={{ padding: '24px 0' }} />
+        </Card>
+      )}
 
-      <Drawer title={detail?.title} open={detailOpen} onClose={() => setDetailOpen(false)} width={560}>
+      <Drawer title={detail?.title} open={detailOpen} onClose={() => setDetailOpen(false)} width={580}>
         {detail ? (
           <div>
-            <p style={{ color: '#666' }}>{detail.goal}</p>
-            <p>
-              周期 {detail.start_date} ~ {detail.end_date} · {sourceTag(detail.source)}
-            </p>
-            {detail.tasks.map((t) => {
-              const link = t.problem_url ?? t.url
-              return (
-                <Card key={t.id} size="small" style={{ marginBottom: 8 }}>
-                  <Space wrap>
-                    {kindTag(t.kind)}
-                    {link ? (
-                      <a href={link} target="_blank" rel="noreferrer">
-                        <b>{t.title}</b>
-                      </a>
-                    ) : (
-                      <b>{t.title}</b>
-                    )}
-                    {t.problem_key && <Tag>{t.problem_key}</Tag>}
-                    {link && (
-                      <a href={link} target="_blank" rel="noreferrer">
-                        跳转做题 ↗
-                      </a>
-                    )}
-                    <Button size="small" type={t.checked ? 'default' : 'primary'} onClick={() => toggleCheckin(t)}>
-                      {t.checked ? '已打卡 ✓' : '打卡'}
-                    </Button>
-                    <Button size="small" type="text" icon={<EditOutlined />} title="编辑任务" onClick={() => openEdit(t)} />
-                    <Popconfirm
-                      title="删除任务"
-                      description="将删除该任务及其打卡记录"
-                      okText="删除"
-                      cancelText="取消"
-                      onConfirm={() => removeTask(t)}
+            <p className="plan-goal">{detail.goal}</p>
+            <div className="plan-meta">
+              {sourceTag(detail.source)}
+              <span className="mono">{detail.start_date} ~ {detail.end_date}</span>
+              <span>已打卡 {checkedCount}/{detail.tasks.length}</span>
+              <Progress
+                className="gradient-progress"
+                percent={detail.tasks.length ? Math.round((checkedCount / detail.tasks.length) * 100) : 0}
+                size="small"
+              />
+            </div>
+
+            {groups.map((g) => (
+              <div key={g.date} className="plan-day-group">
+                <div className="plan-day-header">
+                  <span className="mono">{g.date}</span>
+                  <span className="plan-day-count">
+                    {g.tasks.filter((t) => t.checked).length}/{g.tasks.length} 已打卡
+                  </span>
+                </div>
+                {g.tasks.map((t) => {
+                  const link = t.problem_url ?? t.url
+                  return (
+                    <Card
+                      key={t.id}
+                      size="small"
+                      className={`task-card task-card-${t.kind}${t.checked ? ' task-done' : ''}`}
+                      style={{ marginBottom: 8 }}
                     >
-                      <Button size="small" type="text" danger icon={<DeleteOutlined />} title="删除任务" />
-                    </Popconfirm>
-                  </Space>
-                  {t.note && <p style={{ marginTop: 8, color: '#888' }}>{t.note}</p>}
-                </Card>
-              )
-            })}
+                      <div className="task-row">
+                        <div className="task-main">
+                          <Space size={8} wrap>
+                            {kindTag(t.kind)}
+                            {link ? (
+                              <a className="task-title" href={link} target="_blank" rel="noreferrer">
+                                <b>{t.title}</b>
+                              </a>
+                            ) : (
+                              <b className="task-title">{t.title}</b>
+                            )}
+                            {t.problem_key && <span className="task-key">{t.problem_key}</span>}
+                          </Space>
+                          {t.note && <p className="task-note">{t.note}</p>}
+                          {link && (
+                            <a className="task-link" href={link} target="_blank" rel="noreferrer">
+                              跳转做题 ↗
+                            </a>
+                          )}
+                        </div>
+                        <div className="task-actions">
+                          <Button
+                            size="small"
+                            type={t.checked ? 'default' : 'primary'}
+                            icon={t.checked ? <CheckOutlined /> : undefined}
+                            onClick={() => toggleCheckin(t)}
+                          >
+                            {t.checked ? '已打卡' : '打卡'}
+                          </Button>
+                          <Button size="small" type="text" icon={<EditOutlined />} title="编辑任务" onClick={() => openEdit(t)} />
+                          <Popconfirm
+                            title="删除任务"
+                            description="将删除该任务及其打卡记录"
+                            okText="删除"
+                            cancelText="取消"
+                            onConfirm={() => removeTask(t)}
+                          >
+                            <Button size="small" type="text" danger icon={<DeleteOutlined />} title="删除任务" />
+                          </Popconfirm>
+                        </div>
+                      </div>
+                    </Card>
+                  )
+                })}
+              </div>
+            ))}
           </div>
         ) : (
           <Spin />

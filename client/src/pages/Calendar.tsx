@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Badge, Button, Calendar, Card, Col, Empty, message, Row, Spin, Statistic, Tag } from 'antd'
-import { FireOutlined, TrophyOutlined } from '@ant-design/icons'
+import { Button, Calendar, Card, Col, Empty, message, Row, Space, Spin, Tag } from 'antd'
+import { CheckOutlined, FieldTimeOutlined, FireOutlined, TrophyOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
+import PageHeader from '../components/PageHeader'
 import { get, post, del } from '../api'
 import type { DayPlanInfo, DayTask, StreakInfo } from '../types'
 
@@ -77,31 +78,35 @@ export default function CalendarPage() {
     }
   }
 
+  const today = dayjs().format('YYYY-MM-DD')
+
   const renderCell = (date: Dayjs) => {
     const key = date.format('YYYY-MM-DD')
     const info = monthData[key]
     const isSelected = key === selected
     const done = info && info.total > 0 && info.checked === info.total
+    const pct = info && info.total > 0 ? Math.round((info.checked / info.total) * 100) : 0
+    const cellCls = [
+      'calendar-cell',
+      isSelected ? 'calendar-cell-selected' : '',
+      done ? 'calendar-cell-done' : '',
+      key === today ? 'calendar-today' : '',
+      date.format('YYYY-MM') !== month ? 'calendar-cell-muted' : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
     return (
-      <div
-        style={{
-          padding: 6,
-          height: '100%',
-          borderRadius: 8,
-          background: isSelected ? '#e6f4ff' : undefined,
-          cursor: 'pointer',
-        }}
-      >
-        <div style={{ fontWeight: isSelected ? 600 : 400 }}>{date.date()}</div>
+      <div className={cellCls}>
+        <span className="cell-date">{date.date()}</span>
         {info && info.total > 0 && (
-          <div style={{ marginTop: 4 }}>
-            <Badge
-              count={info.checked}
-              showZero
-              color={done ? 'green' : 'orange'}
-              title={`${info.checked}/${info.total} 已打卡`}
-            />
-          </div>
+          <span className="cell-foot" title={`${info.checked}/${info.total} 已打卡`}>
+            <span className="cell-count">
+              {info.checked}/{info.total}
+            </span>
+            <span className="cell-bar">
+              <i style={{ width: `${pct}%` }} />
+            </span>
+          </span>
         )}
       </div>
     )
@@ -109,30 +114,41 @@ export default function CalendarPage() {
 
   return (
     <div>
+      <PageHeader title="日历打卡" description="每日训练打卡与连续记录" />
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col span={8}>
-          <Card size="small">
-            <Statistic
-              title="当前连续打卡"
-              value={streak.current}
-              suffix="天"
-              prefix={<FireOutlined style={{ color: streak.current > 0 ? '#fa8c16' : '#bbb' }} />}
-            />
+        <Col xs={24} sm={8}>
+          <Card className="stat-card stat-card-purple" size="small" styles={{ body: { position: 'relative', padding: '16px 20px' } }}>
+            <FireOutlined className="stat-card-icon" />
+            <div className="stat-card-title">当前连续打卡</div>
+            <div className="stat-card-value" style={{ fontSize: 28 }}>
+              {streak.current}
+              <span className="stat-card-suffix">天</span>
+            </div>
           </Card>
         </Col>
-        <Col span={8}>
-          <Card size="small">
-            <Statistic title="最长连续打卡" value={streak.longest} suffix="天" prefix={<TrophyOutlined style={{ color: '#faad14' }} />} />
+        <Col xs={24} sm={8}>
+          <Card className="stat-card stat-card-blue" size="small" styles={{ body: { position: 'relative', padding: '16px 20px' } }}>
+            <TrophyOutlined className="stat-card-icon" />
+            <div className="stat-card-title">最长连续打卡</div>
+            <div className="stat-card-value" style={{ fontSize: 28 }}>
+              {streak.longest}
+              <span className="stat-card-suffix">天</span>
+            </div>
           </Card>
         </Col>
-        <Col span={8}>
-          <Card size="small">
-            <Statistic title="累计打卡天数" value={streak.totalDays} suffix="天" />
+        <Col xs={24} sm={8}>
+          <Card className="stat-card stat-card-green" size="small" styles={{ body: { position: 'relative', padding: '16px 20px' } }}>
+            <FieldTimeOutlined className="stat-card-icon" />
+            <div className="stat-card-title">累计打卡天数</div>
+            <div className="stat-card-value" style={{ fontSize: 28 }}>
+              {streak.totalDays}
+              <span className="stat-card-suffix">天</span>
+            </div>
           </Card>
         </Col>
       </Row>
       <Row gutter={[16, 16]}>
-        <Col span={16}>
+        <Col xs={24} xl={16}>
           <Card title="训练日历 —— 点击日期查看当天计划并打卡" size="small">
             <Calendar
               onSelect={(d: Dayjs) => setSelected(d.format('YYYY-MM-DD'))}
@@ -141,7 +157,7 @@ export default function CalendarPage() {
             />
           </Card>
         </Col>
-        <Col span={8}>
+        <Col xs={24} xl={8}>
           <Card title={`当天任务 · ${selected}`} size="small" style={{ minHeight: 360 }}>
             {loadingTasks ? (
               <Spin style={{ display: 'block', margin: '40px auto' }} />
@@ -152,31 +168,43 @@ export default function CalendarPage() {
                 const link = t.problem_url ?? t.url
                 const done = Boolean(t.checked)
                 return (
-                  <Card key={t.id} size="small" style={{ marginBottom: 8 }} styles={{ body: { padding: 12 } }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div>
-                        <Tag color={KIND_COLOR[t.kind]}>{KIND_LABEL[t.kind]}</Tag>
-                        {link ? (
-                          <a href={link} target="_blank" rel="noreferrer">
-                            <b>{t.title}</b>
+                  <Card
+                    key={t.id}
+                    size="small"
+                    className={`task-card task-card-${t.kind}${done ? ' task-done' : ''}`}
+                    style={{ marginBottom: 8 }}
+                    styles={{ body: { padding: 12 } }}
+                  >
+                    <div className="task-row">
+                      <div className="task-main">
+                        <Space size={8} wrap>
+                          <Tag color={KIND_COLOR[t.kind]}>{KIND_LABEL[t.kind]}</Tag>
+                          {link ? (
+                            <a className="task-title" href={link} target="_blank" rel="noreferrer">
+                              <b>{t.title}</b>
+                            </a>
+                          ) : (
+                            <b className="task-title">{t.title}</b>
+                          )}
+                          {t.problem_key && <span className="task-key">{t.problem_key}</span>}
+                        </Space>
+                        {t.note && <p className="task-note">{t.note}</p>}
+                        {link && (
+                          <a className="task-link" href={link} target="_blank" rel="noreferrer">
+                            {t.problem_title ?? '跳转做题'} ↗
                           </a>
-                        ) : (
-                          <b>{t.title}</b>
                         )}
-                        {t.problem_key && <Tag style={{ marginLeft: 4 }}>{t.problem_key}</Tag>}
                       </div>
-                      <Button size="small" type={done ? 'default' : 'primary'} onClick={() => toggle(t)}>
-                        {done ? '已打卡 ✓' : '打卡'}
-                      </Button>
+                      {done ? (
+                        <Button size="small" icon={<CheckOutlined />} onClick={() => toggle(t)}>
+                          已打卡
+                        </Button>
+                      ) : (
+                        <Button size="small" type="primary" onClick={() => toggle(t)}>
+                          打卡
+                        </Button>
+                      )}
                     </div>
-                    {link && (
-                      <div style={{ marginTop: 8 }}>
-                        <a href={link} target="_blank" rel="noreferrer">
-                          {t.problem_title ?? '跳转做题'} ↗
-                        </a>
-                      </div>
-                    )}
-                    {t.note && <p style={{ marginTop: 8, marginBottom: 0, color: '#888', fontSize: 12 }}>{t.note}</p>}
                   </Card>
                 )
               })

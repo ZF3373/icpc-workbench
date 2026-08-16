@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Button,
+  Card,
   Form,
   Input,
   InputNumber,
@@ -13,10 +14,13 @@ import {
   Tag,
   Upload,
 } from 'antd'
-import { InboxOutlined } from '@ant-design/icons'
+import { ClearOutlined, InboxOutlined, PlusOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import type { PlatformId } from '../../../shared/src/index.ts'
 import { PLATFORMS } from '../../../shared/src/index.ts'
+import PageHeader from '../components/PageHeader'
+import PlatformTag from '../components/PlatformTag'
+import { difficultyColor } from '../ui'
 import { get, post } from '../api'
 
 interface ProblemRow {
@@ -36,9 +40,9 @@ interface ProblemRow {
 const DIFFICULTY_BUCKETS = ['<1200', '1200-1399', '1400-1599', '1600-1899', '1900-2199', '2200+', '未知']
 
 function statusTag(s: ProblemRow['status']) {
-  if (s === 'ac') return <Tag color="green">已 AC</Tag>
-  if (s === 'tried') return <Tag color="orange">已尝试</Tag>
-  return <Tag>未做</Tag>
+  if (s === 'ac') return <Tag className="dot-tag" color="success">已 AC</Tag>
+  if (s === 'tried') return <Tag className="dot-tag" color="warning">已尝试</Tag>
+  return <Tag className="dot-tag">未做</Tag>
 }
 
 export default function Problems() {
@@ -48,6 +52,7 @@ export default function Problems() {
   const [difficulty, setDifficulty] = useState<string>()
   const [tag, setTag] = useState<string>()
   const [q, setQ] = useState<string>()
+  const [qInput, setQInput] = useState('')
   const [importOpen, setImportOpen] = useState(false)
   const [manualForm] = Form.useForm()
 
@@ -67,6 +72,14 @@ export default function Problems() {
   useEffect(() => {
     load()
   }, [load])
+
+  const resetFilters = () => {
+    setPlatform(undefined)
+    setDifficulty(undefined)
+    setTag(undefined)
+    setQ(undefined)
+    setQInput('')
+  }
 
   const markAc = async (r: ProblemRow) => {
     try {
@@ -122,14 +135,14 @@ export default function Problems() {
     {
       title: '平台',
       dataIndex: 'platform',
-      width: 90,
-      render: (v: PlatformId) => PLATFORMS.find((p) => p.id === v)?.name ?? v,
+      width: 110,
+      render: (v: PlatformId) => <PlatformTag id={v} />,
     },
     {
       title: '题号',
       dataIndex: 'problem_key',
-      width: 110,
-      render: (v: string, r) => (r.url ? <a href={r.url} target="_blank" rel="noreferrer">{v}</a> : v),
+      width: 120,
+      render: (v: string, r) => (r.url ? <a className="mono" href={r.url} target="_blank" rel="noreferrer">{v}</a> : <span className="mono">{v}</span>),
     },
     {
       title: '标题',
@@ -137,15 +150,34 @@ export default function Problems() {
       ellipsis: true,
       render: (v: string, r) => (r.url ? <a href={r.url} target="_blank" rel="noreferrer">{v}</a> : v),
     },
-    { title: '难度', dataIndex: 'difficulty', width: 80, render: (v: number | null) => v ?? '-' },
+    {
+      title: '难度',
+      dataIndex: 'difficulty',
+      width: 80,
+      align: 'right',
+      render: (v: number | null) =>
+        v == null ? <span style={{ color: '#c0c0cc' }}>-</span> : (
+          <span className="mono" style={{ color: difficultyColor(v), fontWeight: 600 }}>{v}</span>
+        ),
+    },
     {
       title: '标签',
       dataIndex: 'tags',
-      width: 220,
-      render: (tags: string[]) => (tags.length ? tags.slice(0, 4).map((t) => <Tag key={t}>{t}</Tag>) : '-'),
+      width: 230,
+      render: (tags: string[]) =>
+        tags.length ? (
+          <Space size={4} wrap>
+            {tags.slice(0, 3).map((t) => (
+              <Tag key={t}>{t}</Tag>
+            ))}
+            {tags.length > 3 && <span className="tag-more">+{tags.length - 3}</span>}
+          </Space>
+        ) : (
+          <span style={{ color: '#c0c0cc' }}>-</span>
+        ),
     },
-    { title: '提交', dataIndex: 'attempts', width: 70 },
-    { title: '状态', dataIndex: 'status', width: 90, render: (v: ProblemRow['status']) => statusTag(v) },
+    { title: '提交', dataIndex: 'attempts', width: 70, align: 'right' },
+    { title: '状态', dataIndex: 'status', width: 100, render: (v: ProblemRow['status']) => statusTag(v) },
     {
       title: '操作',
       width: 100,
@@ -160,7 +192,16 @@ export default function Problems() {
 
   return (
     <div>
-      <Space style={{ marginBottom: 16 }} wrap>
+      <PageHeader
+        title="题目管理"
+        description="管理和导入你在各平台的刷题记录"
+        extra={
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setImportOpen(true)}>
+            导入题目
+          </Button>
+        }
+      />
+      <Card size="small" className="filter-bar" style={{ marginBottom: 16 }}>
         <Select
           allowClear
           placeholder="平台"
@@ -177,12 +218,26 @@ export default function Problems() {
           onChange={setDifficulty}
           options={DIFFICULTY_BUCKETS.map((b) => ({ value: b, label: b }))}
         />
-        <Input placeholder="按标签筛选" style={{ width: 150 }} value={tag} onChange={(e) => setTag(e.target.value || undefined)} />
-        <Input.Search placeholder="搜索题号/标题" style={{ width: 220 }} onSearch={(v) => setQ(v || undefined)} />
-        <Button type="primary" onClick={() => setImportOpen(true)}>
-          导入题目
+        <Input
+          allowClear
+          placeholder="按标签筛选"
+          style={{ width: 150 }}
+          value={tag}
+          onChange={(e) => setTag(e.target.value || undefined)}
+        />
+        <Input.Search
+          allowClear
+          placeholder="搜索题号/标题"
+          style={{ width: 220 }}
+          value={qInput}
+          onChange={(e) => setQInput(e.target.value)}
+          onSearch={(v) => setQ(v || undefined)}
+        />
+        <Button icon={<ClearOutlined />} onClick={resetFilters}>
+          重置
         </Button>
-      </Space>
+        <span className="filter-count">共 {rows.length} 题</span>
+      </Card>
       <Table rowKey="id" size="small" loading={loading} columns={cols} dataSource={rows} pagination={{ pageSize: 20 }} />
 
       <Modal title="导入刷题记录" open={importOpen} onCancel={() => setImportOpen(false)} footer={null} width={620}>

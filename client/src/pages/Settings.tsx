@@ -14,14 +14,17 @@ import {
   Space,
   Spin,
   Switch,
+  Tag,
   TimePicker,
   Upload,
 } from 'antd'
-import { ImportOutlined, UploadOutlined } from '@ant-design/icons'
+import { ImportOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
 import { PLATFORMS } from '../../../shared/src/index.ts'
+import PageHeader from '../components/PageHeader'
+import PlatformTag from '../components/PlatformTag'
 import { get, post } from '../api'
 import type { ReminderConfig } from '../types'
 
@@ -34,6 +37,12 @@ interface SettingsData {
   reminder: ReminderConfig
 }
 
+const SYNC_NOTE_COLOR: Record<string, string> = {
+  auto: 'success',
+  cookie: 'processing',
+  manual: 'default',
+}
+
 export default function Settings() {
   const [data, setData] = useState<SettingsData | null>(null)
   const [aiForm] = Form.useForm()
@@ -43,6 +52,7 @@ export default function Settings() {
   const [reminderEnabled, setReminderEnabled] = useState(false)
   const [reminderTime, setReminderTime] = useState<Dayjs>(dayjs('20:00', 'HH:mm'))
   const [importOpen, setImportOpen] = useState(false)
+  const [exportDays, setExportDays] = useState(14)
 
   const load = () => {
     get<SettingsData>('/api/settings')
@@ -156,10 +166,28 @@ export default function Settings() {
     await saveReminder(true, reminderTime)
   }
 
+  const downloadPrompt = async () => {
+    try {
+      const url = `/api/export/plan-prompt.md?days=${exportDays}`
+      const res = await fetch(url)
+      const text = await res.text()
+      const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = 'plan-prompt.md'
+      a.click()
+      URL.revokeObjectURL(a.href)
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
   return (
-    <Row gutter={[16, 16]}>
-      <Col span={12}>
-        <Card title="AI 配置（OpenAI 兼容接口）" size="small">
+    <div>
+      <PageHeader title="设置" description="配置平台账号、AI 和提醒" />
+      <Row gutter={[16, 24]}>
+      <Col xs={24} lg={12}>
+        <Card title={<span className="settings-section-title"><RobotOutlined />AI 配置（OpenAI 兼容接口）</span>} size="small">
           <Form form={aiForm} layout="vertical">
             <Form.Item name="enabled" label="启用 AI 生成" valuePropName="checked">
               <Switch />
@@ -179,8 +207,8 @@ export default function Settings() {
           </Form>
         </Card>
       </Col>
-      <Col span={12}>
-        <Card title="平台账号与适配器" size="small">
+      <Col xs={24} lg={12}>
+        <Card title={<span className="settings-section-title"><UserOutlined />平台账号与适配器</span>} size="small">
           {data.platforms.map((p) => {
             const account = data.accounts.find((a) => a.platform === p.id)
             const enabled = data.adapterEnabled[p.id] !== false
@@ -188,26 +216,34 @@ export default function Settings() {
               p.sync === 'auto' ? '自动同步' : p.sync === 'cookie' ? '配置 Cookie 后自动同步' : '仅手动导入'
             const c = cookieInputs[p.id] ?? { cookie: '', csrf: '' }
             return (
-              <div key={p.id} style={{ marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid #f0f0f0' }}>
+              <div key={p.id} className="platform-row">
+                <div className="platform-row-head">
+                  <PlatformTag id={p.id} name={<b>{p.name}</b>} />
+                  <Tag color={SYNC_NOTE_COLOR[p.sync]}>{syncNote}</Tag>
+                  <span className="spacer" />
+                  <Space size={6}>
+                    <span className="adapter-label">自动同步</span>
+                    <Switch
+                      size="small"
+                      checked={enabled}
+                      onChange={(v) => toggleAdapter(p.id, v)}
+                    />
+                  </Space>
+                </div>
                 <Space wrap>
-                  <b style={{ width: 70, display: 'inline-block' }}>{p.name}</b>
                   <Input
                     placeholder={p.id === 'codeforces' ? 'CF handle' : '用户名 / uid'}
-                    style={{ width: 180 }}
+                    style={{ width: 200 }}
                     value={handleInputs[p.id] ?? ''}
                     onChange={(e) => setHandleInputs((s) => ({ ...s, [p.id]: e.target.value }))}
                   />
                   <Button onClick={() => bindAccount(p.id)}>
                     保存
                   </Button>
-                  {account && (
-                    <span style={{ color: '#888', fontSize: 12 }}>
-                      已绑定 {account.handle} · {syncNote}
-                    </span>
-                  )}
+                  {account && <span className="bound-info">已绑定 {account.handle}</span>}
                 </Space>
                 {p.sync === 'cookie' && (
-                  <div style={{ marginTop: 6 }}>
+                  <div style={{ marginTop: 10 }}>
                     {(() => {
                       const check = cookieCheck[p.id]
                       return (
@@ -246,7 +282,7 @@ export default function Settings() {
                           </Space>
                           {check && check !== 'checking' && (
                             <Alert
-                              style={{ marginTop: 6, width: 480 }}
+                              style={{ marginTop: 8, maxWidth: 520 }}
                               type={check.ok ? 'success' : 'warning'}
                               showIcon
                               closable
@@ -258,26 +294,16 @@ export default function Settings() {
                     })()}
                   </div>
                 )}
-                <div style={{ marginTop: 6 }}>
-                  <Space>
-                    <span style={{ fontSize: 12, color: '#888' }}>自动同步</span>
-                    <Switch
-                      size="small"
-                      checked={enabled}
-                      onChange={(v) => toggleAdapter(p.id, v)}
-                    />
-                  </Space>
-                </div>
               </div>
             )
           })}
-          <p style={{ color: '#999', fontSize: 12 }}>
+          <p className="muted-note">
             说明：Codeforces / AtCoder 自动同步；洛谷 / 牛客在填写登录 Cookie 后可自动同步（未配置时请在「题目管理」手动导入）。
           </p>
         </Card>
       </Col>
       <Col span={24}>
-        <Card title="打卡提醒" size="small">
+        <Card title={<span className="settings-section-title"><BellOutlined />打卡提醒</span>} size="small">
           <Space wrap>
             <span>每日提醒</span>
             <Switch checked={reminderEnabled} onChange={toggleReminder} />
@@ -291,51 +317,34 @@ export default function Settings() {
             />
             {(() => {
               if (typeof Notification === 'undefined') {
-                return <span style={{ color: '#888', fontSize: 12 }}>当前浏览器不支持系统通知，仅页面内提醒</span>
+                return <span className="perm-note" style={{ color: '#8c8c9e' }}>当前浏览器不支持系统通知，仅页面内提醒</span>
               }
               if (Notification.permission === 'granted') {
-                return <span style={{ color: '#52c41a', fontSize: 12 }}>系统通知已授权 ✓</span>
+                return <span className="perm-note" style={{ color: '#52c41a' }}>系统通知已授权 ✓</span>
               }
               return (
-                <span style={{ color: '#fa8c16', fontSize: 12 }}>
+                <span className="perm-note" style={{ color: '#fa8c16' }}>
                   系统通知未授权（关闭再开启开关可重新授权，否则仅页面内提醒）
                 </span>
               )
             })()}
           </Space>
-          <p style={{ color: '#999', fontSize: 12, marginBottom: 0 }}>
+          <p className="muted-note" style={{ marginBottom: 0 }}>
             应用保持打开时，到达提醒时间若当天仍有未打卡任务，会弹出系统通知与页面内通知，点击跳转日历打卡；当天任务全部完成或无任务则不打扰。
           </p>
         </Card>
       </Col>
       <Col span={24}>
-        <Card title="导出提示词（手动喂给任意 AI）" size="small">
+        <Card title={<span className="settings-section-title"><FileMarkdownOutlined />导出提示词（手动喂给任意 AI）</span>} size="small">
           <Space wrap>
-            <InputNumber min={1} max={90} defaultValue={14} id="export-days" />
-            <Button
-              onClick={async () => {
-                const days = (document.getElementById('export-days') as HTMLInputElement | null)?.value || '14'
-                try {
-                  const url = `/api/export/plan-prompt.md?days=${days}`
-                  const res = await fetch(url)
-                  const text = await res.text()
-                  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
-                  const a = document.createElement('a')
-                  a.href = URL.createObjectURL(blob)
-                  a.download = 'plan-prompt.md'
-                  a.click()
-                  URL.revokeObjectURL(a.href)
-                } catch (e) {
-                  message.error((e as Error).message)
-                }
-              }}
-            >
+            <InputNumber min={1} max={90} value={exportDays} onChange={(v) => setExportDays(v ?? 14)} style={{ width: 80 }} />
+            <Button onClick={downloadPrompt}>
               下载提示词 .md
             </Button>
             <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>
               导入 AI 计划
             </Button>
-            <span style={{ color: '#888', fontSize: 12 }}>
+            <span style={{ color: '#8c8c9e', fontSize: 12 }}>
               下载后把内容粘贴给任何 AI，再把返回的 JSON 计划通过「导入 AI 计划」粘贴进来即可入库。
             </span>
           </Space>
@@ -343,7 +352,8 @@ export default function Settings() {
       </Col>
 
       <ImportPlanModal open={importOpen} onClose={() => setImportOpen(false)} />
-    </Row>
+      </Row>
+    </div>
   )
 }
 
@@ -404,7 +414,7 @@ function ImportPlanModal({ open, onClose }: { open: boolean; onClose: () => void
             placeholder={'```json\n{\n  "title": "...",\n  "goal": "...",\n  "tasks": [{ "date": "YYYY-MM-DD", "title": "...", "kind": "practice", "url": "..." }]\n}\n```'}
           />
         </Form.Item>
-        <Space size="large">
+        <Space size="large" wrap>
           <Form.Item
             name="startDate"
             label="计划开始日期（用于校验任务日期范围）"

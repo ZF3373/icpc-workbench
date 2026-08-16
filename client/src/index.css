@@ -1,9 +1,731 @@
+/* ============================================================
+   ICPC Workbench · 全局设计系统
+   品牌紫 #863bff + 深空侧边栏；所有类名仅作用于展示层
+   ============================================================ */
+
 :root {
   color-scheme: light;
+  --brand: #863bff;
+  --brand-deep: #5b2fd6;
+  --brand-soft: rgba(134, 59, 255, 0.08);
+  --ink: #17172b;
+  --muted: #6f6f85;
+  --faint: #9a9ab0;
+  --bg: #f6f6fb;
+  --card-border: rgba(23, 23, 43, 0.07);
+  --shadow-sm: 0 1px 2px rgba(23, 23, 43, 0.04), 0 2px 8px rgba(23, 23, 43, 0.03);
+  --shadow-md: 0 6px 20px rgba(23, 23, 43, 0.09);
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
-  background: #f5f5f5;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background:
+    radial-gradient(1100px 460px at 88% -12%, rgba(134, 59, 255, 0.05), transparent 60%),
+    radial-gradient(900px 380px at -8% -4%, rgba(59, 130, 246, 0.04), transparent 55%),
+    var(--bg);
+  background-attachment: fixed;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 等宽数字 / 题号 */
+.mono {
+  font-family: ui-monospace, 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(23, 23, 43, 0.16);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(23, 23, 43, 0.28);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* ============================================================
+   Ant Design 细节统一
+   ============================================================ */
+
+/* 卡片：细边框 + 轻投影，悬浮轻微抬升 */
+.ant-card {
+  border: 1px solid var(--card-border);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.25s ease, transform 0.2s ease, border-color 0.25s ease;
+}
+
+.ant-card:hover {
+  box-shadow: var(--shadow-md);
+}
+
+.ant-card > .ant-card-head {
+  font-weight: 600;
+}
+
+/* 表格：弱化表头（小号大写风）、行悬浮紫色淡底 */
+.ant-table-thead .ant-table-cell {
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.3px;
+  color: var(--faint) !important;
+}
+
+.ant-table-tbody > tr {
+  transition: background-color 0.2s ease;
+}
+
+.ant-btn {
+  transition: all 0.2s ease;
+}
+
+.ant-btn-primary:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(134, 59, 255, 0.32);
+}
+
+.ant-tag {
+  transition: all 0.2s ease;
+}
+
+.ant-statistic-content-value {
+  font-weight: 700 !important;
+}
+
+.ant-progress-bg {
+  transition: width 0.6s ease;
+}
+
+.ant-modal-content {
+  box-shadow: 0 24px 80px rgba(15, 15, 35, 0.16);
+}
+
+.ant-menu-item {
+  transition: all 0.2s ease !important;
+}
+
+/* 表单弹窗内间距微调 */
+.ant-modal-body .ant-form-item:last-child {
+  margin-bottom: 0;
+}
+
+/* ============================================================
+   页面骨架
+   ============================================================ */
+
+@keyframes pageFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-content {
+  animation: pageFadeIn 0.35s ease-out;
+}
+
+.content-container {
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* 页头 */
+.page-title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.3px;
+  background: linear-gradient(90deg, #863bff, #5b2fd6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: #863bff;
+}
+
+.page-description {
+  margin: 4px 0 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* ---------- 侧边栏 ---------- */
+.app-sider {
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ant-layout-sider > .ant-layout-sider-children {
+  display: flex;
+  flex-direction: column;
+}
+
+.sider-menu {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-top: 4px;
+}
+
+.sider-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 18px 16px;
+}
+
+.sider-logo-badge {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #863bff 0%, #4f46e5 100%);
+  box-shadow:
+    0 4px 16px rgba(134, 59, 255, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.sider-logo-badge img {
+  width: 22px;
+  height: 22px;
+}
+
+.sider-logo-text {
+  color: #fff;
+  font-weight: 700;
+  font-size: 15px;
+  white-space: nowrap;
+  letter-spacing: 0.2px;
+  line-height: 1.25;
+}
+
+.sider-logo-sub {
+  display: block;
+  font-size: 9.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.4);
+  letter-spacing: 1.6px;
+  margin-top: 3px;
+}
+
+.sider-divider {
+  height: 1px;
+  margin: 0 16px 10px;
+  background: linear-gradient(90deg, transparent, rgba(134, 59, 255, 0.55), transparent);
+}
+
+/* 菜单选中态：渐变胶囊 + 左侧光条 */
+.sider-menu .ant-menu-item-selected {
+  position: relative;
+  background: linear-gradient(90deg, rgba(134, 59, 255, 0.24), rgba(134, 59, 255, 0.08)) !important;
+}
+
+.sider-menu .ant-menu-item-selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 3px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #a97dff, #863bff);
+  box-shadow: 0 0 8px rgba(134, 59, 255, 0.6);
+}
+
+@keyframes pulseDot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45); }
+  50% { box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.08); }
+}
+
+.sider-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 14px 16px;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+}
+
+.sider-footer-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #34d399;
+  animation: pulseDot 2.4s ease-in-out infinite;
+}
+
+/* ============================================================
+   平台彩色圆点（表格 / 设置页）
+   ============================================================ */
+
+.platform-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.platform-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* 带圆点的状态标签 */
+.dot-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dot-tag::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.85;
+}
+
+.tag-more {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* ============================================================
+   AI 标签流光
+   ============================================================ */
+
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+.ai-tag-shimmer {
+  background: linear-gradient(
+    90deg,
+    #1677ff 0%,
+    #69b1ff 25%,
+    #91caff 50%,
+    #69b1ff 75%,
+    #1677ff 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 3s linear infinite;
+  color: #fff !important;
+  border: none !important;
+}
+
+.gradient-progress .ant-progress-bg {
+  background: linear-gradient(90deg, #863bff, #3b82f6) !important;
+}
+
+/* ============================================================
+   统计渐变卡（仪表盘 / 日历打卡）
+   ============================================================ */
+
+.stat-card {
+  border: none;
+  overflow: hidden;
+  cursor: default;
+}
+
+.stat-card .ant-card-body {
+  padding: 20px 24px;
+  position: relative;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px rgba(23, 23, 43, 0.22);
+}
+
+/* 顶部高光，增加质感 */
+.stat-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(360px 150px at 88% -24%, rgba(255, 255, 255, 0.22), transparent 62%);
+  pointer-events: none;
+}
+
+.stat-card-value {
+  font-size: 34px;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.2;
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.5px;
+}
+
+.stat-card-suffix {
+  font-size: 18px;
+  font-weight: 600;
+  margin-left: 3px;
+}
+
+.stat-card-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.85);
+  letter-spacing: 0.3px;
+}
+
+.stat-card-icon {
+  position: absolute;
+  right: 20px;
+  top: 20px;
+  font-size: 42px;
+  color: rgba(255, 255, 255, 0.16);
+}
+
+.stat-card-blue { background: linear-gradient(135deg, #2563eb 0%, #3b82f6 60%, #60a5fa 100%); }
+.stat-card-green { background: linear-gradient(135deg, #059669 0%, #10b981 60%, #34d399 100%); }
+.stat-card-purple { background: linear-gradient(135deg, #6d28d9 0%, #863bff 60%, #a97dff 100%); }
+
+/* ============================================================
+   筛选工具栏（题目管理）
+   ============================================================ */
+
+.filter-bar .ant-card-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.filter-count {
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 13px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   计划详情抽屉：按日期分组 + 任务卡
+   ============================================================ */
+
+.plan-goal {
+  color: var(--muted);
+  margin: 0 0 4px;
+}
+
+.plan-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  margin: 12px 0 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.plan-meta .ant-progress {
+  flex: 1;
+  min-width: 150px;
+  margin: 0;
+}
+
+.plan-day-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 18px 0 8px;
+  padding: 7px 12px;
+  background: rgba(246, 246, 251, 0.94);
+  backdrop-filter: blur(4px);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.plan-day-header .plan-day-count {
+  color: var(--faint);
+  font-weight: 500;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-day-group:first-child .plan-day-header {
+  margin-top: 10px;
+}
+
+/* 任务卡（计划抽屉 / 日历当天任务共用） */
+.task-card {
+  position: relative;
+  overflow: hidden;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+}
+
+.task-card:hover {
+  border-color: rgba(134, 59, 255, 0.3);
+  box-shadow: 0 4px 14px rgba(23, 23, 43, 0.06);
+}
+
+/* 左侧类型指示条 */
+.task-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+}
+
+.task-card-practice::before { background: #3b82f6; }
+.task-card-review::before { background: #863bff; }
+.task-card-topic::before { background: #06b6d4; }
+.task-card-contest::before { background: #f97316; }
+
+.task-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.task-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.task-title {
+  word-break: break-word;
+}
+
+.task-key {
+  font-family: ui-monospace, 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  background: rgba(23, 23, 43, 0.05);
+  border-radius: 5px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.task-note {
+  margin: 6px 0 0;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.task-link {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+/* 已打卡：整体降透明度 + 标题划线 */
+.task-done {
+  opacity: 0.72;
+}
+
+.task-done .task-title {
+  color: #0e9f6e;
+  text-decoration: line-through;
+  text-decoration-color: rgba(16, 185, 129, 0.55);
+  text-decoration-thickness: 1.5px;
+}
+
+/* ============================================================
+   日历打卡
+   ============================================================ */
+
+@keyframes pulseBorder {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(134, 59, 255, 0.4); }
+  50% { box-shadow: 0 0 0 4px rgba(134, 59, 255, 0.1); }
+}
+
+.calendar-today {
+  animation: pulseBorder 2s ease-in-out infinite;
+}
+
+.ant-picker-cell-inner {
+  border-radius: 8px !important;
+}
+
+.calendar-cell {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 7px 7px;
+  height: 100%;
+  min-height: 68px;
+  border-radius: 8px;
+  cursor: pointer;
+  position: relative;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.calendar-cell:hover {
+  border-color: rgba(134, 59, 255, 0.35);
+  background: var(--brand-soft);
+}
+
+.calendar-cell-selected {
+  background: rgba(134, 59, 255, 0.08);
+  border-color: rgba(134, 59, 255, 0.45);
+}
+
+.calendar-cell-done {
+  background: rgba(16, 185, 129, 0.07);
+}
+
+.calendar-cell-done::after {
+  content: '✓';
+  position: absolute;
+  top: 2px;
+  right: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #10b981;
+}
+
+/* 非本月日期弱化 */
+.calendar-cell-muted {
+  opacity: 0.35;
+}
+
+.cell-date {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.cell-foot {
+  margin-top: auto;
+}
+
+.cell-count {
+  display: block;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.cell-bar {
+  display: block;
+  margin-top: 3px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(23, 23, 43, 0.08);
+  overflow: hidden;
+}
+
+.cell-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  transition: width 0.4s ease;
+}
+
+.calendar-cell-done .cell-bar > i {
+  background: linear-gradient(90deg, #10b981, #34d399);
+}
+
+/* ============================================================
+   设置页
+   ============================================================ */
+
+.settings-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-section-title .anticon {
+  color: var(--brand);
+  font-size: 16px;
+}
+
+.muted-note {
+  color: var(--faint);
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+
+/* 平台账号行：独立圆角小面板 */
+.platform-row {
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background: #fbfbfe;
+  transition: border-color 0.2s ease;
+}
+
+.platform-row:hover {
+  border-color: rgba(134, 59, 255, 0.28);
+}
+
+.platform-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.platform-row-head .spacer {
+  flex: 1;
+}
+
+.adapter-label {
+  font-size: 12px;
+  color: var(--faint);
+  margin-right: 4px;
+}
+
+.bound-info {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* 提醒状态行内提示 */
+.perm-note {
+  font-size: 12px;
 }
