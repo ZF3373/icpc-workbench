@@ -11,6 +11,7 @@ import {
   generatePlan,
   parsePlanJson,
   recommendProblems,
+  recommendProblemsByWeakTag,
   renderTemplate,
   savePlan,
   templatePlan,
@@ -351,4 +352,111 @@ test('buildPlanPackage prompt has placeholders rendered', () => {
 
 test('renderTemplate replaces known vars and keeps unknown', () => {
   assert.equal(renderTemplate('a={x} b={y}', { x: '1' }), 'a=1 b={y}');
+});
+
+// ---------- 按弱项 tag 分组选题（导出提示词清单） ----------
+
+const PROFILE = (tags: string[]) => ({
+  items: tags.map((tag, i) => ({
+    tag,
+    attempts: 6,
+    ac: 2,
+    acRate: 33.3,
+    avgAcRate: 60,
+    gap: 26.7 - i, // 依次递减，tag[0] 最弱
+    solved: 2,
+  })),
+  byDifficulty: [],
+  generatedAt: '',
+});
+
+function seedGrouped(): void {
+  // 用户已 AC：A(dp)、B(graphs)；未 AC：D(dp)、E(graphs)、F(无弱项标签)
+  // D/E 各补 3 次 WA：使 dp/graphs 提交数 ≥5，过 buildPlanPackage 的 minAttempts=5 弱项门槛
+  insertNormalized(db, 1, [
+    sub('codeforces', 'A', 'AC', ['dp'], 1500, '2026-07-20T10:00:00.000Z', 'https://codeforces.com/contest/A'),
+    sub('codeforces', 'B', 'AC', ['graphs'], 1500, '2026-07-25T10:00:00.000Z', 'https://codeforces.com/contest/B'),
+    sub('codeforces', 'D', 'WA', ['dp'], 1500, '2026-07-28T10:00:00.000Z', 'https://codeforces.com/contest/D'),
+    sub('codeforces', 'D', 'WA', ['dp'], 1500, '2026-07-27T10:00:00.000Z', 'https://codeforces.com/contest/D'),
+    sub('codeforces', 'D', 'WA', ['dp'], 1500, '2026-07-26T10:00:00.000Z', 'https://codeforces.com/contest/D'),
+    sub('codeforces', 'D', 'WA', ['dp'], 1500, '2026-07-25T09:00:00.000Z', 'https://codeforces.com/contest/D'),
+    sub('codeforces', 'E', 'WA', ['graphs'], 1600, '2026-07-28T11:00:00.000Z', 'https://codeforces.com/contest/E'),
+    sub('codeforces', 'E', 'WA', ['graphs'], 1600, '2026-07-27T11:00:00.000Z', 'https://codeforces.com/contest/E'),
+    sub('codeforces', 'E', 'WA', ['graphs'], 1600, '2026-07-26T11:00:00.000Z', 'https://codeforces.com/contest/E'),
+    sub('codeforces', 'E', 'WA', ['graphs'], 1600, '2026-07-25T09:30:00.000Z', 'https://codeforces.com/contest/E'),
+    // 无弱项标签且未 AC → 应进「综合练习」兜底组
+    sub('codeforces', 'F', 'WA', ['math'], 1500, '2026-07-28T12:00:00.000Z', 'https://codeforces.com/contest/F'),
+  ]);
+}
+
+test('recommendProblemsByWeakTag groups by weak tag, limits per tag, AC only as review', () => {
+  seedGrouped();
+  const groups = recommendProblemsByWeakTag(db, PROFILE(['dp', 'graphs']) as never, {
+    perTag: 5,
+    reviewPerTag: 1,
+    level: null, // 不过滤难度，聚焦分组语义
+  });
+  const tags = groups.map((g) => g.tag);
+  assert.ok(tags.includes('dp'), `应包含 dp 组: ${tags}`);
+  assert.ok(tags.includes('graphs'), `应包含 graphs 组: ${tags}`);
+  assert.ok(tags.includes('综合练习'), `应包含兜底组: ${tags}`);
+
+  const dp = groups.find((g) => g.tag === 'dp')!;
+  // 未 AC 新题在前（role=weak），已 AC 仅 1 道且标注 review
+  const weak = dp.problems.filter((p) => p.role === 'weak');
+  const review = dp.problems.filter((p) => p.role === 'review');
+  assert.ok(weak.some((p) => p.problemKey === 'D'), '未 AC 的 D 应为 dp 组新题');
+  assert.equal(review.length, 1, '已 AC 题每组至多 1 道复习位');
+  assert.equal(review[0].problemKey, 'A');
+  // 综合练习组只含未 AC、无弱项标签的题
+  const misc = groups.find((g) => g.tag === '综合练习')!;
+  assert.deepEqual(misc.problems.map((p) => p.problemKey), ['F']);
+  assert.ok(misc.problems.every((p) => p.role === 'weak'));
+});
+
+test('recommendProblemsByWeakTag respects perTag limit and difficulty range', () => {
+  seedGrouped();
+  // 追加 6 道 dp 未 AC 题，难度 1500-2000；区间设为 1500-1600 → 仅区间内入选
+  const more: NormalizedSubmission[] = [];
+  for (let i = 0; i < 6; i += 1) {
+    more.push(sub('codeforces', `DP${i}`, 'WA', ['dp'], 1500 + i * 100, '2026-07-29T10:00:00.000Z', `https://codeforces.com/contest/DP${i}`));
+  }
+  insertNormalized(db, 1, more);
+  const groups = recommendProblemsByWeakTag(db, PROFILE(['dp']) as never, {
+    perTag: 2,
+    reviewPerTag: 0,
+    level: { solvedCount: 10, medianDifficulty: 1500, p75Difficulty: 1550, suggestedRange: [1500, 1600] },
+  });
+  const dp = groups.find((g) => g.tag === 'dp')!;
+  assert.equal(dp.problems.filter((p) => p.role === 'weak').length, 2); // perTag 限量
+  assert.ok(dp.problems.every((p) => p.difficulty !== null && p.difficulty >= 1500 && p.difficulty <= 1600));
+  assert.ok(dp.problems.every((p) => p.role === 'weak')); // reviewPerTag=0 → 无复习位
+});
+
+test('recommendProblemsByWeakTag picks oldest-AC problem for review slot', () => {
+  seedGrouped();
+  // A 的 AC 时间（07-20）早于 B（07-25）；dp 组复习位应取 A（久未重做）
+  const groups = recommendProblemsByWeakTag(db, PROFILE(['dp', 'graphs']) as never, {
+    perTag: 5,
+    reviewPerTag: 1,
+    level: null,
+  });
+  const dp = groups.find((g) => g.tag === 'dp')!;
+  const graphs = groups.find((g) => g.tag === 'graphs')!;
+  assert.equal(dp.problems.find((p) => p.role === 'review')?.problemKey, 'A');
+  assert.equal(graphs.problems.find((p) => p.role === 'review')?.problemKey, 'B'); // graphs 组内唯一 AC
+});
+
+test('buildPlanPackage renders grouped problem list in prompt markdown', () => {
+  seedGrouped();
+  const pkg = buildPlanPackage(db, 1, { days: 7, startDate: '2026-08-10' });
+  // 提示词中出现分组标题与题目行（role 标注）
+  assert.match(pkg.prompt, /### dp/);
+  assert.match(pkg.prompt, /### 综合练习/);
+  assert.match(pkg.prompt, /codeforces\/D《T D》\s*\|\s*难度1500\s*\|\s*未AC/);
+  assert.match(pkg.prompt, /codeforces\/A《T A》\s*\|\s*难度1500\s*\|\s*已AC-可作复习/);
+  // 扁平 problems 与分组结构一致
+  assert.equal(pkg.problems.length, pkg.problemGroups.reduce((n, g) => n + g.problems.length, 0));
+  // 未出现旧版大 JSON 数组形态
+  assert.ok(!pkg.prompt.includes('[{"platform"'));
 });

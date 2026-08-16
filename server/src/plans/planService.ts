@@ -45,12 +45,25 @@ export interface RecommendProblem {
   difficulty: number | null;
   tags: string[];
   url: string | null;
+  /** 分组选题时标注：weak=未 AC 弱项新题，review=已 AC 复习用 */
+  role?: 'weak' | 'review';
+}
+
+/** 弱项 tag 分组（导出提示词用） */
+export interface WeakTagGroup {
+  tag: string;
+  /** 弱项程度（画像 gap，越大越弱；无画像时为 0） */
+  gap: number;
+  problems: RecommendProblem[];
 }
 
 export interface PlanPackage {
   profile: WeaknessProfile;
   trend: ReturnType<typeof computeTrend>;
+  /** 分组后的推荐题（扁平导出，供 API 消费方使用） */
   problems: RecommendProblem[];
+  /** 弱项 tag 分组结构（problems 的分组视图） */
+  problemGroups: WeakTagGroup[];
   level: UserLevel;
   prompt: string;
   meta: { startDate: string; days: number; generatedAt: string };
@@ -215,7 +228,7 @@ export function buildPlanPackage(
   const profile = computeWeakness(db, userId, { minAttempts: 5, topN: 8 });
   const trend = computeTrend(db, userId, 12);
   const level = computeUserLevel(db, userId);
-  const problems = recommendProblems(db, profile, { level });
+  const problems = recommendProblemsByWeakTag(db, profile, { level });
 
   const prompt = renderTemplate(PROMPT_TEMPLATE, {
     days: String(days),
@@ -223,13 +236,14 @@ export function buildPlanPackage(
     level: JSON.stringify(level),
     weakness: JSON.stringify(profile.items),
     trend: JSON.stringify(trend),
-    problems: JSON.stringify(problems.slice(0, 50)),
+    problems: renderProblemGroups(problems),
   });
 
   return {
     profile,
     trend,
-    problems,
+    problems: problems.flatMap((g) => g.problems),
+    problemGroups: problems,
     level,
     prompt,
     meta: { startDate, days, generatedAt: new Date().toISOString() },
@@ -337,6 +351,140 @@ export function recommendProblems(
     .sort((a, b) => b.score - a.score || (a.difficulty ?? 9999) - (b.difficulty ?? 9999))
     .slice(0, limit)
     .map(({ score: _score, ...p }) => p);
+}
+
+/**
+ * 按弱项 tag 分组选题（导出提示词 / AI 生成用）：
+ * - 每个弱项 tag 一组，组内未 AC 优先（role=weak）、难度锚定用户水平区间
+ * - 已 AC 的题默认不选，仅每组保留少量作复习参考（role=review，取 AC 时间最近的）
+ * - 弱项 tag 覆盖不到的候选（无标签/标签不在弱项内）归入「综合练习」组兜底
+ * - 总量控制在每组 4-6 题（perTag），组数默认取画像 topN，避免清单过长稀释 AI 注意力
+ */
+export function recommendProblemsByWeakTag(
+  db: Db,
+  profile: WeaknessProfile,
+  opts: { perTag?: number; reviewPerTag?: number; level?: UserLevel | null } = {},
+): WeakTagGroup[] {
+  const perTag = opts.perTag ?? 5;
+  const reviewPerTag = opts.reviewPerTag ?? 1;
+  const level = opts.level === undefined ? computeUserLevel(db, DEFAULT_USER_ID) : opts.level;
+
+  const all = db
+    .prepare(
+      `SELECT p.platform, p.problem_key, p.title, p.difficulty, p.url, p.tags,
+              EXISTS (SELECT 1 FROM submissions s
+                       WHERE s.problem_id = p.id AND s.user_id = ? AND s.verdict = 'AC') AS aced,
+              (SELECT MAX(s.submitted_at) FROM submissions s
+                WHERE s.problem_id = p.id AND s.user_id = ? AND s.verdict = 'AC') AS last_ac_at
+       FROM problems p`,
+    )
+    .all(DEFAULT_USER_ID, DEFAULT_USER_ID) as Array<{
+    platform: PlatformId;
+    problem_key: string;
+    title: string;
+    difficulty: number | null;
+    url: string | null;
+    tags: string;
+    aced: number;
+    last_ac_at: string | null;
+  }>;
+
+  const weakTags = profile.items.map((i) => i.tag);
+  const gapByTag = new Map(profile.items.map((i) => [i.tag, i.gap]));
+  const [lo, hi] = level?.suggestedRange ?? [null, null];
+  const inRange = (d: number | null): boolean => {
+    if (lo === null || hi === null) return true; // 样本不足：不过滤难度
+    return d !== null && d >= lo && d <= hi;
+  };
+
+  interface Candidate extends RecommendProblem {
+    lastAcAt: string | null;
+  }
+  const toCandidate = (p: (typeof all)[number]): Candidate => {
+    let tags: string[] = [];
+    try {
+      tags = JSON.parse(p.tags) as string[];
+    } catch {
+      tags = [];
+    }
+    return {
+      platform: p.platform,
+      problemKey: p.problem_key,
+      title: p.title,
+      difficulty: p.difficulty,
+      tags: filterNoiseTags(tags),
+      url: p.url,
+      ...(p.aced ? { role: 'review' as const } : { role: 'weak' as const }),
+      lastAcAt: p.last_ac_at,
+    };
+  };
+
+  // 分组：弱项 tag 命中入对应组；无弱项标签命中的未 AC 题入「综合练习」兜底组
+  const groups = new Map<string, Candidate[]>();
+  for (const tag of weakTags) groups.set(tag, []);
+  const misc: Candidate[] = [];
+  const used = new Set<string>(); // 跨组去重：同一题只进一个组
+  for (const row of all) {
+    if (!row.url) continue;
+    const c = toCandidate(row);
+    const key = `${c.platform}:${c.problemKey}`;
+    if (used.has(key)) continue;
+    const hit = c.tags.find((t) => groups.has(t));
+    if (hit) {
+      groups.get(hit)!.push(c);
+      used.add(key);
+    } else if (!c.tags.some((t) => weakTags.includes(t)) && !row.aced) {
+      // 未 AC 且不命中任何弱项 tag → 综合练习候选（AC 题不进兜底组，复习位在弱项组内）
+      misc.push(c);
+      used.add(key);
+    }
+  }
+
+  const pick = (list: Candidate[]): { weak: Candidate[]; review: Candidate[] } => {
+    const weak = list
+      .filter((c) => c.role === 'weak' && inRange(c.difficulty))
+      .sort((a, b) => (a.difficulty ?? 9999) - (b.difficulty ?? 9999))
+      .slice(0, perTag);
+    // 复习位：该组内已 AC、且 AC 时间较久的题（久未重做优先）
+    const review = list
+      .filter((c) => c.role === 'review')
+      .sort((a, b) => (a.lastAcAt ?? '').localeCompare(b.lastAcAt ?? ''))
+      .slice(0, reviewPerTag);
+    return { weak, review };
+  };
+
+  const out: WeakTagGroup[] = [];
+  for (const [tag, list] of groups) {
+    const { weak, review } = pick(list);
+    if (weak.length + review.length === 0) continue;
+    out.push({ tag, gap: gapByTag.get(tag) ?? 0, problems: [...weak, ...review] });
+  }
+  if (misc.length > 0) {
+    const { weak } = pick(misc);
+    if (weak.length > 0) out.push({ tag: '综合练习', gap: 0, problems: weak });
+  }
+  return out;
+}
+
+/** 分组候选渲染为提示词用 Markdown 列表（AI 对结构化分组的遵循度高于大 JSON 数组）。 */
+export function renderProblemGroups(groups: WeakTagGroup[]): string {
+  if (groups.length === 0) {
+    return '（暂无候选：题库为空或所有候选均已 AC，可自行安排平台选题）';
+  }
+  const lines: string[] = [];
+  for (const g of groups) {
+    lines.push(`### ${g.tag}${g.gap > 0 ? `（弱项 gap=${g.gap}）` : ''}`);
+    for (const p of g.problems) {
+      const parts = [
+        `- ${p.platform}/${p.problemKey}《${p.title}》`,
+        p.difficulty !== null ? `难度${p.difficulty}` : '难度未知',
+        p.role === 'review' ? '已AC-可作复习' : '未AC',
+      ];
+      if (p.url) parts.push(p.url);
+      lines.push(parts.join(' | '));
+    }
+  }
+  return lines.join('\n');
 }
 
 /** 解析 AI 输出的 JSON，校验基本结构。容错：围栏、前后解释性文字、尾逗号、畸形任务条目。 */
