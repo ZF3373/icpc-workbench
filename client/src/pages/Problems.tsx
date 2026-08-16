@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Button,
   Card,
+  Checkbox,
   Form,
   Input,
   InputNumber,
@@ -14,7 +15,7 @@ import {
   Tag,
   Upload,
 } from 'antd'
-import { ClearOutlined, InboxOutlined, PlusOutlined } from '@ant-design/icons'
+import { ClearOutlined, CloudDownloadOutlined, InboxOutlined, PlusOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import type { PlatformId } from '../../../shared/src/index.ts'
 import { PLATFORMS } from '../../../shared/src/index.ts'
@@ -53,6 +54,7 @@ export default function Problems() {
   const [tag, setTag] = useState<string>()
   const [q, setQ] = useState<string>()
   const [qInput, setQInput] = useState('')
+  const [includeBank, setIncludeBank] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [manualForm] = Form.useForm()
 
@@ -63,11 +65,12 @@ export default function Problems() {
     if (difficulty) params.set('difficulty', difficulty)
     if (tag) params.set('tag', tag)
     if (q) params.set('q', q)
+    if (includeBank) params.set('bank', '1')
     get<ProblemRow[]>(`/api/problems?${params.toString()}`)
       .then(setRows)
       .catch((e: Error) => message.error(e.message))
       .finally(() => setLoading(false))
-  }, [platform, difficulty, tag, q])
+  }, [platform, difficulty, tag, q, includeBank])
 
   useEffect(() => {
     load()
@@ -79,6 +82,7 @@ export default function Problems() {
     setTag(undefined)
     setQ(undefined)
     setQInput('')
+    setIncludeBank(false)
   }
 
   const markAc = async (r: ProblemRow) => {
@@ -236,6 +240,9 @@ export default function Problems() {
         <Button icon={<ClearOutlined />} onClick={resetFilters}>
           重置
         </Button>
+        <Checkbox checked={includeBank} onChange={(e) => setIncludeBank(e.target.checked)}>
+          含题库未做题
+        </Checkbox>
         <span className="filter-count">共 {rows.length} 题</span>
       </Card>
       <Table rowKey="id" size="small" loading={loading} columns={cols} dataSource={rows} pagination={{ pageSize: 20 }} />
@@ -247,6 +254,11 @@ export default function Problems() {
               key: 'sync',
               label: '平台同步',
               children: <SyncTab onDone={() => { setImportOpen(false); load() }} />,
+            },
+            {
+              key: 'bank',
+              label: '拉取题库',
+              children: <BankTab onDone={() => { setImportOpen(false); load() }} />,
             },
             {
               key: 'file',
@@ -350,6 +362,80 @@ function SyncTab({ onDone }: { onDone: () => void }) {
         <Input placeholder={platform === 'codeforces' ? 'CF handle' : '用户名 / uid'} value={handle} onChange={(e) => setHandle(e.target.value)} style={{ width: 200 }} />
         <Button type="primary" loading={busy} onClick={run}>同步</Button>
       </Space>
+      {result && <p style={{ marginTop: 12 }}>{result}</p>}
+    </div>
+  )
+}
+
+const LUOGU_DIFFICULTY_OPTIONS = [
+  { value: 2, label: '普及- 及以上（含入门水题）' },
+  { value: 3, label: '普及/提高- 及以上（推荐）' },
+  { value: 4, label: '普及+/提高 及以上' },
+  { value: 5, label: '提高+/省选- 及以上' },
+  { value: 6, label: '省选/NOI- 及以上' },
+]
+
+/** 「拉取题库」页签：从洛谷/牛客公开题库批量入库，扩充训练计划待选题池（无需账号）。 */
+function BankTab({ onDone }: { onDone: () => void }) {
+  const [platform, setPlatform] = useState<'luogu' | 'nowcoder'>('luogu')
+  const [max, setMax] = useState(1000)
+  const [luoguMin, setLuoguMin] = useState(3)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<string>()
+
+  const run = async () => {
+    setBusy(true)
+    setResult(undefined)
+    try {
+      const r = await post<{
+        ok: boolean; platform: string; total: number | null; fetched: number; inserted: number; updated: number
+      }>('/api/problems/bank', {
+        platform,
+        max,
+        ...(platform === 'luogu' ? { luoguMinDifficulty: luoguMin } : {}),
+      })
+      const totalPart = r.total ? `（题库共 ${r.total} 题）` : ''
+      setResult(`拉取 ${r.fetched} 题${totalPart}：新增 ${r.inserted}，更新 ${r.updated}`)
+      message.success(`${platform === 'luogu' ? '洛谷' : '牛客'}题库已入库，训练计划选题池已扩充`)
+      onDone()
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div>
+      <p style={{ color: '#8c8c9e' }}>
+        从洛谷 / 牛客公开题库批量拉取题目入库，扩充训练计划的待选题池（无需账号/Cookie，不影响刷题统计）。
+        拉取量越大耗时越长（约 1-2 分钟/千题），请耐心等待。
+      </p>
+      <Space wrap>
+        <Select
+          style={{ width: 120 }}
+          value={platform}
+          onChange={(v) => setPlatform(v)}
+          options={[
+            { value: 'luogu' as const, label: '洛谷' },
+            { value: 'nowcoder' as const, label: '牛客' },
+          ]}
+        />
+        <InputNumber min={50} max={5000} step={50} value={max} onChange={(v) => setMax(v ?? 1000)} addonAfter="题" style={{ width: 140 }} />
+        <Button type="primary" icon={<CloudDownloadOutlined />} loading={busy} onClick={run}>
+          拉取题库
+        </Button>
+      </Space>
+      {platform === 'luogu' && (
+        <div style={{ marginTop: 12 }}>
+          <Select
+            style={{ width: 300 }}
+            value={luoguMin}
+            onChange={setLuoguMin}
+            options={LUOGU_DIFFICULTY_OPTIONS}
+          />
+        </div>
+      )}
       {result && <p style={{ marginTop: 12 }}>{result}</p>}
     </div>
   )

@@ -106,8 +106,9 @@ function requestHeaders(cookie: string, csrf?: string): Record<string, string> {
  * 首次请求（无有效 C3VK）会被 302 重定向回自身，同时 Set-Cookie 下发新 C3VK（5 分钟有效）；
  * 带新 C3VK 重试后放行返回 200。此函数自动保存 set-cookie 中的新 C3VK 并重试（最多 2 次）。
  * 返回的 Response 状态：200=正常；302/303=未登录（无新 C3VK 下发）；504=挑战重试超限。
+ * cookie 传空串即可匿名访问公开接口（题库列表 / 标签字典）。
  */
-async function fetchWithChallenge(
+export async function fetchWithChallenge(
   fetchFn: typeof fetch,
   url: string,
   cookie: string,

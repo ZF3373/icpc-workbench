@@ -4,6 +4,8 @@ import { PLATFORMS } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { bucketForDifficulty, safeTags } from '../analysis/stats.ts';
+import { fetchLuoguBank, fetchNowcoderBank } from '../adapters/problemBank.ts';
+import { upsertBankProblems } from '../import/bankService.ts';
 
 interface ProblemRow {
   id: number;
@@ -18,12 +20,13 @@ interface ProblemRow {
   last_ac_at: string | null;
 }
 
-export function problemsRoutes(db: Db): Router {
+export function problemsRoutes(db: Db, fetchFn: typeof fetch = fetch): Router {
   const r = Router();
 
-  // GET /api/problems?platform=&difficulty=&tag=&q=
+  // GET /api/problems?platform=&difficulty=&tag=&q=&bank=1
+  // bank 缺省：只显示「做过」（有提交记录）的题；bank=1 时包含题库拉取的未做题
   r.get('/', (req, res) => {
-    const { platform, difficulty, tag, q } = req.query;
+    const { platform, difficulty, tag, q, bank } = req.query;
     if (platform && !PLATFORMS.some((p) => p.id === platform)) {
       return res.status(400).json({ error: `platform 非法: ${String(platform)}` });
     }
@@ -37,6 +40,10 @@ export function problemsRoutes(db: Db): Router {
        WHERE 1 = 1
     `;
     const params: Array<string | number> = [DEFAULT_USER_ID];
+    if (bank !== '1') {
+      sql += ' AND EXISTS (SELECT 1 FROM submissions s2 WHERE s2.problem_id = p.id AND s2.user_id = ?)';
+      params.push(DEFAULT_USER_ID);
+    }
     if (typeof platform === 'string') {
       sql += ' AND p.platform = ?';
       params.push(platform);
@@ -60,6 +67,38 @@ export function problemsRoutes(db: Db): Router {
         status: r.ac_count > 0 ? 'ac' : r.attempts > 0 ? 'tried' : 'none',
       })),
     );
+  });
+
+  // POST /api/problems/bank  body: { platform: 'luogu' | 'nowcoder', max?, luoguMinDifficulty? }
+  // 拉取公开题库入库（匿名可访问），扩充待选题目池（不产生提交记录）
+  r.post('/bank', async (req, res) => {
+    const { platform, max, luoguMinDifficulty } = req.body ?? {};
+    if (platform !== 'luogu' && platform !== 'nowcoder') {
+      return res.status(400).json({ error: 'platform 需为 luogu 或 nowcoder' });
+    }
+    const maxN =
+      typeof max === 'number' && Number.isFinite(max)
+        ? Math.min(5000, Math.max(50, Math.floor(max)))
+        : 2000;
+    const minDiff =
+      typeof luoguMinDifficulty === 'number' && Number.isFinite(luoguMinDifficulty)
+        ? luoguMinDifficulty
+        : undefined;
+    try {
+      const fetcher = platform === 'luogu' ? fetchLuoguBank : fetchNowcoderBank;
+      const result = await fetcher(fetchFn, { max: maxN, ...(minDiff !== undefined ? { luoguMinDifficulty: minDiff } : {}) });
+      const imported = upsertBankProblems(db, result.problems);
+      res.json({
+        ok: true,
+        platform,
+        total: result.total,
+        fetched: result.problems.length,
+        inserted: imported[0]?.inserted ?? 0,
+        updated: imported[0]?.updated ?? 0,
+      });
+    } catch (e) {
+      res.status(502).json({ error: (e as Error).message });
+    }
   });
 
   return r;

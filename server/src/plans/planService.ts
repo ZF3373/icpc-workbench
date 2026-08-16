@@ -478,8 +478,12 @@ export function templatePlan(
   return { title: `模板训练计划（${days} 天）`, goal, startDate, days, tasks };
 }
 
-/** 训练候选池：未 AC 且带链接的题目，按弱项标签命中数排序（同分按难度升序）。 */
+/** 训练候选池：未 AC 且带链接的题目，按弱项标签命中数排序（同分按难度升序）。
+ * 用户水平样本充足时仅保留建议区间内的题（题库拉取入库后候选量大，
+ * 不过滤会全是远低于水平的入门题）。 */
 export function practicePool(db: Db, weakTags: string[]): RecommendProblem[] {
+  const level = computeUserLevel(db, DEFAULT_USER_ID);
+  const [lo, hi] = level.suggestedRange ?? [null, null];
   const rows = db
     .prepare(
       `SELECT p.platform, p.problem_key, p.title, p.difficulty, p.url, p.tags
@@ -487,10 +491,12 @@ export function practicePool(db: Db, weakTags: string[]): RecommendProblem[] {
        LEFT JOIN submissions s
          ON s.problem_id = p.id AND s.user_id = ? AND s.verdict = 'AC'
        WHERE s.id IS NULL AND p.url IS NOT NULL
+         AND (? IS NULL OR p.difficulty >= ?)
+         AND (? IS NULL OR p.difficulty <= ?)
        ORDER BY p.difficulty IS NULL, p.difficulty
        LIMIT 500`,
     )
-    .all(DEFAULT_USER_ID) as Array<{
+    .all(DEFAULT_USER_ID, lo, lo, hi, hi) as Array<{
     platform: PlatformId;
     problem_key: string;
     title: string;
