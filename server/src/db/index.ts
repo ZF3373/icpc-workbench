@@ -7,6 +7,13 @@ import { PLATFORMS } from '../../../shared/src/index.ts';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
 
+/** SEA 单文件分发时 schema 由入口（sea.ts）内嵌注入，不再读磁盘 */
+let schemaOverride: string | null = null;
+
+export function setSchemaSql(sql: string): void {
+  schemaOverride = sql;
+}
+
 export type Db = DatabaseSync;
 
 /**
@@ -20,7 +27,7 @@ export function createDb(dbPath: string): Db {
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
-  db.exec(fs.readFileSync(SCHEMA_PATH, 'utf8'));
+  db.exec(schemaOverride ?? fs.readFileSync(SCHEMA_PATH, 'utf8'));
   seed(db);
   return db;
 }

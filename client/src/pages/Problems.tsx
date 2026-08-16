@@ -437,6 +437,46 @@ function BankTab({ onDone }: { onDone: () => void }) {
         </div>
       )}
       {result && <p style={{ marginTop: 12 }}>{result}</p>}
+      <BackfillDifficultyCard />
+    </div>
+  )
+}
+
+/** 「拉取题库」页签内的难度回填区块：对库内未知难度的洛谷/牛客题逐题查询公开接口补全。 */
+function BackfillDifficultyCard() {
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<string>()
+
+  const run = async () => {
+    setBusy(true)
+    setResult(undefined)
+    try {
+      const r = await post<{
+        ok: boolean
+        results: Array<{ platform: string; scanned: number; filled: number; repaired: number; missing: number; failed: number }>
+        unknownLeft: number
+      }>('/api/problems/backfill-difficulty', {})
+      const parts = r.results.map((x) => {
+        const name = x.platform === 'nowcoder' ? '牛客' : x.platform === 'luogu' ? '洛谷' : x.platform
+        return `${name}：补难度 ${x.filled} 题、修标题/标签 ${x.repaired} 题${x.missing ? `、官方无难度 ${x.missing} 题` : ''}${x.failed ? `、失败 ${x.failed} 题` : ''}`
+      })
+      setResult(parts.length ? parts.join('；') + `。全库剩余未知难度 ${r.unknownLeft} 题` : '库内没有待补难度的洛谷/牛客题')
+      message.success('难度回填完成')
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+      <p style={{ color: '#8c8c9e' }}>
+        补全库内「未知难度」的洛谷/牛客题（逐题查询官方接口，牛客约 0.5 秒/题，请耐心等待）；
+        牛客同时修复历史遗留的标题混入标签问题。Codeforces 未知难度来自 gym 与官方 Unrated 比赛，无公开难度可补。
+      </p>
+      <Button loading={busy} onClick={run}>一键回填未知难度</Button>
+      {result && <p style={{ marginTop: 12 }}>{result}</p>}
     </div>
   )
 }

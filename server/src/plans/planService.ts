@@ -12,10 +12,22 @@ import { filterNoiseTags } from '../analysis/tags.ts';
 import { getAdapter } from '../adapters/registry.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const PROMPT_TEMPLATE = fs.readFileSync(
-  path.join(__dirname, '..', 'ai', 'plan-prompt.md'),
-  'utf8',
-);
+
+/** 提示词模板：懒加载（SEA bundle 中磁盘路径不存在，注入值优先；dev 首次调用读文件） */
+let promptOverride: string | null = null;
+let promptFromDisk: string | null = null;
+
+export function setPromptTemplate(tpl: string): void {
+  promptOverride = tpl;
+}
+
+export function PROMPT_TEMPLATE(): string {
+  if (promptOverride !== null) return promptOverride;
+  if (promptFromDisk === null) {
+    promptFromDisk = fs.readFileSync(path.join(__dirname, '..', 'ai', 'plan-prompt.md'), 'utf8');
+  }
+  return promptFromDisk;
+}
 
 export const TASK_KINDS = ['practice', 'review', 'topic', 'contest'] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
@@ -234,7 +246,7 @@ export function buildPlanPackage(
     minNewProblems: days * 2,
   });
 
-  const prompt = renderTemplate(PROMPT_TEMPLATE, {
+  const prompt = renderTemplate(PROMPT_TEMPLATE(), {
     days: String(days),
     startDate,
     level: JSON.stringify(level),
