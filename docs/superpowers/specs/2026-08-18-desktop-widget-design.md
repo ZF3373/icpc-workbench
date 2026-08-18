@@ -36,7 +36,7 @@ icpc-workbench/
         │   ├── discovery.rs# 端口扫描与实例验证
         │   ├── watcher.rs  # 周期健康检查，掉线/恢复切换页面
         │   ├── lifecycle.rs# 拉起主 exe、退出清理
-        │   └── state.rs    # widget.json 读写（位置/穿透/隐藏）
+        │   └── state.rs    # widget.json 读写（位置/隐藏）
         └── tauri.conf.json
 ```
 
@@ -66,14 +66,16 @@ widget.exe 启动
   （`detached + windowsHide`，不等待、不持有句柄）；同目录找不到 exe 时返回错误原因给前端。
   主 exe 自带防重复启动，重复拉起无害。
 - **state.rs**：持久化到 widget.exe 旁 `widget.json`。字段：
-  `{ x, y, clickThrough, hidden }`（置顶为固定行为，不做成可配置）。损坏/缺失时静默用默认值，
-  下次成功写入时覆盖修复。开机自启状态由 Tauri autostart 插件自管，不入此文件。
+  `{ x, y, hidden }`（置顶为固定行为；穿透为会话级状态、重启即交互态，均不入文件）。
+  损坏/缺失时静默用默认值，下次成功写入时覆盖修复。开机自启状态由 Tauri autostart
+  插件自管，不入此文件。
 
 ### 对主仓的改动（刻意最小）
 
-1. `server/src/public/widget.html`：文件末尾追加约 20 行「桌面模式」脚本——
-   检测到 Tauri 环境（`window.__TAURI_INTERNALS__`）时：header 加 `data-tauri-drag-region`
-   启用原生拖动；显示穿透切换小按钮（仅桌面模式显示，调 Tauri command）。浏览器中零副作用。
+1. `server/src/public/widget.html`：文件末尾追加约 15 行「桌面模式」脚本——
+   检测到 Tauri 环境（`window.__TAURI_INTERNALS__`）时给 header 元素加
+   `data-tauri-drag-region` 属性启用原生拖动。浏览器中零副作用。
+   （穿透不设面板按钮，见「窗口行为」。）
 2. `server/src/sea.ts`：`bootSea` 成功监听端口后，若 `config.launchWidget !== false` 且同目录
    存在 `widget.exe`，则 spawn 拉起（`detached + stdio:ignore + windowsHide + unref`），
    找不到或 spawn 失败一律静默跳过（独立分发语义：主 exe 单独可用，挂件是可选增强）。
@@ -94,14 +96,15 @@ REST API 零改动。
 - **拖动**：header 区域为拖动把手（`data-tauri-drag-region`）。窗口移动结束时把 `(x, y)`
   写入 widget.json；下次启动恢复位置。首次启动放工作区右下角（留 20px 边距）。
 - **点击穿透**：Tauri v2 `set_ignore_cursor_events(true)`（Windows 底层即 WebView2
-  `SendPixmapMessage`/WS_EX_TRANSPARENT，穿透期间 WebView 收不到任何鼠标事件，**没有
-  forward 转发**——那是 Electron 的 `setIgnoreMouseEvents({forward})` 特性）。
-  因此穿透的退出不能依赖前端事件，交互回路改为：**开启穿透靠用户（托盘菜单/面板按钮），
-  退出穿透只走托盘菜单**（穿透态下窗口收不到点击，前端无从恢复；托盘是系统级入口不受穿透
-  影响）。同时提供两个保底：穿透开启 60s 后自动恢复交互（防止用户开了穿透找不到出口）；
-  widget.json 记录穿透态，重启挂件时若发现上次是穿透态则恢复为可交互（不继承穿透）。
-  即：不存在穿透后无法找回的死角。
-- **托盘**：右键菜单：「显示/隐藏挂件」「点击穿透 开/关」」「开机自启 开/关」「退出」。
+  透明命中测试，穿透期间 WebView 收不到任何鼠标事件，**没有 forward 转发**——那是
+  Electron 的 `setIgnoreMouseEvents({forward})` 特性）。因此穿透的退出不能依赖前端事件：
+  **开启与退出都走托盘菜单「切换点击穿透」**（穿透态下窗口收不到点击，前端无从恢复；
+  托盘是系统级入口不受穿透影响）。不设面板按钮——远程页调用自定义 command 需要逐源
+  ACL 授权（3001–3020 二十条）且是 v2 中变动较多的区域，v1 不值得为此冒险；拖动所需的
+  `core:window:allow-start-dragging` 是单一稳定权限，经 capability 的 `remote.urls`
+  授予即可。保底：穿透开启 60s 后自动恢复交互（防用户找不到出口）；穿透态不持久化，
+  重启挂件一律回到可交互态。即：不存在穿透后无法找回的死角。
+- **托盘**：右键菜单：「显示/隐藏挂件」「切换点击穿透」「开机自启 开/关」「退出」。
   关闭窗口 ≠ 退出：隐藏到托盘，托盘单击恢复显示；`hidden` 状态入 widget.json。
   真正退出仅托盘菜单「退出」。
 - **offline.html**：与 widget.html 同视觉风格的卡片：“主程序未运行”说明 +
@@ -129,7 +132,7 @@ REST API 零改动。
   - lifecycle：同目录 exe 路径解析（存在/缺失）。
 - **主仓测试**：`server/test/widget.test.ts` 追加断言——widget.html 含桌面模式注入脚本
   与 `data-tauri-drag-region` 逻辑，且不影响现有断言。
-- **手动验收清单**（写入 README）：透明效果、拖动+位置记忆、穿透切换与回恢复、
+- **手动验收清单**（写入 README）：透明效果、拖动+位置记忆、穿透开关（托盘）与 60s 自动恢复、
   托盘全菜单、掉线→offline→自动恢复、开机自启、同目录/不同目录两种摆放。
 
 ## 风险与兜底
@@ -146,7 +149,7 @@ REST API 零改动。
 
 1. 双击 widget.exe（主程序已运行）→ 透明小窗出现在右下角，可拖动、重启后位置保持。
 2. 主程序关闭 → 10~20s 内挂件切到 offline 提示页；点「启动主程序」→ 服务起来后自动恢复任务列表。
-3. 穿透开启后鼠标可穿过挂件操作桌面；移入 header 区域可重新交互并关闭穿透。
+3. 穿透开启后鼠标可穿过挂件操作桌面；托盘「切换点击穿透」可退出；60s 未退出自动恢复交互。
 4. 托盘可显示/隐藏、开关自启、退出；关闭窗口不杀进程。
 5. 主仓 `npm test`、`npm run typecheck` 与 `cargo test` 全绿。
 6. 双击主 exe（同目录有 widget.exe）→ 挂件自动出现；反复重启主程序只有一份挂件；
