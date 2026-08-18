@@ -15,7 +15,7 @@ ICPC Workbench 已有 Web 挂件页 `http://localhost:{port}/widget`（Express �
 | --- | --- |
 | 组件形态 | 桌面挂件小窗（非整个应用桌面化） |
 | 技术选型 | Tauri v2（系统 WebView2，小体积、低内存） |
-| 集成分发 | 独立 widget.exe，与主 exe 独立发布；典型用法两者同目录 |
+| 集成分发 | 独立 widget.exe，与主 exe 独立发布；典型用法两者同目录。主 exe（SEA 模式）启动后自动拉起同目录 widget.exe，找不到时静默跳过 |
 | 承载方案 | 远程 URL 直载：窗口直接加载主服务的 `/widget` 页，Rust 侧做服务发现 |
 | 第一版能力 | 透明无边框置顶 + 拖动位置记忆；点击穿透切换；托盘（退出/自启）；掉线检测 + 拉起主程序 |
 
@@ -32,11 +32,11 @@ icpc-workbench/
     │   └── offline.html    # 兜底页：主服务未运行时的提示 + 「启动主程序」按钮
     └── src-tauri/
         ├── src/
-        │   ├── main.rs     # 入口：装配托盘/窗口、启动发现与守护
+        │   ├── main.rs     # 入口：装配托盘/窗口、single-instance 防重复、启动发现与守护
         │   ├── discovery.rs# 端口扫描与实例验证
         │   ├── watcher.rs  # 周期健康检查，掉线/恢复切换页面
         │   ├── lifecycle.rs# 拉起主 exe、退出清理
-        │   └── state.rs    # widget.json 读写（位置/穿透/置顶/隐藏/自启）
+        │   └── state.rs    # widget.json 读写（位置/穿透/隐藏）
         └── tauri.conf.json
 ```
 
@@ -74,7 +74,15 @@ widget.exe 启动
 1. `server/src/public/widget.html`：文件末尾追加约 20 行「桌面模式」脚本——
    检测到 Tauri 环境（`window.__TAURI_INTERNALS__`）时：header 加 `data-tauri-drag-region`
    启用原生拖动；显示穿透切换小按钮（仅桌面模式显示，调 Tauri command）。浏览器中零副作用。
-2. README 增补桌面挂件章节（构建、使用、验收清单）。
+2. `server/src/sea.ts`：`bootSea` 成功监听端口后，若 `config.launchWidget !== false` 且同目录
+   存在 `widget.exe`，则 spawn 拉起（`detached + stdio:ignore + windowsHide + unref`），
+   找不到或 spawn 失败一律静默跳过（独立分发语义：主 exe 单独可用，挂件是可选增强）。
+   仅 SEA 模式拉起；dev 模式不拉起（开发者自行 `cargo tauri dev`）。
+   挂件为 detached 进程，不随主程序退出而退出——主程序关闭后挂件转 offline 页，
+   用户可从挂件一键重启主程序（与掉线检测设计闭环）。
+3. `server/src/config.ts`：`AppConfig` 增加 `launchWidget: boolean`（默认 `true`），
+   `config.example.json` 同步补字段；不进 DB 设置页。
+4. README 增补桌面挂件章节（构建、使用、验收清单、自动拉起行为与关闭方法）。
 
 REST API 零改动。
 
@@ -130,7 +138,8 @@ REST API 零改动。
 | WebView2 透明对外部 URL 不生效 | 低 | `/widget` 路由支持 `?desktop=1` 返回显式透明背景页（主仓一行改动） |
 | 远程页（127.0.0.1:3001..3020）调用 Tauri command 需逐源授权，且端口会顺延 | 中 | tauri.conf.json `dangerousRemoteDomainIpcAccess` 按端口生成 20 条授权（构建时脚本/代码生成）；若端口级匹配不可行，改为 Rust 侧 initialization_script 注入交互脚本走 wry 原生 ipc 通道（不经过 Tauri 权限层） |
 | forward 穿透在部分 WebView2 版本行为差异 | 中 | header 恢复交互兜底：托盘菜单「点击穿透」随时可关；穿透开启时启动 30s 自动恢复交互的保底定时器 |
-| 用户把 widget.exe 放在非同目录 | 高（预期内） | 拉起按钮置灰并提示摆放位置，其余功能不受影响 |
+| 用户把 widget.exe 放在非同目录 | 高（预期内） | 拉起按钮置灰并提示摆放位置，其余功能不受影响；主 exe 自动拉起在此场景静默跳过 |
+| 主程序反复重启导致重复孵化挂件 | 中 | widget.exe 使用 Tauri single-instance 插件，二次拉起仅聚焦既有窗口 |
 
 ## 成功标准
 
@@ -139,3 +148,5 @@ REST API 零改动。
 3. 穿透开启后鼠标可穿过挂件操作桌面；移入 header 区域可重新交互并关闭穿透。
 4. 托盘可显示/隐藏、开关自启、退出；关闭窗口不杀进程。
 5. 主仓 `npm test`、`npm run typecheck` 与 `cargo test` 全绿。
+6. 双击主 exe（同目录有 widget.exe）→ 挂件自动出现；反复重启主程序只有一份挂件；
+   `config.json` 设 `launchWidget: false` 后不再自动拉起；主 exe 单独存在时正常使用。
