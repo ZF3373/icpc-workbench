@@ -93,13 +93,14 @@ REST API 零改动。
   `html, body` 本就是透明背景，页面无需样式改动。
 - **拖动**：header 区域为拖动把手（`data-tauri-drag-region`）。窗口移动结束时把 `(x, y)`
   写入 widget.json；下次启动恢复位置。首次启动放工作区右下角（留 20px 边距）。
-- **点击穿透**：`set_ignore_cursor_events(true, { forward: true })`（Windows 支持
-  forward：滚轮/点击穿透，鼠标移动事件仍转发 WebView）。完整交互回路：
-  1. 用户从托盘菜单或面板按钮开启穿透 → 窗口整体进入穿透态（鼠标可穿过挂件操作桌面）；
-  2. 穿透态下鼠标移入 header 区域（forward 转发的 mousemove 触发前端监听）→
-     前端调 Tauri command `set_click_through(false)` **自动恢复交互**；
-  3. 恢复交互后，用户可再点穿透按钮/托盘菜单重新进入穿透态。
-  即「开启穿透靠用户，退出穿透靠移入 header 自动恢复」，不存在穿透后无法找回的死角。
+- **点击穿透**：Tauri v2 `set_ignore_cursor_events(true)`（Windows 底层即 WebView2
+  `SendPixmapMessage`/WS_EX_TRANSPARENT，穿透期间 WebView 收不到任何鼠标事件，**没有
+  forward 转发**——那是 Electron 的 `setIgnoreMouseEvents({forward})` 特性）。
+  因此穿透的退出不能依赖前端事件，交互回路改为：**开启穿透靠用户（托盘菜单/面板按钮），
+  退出穿透只走托盘菜单**（穿透态下窗口收不到点击，前端无从恢复；托盘是系统级入口不受穿透
+  影响）。同时提供两个保底：穿透开启 60s 后自动恢复交互（防止用户开了穿透找不到出口）；
+  widget.json 记录穿透态，重启挂件时若发现上次是穿透态则恢复为可交互（不继承穿透）。
+  即：不存在穿透后无法找回的死角。
 - **托盘**：右键菜单：「显示/隐藏挂件」「点击穿透 开/关」」「开机自启 开/关」「退出」。
   关闭窗口 ≠ 退出：隐藏到托盘，托盘单击恢复显示；`hidden` 状态入 widget.json。
   真正退出仅托盘菜单「退出」。
@@ -137,7 +138,7 @@ REST API 零改动。
 | --- | --- | --- |
 | WebView2 透明对外部 URL 不生效 | 低 | `/widget` 路由支持 `?desktop=1` 返回显式透明背景页（主仓一行改动） |
 | 远程页（127.0.0.1:3001..3020）调用 Tauri command 需逐源授权，且端口会顺延 | 中 | tauri.conf.json `dangerousRemoteDomainIpcAccess` 按端口生成 20 条授权（构建时脚本/代码生成）；若端口级匹配不可行，改为 Rust 侧 initialization_script 注入交互脚本走 wry 原生 ipc 通道（不经过 Tauri 权限层） |
-| forward 穿透在部分 WebView2 版本行为差异 | 中 | header 恢复交互兜底：托盘菜单「点击穿透」随时可关；穿透开启时启动 30s 自动恢复交互的保底定时器 |
+| forward 穿透在部分 WebView2 版本行为差异 | 中（已消除） | 设计已改为「托盘退出 + 60s 自动恢复 + 重启不继承穿透」，不依赖 forward |
 | 用户把 widget.exe 放在非同目录 | 高（预期内） | 拉起按钮置灰并提示摆放位置，其余功能不受影响；主 exe 自动拉起在此场景静默跳过 |
 | 主程序反复重启导致重复孵化挂件 | 中 | widget.exe 使用 Tauri single-instance 插件，二次拉起仅聚焦既有窗口 |
 
