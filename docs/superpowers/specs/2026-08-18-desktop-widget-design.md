@@ -140,7 +140,7 @@ REST API 零改动。
 | 风险 | 概率 | 兜底 |
 | --- | --- | --- |
 | WebView2 透明对外部 URL 不生效 | 低 | `/widget` 路由支持 `?desktop=1` 返回显式透明背景页（主仓一行改动） |
-| 远程页（127.0.0.1:3001..3020）调用 Tauri command 需逐源授权，且端口会顺延 | 中 | tauri.conf.json `dangerousRemoteDomainIpcAccess` 按端口生成 20 条授权（构建时脚本/代码生成）；若端口级匹配不可行，改为 Rust 侧 initialization_script 注入交互脚本走 wry 原生 ipc 通道（不经过 Tauri 权限层） |
+| 远程页（127.0.0.1:3001..3020）调用 Tauri 自定义 command 需逐源授权且端口顺延 | 已消除 | 远程页不再调用任何自定义 command：穿透开关只走托盘，拉起主程序只走本地 offline 页；远程页唯一需要的 `core:window:allow-start-dragging` 经 capability `remote.urls` 按 3001–3020 二十条授予（单一稳定内置权限） |
 | forward 穿透在部分 WebView2 版本行为差异 | 中（已消除） | 设计已改为「托盘退出 + 60s 自动恢复 + 重启不继承穿透」，不依赖 forward |
 | 用户把 widget.exe 放在非同目录 | 高（预期内） | 拉起按钮置灰并提示摆放位置，其余功能不受影响；主 exe 自动拉起在此场景静默跳过 |
 | 主程序反复重启导致重复孵化挂件 | 中 | widget.exe 使用 Tauri single-instance 插件，二次拉起仅聚焦既有窗口 |
