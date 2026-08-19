@@ -186,6 +186,39 @@ fn workspace_bottom_right(
     ))
 }
 
+/// 拖动导航桥：远程 /widget 页无法通过 Tauri IPC 调 start_dragging
+/// （tauri 2.11.5 对远程页的 IPC 请求在 WebView2 内部端点（http://ipc.localhost）上
+/// 做 ACL 匹配，remote/local capability 均无法命中——实测 capability 加 ipc.localhost
+/// 与 local:true 都仍被拒）。改用零 IPC 方案：本脚本随窗口注入（对页面同源运行），
+/// header mousedown 时发起一次假导航，由 Rust 侧 on_navigation 拦截并直接调
+/// start_dragging()（纯 Rust 调用，不经 ACL）。
+/// 导航用 <a> 点击而非 location.href，避免污染页面历史/触发 beforeunload。
+const DRAG_BRIDGE_SCRIPT: &str = r#"
+(function () {
+  function requestDrag(e) {
+    if (e.button !== 0 || e.detail !== 1) return;
+    var a = document.createElement('a');
+    a.href = 'http://widget.drag.internal/start';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { a.remove(); }, 0);
+  }
+  function bind() {
+    var h = document.querySelector('header');
+    if (h) h.addEventListener('mousedown', requestDrag);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bind);
+  } else {
+    bind();
+  }
+})();
+"#;
+
+/// 拖动桥导航目标（与 DRAG_BRIDGE_SCRIPT 中的 href 一致）
+const DRAG_BRIDGE_URL: &str = "http://widget.drag.internal/start";
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -210,6 +243,8 @@ fn main() {
                 None => offline_url(),
             };
             let st = state::WidgetState::load();
+            // on_navigation 闭包要求 Send：捕获 AppHandle（Send+Clone）而非 setup 的 &mut App
+            let nav_app = app.handle().clone();
             let win = tauri::WebviewWindowBuilder::new(app, "main", url)
                 .title("ICPC 挂件")
                 .inner_size(340.0, 520.0)
@@ -219,11 +254,32 @@ fn main() {
                 .skip_taskbar(true)
                 // hidden 读回：上次退出时已隐藏到托盘，则启动即隐藏（托盘/二次启动可唤起）
                 .visible(!st.hidden)
+                // 拖动导航桥：注入到每个页面（含远程 /widget），mousedown→假导航→Rust 拦截
+                .initialization_script(DRAG_BRIDGE_SCRIPT)
+                // 拦截拖动桥导航：调 start_dragging 并取消导航。
+                // 其余导航（/widget↔offline 切换、页面内跳转）放行。
+                .on_navigation(move |nav_url| {
+                    if nav_url.as_str() == DRAG_BRIDGE_URL {
+                        if let Some(w) = nav_app.get_webview_window("main") {
+                            let _ = w.start_dragging();
+                        }
+                        return false;
+                    }
+                    true
+                })
                 .build()?;
-            // 位置统一在 build 后以物理像素设置：
+            // 位置与尺寸统一在 build 后以物理像素设置：
+            // - inner_size(340,520) 是逻辑像素。exe 已嵌入 PerMonitorV2 DPI 清单
+            //   （build.rs + windows-app.manifest），建窗时即按实际 DPI 换算；
+            //   此处再按 scale_factor 显式设置物理尺寸，双保险保证窗口=视口。
             // - 有记忆位置： Moved 事件存的即物理像素，物理对物理恢复（跨 DPI 迁移不漂移）
             // - 无记忆位置： 首启落在主显示器工作区右下角（留 20px 边距）
             // builder.position 是 logical 语义，与存储的物理像素不一致，故不在这里传。
+            let scale = win.scale_factor().unwrap_or(1.0);
+            let _ = win.set_size(tauri::PhysicalSize::new(
+                (340.0 * scale).round() as u32,
+                (520.0 * scale).round() as u32,
+            ));
             let pos = if st.x >= 0 && st.y >= 0 {
                 tauri::PhysicalPosition::new(st.x, st.y)
             } else {

@@ -1724,6 +1724,7 @@ dependencies = [
 name = "icpc-widget"
 version = "0.1.0"
 dependencies = [
+ "embed-resource",
  "futures",
  "reqwest 0.12.28",
  "serde",
