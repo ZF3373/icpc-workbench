@@ -7,9 +7,17 @@ mod discovery;
 mod lifecycle;
 mod state;
 
+use std::sync::Mutex;
+use std::time::Duration;
+
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
+
+/// watcher 每 10s 探测的间隔
+const WATCH_INTERVAL: Duration = Duration::from_secs(10);
+/// 连续失败多少次后判定掉线
+const WATCH_MAX_FAILS: u32 = 2;
 
 fn parse_port_hint() -> Option<u16> {
     let arg = std::env::args().find(|a| a.starts_with("--port="))?;
@@ -21,11 +29,69 @@ fn offline_url() -> tauri::WebviewUrl {
     tauri::WebviewUrl::App("offline.html".into())
 }
 
-fn widget_url(port: u16) -> tauri::WebviewUrl {
-    let url: tauri::Url = format!("http://127.0.0.1:{}/widget", port)
+fn widget_abs_url(port: u16) -> tauri::Url {
+    format!("http://127.0.0.1:{}/widget", port)
         .parse()
-        .expect("合法的 widget URL");
-    tauri::WebviewUrl::External(url)
+        .expect("合法的 widget URL")
+}
+
+fn widget_url(port: u16) -> tauri::WebviewUrl {
+    tauri::WebviewUrl::External(widget_abs_url(port))
+}
+
+/// offline.html 的绝对地址（Windows 上 frontendDist 走 http://tauri.localhost 协议），
+/// 供 watcher 的 `navigate`（需要绝对 URL）使用；建窗时仍用 `offline_url()`。
+fn offline_abs_url() -> tauri::Url {
+    "http://tauri.localhost/offline.html"
+        .parse()
+        .expect("合法的 offline URL")
+}
+
+/// 让主窗口在 /widget 与 offline.html 之间切换。
+/// Tauri v2 的 WebviewWindowBuilder 只在建窗时消费 WebviewUrl，无稳定 set_url；
+/// 但 2.x 提供 `WebviewWindow::navigate(url)`（wry load_url），在原窗口内切换，
+/// 保留窗口位置与可见性，避免「销毁重建」的闪烁与 label 竞态。
+fn navigate(app: &tauri::AppHandle, url: tauri::Url) -> tauri::Result<()> {
+    match app.get_webview_window("main") {
+        Some(w) => w.navigate(url),
+        None => Ok(()),
+    }
+}
+
+/// 后台健康检查：每 10s 探测当前端口，连续 2 次失败切 offline；
+/// offline 期间每轮尝试重新发现服务，成功即切回 /widget。
+/// 当前端口经 `Mutex<Option<u16>>` 共享（offline 时为 None）。
+fn spawn_watcher(handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut fails = 0u32;
+        loop {
+            tokio::time::sleep(WATCH_INTERVAL).await;
+            let current = { *handle.state::<Mutex<Option<u16>>>().inner().lock().unwrap() };
+            let Some(p) = current else {
+                // 当前 offline：尝试重新发现主服务
+                if let Some(np) = discovery::find_server(None).await {
+                    let mut guard = handle.state::<Mutex<Option<u16>>>().inner().lock().unwrap();
+                    *guard = Some(np);
+                    drop(guard);
+                    fails = 0;
+                    let _ = navigate(&handle, widget_abs_url(np));
+                }
+                continue;
+            };
+            if discovery::check(p).await {
+                fails = 0;
+            } else {
+                fails += 1;
+                if fails >= WATCH_MAX_FAILS {
+                    let mut guard = handle.state::<Mutex<Option<u16>>>().inner().lock().unwrap();
+                    *guard = None;
+                    drop(guard);
+                    fails = 0;
+                    let _ = navigate(&handle, offline_abs_url());
+                }
+            }
+        }
+    });
 }
 
 /// 托盘「显示/隐藏」：切换主窗口可见性并持久化 hidden 状态
@@ -75,6 +141,10 @@ fn main() {
                 win = win.position(1200.0, 400.0);
             }
             win.build()?;
+
+            // 当前端口共享给 watcher（offline 时为 None），并启动后台健康检查
+            app.manage(Mutex::new(port));
+            spawn_watcher(app.handle().clone());
 
             // 系统托盘：右键菜单「显示/隐藏」「退出」，左键单击恢复显示
             let show_item = MenuItem::with_id(app, "show", "显示/隐藏", true, None::<&str>)?;
