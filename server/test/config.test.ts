@@ -80,3 +80,26 @@ test('aiConfigFromDb overrides file config via settings table', () => {
     db.close();
   }
 });
+
+function writeTempConfig(content: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'icpc-cfg-'));
+  const file = path.join(dir, 'config.json');
+  fs.writeFileSync(file, content, 'utf8');
+  return file;
+}
+
+test('launchWidget 默认 true', () => {
+  assert.equal(loadConfig(writeTempConfig('{}')).launchWidget, true);
+});
+
+test('launchWidget=false 被读取', () => {
+  assert.equal(loadConfig(writeTempConfig('{"launchWidget": false}')).launchWidget, false);
+});
+
+test('launchWidget 非布尔值回退默认 true', () => {
+  assert.equal(loadConfig(writeTempConfig('{"launchWidget": "yes"}')).launchWidget, true);
+});
+
+test('DEFAULT_CONFIG.launchWidget 为 true', () => {
+  assert.equal(DEFAULT_CONFIG.launchWidget, true);
+});

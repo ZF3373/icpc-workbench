@@ -2,6 +2,7 @@
   "port": 3001,
   "dbPath": "data/icpc.db",
   "dataDir": "data",
+  "launchWidget": true,
   "ai": {
     "enabled": false,
     "baseURL": "https://api.deepseek.com/v1",

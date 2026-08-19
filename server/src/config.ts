@@ -18,6 +18,7 @@ export interface AppConfig {
   port: number;
   dbPath: string;
   dataDir: string;
+  launchWidget: boolean;
   ai: AiConfig;
 }
 
@@ -25,6 +26,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   port: 3001,
   dbPath: path.join(SERVER_ROOT, 'data', 'icpc.db'),
   dataDir: path.join(SERVER_ROOT, 'data'),
+  launchWidget: true,
   ai: {
     enabled: false,
     baseURL: 'https://api.deepseek.com/v1',
@@ -50,6 +52,7 @@ export function loadConfig(filePath: string = DEFAULT_CONFIG_PATH): AppConfig {
     port: Number(file.port ?? DEFAULT_CONFIG.port),
     dbPath: resolvePath(file.dbPath, DEFAULT_CONFIG.dbPath),
     dataDir: resolvePath(file.dataDir, DEFAULT_CONFIG.dataDir),
+    launchWidget: typeof file.launchWidget === 'boolean' ? file.launchWidget : DEFAULT_CONFIG.launchWidget,
     ai: { ...DEFAULT_CONFIG.ai, ...(file.ai ?? {}) },
   };
   validate(cfg);
