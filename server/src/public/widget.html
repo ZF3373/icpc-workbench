@@ -220,5 +220,12 @@
     load();
     setInterval(load, 60000); // 每分钟刷新，跨天自动切换日期
   </script>
+  <script>
+    // 桌面模式（Tauri）：header 作为原生拖动把手；浏览器中无副作用
+    if (window.__TAURI_INTERNALS__) {
+      var h = document.querySelector('header');
+      if (h) h.setAttribute('data-tauri-drag-region', '');
+    }
+  </script>
 </body>
 </html>

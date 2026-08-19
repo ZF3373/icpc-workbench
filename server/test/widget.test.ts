@@ -18,6 +18,8 @@ test('GET /widget serves the single-page widget with correct content type', asyn
     assert.match(html, /api\/checkins\/date/); // 轮询当天任务
     assert.match(html, /api\/checkins\/streak/); // 连续打卡徽标
     assert.match(html, /打卡/);
+    assert.match(html, /__TAURI_INTERNALS__/);
+    assert.match(html, /data-tauri-drag-region/);
   } finally {
     srv.close();
   }
