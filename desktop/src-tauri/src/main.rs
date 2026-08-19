@@ -13,6 +13,7 @@ use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 /// watcher 每 10s 探测的间隔
 const WATCH_INTERVAL: Duration = Duration::from_secs(10);
@@ -146,6 +147,25 @@ fn toggle_pierce(app: &tauri::AppHandle) {
     }
 }
 
+/// 托盘「开机自启 开/关」：翻转 autostart 注册（读取失败按已关处理）。
+/// MacosLauncher 参数是插件 API 形状（macOS 枚举），Windows 上仍需传入但无效。
+fn toggle_autostart(app: &tauri::AppHandle) {
+    let mgr = app.autolaunch();
+    let _ = if mgr.is_enabled().unwrap_or(false) {
+        mgr.disable()
+    } else {
+        mgr.enable()
+    };
+}
+
+/// offline 页「启动主程序」按钮的 command 入口。
+/// 函数名即注册名（generate_handler! 默认取函数名本身），前端 invoke('launch_main')。
+/// 与 lifecycle::launch_main_app 不同模块，不冲突。
+#[tauri::command]
+fn launch_main() -> Result<(), String> {
+    lifecycle::launch_main_app()
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -157,6 +177,11 @@ fn main() {
                 state::WidgetState { hidden: false, ..state::WidgetState::load() }.save();
             }
         }))
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec!["--autostarted"]),
+        ))
+        .invoke_handler(tauri::generate_handler![launch_main])
         .setup(|app| {
             let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
             let port = rt.block_on(discovery::find_server(parse_port_hint()));
@@ -186,11 +211,12 @@ fn main() {
             app.manage(PierceState::new(false));
             spawn_watcher(app.handle().clone());
 
-            // 系统托盘：右键菜单「显示/隐藏」「退出」，左键单击恢复显示
+            // 系统托盘：右键菜单「显示/隐藏」「切换点击穿透」「开机自启 开/关」「退出」，左键单击恢复显示
             let show_item = MenuItem::with_id(app, "show", "显示/隐藏", true, None::<&str>)?;
             let pierce_item = MenuItem::with_id(app, "pierce", "切换点击穿透", true, None::<&str>)?;
+            let auto_item = MenuItem::with_id(app, "auto", "开机自启 开/关", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &pierce_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &pierce_item, &auto_item, &quit_item])?;
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
@@ -199,6 +225,7 @@ fn main() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => toggle_main_window(app),
                     "pierce" => toggle_pierce(app),
+                    "auto" => toggle_autostart(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })

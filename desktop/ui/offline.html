@@ -1,5 +1,31 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>ICPC 挂件</title></head>
-<body style="background:transparent;font-family:sans-serif;color:#e8eaf0">
-<div style="padding:24px;text-align:center">主程序未运行，等待自动恢复…</div>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>ICPC 挂件</title>
+<style>
+  :root{color-scheme:dark}
+  body{background:transparent;font:13px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;color:#e8eaf0;margin:0;padding:10px}
+  #card{background:rgba(18,20,28,.86);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:24px;text-align:center;backdrop-filter:blur(12px)}
+  button{margin-top:14px;padding:8px 16px;border:0;border-radius:8px;background:#4096ff;color:#fff;cursor:pointer;font-size:13px}
+  button:hover{background:#1677ff}
+  #err{color:#ff7875;margin-top:10px;font-size:12px;word-break:break-all}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#8b93a7;margin-right:6px;animation:p 1s infinite}
+  @keyframes p{50%{opacity:.3}}
+</style></head>
+<body>
+<div id="card">
+  <div><span class="dot"></span>主程序未运行</div>
+  <div style="color:#8b93a7;font-size:12px;margin-top:6px">挂件将持续检测并自动恢复</div>
+  <button id="btn">启动主程序</button>
+  <div id="err"></div>
+</div>
+<script>
+  document.getElementById('btn').onclick = async () => {
+    document.getElementById('err').textContent = '';
+    try {
+      await window.__TAURI__.core.invoke('launch_main');
+      document.getElementById('btn').textContent = '已请求启动，等待恢复…';
+    } catch (e) {
+      document.getElementById('err').textContent = String(e);
+    }
+  };
+</script>
 </body></html>
