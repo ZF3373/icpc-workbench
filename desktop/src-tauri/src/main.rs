@@ -4,6 +4,7 @@ pub const PORT_MIN: u16 = 3001;
 pub const PORT_MAX: u16 = 3020;
 
 mod discovery;
+mod lifecycle;
 mod state;
 
 fn main() {
