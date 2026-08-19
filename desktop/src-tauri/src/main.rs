@@ -7,6 +7,10 @@ mod discovery;
 mod lifecycle;
 mod state;
 
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{TrayIconBuilder, TrayIconEvent};
+use tauri::Manager;
+
 fn parse_port_hint() -> Option<u16> {
     let arg = std::env::args().find(|a| a.starts_with("--port="))?;
     arg.trim_start_matches("--port=").parse().ok()
@@ -24,10 +28,30 @@ fn widget_url(port: u16) -> tauri::WebviewUrl {
     tauri::WebviewUrl::External(url)
 }
 
+/// 托盘「显示/隐藏」：切换主窗口可见性并持久化 hidden 状态
+/// （x/y 保持 state 文件中的既有值，不触碰）。
+fn toggle_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let hidden = if w.is_visible().unwrap_or(false) {
+            let _ = w.hide();
+            true
+        } else {
+            let _ = w.show();
+            let _ = w.set_focus();
+            false
+        };
+        state::WidgetState { hidden, ..state::WidgetState::load() }.save();
+    }
+}
+
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {
-            // 二次启动：聚焦已有窗口由 single-instance 默认行为处理
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 二次启动：唤起并聚焦已有主窗口（可能已隐藏到托盘）
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
         }))
         .setup(|app| {
             let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -51,7 +75,46 @@ fn main() {
                 win = win.position(1200.0, 400.0);
             }
             win.build()?;
+
+            // 系统托盘：右键菜单「显示/隐藏」「退出」，左键单击恢复显示
+            let show_item = MenuItem::with_id(app, "show", "显示/隐藏", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .tooltip("ICPC 挂件")
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => toggle_main_window(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    // 左键单击：若窗口处于隐藏态则恢复显示并聚焦
+                    if matches!(event, TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, button_state: tauri::tray::MouseButtonState::Up, .. })
+                    {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            if !w.is_visible().unwrap_or(false) {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // 关窗 = 隐藏到托盘（进程保留），并持久化 hidden
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+                if window.label() == "main" {
+                    state::WidgetState { hidden: true, ..state::WidgetState::load() }.save();
+                }
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running widget");
