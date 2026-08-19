@@ -17,6 +17,7 @@ import type { Server } from 'node:http';
 import { isSea, getAsset } from 'node:sea';
 import express, { type Express } from 'express';
 import { aiConfigFromDb, loadConfig, DEFAULT_CONFIG, type AppConfig } from './config.ts';
+import { tryLaunchWidget } from './widget-launcher.ts';
 import { createDb } from './db/index.ts';
 import { initAdapters } from './adapters/index.ts';
 import { checkinsRoutes } from './routes/checkins.ts';
@@ -230,6 +231,9 @@ async function bootSea(app: Express, config: AppConfig, desiredPort: number): Pr
   const url = `http://localhost:${port}`;
   console.log(banner(url, APP_VERSION));
   openBrowser(url);
+  if (tryLaunchWidget(config, port)) {
+    console.log(`[widget] 已自动拉起桌面挂件（关闭可在 config.json 设 launchWidget: false）`);
+  }
 }
 
 /** 在 127.0.0.1 上监听，端口占用时以 EADDRINUSE reject。 */
