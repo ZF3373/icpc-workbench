@@ -18,6 +18,12 @@ use tauri::Manager;
 const WATCH_INTERVAL: Duration = Duration::from_secs(10);
 /// 连续失败多少次后判定掉线
 const WATCH_MAX_FAILS: u32 = 2;
+/// 穿透开启后自动恢复交互的时限（穿透仅会话级，重启一律可交互）
+const PIERCE_AUTO_RESTORE: Duration = Duration::from_secs(60);
+
+/// 穿透状态（会话级，不持久化）。tauri 2.11.5 没有 `is_ignore_cursor_events`，
+/// 只能自记标志；独立类型避免与端口的 `Mutex<Option<u16>>` 在 State 中撞类型。
+type PierceState = Mutex<bool>;
 
 fn parse_port_hint() -> Option<u16> {
     let arg = std::env::args().find(|a| a.starts_with("--port="))?;
@@ -110,6 +116,36 @@ fn toggle_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// 托盘「切换点击穿透」：翻转 set_ignore_cursor_events。
+/// tauri 2.11.5 没有 `is_ignore_cursor_events()`，当前态由 PierceState（Mutex<bool>）自记。
+/// 刚开启穿透时 60s 后自动恢复交互（穿透仅会话级，重启一律可交互）。
+fn toggle_pierce(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let piercing = {
+            let state = app.state::<PierceState>();
+            let mut g = state.inner().lock().unwrap();
+            *g = !*g;
+            *g
+        };
+        if w.set_ignore_cursor_events(piercing).is_err() {
+            // 设置失败：回滚标志，保持「记录态 == 实际态」
+            *app.state::<PierceState>().inner().lock().unwrap() = !piercing;
+            return;
+        }
+        if piercing {
+            // AppHandle 本身即 handle，直接 clone 进异步任务
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(PIERCE_AUTO_RESTORE).await;
+                if let Some(w) = handle.get_webview_window("main") {
+                    let _ = w.set_ignore_cursor_events(false);
+                }
+                *handle.state::<PierceState>().inner().lock().unwrap() = false;
+            });
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -117,6 +153,8 @@ fn main() {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
                 let _ = w.set_focus();
+                // hidden 状态闭环：恢复显示后落盘，重启后直接可见
+                state::WidgetState { hidden: false, ..state::WidgetState::load() }.save();
             }
         }))
         .setup(|app| {
@@ -144,12 +182,15 @@ fn main() {
 
             // 当前端口共享给 watcher（offline 时为 None），并启动后台健康检查
             app.manage(Mutex::new(port));
+            // 穿透状态自记（tauri 无 is_ignore_cursor_events），初始 false = 可交互
+            app.manage(PierceState::new(false));
             spawn_watcher(app.handle().clone());
 
             // 系统托盘：右键菜单「显示/隐藏」「退出」，左键单击恢复显示
             let show_item = MenuItem::with_id(app, "show", "显示/隐藏", true, None::<&str>)?;
+            let pierce_item = MenuItem::with_id(app, "pierce", "切换点击穿透", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &pierce_item, &quit_item])?;
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
@@ -157,6 +198,7 @@ fn main() {
                 .tooltip("ICPC 挂件")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => toggle_main_window(app),
+                    "pierce" => toggle_pierce(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -169,6 +211,8 @@ fn main() {
                             if !w.is_visible().unwrap_or(false) {
                                 let _ = w.show();
                                 let _ = w.set_focus();
+                                // 从隐藏恢复显示：hidden 状态闭环，重启后直接可见
+                                state::WidgetState { hidden: false, ..state::WidgetState::load() }.save();
                             }
                         }
                     }
@@ -183,6 +227,15 @@ fn main() {
                 api.prevent_close();
                 if window.label() == "main" {
                     state::WidgetState { hidden: true, ..state::WidgetState::load() }.save();
+                }
+            }
+            // 拖动位置记忆：Moved 事件即存（小文件写，不做防抖）。
+            // navigate 切换 URL 不重建窗口，位置天然保持，无需额外恢复逻辑。
+            // hidden 沿用落盘值：Moved 通常意味着窗口可见，但隐藏期间的
+            // 显示器/DPI 变化也可能触发 Moved，此时不应把 hidden:true 覆盖掉。
+            if let tauri::WindowEvent::Moved(pos) = event {
+                if window.label() == "main" {
+                    state::WidgetState { x: pos.x, y: pos.y, ..state::WidgetState::load() }.save();
                 }
             }
         })
