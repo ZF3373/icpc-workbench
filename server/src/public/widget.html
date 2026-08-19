@@ -42,6 +42,9 @@
     header .logo { font-weight: 700; font-size: 14px; }
     header #date { color: var(--dim); font-size: 12px; flex: 1; }
     header #streak { font-size: 12px; color: #ffa940; white-space: nowrap; }
+    /* 桌面模式拖动死区修复：header 是拖动把手，其内 span 无交互语义，
+       关闭指针命中让整个 header 都能发起拖动（浏览器侧仅渲染，无行为差异） */
+    header span { pointer-events: none; }
     main { padding: 8px; overflow-y: auto; flex: 1; }
     main::-webkit-scrollbar { width: 6px; }
     main::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }

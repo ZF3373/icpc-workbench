@@ -12,7 +12,7 @@
   - 任务全部附带可点击的题目链接：练习任务直接跳题目页；回顾/模拟赛任务跳 CF 提交记录/题集入口；AI 输出缺链接时自动按题库回退补链
 - **日历打卡**：月历查看每天训练任务、跳转做题链接、逐任务打卡；打卡数据与计划页联动；连续打卡统计
 - **打卡提醒**：设置页配置每日提醒时间，应用打开期间到点若当天仍有未打卡任务，弹浏览器系统通知 + 页面内通知，点击直达日历
-- **Web 挂件**：`http://localhost:3001/widget` 零依赖单页（Express 直接服务），常驻小窗展示当天任务、连续打卡徽标，可直接打卡/跳转做题；透明置顶桌面挂件仍可后续接 Electron/Tauri（API 零改）
+- **Web 挂件**：`http://localhost:3001/widget` 零依赖单页（Express 直接服务），常驻小窗展示当天任务、连续打卡徽标，可直接打卡/跳转做题；透明置顶桌面挂件已按 Tauri 落地（widget.exe，见文末桌面挂件章节）
 
 ## 技术架构
 
@@ -141,12 +141,7 @@ GET  /widget                      # Web 挂件单页（当天任务 + 打卡，�
 
 ## 桌面挂件扩展路线
 
-Web 挂件（`/widget`）已提供常驻小窗形态；透明置顶桌面挂件可在此基础上加壳：
-
-1. **Electron**（Node 生态现成，复用现有栈）：无边框透明窗口 + `alwaysOnTop`，直接加载 `http://localhost:3001/widget`
-2. **Tauri**（更轻，需 Rust 工具链）：同样的页面与纯 JSON API，仅换外壳
-
-打卡与任务 API 已按日期维度设计（`GET /api/checkins/date/:date`、`POST /api/checkins`），数据模型含 `plan_tasks.url` 跳转链接，加壳零改后端。
+桌面挂件已按 Tauri 方案落地（见文末「桌面挂件」章节）：打卡与任务 API 均按日期维度设计（`GET /api/checkins/date/:date`、`POST /api/checkins`），数据模型含 `plan_tasks.url` 跳转链接，加壳零改后端。
 
 ## 测试
 

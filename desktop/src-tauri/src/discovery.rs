@@ -23,17 +23,14 @@ pub async fn find_server(hint: Option<u16>) -> Option<u16> {
             return Some(p);
         }
     }
-    let mut tasks = Vec::new();
-    for p in PORT_MIN..=PORT_MAX {
-        tasks.push(async move { (p, check(p).await) });
-    }
-    for t in tasks {
-        let (p, ok) = t.await;
-        if ok {
-            return Some(p);
-        }
-    }
-    None
+    // 全量并行探测（20 个端口同时发），收集齐后按端口升序取第一个命中：
+    // 与旧顺序扫描语义一致（最低端口优先），不依赖各请求完成先后。
+    let tasks = (PORT_MIN..=PORT_MAX).map(|p| async move { (p, check(p).await) });
+    futures::future::join_all(tasks)
+        .await
+        .into_iter()
+        .find(|(_, ok)| *ok)
+        .map(|(p, _)| p)
 }
 
 #[cfg(test)]

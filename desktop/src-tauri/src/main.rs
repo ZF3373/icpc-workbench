@@ -166,6 +166,26 @@ fn launch_main() -> Result<(), String> {
     lifecycle::launch_main_app()
 }
 
+/// 首启默认位置：主显示器工作区右下角（全物理像素计算，留 20px 边距）。
+/// Tauri v2 monitor API 无「工作区」概念，size 即含任务栏的全屏尺寸；
+/// Windows 任务栏默认在底部且高约 48px，底部边距取 60px 让挂件压在任务栏上方。
+/// 监视器信息拿不到（无显示器/异常）时返回 None，由调用方回退硬编码。
+fn workspace_bottom_right(
+    app: &tauri::AppHandle,
+    win: &tauri::WebviewWindow,
+) -> Option<tauri::PhysicalPosition<i32>> {
+    let mon = app.primary_monitor().ok().flatten()?;
+    let msize = mon.size();        // 物理像素
+    let mpos = mon.position();     // 物理像素
+    let wsize = win.outer_size().ok()?; // 建窗后的实际物理尺寸
+    const MARGIN: i32 = 20;
+    const TASKBAR: i32 = 60; // 底部任务栏预留
+    Some(tauri::PhysicalPosition::new(
+        mpos.x + msize.width as i32 - wsize.width as i32 - MARGIN,
+        mpos.y + msize.height as i32 - wsize.height as i32 - TASKBAR,
+    ))
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -190,20 +210,26 @@ fn main() {
                 None => offline_url(),
             };
             let st = state::WidgetState::load();
-            let mut win = tauri::WebviewWindowBuilder::new(app, "main", url)
+            let win = tauri::WebviewWindowBuilder::new(app, "main", url)
                 .title("ICPC 挂件")
                 .inner_size(340.0, 520.0)
                 .decorations(false)
                 .transparent(true)
                 .always_on_top(true)
-                .skip_taskbar(true);
-            if st.x >= 0 && st.y >= 0 {
-                win = win.position(st.x as f64, st.y as f64);
+                .skip_taskbar(true)
+                // hidden 读回：上次退出时已隐藏到托盘，则启动即隐藏（托盘/二次启动可唤起）
+                .visible(!st.hidden)
+                .build()?;
+            // 位置统一在 build 后以物理像素设置：
+            // - 有记忆位置： Moved 事件存的即物理像素，物理对物理恢复（跨 DPI 迁移不漂移）
+            // - 无记忆位置： 首启落在主显示器工作区右下角（留 20px 边距）
+            // builder.position 是 logical 语义，与存储的物理像素不一致，故不在这里传。
+            let pos = if st.x >= 0 && st.y >= 0 {
+                tauri::PhysicalPosition::new(st.x, st.y)
             } else {
-                // 默认右下角（粗略；精确工作区在 Task 10 处理）
-                win = win.position(1200.0, 400.0);
-            }
-            win.build()?;
+                workspace_bottom_right(app.handle(), &win).unwrap_or(tauri::PhysicalPosition::new(1200, 400))
+            };
+            let _ = win.set_position(pos);
 
             // 当前端口共享给 watcher（offline 时为 None），并启动后台健康检查
             app.manage(Mutex::new(port));
