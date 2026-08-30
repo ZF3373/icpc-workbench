@@ -1,0 +1,20 @@
+[package]
+name = "icpc-workbench"
+version = "0.4.0"
+edition = "2021"
+description = "ICPC 备赛工作台桌面壳：原生窗口 + 本地服务守护"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+embed-resource = "3"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+futures = "0.3"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "本地窗口基础权限（页面为远程本地服务，未调用任何 Tauri IPC 能力）",
+  "local": true,
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

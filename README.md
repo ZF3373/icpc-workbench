@@ -51,7 +51,23 @@ npm run dev:server   # 仅后端
 npm run dev:client   # 仅前端
 ```
 
-## Windows 单文件 exe 打包（双击即用）
+## 桌面窗口版（原生窗口，不再依赖浏览器）
+
+```bash
+node server/scripts/build-desktop.mjs   # 桌面窗口版（壳 + 核心）
+```
+
+产物在 `server/release/`：`icpc-workbench.exe`（桌面壳，双击启动原生窗口）+ `icpc-core.exe`（本地服务核心，勿删）。
+壳启动时自动拉起核心并探测端口，窗口直接加载应用页面；核心掉线自动重启恢复，关窗即退出（一并回收服务）。
+`icpc-core.exe` 单独双击时走旧的浏览器模式（自动开页面），两种用法共存。
+
+面向零基础用户的运行体验：
+
+- 自己的原生窗口，不再依赖浏览器挂载；首启初始化几秒
+- 数据落在 exe 旁 `data/icpc.db`，exe 与 data 同文件夹整体搬迁即可
+- 升级时用新版的两个 exe 覆盖旧文件，data 不用动
+
+## 浏览器模式单文件 exe 打包（兼容保留）
 
 ```bash
 node server/scripts/build-exe.mjs

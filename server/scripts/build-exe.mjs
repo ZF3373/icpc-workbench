@@ -23,7 +23,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(serverRoot, '..');
 const outDir = path.join(serverRoot, 'dist');
-const exePath = path.join(outDir, 'icpc-workbench.exe');
+// --core-only：桌面壳打包用的无窗口核心（icpc-core.exe），跳过 release 目录组装
+const coreOnly = process.argv.includes('--core-only');
+const exePath = path.join(outDir, coreOnly ? 'icpc-core.exe' : 'icpc-workbench.exe');
 
 console.log('[1/5] 构建前端 client/dist ...');
 execSync('npm run build', { cwd: repoRoot, stdio: 'inherit' });
@@ -168,6 +170,12 @@ const README_TXT = `
 `;
 
 // ---- 发布目录：只放 exe + 使用说明，直接整个文件夹拷给用户 ----
+if (coreOnly) {
+  console.log(`
+核心构建完成: ${exePath} (${sizeMb} MB)`);
+  process.exit(0);
+}
+
 console.log('[6/6] 生成发布目录 release/ ...');
 const releaseDir = path.join(serverRoot, 'release');
 const releaseExe = path.join(releaseDir, 'icpc-workbench.exe');

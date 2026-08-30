@@ -238,7 +238,9 @@ async function bootSea(app: Express, config: AppConfig, desiredPort: number): Pr
   }
   const url = `http://localhost:${port}`;
   console.log(banner(url, APP_VERSION));
-  openBrowser(url);
+  // 桌面壳（Tauri）拉起的嵌入模式：窗口由壳提供，不再抢占默认浏览器
+  const embedded = process.env.ICPC_EMBEDDED === '1';
+  if (!embedded) openBrowser(url);
   if (tryLaunchWidget(config, port)) {
     console.log(`[widget] 已自动拉起桌面挂件（关闭可在 config.json 设 launchWidget: false）`);
   }

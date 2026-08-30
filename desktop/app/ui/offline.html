@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    :root { color-scheme: dark; }
+    html, body { width: 100%; height: 100%; margin: 0; }
+    body {
+      background: #111318;
+      color: #f5f7fb;
+      font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+      display: grid;
+      place-items: center;
+      user-select: none;
+    }
+    .box { display: flex; flex-direction: column; align-items: center; gap: 14px; max-width: 420px; text-align: center; }
+    .t1 { font-size: 15px; font-weight: 650; color: #f2c46d; }
+    .t2 { font-size: 12.5px; color: #8993a2; line-height: 1.7; }
+    .spin {
+      width: 20px; height: 20px; border-radius: 50%;
+      border: 3px solid rgba(134, 168, 255, 0.2);
+      border-top-color: #86a8ff;
+      animation: r 0.9s linear infinite;
+    }
+    @keyframes r { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div class="t1">本地服务未响应</div>
+    <div class="spin"></div>
+    <div class="t2">
+      正在自动重启服务并尝试恢复连接，请稍候。<br />
+      若长时间停留在此页面，请关闭窗口后重新打开软件；
+      若问题反复出现，请确认 icpc-core.exe 与本程序位于同一文件夹。
+    </div>
+  </div>
+</body>
+</html>

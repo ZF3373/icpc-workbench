@@ -1,6 +1,6 @@
 {
   "name": "icpc-workbench",
-  "version": "0.2.1",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -14,7 +14,8 @@
     "dev:client": "npm run dev -w client",
     "build": "npm run build -w client",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w client",
-    "test": "npm run test -w server"
+    "test": "npm run test -w server",
+    "build:desktop": "node server/scripts/build-desktop.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

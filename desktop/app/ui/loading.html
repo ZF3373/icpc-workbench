@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    :root { color-scheme: dark; }
+    html, body { width: 100%; height: 100%; margin: 0; }
+    body {
+      background: #111318;
+      color: #f5f7fb;
+      font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+      display: grid;
+      place-items: center;
+      user-select: none;
+    }
+    .box { display: flex; flex-direction: column; align-items: center; gap: 18px; }
+    .mark {
+      width: 56px; height: 56px; border-radius: 15px;
+      display: grid; place-items: center;
+      border: 1px solid rgba(176, 195, 255, 0.5);
+      background: #91adff;
+      color: #10141e; font-weight: 800; font-size: 22px;
+      box-shadow: 0 10px 28px rgba(71, 102, 188, 0.25);
+    }
+    .spin {
+      width: 22px; height: 22px; border-radius: 50%;
+      border: 3px solid rgba(134, 168, 255, 0.2);
+      border-top-color: #86a8ff;
+      animation: r 0.9s linear infinite;
+    }
+    @keyframes r { to { transform: rotate(360deg); } }
+    .t1 { font-size: 15px; font-weight: 650; letter-spacing: 0.02em; }
+    .t2 { font-size: 12px; color: #8993a2; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div class="mark">&lt;/&gt;</div>
+    <div class="t1">正在启动本地服务…</div>
+    <div class="spin"></div>
+    <div class="t2">首次启动需要几秒钟，请稍候</div>
+  </div>
+</body>
+</html>
