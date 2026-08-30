@@ -32,4 +32,10 @@ export const patch = <T>(path: string, body?: unknown): Promise<T> =>
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
+export const put = <T>(path: string, body?: unknown): Promise<T> =>
+  api<T>(path, {
+    method: 'PUT',
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
 export const del = <T>(path: string): Promise<T> => api<T>(path, { method: 'DELETE' });

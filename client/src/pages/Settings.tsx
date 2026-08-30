@@ -337,13 +337,13 @@ export default function Settings() {
             />
             {(() => {
               if (typeof Notification === 'undefined') {
-                return <span className="perm-note" style={{ color: '#8c8c9e' }}>当前浏览器不支持系统通知，仅页面内提醒</span>
+                return <span className="perm-note" style={{ color: '#8993a2' }}>当前浏览器不支持系统通知，仅页面内提醒</span>
               }
               if (Notification.permission === 'granted') {
-                return <span className="perm-note" style={{ color: '#52c41a' }}>系统通知已授权 ✓</span>
+                return <span className="perm-note" style={{ color: '#69d7a5' }}>系统通知已授权 ✓</span>
               }
               return (
-                <span className="perm-note" style={{ color: '#fa8c16' }}>
+                <span className="perm-note" style={{ color: '#f2c46d' }}>
                   系统通知未授权（关闭再开启开关可重新授权，否则仅页面内提醒）
                 </span>
               )
@@ -364,7 +364,7 @@ export default function Settings() {
             <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>
               导入 AI 计划
             </Button>
-            <span style={{ color: '#8c8c9e', fontSize: 12 }}>
+            <span style={{ color: '#8993a2', fontSize: 12 }}>
               下载后把内容粘贴给任何 AI，再把返回的 JSON 计划通过「导入 AI 计划」粘贴进来即可入库。
             </span>
           </Space>

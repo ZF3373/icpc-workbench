@@ -4,6 +4,7 @@ import { CheckOutlined, FieldTimeOutlined, FireOutlined, TrophyOutlined } from '
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import PageHeader from '../components/PageHeader'
+import StatStrip from '../components/StatStrip'
 import { get, post, del } from '../api'
 import type { DayPlanInfo, DayTask, StreakInfo } from '../types'
 
@@ -115,38 +116,45 @@ export default function CalendarPage() {
   return (
     <div>
       <PageHeader title="日历打卡" description="每日训练打卡与连续记录" />
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={24} sm={8}>
-          <Card className="stat-card stat-card-purple" size="small" styles={{ body: { position: 'relative', padding: '16px 20px' } }}>
-            <FireOutlined className="stat-card-icon" />
-            <div className="stat-card-title">当前连续打卡</div>
-            <div className="stat-card-value" style={{ fontSize: 28 }}>
-              {streak.current}
-              <span className="stat-card-suffix">天</span>
-            </div>
-          </Card>
-        </Col>
-        <Col xs={24} sm={8}>
-          <Card className="stat-card stat-card-blue" size="small" styles={{ body: { position: 'relative', padding: '16px 20px' } }}>
-            <TrophyOutlined className="stat-card-icon" />
-            <div className="stat-card-title">最长连续打卡</div>
-            <div className="stat-card-value" style={{ fontSize: 28 }}>
-              {streak.longest}
-              <span className="stat-card-suffix">天</span>
-            </div>
-          </Card>
-        </Col>
-        <Col xs={24} sm={8}>
-          <Card className="stat-card stat-card-green" size="small" styles={{ body: { position: 'relative', padding: '16px 20px' } }}>
-            <FieldTimeOutlined className="stat-card-icon" />
-            <div className="stat-card-title">累计打卡天数</div>
-            <div className="stat-card-value" style={{ fontSize: 28 }}>
-              {streak.totalDays}
-              <span className="stat-card-suffix">天</span>
-            </div>
-          </Card>
-        </Col>
-      </Row>
+      <div style={{ marginBottom: 16 }}>
+        <StatStrip
+          items={[
+            {
+              label: '当前连续打卡',
+              value: (
+                <>
+                  {streak.current}
+                  <span className="stat-suffix">天</span>
+                </>
+              ),
+              icon: <FireOutlined />,
+              tone: 'amber',
+            },
+            {
+              label: '最长连续打卡',
+              value: (
+                <>
+                  {streak.longest}
+                  <span className="stat-suffix">天</span>
+                </>
+              ),
+              icon: <TrophyOutlined />,
+              tone: 'violet',
+            },
+            {
+              label: '累计打卡天数',
+              value: (
+                <>
+                  {streak.totalDays}
+                  <span className="stat-suffix">天</span>
+                </>
+              ),
+              icon: <FieldTimeOutlined />,
+              tone: 'green',
+            },
+          ]}
+        />
+      </div>
       <Row gutter={[16, 16]}>
         <Col xs={24} xl={16}>
           <Card title="训练日历 —— 点击日期查看当天计划并打卡" size="small">

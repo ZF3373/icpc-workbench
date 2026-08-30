@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Button,
-  Card,
   Checkbox,
   Form,
   Input,
@@ -13,15 +12,16 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Upload,
 } from 'antd'
-import { ClearOutlined, CloudDownloadOutlined, InboxOutlined, PlusOutlined } from '@ant-design/icons'
+import { ClearOutlined, CloudDownloadOutlined, InboxOutlined, PlusOutlined, ReadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import type { PlatformId } from '../../../shared/src/index.ts'
 import { PLATFORMS } from '../../../shared/src/index.ts'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
-import { difficultyColor } from '../ui'
+import { difficultyColor, PLATFORM_COLOR, tagColor } from '../ui'
 import { get, post } from '../api'
 
 interface ProblemRow {
@@ -38,20 +38,35 @@ interface ProblemRow {
   status: 'ac' | 'tried' | 'none'
 }
 
-const DIFFICULTY_BUCKETS = ['<1200', '1200-1399', '1400-1599', '1600-1899', '1900-2199', '2200+', '未知']
+type StatusFilter = 'all' | 'ac' | 'tried' | 'none'
 
-function statusTag(s: ProblemRow['status']) {
-  if (s === 'ac') return <Tag className="dot-tag" color="success">已 AC</Tag>
-  if (s === 'tried') return <Tag className="dot-tag" color="warning">已尝试</Tag>
-  return <Tag className="dot-tag">未做</Tag>
-}
+const STATUS_TABS: Array<{ key: StatusFilter; label: string }> = [
+  { key: 'all', label: '全部' },
+  { key: 'ac', label: '已 AC' },
+  { key: 'tried', label: '已尝试' },
+  { key: 'none', label: '未做' },
+]
+
+/** 难度分桶（筛选下拉与概览面板共用） */
+const DIFF_BUCKETS: Array<{ key: string; min: number | null; max: number | null }> = [
+  { key: '<1200', min: 0, max: 1199 },
+  { key: '1200-1399', min: 1200, max: 1399 },
+  { key: '1400-1599', min: 1400, max: 1599 },
+  { key: '1600-1899', min: 1600, max: 1899 },
+  { key: '1900-2199', min: 1900, max: 2199 },
+  { key: '2200+', min: 2200, max: null },
+  { key: '未知', min: null, max: null },
+]
+
+const TAXONOMY_MAX = 60
 
 export default function Problems() {
   const [rows, setRows] = useState<ProblemRow[]>([])
   const [loading, setLoading] = useState(false)
   const [platform, setPlatform] = useState<string>()
   const [difficulty, setDifficulty] = useState<string>()
-  const [tag, setTag] = useState<string>()
+  const [tagFilter, setTagFilter] = useState<string>()
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [q, setQ] = useState<string>()
   const [qInput, setQInput] = useState('')
   const [includeBank, setIncludeBank] = useState(false)
@@ -63,23 +78,66 @@ export default function Problems() {
     const params = new URLSearchParams()
     if (platform) params.set('platform', platform)
     if (difficulty) params.set('difficulty', difficulty)
-    if (tag) params.set('tag', tag)
     if (q) params.set('q', q)
     if (includeBank) params.set('bank', '1')
     get<ProblemRow[]>(`/api/problems?${params.toString()}`)
       .then(setRows)
       .catch((e: Error) => message.error(e.message))
       .finally(() => setLoading(false))
-  }, [platform, difficulty, tag, q, includeBank])
+  }, [platform, difficulty, q, includeBank])
 
   useEffect(() => {
     load()
   }, [load])
 
+  // 分类栏标签计数：基于当前服务端筛选结果统计
+  const tagCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const r of rows) for (const t of r.tags) m.set(t, (m.get(t) ?? 0) + 1)
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, TAXONOMY_MAX)
+  }, [rows])
+
+  // 标签 / 状态为客户端过滤（平台、难度、搜索仍走服务端）
+  const filtered = useMemo(
+    () =>
+      rows.filter((r) => {
+        if (tagFilter && !r.tags.includes(tagFilter)) return false
+        if (statusFilter !== 'all' && r.status !== statusFilter) return false
+        return true
+      }),
+    [rows, tagFilter, statusFilter],
+  )
+
+  // 概览面板：难度 / 平台分布（随当前数据集联动）
+  const diffDist = useMemo(
+    () =>
+      DIFF_BUCKETS.map((b) => ({
+        ...b,
+        count: rows.filter((r) =>
+          b.min == null
+            ? r.difficulty == null
+            : r.difficulty != null && r.difficulty >= b.min && (b.max == null || r.difficulty <= b.max),
+        ).length,
+      })).map((b) => ({
+        ...b,
+        color: b.min == null ? '#8993a2' : difficultyColor((b.min + (b.max ?? b.min + 199)) / 2),
+      })),
+    [rows],
+  )
+
+  const platDist = useMemo(
+    () =>
+      PLATFORMS.map((p) => ({ id: p.id, name: p.name, count: rows.filter((r) => r.platform === p.id).length }))
+        .filter((x) => x.count > 0)
+        .sort((a, b) => b.count - a.count),
+    [rows],
+  )
+
   const resetFilters = () => {
     setPlatform(undefined)
     setDifficulty(undefined)
-    setTag(undefined)
+    setTagFilter(undefined)
+    setStatusFilter('all')
     setQ(undefined)
     setQInput('')
     setIncludeBank(false)
@@ -102,6 +160,15 @@ export default function Problems() {
       })
       message.success(`已标记 ${r.problem_key} 为 AC`)
       load()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  const addToReview = async (r: ProblemRow) => {
+    try {
+      await post('/api/reviews', { platform: r.platform, problemKey: r.problem_key })
+      message.success(`「${r.problem_key}」已加入复习队列，到期会出现在「复习库」与「今日训练」`)
     } catch (e) {
       message.error((e as Error).message)
     }
@@ -157,11 +224,11 @@ export default function Problems() {
     {
       title: '难度',
       dataIndex: 'difficulty',
-      width: 80,
+      width: 88,
       align: 'right',
       render: (v: number | null) =>
-        v == null ? <span style={{ color: '#c0c0cc' }}>-</span> : (
-          <span className="mono" style={{ color: difficultyColor(v), fontWeight: 600 }}>{v}</span>
+        v == null ? <span style={{ color: '#4e5a68' }}>-</span> : (
+          <span className="rating-pill mono" style={{ color: difficultyColor(v) }}>{v}</span>
         ),
     },
     {
@@ -177,22 +244,30 @@ export default function Problems() {
             {tags.length > 3 && <span className="tag-more">+{tags.length - 3}</span>}
           </Space>
         ) : (
-          <span style={{ color: '#c0c0cc' }}>-</span>
+          <span style={{ color: '#4e5a68' }}>-</span>
         ),
     },
     { title: '提交', dataIndex: 'attempts', width: 70, align: 'right' },
-    { title: '状态', dataIndex: 'status', width: 100, render: (v: ProblemRow['status']) => statusTag(v) },
     {
       title: '操作',
-      width: 100,
-      render: (_v, r) =>
-        r.status === 'ac' ? null : (
-          <Button size="small" onClick={() => markAc(r)}>
-            标记 AC
-          </Button>
-        ),
+      width: 150,
+      render: (_v, r) => (
+        <Space size={4}>
+          {r.status !== 'ac' && (
+            <Button size="small" onClick={() => markAc(r)}>
+              标记 AC
+            </Button>
+          )}
+          <Tooltip title="加入复习队列（间隔复习）">
+            <Button size="small" type="text" icon={<ReadOutlined />} onClick={() => addToReview(r)} />
+          </Tooltip>
+        </Space>
+      ),
     },
   ]
+
+  const diffMax = Math.max(1, ...diffDist.map((d) => d.count))
+  const platMax = Math.max(1, ...platDist.map((d) => d.count))
 
   return (
     <div>
@@ -205,47 +280,155 @@ export default function Problems() {
           </Button>
         }
       />
-      <Card size="small" className="filter-bar" style={{ marginBottom: 16 }}>
-        <Select
-          allowClear
-          placeholder="平台"
-          style={{ width: 130 }}
-          value={platform}
-          onChange={setPlatform}
-          options={PLATFORMS.map((p) => ({ value: p.id, label: p.name }))}
-        />
-        <Select
-          allowClear
-          placeholder="难度区间"
-          style={{ width: 140 }}
-          value={difficulty}
-          onChange={setDifficulty}
-          options={DIFFICULTY_BUCKETS.map((b) => ({ value: b, label: b }))}
-        />
-        <Input
-          allowClear
-          placeholder="按标签筛选"
-          style={{ width: 150 }}
-          value={tag}
-          onChange={(e) => setTag(e.target.value || undefined)}
-        />
-        <Input.Search
-          allowClear
-          placeholder="搜索题号/标题"
-          style={{ width: 220 }}
-          value={qInput}
-          onChange={(e) => setQInput(e.target.value)}
-          onSearch={(v) => setQ(v || undefined)}
-        />
-        <Button icon={<ClearOutlined />} onClick={resetFilters}>
-          重置
-        </Button>
-        <Checkbox checked={includeBank} onChange={(e) => setIncludeBank(e.target.checked)}>
-          含题库未做题
-        </Checkbox>
-        <span className="filter-count">共 {rows.length} 题</span>
-      </Card>
-      <Table rowKey="id" size="small" loading={loading} columns={cols} dataSource={rows} pagination={{ pageSize: 20 }} />
+
+      <div className="workbench">
+        {/* 左栏：标签分类 */}
+        <aside className="taxonomy-panel">
+          <div className="section-label">
+            算法标签
+            <span className="section-label-count">{rows.length} 题</span>
+          </div>
+          <div className="taxonomy-list">
+            <button
+              type="button"
+              className={`taxonomy-item${!tagFilter ? ' is-active' : ''}`}
+              onClick={() => setTagFilter(undefined)}
+            >
+              <span className="taxonomy-item__marker" style={{ background: '#86a8ff' }} />
+              <span className="taxonomy-item__name">全部标签</span>
+              <span className="taxonomy-item__count">{rows.length}</span>
+            </button>
+            {tagCounts.map(([t, n]) => (
+              <button
+                key={t}
+                type="button"
+                className={`taxonomy-item${tagFilter === t ? ' is-active' : ''}`}
+                onClick={() => setTagFilter(tagFilter === t ? undefined : t)}
+              >
+                <span className="taxonomy-item__marker" style={{ background: tagColor(t) }} />
+                <span className="taxonomy-item__name">{t}</span>
+                <span className="taxonomy-item__count">{n}</span>
+              </button>
+            ))}
+          </div>
+          <div className="taxonomy-footer">点击标签筛选，再点一次取消</div>
+        </aside>
+
+        {/* 中栏：题目工作区 */}
+        <section className="problem-workspace">
+          <div className="workspace-topline">
+            <div>
+              <span className="workspace-kicker">PROBLEM LIBRARY</span>
+              <h2>{tagFilter ?? '全部题目'}</h2>
+            </div>
+            <span className="result-count">
+              共 <strong>{filtered.length}</strong> 题
+            </span>
+          </div>
+          <div className="filter-row">
+            <Select
+              allowClear
+              placeholder="平台"
+              style={{ width: 120 }}
+              value={platform}
+              onChange={setPlatform}
+              options={PLATFORMS.map((p) => ({ value: p.id, label: p.name }))}
+            />
+            <Select
+              allowClear
+              placeholder="难度区间"
+              style={{ width: 130 }}
+              value={difficulty}
+              onChange={setDifficulty}
+              options={DIFF_BUCKETS.map((b) => ({ value: b.key, label: b.key }))}
+            />
+            <Input.Search
+              allowClear
+              placeholder="搜索题号 / 标题"
+              style={{ width: 200 }}
+              value={qInput}
+              onChange={(e) => setQInput(e.target.value)}
+              onSearch={(v) => setQ(v || undefined)}
+            />
+            <Button icon={<ClearOutlined />} onClick={resetFilters}>
+              重置
+            </Button>
+            <Checkbox checked={includeBank} onChange={(e) => setIncludeBank(e.target.checked)}>
+              含题库未做题
+            </Checkbox>
+          </div>
+          <div className="status-row">
+            <div className="status-tabs">
+              {STATUS_TABS.map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  className={statusFilter === t.key ? 'is-active' : ''}
+                  onClick={() => setStatusFilter(t.key)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {tagFilter && (
+              <Tag closable onClose={() => setTagFilter(undefined)}>
+                {tagFilter}
+              </Tag>
+            )}
+          </div>
+          <div className="problem-table">
+            <Table
+              rowKey="id"
+              size="small"
+              loading={loading}
+              columns={cols}
+              dataSource={filtered}
+              pagination={{ pageSize: 20, showSizeChanger: false }}
+            />
+          </div>
+        </section>
+
+        {/* 右栏：概览面板 */}
+        <aside className="side-panel">
+          <div className="panel-block">
+            <div className="section-label">难度分布</div>
+            <div className="dist-list">
+              {diffDist.map((d) => (
+                <div className="dist-row" key={d.key}>
+                  <span className="dist-row__label mono">{d.key}</span>
+                  <span className="dist-row__track">
+                    <i style={{ width: `${(d.count / diffMax) * 100}%`, background: d.color }} />
+                  </span>
+                  <span className="dist-row__count mono">{d.count}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="panel-block">
+            <div className="section-label">平台分布</div>
+            <div className="dist-list">
+              {platDist.map((p) => (
+                <div className="dist-row" key={p.id}>
+                  <span className="dist-row__label">
+                    <i className="platform-dot" style={{ background: PLATFORM_COLOR[p.id] }} />
+                    {p.name}
+                  </span>
+                  <span className="dist-row__track">
+                    <i
+                      style={{
+                        width: `${(p.count / platMax) * 100}%`,
+                        background: PLATFORM_COLOR[p.id],
+                        opacity: 0.75,
+                      }}
+                    />
+                  </span>
+                  <span className="dist-row__count mono">{p.count}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </aside>
+      </div>
 
       <Modal title="导入刷题记录" open={importOpen} onCancel={() => setImportOpen(false)} footer={null} width={620}>
         <Tabs
@@ -407,7 +590,7 @@ function BankTab({ onDone }: { onDone: () => void }) {
 
   return (
     <div>
-      <p style={{ color: '#8c8c9e' }}>
+      <p style={{ color: '#8993a2' }}>
         从洛谷 / 牛客公开题库批量拉取题目入库，扩充训练计划的待选题池（无需账号/Cookie，不影响刷题统计）。
         拉取量越大耗时越长（约 1-2 分钟/千题），请耐心等待。
       </p>
@@ -470,8 +653,8 @@ function BackfillDifficultyCard() {
   }
 
   return (
-    <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-      <p style={{ color: '#8c8c9e' }}>
+    <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #222831' }}>
+      <p style={{ color: '#8993a2' }}>
         补全库内「未知难度」的洛谷/牛客题（逐题查询官方接口，牛客约 0.5 秒/题，请耐心等待）；
         牛客同时修复历史遗留的标题混入标签问题。Codeforces 未知难度来自 gym 与官方 Unrated 比赛，无公开难度可补。
       </p>

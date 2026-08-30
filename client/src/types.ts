@@ -132,3 +132,74 @@ export interface UpdateInfo {
   notes: string | null
   message?: string
 }
+
+// ---------- 复习库 / 今日训练 / 赛事中心（与 shared 类型对齐） ----------
+export type {
+  ContestInfo,
+  ReviewFeedback,
+  ReviewItem,
+  TodayBand,
+  TodayBandKey,
+  TodayPlan,
+  TodayProblem,
+} from '../../shared/src/index.ts'
+
+// ---------- 模板库（内置课程 + 个人进度） ----------
+export type TemplateStatus = 'todo' | 'learning' | 'mastered'
+
+export interface TemplateExampleInfo {
+  platform: 'codeforces' | 'luogu'
+  key: string
+  title: string
+  url: string
+  /** 是否已入库题目管理 */
+  inBank?: boolean
+  /** 是否已 AC（基于同步的提交记录） */
+  ac?: boolean
+}
+
+export interface TemplateContentInfo {
+  code: string | null
+  idea: string | null
+  complexity: string | null
+  url: string | null
+}
+
+export interface TemplateItemInfo {
+  /** 自建模板（c-<dbId>） */
+  custom?: boolean
+  id: string
+  name: string
+  difficulty: number
+  tags: string[]
+  /** 大纲要点（仅内置条目）：这条模板位需要覆盖什么 */
+  outline?: string
+  code: string
+  idea: string
+  complexity: string
+  useCases: string
+  pitfalls: string
+  examples: TemplateExampleInfo[]
+  /** 自建模板的出处 / 讲解链接 */
+  url?: string | null
+  /** 用户为内置条目写入的模板内容（自建模板内容直接在自身字段上） */
+  content: TemplateContentInfo | null
+  status: TemplateStatus
+  note: string | null
+}
+
+export interface TemplateCategoryInfo {
+  key: string
+  name: string
+  description: string
+  templates: TemplateItemInfo[]
+}
+
+export interface TemplatesResponse {
+  customCount: number
+  total: number
+  mastered: number
+  learning: number
+  next: { id: string; name: string; difficulty: number } | null
+  categories: TemplateCategoryInfo[]
+}

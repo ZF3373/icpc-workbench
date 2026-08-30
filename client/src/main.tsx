@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
-import { ConfigProvider } from 'antd'
+import { ConfigProvider, theme as antdTheme } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import 'antd/dist/reset.css'
 import './index.css'
@@ -12,54 +12,68 @@ createRoot(document.getElementById('root')!).render(
     <ConfigProvider
       locale={zhCN}
       theme={{
+        algorithm: antdTheme.darkAlgorithm,
         token: {
-          colorPrimary: '#863bff',
-          colorSuccess: '#10b981',
-          colorWarning: '#f59e0b',
-          colorError: '#ef4444',
-          colorInfo: '#3b82f6',
-          colorText: '#17172b',
-          colorTextSecondary: '#6f6f85',
-          colorTextTertiary: '#9a9ab0',
-          colorBorderSecondary: 'rgba(23, 23, 43, 0.08)',
+          colorPrimary: '#86a8ff',
+          colorSuccess: '#69d7a5',
+          colorWarning: '#f2c46d',
+          colorError: '#ff7b84',
+          colorInfo: '#58a3ff',
+          colorText: '#f5f7fb',
+          colorTextSecondary: '#c4cad4',
+          colorTextTertiary: '#8993a2',
+          colorBgContainer: '#181b22',
+          colorBgElevated: '#1d212a',
+          colorBgLayout: '#111318',
+          colorBorder: '#2a3039',
+          colorBorderSecondary: '#222831',
           borderRadius: 10,
-          fontFamily: "'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif",
-          colorBgContainer: '#ffffff',
-          colorBgLayout: '#f6f6fb',
+          fontFamily:
+            "'Segoe UI Variable Text', 'Segoe UI', 'Inter', system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei UI', sans-serif",
         },
         components: {
           Layout: {
-            siderBg: '#0f0f23',
-            headerBg: '#0f0f23',
+            siderBg: '#12151a',
+            headerBg: '#12151a',
+            bodyBg: '#111318',
           },
           Menu: {
             darkItemBg: 'transparent',
-            darkSubMenuItemBg: '#1a1a3e',
-            darkItemSelectedBg: 'rgba(134, 59, 255, 0.15)',
-            darkItemHoverBg: 'rgba(134, 59, 255, 0.08)',
-            darkItemSelectedColor: '#ffffff',
-            itemBorderRadius: 8,
+            darkSubMenuItemBg: '#1d212a',
+            darkItemSelectedBg: 'rgba(134, 168, 255, 0.13)',
+            darkItemHoverBg: '#20242c',
+            darkItemSelectedColor: '#86a8ff',
+            darkItemColor: '#8b94a3',
+            itemBorderRadius: 10,
             itemMarginInline: 10,
+            itemMarginBlock: 2,
+            itemHeight: 40,
+            iconSize: 17,
+            activeBarBorderWidth: 0,
           },
           Card: {
+            colorBgContainer: '#181b22',
             borderRadiusLG: 14,
           },
           Button: {
             borderRadius: 8,
-            primaryShadow: '0 2px 10px rgba(134, 59, 255, 0.28)',
+            primaryShadow: '0 6px 18px rgba(58, 76, 128, 0.28)',
             defaultShadow: 'none',
             dangerShadow: 'none',
           },
           Table: {
-            borderRadius: 8,
-            headerBg: '#f8f8fd',
-            rowHoverBg: 'rgba(134, 59, 255, 0.035)',
+            headerBg: '#1b1f27',
+            headerColor: '#929ba9',
+            rowHoverBg: '#1d222a',
+            borderColor: '#222831',
           },
           Modal: {
+            contentBg: '#1d212a',
+            headerBg: '#1d212a',
             borderRadiusLG: 14,
           },
           Drawer: {
-            colorBgElevated: '#ffffff',
+            colorBgElevated: '#181b22',
           },
           Tag: {
             borderRadiusSM: 6,
