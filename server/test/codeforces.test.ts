@@ -92,3 +92,43 @@ test('problemUrl splitKey behavior', () => {
   assert.equal(adapter.problemUrl({ problemKey: '1919C' }), 'https://codeforces.com/contest/1919/problem/C');
   assert.equal(adapter.problemUrl({ problemKey: '100000A' }), 'https://codeforces.com/gym/100000/problem/A');
 });
+
+test('known ids: entire known page stops paging and skips known submissions', async () => {
+  let calls = 0;
+  const adapter = createCodeforcesAdapter(async () => {
+    calls += 1;
+    // 第一页 2 条（页小于 PAGE_SIZE 时本会自然终止，这里用固定小页模拟整页已知场景）
+    return cfRes({
+      status: 'OK',
+      result: [submission({ id: 10 }), submission({ id: 9 })],
+    });
+  });
+  const rows = await adapter.fetchUserSubmissions('u', {
+    knownExternalIds: new Set(['9', '10']),
+  });
+  assert.equal(rows.length, 0); // 整页已知 → 全部跳过
+  assert.equal(calls, 1);       // 不再请求第二页
+});
+
+test('known ids: mixed page keeps new ones and continues until a fully-known page', async () => {
+  // 每页需凑满 PAGE_SIZE(1000) 条：用已知 id 填充尾部
+  const filler = (base: number, n: number) =>
+    Array.from({ length: n }, (_, i) => ({ id: base + i }));
+  const known = new Set(['20', '12', '11', '4']);
+  for (let i = 0; i < 998; i++) known.add(String(2_000_000 + i)); // 第 1 页填充
+  for (let i = 0; i < 998; i++) known.add(String(3_000_000 + i)); // 第 2 页填充
+  const pages = [
+    [{ id: 30 }, { id: 29 }, ...filler(2_000_000, 998)], // 30/29 全新
+    [{ id: 28 }, { id: 20 }, ...filler(3_000_000, 998)], // 28 新、20 已知（混页）
+    [{ id: 12 }, { id: 11 }],                            // 整页已知 → 应在此终止
+    [{ id: 5 }, { id: 4 }],                              // 不应被请求
+  ]
+  const requested: number[] = [];
+  const adapter = createCodeforcesAdapter(async () => {
+    requested.push(requested.length);
+    return cfRes({ status: 'OK', result: pages[requested.length - 1].map((s) => submission(s)) });
+  });
+  const rows = await adapter.fetchUserSubmissions('u', { knownExternalIds: known });
+  assert.equal(requested.length, 3); // 第三页整页已知后终止
+  assert.deepEqual(rows.map((r) => r.externalId), ['30', '29', '28']);
+});

@@ -12,6 +12,18 @@ export interface SyncOptions {
   userId?: number;
 }
 
+/** 库中该平台已有的平台侧提交号（适配器提前终止分页用） */
+function loadKnownExternalIds(
+  db: Db,
+  userId: number,
+  platform: PlatformId,
+): Set<string> {
+  const rows = db
+    .prepare('SELECT external_id FROM submissions WHERE user_id = ? AND platform = ?')
+    .all(userId, platform) as Array<{ external_id: string }>;
+  return new Set(rows.map((r) => r.external_id));
+}
+
 /**
  * 同步某个平台账号的刷题记录：
  * 1. 检查平台开关（settings.adapter.<platform>.enabled，缺省启用）
@@ -57,6 +69,12 @@ export async function syncPlatform(
     // 换账号/未成功同步过：全量重拉（不沿用可能属于旧账号的增量起点）
     const since =
       !handleChanged && account?.last_sync_at ? account.last_sync_at : undefined;
+    // 声明支持已知提交号过滤的适配器（CF/洛谷，拉取按新到旧排序）：
+    // 注入库中已有提交号，适配器整页已知即提前终止分页，实现真实增量
+    const knownExternalIds =
+      !handleChanged && adapter.knownIdsFilter
+        ? loadKnownExternalIds(db, userId, platform)
+        : undefined;
     // 需登录平台：从 settings 读取 Cookie / CSRF 注入适配器
     const readSetting = (key: string): string | undefined => {
       const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
@@ -70,6 +88,7 @@ export async function syncPlatform(
       ...(since ? { since } : {}),
       ...(cookie ? { cookie } : {}),
       ...(csrf ? { csrf } : {}),
+      ...(knownExternalIds ? { knownExternalIds } : {}),
     });
 
     // 换账号：全量重拉，并在同一事务内清空该平台旧提交再写入新数据
@@ -78,6 +97,9 @@ export async function syncPlatform(
     });
     result.imported = r.imported;
     result.skipped = r.skipped;
+    if (!handleChanged && (since || (knownExternalIds && knownExternalIds.size > 0))) {
+      result.incremental = true;
+    }
 
     const now = new Date().toISOString();
     db.prepare(

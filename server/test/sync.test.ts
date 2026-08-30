@@ -1,4 +1,5 @@
 import { test, beforeEach, afterEach } from 'node:test';
+import type { AddressInfo } from 'node:net';
 import assert from 'node:assert/strict';
 import type {
   NormalizedSubmission,
@@ -173,4 +174,94 @@ test('unregistered platform returns error', async () => {
   const result = await syncPlatform(db, 'unknown' as PlatformId, 'u');
   assert.match(result.errors[0], /未注册适配器/);
   assert.equal(result.imported, 0);
+});
+
+test('knownIdsFilter adapter receives known external ids and marks incremental', async () => {
+  let seenIds: Set<string> | undefined;
+  const fake: PlatformAdapter = {
+    platform: 'codeforces',
+    knownIdsFilter: true,
+    async fetchUserSubmissions(handle, opts) {
+      seenIds = opts?.knownExternalIds;
+      fakeCalls.push({ handle, since: opts?.since });
+      return [sub('1919D', 'e4')];
+    },
+    problemUrl() {
+      return 'https://codeforces.com/';
+    },
+  };
+  register(fake);
+  // 首次同步：库中无该平台提交 → 传入空集合（无害），不算增量
+  await syncPlatform(db, 'codeforces', 'tourist');
+  assert.ok(seenIds instanceof Set);
+  assert.equal(seenIds.size, 0);
+  // 第二次同步：注入已知 id，标记增量
+  const result = await syncPlatform(db, 'codeforces', 'tourist');
+  const seen = seenIds as Set<string> | undefined; // 赋值发生在闭包内，TS 收窄需要显式断言
+  assert.ok(seen instanceof Set);
+  assert.ok(seen.has('e4')); // 首刷入库的提交号出现在已知集合中
+  assert.equal(result.incremental, true);
+});
+
+test('POST /api/sync/all syncs every bound account and reports incremental', async () => {
+  const { default: express } = await import('express');
+  const { syncRoutes } = await import('../src/routes/sync.ts');
+  const app = express();
+  app.use(express.json());
+  app.use('/api/sync', syncRoutes(db));
+  const srv = app.listen(0);
+  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/sync`;
+
+  try {
+    // 未绑定账号 → results 为空数组
+    const empty = (await (await fetch(`${base}/all`, { method: 'POST' })).json()) as { results: unknown[] };
+    assert.equal(empty.results.length, 0);
+
+    // 注册 atcoder fake（codeforces fake 已由上一个用例注册）
+    register({
+      platform: 'atcoder',
+      async fetchUserSubmissions() {
+        return [
+          {
+            problem: {
+              platform: 'atcoder',
+              problemKey: 'abc321_a',
+              title: 'T abc321_a',
+              difficulty: 300,
+              url: 'https://atcoder.jp/contests/abc321/tasks/abc321_a',
+              tags: [],
+            },
+            verdict: 'AC',
+            language: 'C++',
+            submittedAt: '2024-01-01T00:00:00.000Z',
+            externalId: 'at1',
+          },
+        ];
+      },
+      problemUrl() {
+        return 'https://atcoder.jp/';
+      },
+    });
+    // 绑定两个账号
+    db.prepare(
+      "INSERT INTO platform_accounts (user_id, platform, handle, enabled) VALUES (1, 'codeforces', 'tourist', 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO platform_accounts (user_id, platform, handle, enabled) VALUES (1, 'atcoder', 'tourist_ap', 1)",
+    ).run();
+    const res = await fetch(`${base}/all`, { method: 'POST' });
+    const body = (await res.json()) as {
+      results: Array<{ platform: string; imported: number; incremental?: boolean; durationMs?: number }>;
+    };
+    assert.equal(body.results.length, 2);
+    assert.deepEqual(body.results.map((r) => r.platform).sort(), ['atcoder', 'codeforces']);
+    for (const r of body.results) {
+      assert.equal(r.imported, 1);
+      assert.equal(r.incremental, undefined); // 首刷全量，不标增量
+      assert.ok(typeof r.durationMs === 'number');
+    }
+  } finally {
+    srv.close();
+  }
 });

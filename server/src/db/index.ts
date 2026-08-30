@@ -28,8 +28,25 @@ export function createDb(dbPath: string): Db {
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(schemaOverride ?? fs.readFileSync(SCHEMA_PATH, 'utf8'));
+  migrate(db);
   seed(db);
   return db;
+}
+
+/**
+ * 轻量列迁移：CREATE TABLE IF NOT EXISTS 不会给老库补新列，
+ * 这里按 PRAGMA table_info 检查缺列后 ALTER TABLE 补齐。
+ */
+function migrate(db: Db): void {
+  const columnsOf = (table: string): Set<string> => {
+    const info = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    return new Set(info.map((c) => c.name));
+  };
+  // v0.3: template_progress 增加用户写入的模板内容列
+  const progressCols = columnsOf('template_progress');
+  for (const col of ['code', 'idea', 'complexity', 'url']) {
+    if (!progressCols.has(col)) db.exec(`ALTER TABLE template_progress ADD COLUMN ${col} TEXT`);
+  }
 }
 
 function seed(db: Db): void {

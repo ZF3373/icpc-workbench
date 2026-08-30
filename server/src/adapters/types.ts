@@ -19,6 +19,12 @@ export interface FetchOptions {
   cookie?: string;
   /** 平台 CSRF token（洛谷需 x-csrf-token） */
   csrf?: string;
+  /**
+   * 库中已有的平台提交号集合（同步层注入）。
+   * 拉取结果按新到旧排序的适配器可用它提前终止分页（整页已知 → 更旧的都在库中），
+   * 并跳过已知条目，实现真实增量拉取。
+   */
+  knownExternalIds?: Set<string>;
 }
 
 /**
@@ -27,6 +33,9 @@ export interface FetchOptions {
  */
 export interface PlatformAdapter {
   readonly platform: PlatformId;
+
+  /** 声明支持 knownExternalIds 提前终止（同步层才会注入该参数） */
+  readonly knownIdsFilter?: boolean;
 
   /**
    * 拉取用户在平台上的提交记录（含题目信息），输出统一结构。

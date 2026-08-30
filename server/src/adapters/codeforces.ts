@@ -49,16 +49,18 @@ function splitKey(key: string): { contestId?: string; index: string } {
 
 /**
  * Codeforces 适配器：官方公开 API user.status（无需登录）。
- * 全量拉取最近提交（自动分页，单次最多 1000 条），不支持服务端增量，
- * 增量去重交由同步层按 externalId 处理。
+ * 提交按新到旧返回：同步层注入库中已知提交号后，整页已知即提前终止分页（增量），
+ * 已知条目直接跳过；首刷无已知集合时全量分页，去重交由同步层按 externalId 处理。
  */
 export function createCodeforcesAdapter(
   fetchFn: typeof fetch = fetch,
 ): PlatformAdapter {
   return {
     platform: 'codeforces',
+    knownIdsFilter: true,
 
-    async fetchUserSubmissions(handle: string): Promise<NormalizedSubmission[]> {
+    async fetchUserSubmissions(handle, opts) {
+      const known = opts?.knownExternalIds;
       const out: NormalizedSubmission[] = [];
       let from = 1;
       for (;;) {
@@ -72,8 +74,14 @@ export function createCodeforcesAdapter(
           throw new Error(`Codeforces API: ${data.comment ?? 'unknown error'}`);
         }
         const page = data.result ?? [];
-        for (const s of page) out.push(normalize(s));
-        if (page.length < PAGE_SIZE) break;
+        let unknownInPage = 0;
+        for (const s of page) {
+          if (known?.has(String(s.id))) continue;
+          unknownInPage += 1;
+          out.push(normalize(s));
+        }
+        if (page.length < PAGE_SIZE) break; // 最后一页
+        if (known && unknownInPage === 0) break; // 整页已知：更旧的提交也已在库，增量终止
         from += PAGE_SIZE;
         await sleep(500); // CF 建议 <= 2 req/s
       }

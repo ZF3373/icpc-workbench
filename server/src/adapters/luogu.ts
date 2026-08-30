@@ -219,12 +219,14 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
 
   return {
     platform: 'luogu',
+    knownIdsFilter: true,
 
     async fetchUserSubmissions(
       handle: string,
-      opts?: { since?: string; cookie?: string; csrf?: string },
+      opts?: { since?: string; cookie?: string; csrf?: string; knownExternalIds?: Set<string> },
     ): Promise<NormalizedSubmission[]> {
       const cookie = opts?.cookie;
+      const known = opts?.knownExternalIds;
       if (!cookie) {
         throw new ManualImportRequiredError(
           'luogu',
@@ -258,11 +260,18 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
         }
         const records = data.currentData.records.result;
         if (!Array.isArray(records) || records.length === 0) break;
+        // 已知记录直接跳过（省去后续逐题抓难度/标签）；整页已知 → 更旧的都在库，提前终止
+        let knownInPage = 0;
         for (const rec of records) {
+          if (known?.has(String(rec.id))) {
+            knownInPage += 1;
+            continue;
+          }
           // 过滤等待/评测中/隐藏的非最终状态
           if (rec.status === 0 || rec.status === 1 || rec.status === -1) continue;
           raws.push(rec);
         }
+        if (known && knownInPage === records.length) break;
         await sleep(300);
       }
 
