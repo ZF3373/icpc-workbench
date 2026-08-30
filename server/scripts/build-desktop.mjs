@@ -40,7 +40,13 @@ if (!fs.existsSync(coreExe)) {
 // 版本号同步：git tag → tauri.conf.json（安装程序文件名/卸载信息随 tag 走）
 let appVersion = '0.0.0';
 try {
-  appVersion = execSync('git describe --tags --abbrev=0', { cwd: repoRoot }).toString().trim().replace(/^v/, '');
+  // 只认 vX.Y.Z 形式的 tag：CI 的 nightly tag 不是合法 semver，不能写进 tauri.conf
+  const described = execSync('git describe --tags --abbrev=0 --match "v[0-9]*"', { cwd: repoRoot }).toString().trim();
+  if (/^v?\d+\.\d+\.\d+/.test(described)) {
+    appVersion = described.replace(/^v/, '');
+  } else {
+    console.log(`      （最近 tag "${described}" 非语义化版本，tauri.conf.json 版本保持不变）`);
+  }
 } catch {
   console.log('      （未找到 git tag，tauri.conf.json 版本保持不变）');
 }

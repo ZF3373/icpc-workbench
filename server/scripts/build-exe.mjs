@@ -36,7 +36,13 @@ fs.mkdirSync(outDir, { recursive: true });
 // 供「软件更新」与 /api/health 显示与比对；无 tag 时回退 dev。
 let appVersion = 'dev';
 try {
-  appVersion = execSync('git describe --tags --abbrev=0').toString().trim();
+  // 只认 vX.Y.Z 形式的 tag：仓库里还有 CI 移动的 nightly tag，不能让它进版本号
+  const described = execSync(`git describe --tags --abbrev=0 --match "v[0-9]*"`).toString().trim();
+  if (/^v?\d+\.\d+\.\d+/.test(described)) {
+    appVersion = described;
+  } else {
+    console.log(`      （最近 tag "${described}" 非语义化版本，APP_VERSION=dev）`);
+  }
 } catch {
   console.log('      （未找到 git tag，APP_VERSION=dev）');
 }
