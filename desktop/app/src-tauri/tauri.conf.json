@@ -15,7 +15,15 @@
   },
   "bundle": {
     "active": true,
-    "targets": [],
-    "icon": ["icons/icon.ico"]
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "externalBin": ["binaries/icpc-core"],
+    "windows": {
+      "nsis": {
+        "languages": ["SimpChinese"],
+        "displayLanguageSelector": false,
+        "installerHooks": "./installer-hooks.nsh"
+      }
+    }
   }
 }
