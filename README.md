@@ -4,28 +4,33 @@
 
 ## 功能
 
-- **多平台刷题导入**：Codeforces / AtCoder 自动同步（官方/社区公开 API，增量去重）；洛谷 / 牛客手动导入（JSON / CSV / 表单）
+- **多平台题库与提交记录**：Codeforces / AtCoder / 洛谷 / 牛客支持账号同步（增量去重）；同时保留 JSON / CSV / 表单手动导入兜底
 - **弱项分析**：按标签 / 难度区间 / 平台统计 AC 率，输出相对自身平均的弱项画像；近 12 周趋势
+- **今日训练推荐**：基于近期 AC 能力值自动生成「巩固 / 同段 / 挑战」三档题单，并联动到期复习数与当日计划进度
+- **模板库学习**：内置课程模板 + 自建模板，支持学习状态、笔记、代码要点与「下一课」推荐
 - **AI 训练计划（双通道）**：
   - 内置生成：配置 OpenAI 兼容 API Key 一键生成（DeepSeek / OpenAI / 智谱 / Ollama 等）
   - 导出通道：无 Key 也可下载数据包 + 提示词 `.md`，手动喂给任意 AI，返回的 JSON 通过设置页「导入 AI 计划」粘贴/上传即可入库（自动清洗围栏与解释文字）
   - 任务全部附带可点击的题目链接：练习任务直接跳题目页；回顾/模拟赛任务跳 CF 提交记录/题集入口；AI 输出缺链接时自动按题库回退补链
 - **日历打卡**：月历查看每天训练任务、跳转做题链接、逐任务打卡；打卡数据与计划页联动；连续打卡统计
+- **复习库（间隔复习）**：可把题目加入复习队列，按 hard / ok / easy 反馈自动排期，维护长期记忆
+- **赛事中心**：聚合 Codeforces / AtCoder / 洛谷公开赛事，支持 upcoming / finished 视图与平台筛选
 - **打卡提醒**：设置页配置每日提醒时间，应用打开期间到点若当天仍有未打卡任务，弹浏览器系统通知 + 页面内通知，点击直达日历
 - **Web 挂件**：`http://localhost:3001/widget` 零依赖单页（Express 直接服务），常驻小窗展示当天任务、连续打卡徽标，可直接打卡/跳转做题；透明置顶桌面挂件已按 Tauri 落地（widget.exe，见文末桌面挂件章节）
+- **软件更新**：支持稳定版与 nightly 提交通道检查，桌面版可一键下载并原地更新
 
 ## 技术架构
 
 ```
 icpc-workbench/
 ├── server/          # Node.js + Express + node:sqlite（内置 SQLite，零原生依赖）
-│   ├── adapters/    # 平台适配器（CF/AtCoder 自动；洛谷/牛客受限）+ 增量同步
+│   ├── adapters/    # 平台适配器（CF/AtCoder/洛谷/牛客）+ 增量同步
 │   ├── analysis/    # 聚合统计 / 弱项画像 / 周趋势
 │   ├── ai/          # OpenAI 兼容 provider + plan-prompt.md 提示词模板
 │   ├── plans/       # 计划生成（AI 优先，失败/未配置降级模板）+ 入库
 │   ├── import/      # 手动导入（JSON/CSV/表单）+ 事务入库
-│   └── routes/      # REST API（stats/problems/plans/checkins/settings/export/sync/import）
-├── client/          # React + Vite + Ant Design（仪表盘/题目/计划/日历/设置）
+│   └── routes/      # REST API（today/templates/reviews/contests/plans/checkins/settings/export/sync/import）
+├── client/          # React + Vite + Ant Design（概览/今日训练/模板库/题目/计划/打卡/复习/赛事/设置）
 └── shared/          # 跨端共享类型与平台元信息
 ```
 
@@ -108,7 +113,7 @@ node server/scripts/build-exe.mjs
 
 1. 「设置」→ 下载提示词 `.md`（或 `GET /api/export/plan-package` 取完整数据包）
 2. 把内容粘贴给任意 AI，让其按模板输出 JSON 计划
-3. 将返回的 JSON 通过「题目管理 → 逐条录入 / 上传文件」手动导入为计划
+3. 将返回的 JSON 通过「设置 → 导入 AI 计划」粘贴/上传入库
 
 ## 各平台接入状态
 
@@ -139,9 +144,21 @@ POST /api/import/csv              # CSV 导入（body: platform, csv）
 GET  /api/stats                   # 总体统计（from/to/platform 过滤）
 GET  /api/stats/weakness          # 弱项画像（minAttempts/topN）
 GET  /api/stats/trend             # 周趋势（weeks）
+GET  /api/today                   # 今日训练三档推荐（consolidation/core/challenge）
 GET  /api/problems                # 题目列表（platform/difficulty/tag/q 过滤）
+POST /api/reviews                 # 加入复习队列（body: platform, problemKey）
+GET  /api/reviews                 # 复习队列（due=1 只看到期）
+GET  /api/reviews/due-count       # 到期复习数量
+POST /api/reviews/:id/feedback    # 复习反馈（body: { feedback: hard|ok|easy }）并自动排期
+PATCH /api/reviews/:id            # 复习笔记（body: note）
+DELETE /api/reviews/:id           # 移出复习队列
 GET  /api/templates               # 内置模板课程全量 + 个人进度（total/mastered/learning/next）
 GET  /api/templates/next          # 「下一课」推荐（学习中优先，其次大纲第一个未学）
+POST /api/templates/custom        # 新建自建模板
+PATCH /api/templates/custom/:id   # 编辑自建模板
+DELETE /api/templates/custom/:id  # 删除自建模板
+PUT  /api/templates/:id/content   # 更新课程条目内容（code/idea/complexity/url）
+POST /api/templates/examples/collect # 例题一键入库题目管理
 POST /api/templates/:id/status    # 学习状态（body: { status: todo|learning|mastered }）
 PATCH /api/templates/:id/note     # 学习笔记（body: { note }）
 GET  /api/plans | POST /api/plans/generate | POST /api/plans/import | GET /api/plans/:id | DELETE /api/plans/:id
@@ -155,6 +172,11 @@ POST /api/checkins { taskId }     # 打卡 | DELETE /api/checkins/:taskId 取消
 GET  /api/settings                # 设置（AI/账号/适配器开关/打卡提醒）
 POST /api/settings/reminder       # 打卡提醒配置（body: enabled?, time? "HH:MM"）
 POST /api/settings/cookies/check  # 检测 Cookie 登录态（洛谷：302/非 JSON 判定过期）
+GET  /api/contests                # 公开赛事聚合（type=upcoming|finished&platform=&limit=）
+GET  /api/update/check            # 检查稳定版/nightly更新
+GET  /api/update/progress         # 一键更新下载进度
+POST /api/update/download         # 下载推荐更新产物（桌面版）
+POST /api/update/apply            # 应用更新（桌面版）
 GET  /api/export/plan-package     # 数据包（弱项+趋势+题目+提示词）
 GET  /api/export/plan-prompt.md   # 渲染好的提示词下载
 GET  /widget                      # Web 挂件单页（当天任务 + 打卡，桌面挂件同款 API）
