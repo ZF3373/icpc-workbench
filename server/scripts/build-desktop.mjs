@@ -37,6 +37,21 @@ if (!fs.existsSync(coreExe)) {
   process.exit(1);
 }
 
+// 版本号同步：git tag → tauri.conf.json（安装程序文件名/卸载信息随 tag 走）
+let appVersion = '0.0.0';
+try {
+  appVersion = execSync('git describe --tags --abbrev=0', { cwd: repoRoot }).toString().trim().replace(/^v/, '');
+} catch {
+  console.log('      （未找到 git tag，tauri.conf.json 版本保持不变）');
+}
+const tauriConfPath = path.join(appTauriDir, 'tauri.conf.json');
+const tauriConf = JSON.parse(fs.readFileSync(tauriConfPath, 'utf8'));
+if (appVersion !== '0.0.0' && tauriConf.version !== appVersion) {
+  tauriConf.version = appVersion;
+  fs.writeFileSync(tauriConfPath, JSON.stringify(tauriConf, null, 2) + '\n');
+  console.log(`      tauri.conf.json version -> ${appVersion}`);
+}
+
 console.log(`[2/4] 复制核心为 sidecar（同时覆盖 gnu / msvc 两种 triple 命名）...`);
 fs.mkdirSync(sidecarDir, { recursive: true });
 for (const triple of ['x86_64-pc-windows-gnu', 'x86_64-pc-windows-msvc']) {
