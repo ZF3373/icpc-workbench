@@ -1,8 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "本地窗口基础权限（页面为远程本地服务，未调用任何 Tauri IPC 能力）",
+  "description": "本地窗口基础权限；远程页面（本机核心服务）授予 opener 外链打开权限",
   "local": true,
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+  },
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "opener:default"]
 }

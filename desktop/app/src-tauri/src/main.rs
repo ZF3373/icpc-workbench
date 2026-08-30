@@ -68,6 +68,8 @@ fn spawn_core(app: &tauri::AppHandle) {
     }
     let mut cmd = std::process::Command::new(&path);
     cmd.env("ICPC_EMBEDDED", "1");
+    // 企业网 TLS 拦截下 Node 内置 CA 校验会失败（更新检查/下载），改走 Windows 系统证书库
+    cmd.env("NODE_USE_SYSTEM_CA", "1");
     cmd.current_dir(exe_dir()); // data/ 与壳 exe 同目录，升级替换 exe 数据不丢
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -179,6 +181,7 @@ async fn supervise(app: tauri::AppHandle) {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_focus();
