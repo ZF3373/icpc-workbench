@@ -66,4 +66,4 @@ jobs:
             server/release/icpc-workbench.exe \
             server/release/icpc-core.exe \
             server/release/checksums.sha256 \
-            server/release/icpc-workbench-*.exe
+            server/release/*-setup.exe
