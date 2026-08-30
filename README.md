@@ -198,3 +198,8 @@ cd desktop/src-tauri && cargo tauri build   # 产物 widget.exe（约 3-8MB）
 - [ ] offline 页「启动主程序」按钮可拉起主 exe
 - [ ] 主 exe 同目录有 widget.exe 时自动拉起；反复重启主程序只有一份挂件
 - [ ] `launchWidget: false` 时不自动拉起；主 exe 单独存在时正常使用
+
+## 许可证
+
+本项目代码以 [MIT License](./LICENSE) 发布。
+第三方依赖及其许可证见 [CREDITS.md](./CREDITS.md)；安全问题请通过 [SECURITY.md](./SECURITY.md) 的私密渠道报告，勿公开发 Issue。
