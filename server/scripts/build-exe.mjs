@@ -41,6 +41,14 @@ try {
   console.log('      （未找到 git tag，APP_VERSION=dev）');
 }
 console.log(`      APP_VERSION = ${appVersion}`);
+// 构建 commit（短 SHA）：供更新检查与 GitHub master 最新提交比对（nightly 双通道）。
+let buildCommit = 'dev';
+try {
+  buildCommit = execSync('git rev-parse --short HEAD').toString().trim();
+} catch {
+  console.log('      （非 git 环境，BUILD_COMMIT=dev）');
+}
+console.log(`      BUILD_COMMIT = ${buildCommit}`);
 // CJS bundle：SEA 主脚本按 CJS 执行（embedderRunCjs）。
 // 源码普遍在模块顶层用 fileURLToPath(import.meta.url) 定位资源，
 // CJS 下 import.meta 为空对象会当场抛错 —— 打包期重写为 __filename/__dirname。
@@ -68,7 +76,10 @@ await build({
   external: ['node:*'],
   minify: true,
   plugins: [importMetaPlugin],
-  define: { 'process.env.APP_VERSION': JSON.stringify(appVersion) },
+  define: {
+    'process.env.APP_VERSION': JSON.stringify(appVersion),
+    'process.env.BUILD_COMMIT': JSON.stringify(buildCommit),
+  },
 });
 
 // ---- 收集内嵌资源 ----
@@ -165,8 +176,8 @@ const README_TXT = `
   - 提示端口被占用：软件会自动换一个端口，以黑色窗口里显示的网址为准。
   - 双击后窗口一闪而过：说明启动出错，请把 exe 拖到命令行窗口里运行查看报错。
   - 重复双击：软件只会运行一份，直接为你打开正在运行的页面。
-  - 检查更新：设置页底部有「检查更新」按钮，有新版本时按提示下载 zip，
-    解压后用新 exe 替换旧文件即可，data 文件夹不用动。
+  - 检查更新：设置页底部有「检查更新」按钮，支持一键更新（正式版与
+    GitHub 最新提交构建），也可按提示下载后手动替换，data 文件夹不用动。
 `;
 
 // ---- 发布目录：只放 exe + 使用说明，直接整个文件夹拷给用户 ----

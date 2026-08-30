@@ -123,14 +123,41 @@ export interface ReminderConfig {
   time: string // HH:MM（24 小时制）
 }
 
+export interface UpdateCommit {
+  sha: string
+  shortSha: string
+  message: string
+  date: string
+  page: string
+}
+
+export interface UpdateDownloadUrls {
+  shell: string
+  core: string
+  checksums: string
+}
+
 export interface UpdateInfo {
   ok: boolean
   current: string
+  buildCommit: string
   latest: string | null
   hasUpdate: boolean
   releasePage: string | null
   notes: string | null
+  commit: UpdateCommit | null
+  hasCommitUpdate: boolean
+  channel: 'stable' | 'commit' | null
+  download: UpdateDownloadUrls | null
+  canSelfUpdate?: boolean
   message?: string
+}
+
+export interface UpdateProgress {
+  phase: 'idle' | 'downloading' | 'verifying' | 'staged' | 'error'
+  received: number
+  total: number
+  error: string | null
 }
 
 // ---------- 复习库 / 今日训练 / 赛事中心（与 shared 类型对齐） ----------

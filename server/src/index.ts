@@ -37,7 +37,7 @@ app.use('/api/templates', templatesRoutes(db));
 app.use('/api/contests', contestsRoutes());
 app.use('/api/checkins', checkinsRoutes(db));
 app.use('/api/settings', settingsRoutes(db, config));
-app.use('/api/update', updateRoutes());
+app.use('/api/update', updateRoutes(config));
 app.use('/widget', widgetRoutes());
 
 app.get('/api/health', (_req, res) => {

@@ -66,7 +66,7 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
   app.use('/api/contests', contestsRoutes());
   app.use('/api/checkins', checkinsRoutes(db));
   app.use('/api/settings', settingsRoutes(db, config));
-  app.use('/api/update', updateRoutes());
+  app.use('/api/update', updateRoutes(config));
   // widget 静态目录必须先注入再创建 router（express.static 创建时捕获目录值）
   setWidgetPublicDir(resolveWidgetDir());
   app.use('/widget', widgetRoutes());

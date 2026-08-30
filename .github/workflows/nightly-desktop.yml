@@ -1,0 +1,69 @@
+# 桌面版 nightly 自动构建：每次 push 到 master 构建三件套并发布/覆盖 nightly 预发布版。
+# 应用内「检查更新」会把它作为提交通道，感知未打 tag 的新提交并支持一键更新。
+name: 桌面版 nightly 构建
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-desktop
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # APP_VERSION 取最近 tag、注入构建 commit，需要完整历史
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/app/src-tauri
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建桌面版（核心 SEA + Tauri 壳 + NSIS 安装程序）
+        run: node server/scripts/build-desktop.mjs
+
+      - name: 生成 SHA256 校验文件
+        shell: pwsh
+        run: |
+          $lines = Get-ChildItem server/release/*.exe | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          }
+          $lines | Set-Content server/release/checksums.sha256
+          Get-Content server/release/checksums.sha256
+
+      - name: 发布 nightly 预发布版（覆盖旧的）
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          SHORT="${SHA::7}"
+          DATE=$(date +%Y-%m-%d)
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly \
+            --prerelease \
+            --target "$SHA" \
+            --title "nightly · $SHORT · $DATE" \
+            --notes "master 分支提交 ${SHORT} 的自动构建（开发版，稳定性低于正式发布版）。应用内「一键更新」会自动选择此通道；校验文件见 checksums.sha256。" \
+            server/release/icpc-workbench.exe \
+            server/release/icpc-core.exe \
+            server/release/checksums.sha256 \
+            server/release/icpc-workbench-*.exe
