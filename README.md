@@ -98,7 +98,7 @@ node server/scripts/build-exe.mjs
 
 | 平台 | 自动同步 | 方式 | 说明 |
 |------|---------|------|------|
-| Codeforces | ✅ | 官方公开 API `user.status` | 无需登录；全量拉取最近提交，按提交号去重 |
+| Codeforces | ✅ | 官方公开 API `user.status` | 无需登录；按新到旧分页，整页提交号已知即提前终止（增量） |
 | AtCoder | ✅ | 社区 API `kenkoooo.com` v3 | 支持增量（from_second）；题目资源 24h 磁盘缓存；官方要求页间 ≥1s |
 | 洛谷 | ✅（需 Cookie） | `record/list` 非官方 API | 设置页填写登录 Cookie（+CSRF）后自动同步；难度分级（0-8）自动映射为 CF rating；标签经 `x-lentille-request` 头 + `/_lfe/tags` 字典获取 |
 | 牛客 | ✅ | 公开 HTML `acm/contest/profile/{uid}/practice-coding` | 无需登录/Cookie（牛客已下线 JSON API）；解析提交表格，支持增量与分页；题目无难度/标签字段（数据源限制） |
@@ -116,13 +116,18 @@ node server/scripts/build-exe.mjs
 
 ```
 GET  /api/health
-POST /api/sync/:platform          # 同步平台账号（body: handle）
+POST /api/sync/all               # 一键同步全部已绑定账号（各平台增量，单平台失败不影响其余）
+POST /api/sync/:platform          # 同步单个平台账号（body: handle）
 POST /api/import/manual           # 手动导入（body: platform, rows[]）
 POST /api/import/csv              # CSV 导入（body: platform, csv）
 GET  /api/stats                   # 总体统计（from/to/platform 过滤）
 GET  /api/stats/weakness          # 弱项画像（minAttempts/topN）
 GET  /api/stats/trend             # 周趋势（weeks）
 GET  /api/problems                # 题目列表（platform/difficulty/tag/q 过滤）
+GET  /api/templates               # 内置模板课程全量 + 个人进度（total/mastered/learning/next）
+GET  /api/templates/next          # 「下一课」推荐（学习中优先，其次大纲第一个未学）
+POST /api/templates/:id/status    # 学习状态（body: { status: todo|learning|mastered }）
+PATCH /api/templates/:id/note     # 学习笔记（body: { note }）
 GET  /api/plans | POST /api/plans/generate | POST /api/plans/import | GET /api/plans/:id | DELETE /api/plans/:id
                                    # import body: { raw, startDate?, days? } ← 任意 AI 返回的计划 JSON 文本
 PATCH /api/plans/tasks/:taskId    # 编辑单条任务（taskDate/title/kind/url/note，仅更新提交字段）
