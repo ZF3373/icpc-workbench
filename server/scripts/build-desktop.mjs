@@ -122,6 +122,48 @@ try {
 }
 
 const sizeOf = (p) => (fs.statSync(p).size / 1024 / 1024).toFixed(1);
+
+// ---- 代码签名（可选）：设置环境变量 CODESIGN_PFX_PASSWORD 后自动签名三个 exe ----
+// 证书默认取 server/certs/*.pfx（已 gitignore，绝不入库）；无密码环境变量则跳过签名。
+const pfxCandidates = fs.existsSync(path.join(serverRoot, 'certs'))
+  ? fs
+      .readdirSync(path.join(serverRoot, 'certs'))
+      .filter((f) => f.endsWith('.pfx'))
+      .map((f) => path.join(serverRoot, 'certs', f))
+  : [];
+const pfxPassword = process.env.CODESIGN_PFX_PASSWORD;
+if (!pfxPassword || pfxCandidates.length === 0) {
+  console.log('（未设置 CODESIGN_PFX_PASSWORD 或无 pfx 证书，跳过代码签名——SmartScreen 提示仍会出现）');
+} else {
+  const kitsRoot = 'C:\\Program Files (x86)\\Windows Kits\\10\\bin';
+  let signtool = null;
+  if (fs.existsSync(kitsRoot)) {
+    for (const ver of fs.readdirSync(kitsRoot).sort().reverse()) {
+      const cand = path.join(kitsRoot, ver, 'x64', 'signtool.exe');
+      if (fs.existsSync(cand)) {
+        signtool = cand;
+        break;
+      }
+    }
+  }
+  if (!signtool) {
+    console.log('（未找到 Windows SDK signtool，跳过代码签名）');
+  } else {
+    const targets = [
+      path.join(releaseDir, 'icpc-workbench.exe'),
+      path.join(releaseDir, 'icpc-core.exe'),
+      path.join(releaseDir, setupExe),
+    ];
+    for (const f of targets) {
+      execSync(
+        `"${signtool}" sign /fd SHA256 /f "${pfxCandidates[0]}" /p "${pfxPassword}" /t http://timestamp.digicert.com "${f}"`,
+        { stdio: 'inherit' },
+      );
+    }
+    console.log('已完成代码签名（自签名：仅本机装信任后去除告警，公网分发建议 Azure Trusted Signing）');
+  }
+}
+
 console.log(`\n完成: ${releaseDir}`);
 console.log(`  ${setupExe}  ${sizeOf(path.join(releaseDir, setupExe))} MB（安装程序）`);
 console.log(`  icpc-workbench.exe  ${sizeOf(path.join(releaseDir, 'icpc-workbench.exe'))} MB（便携版壳）`);
