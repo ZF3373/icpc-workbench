@@ -34,6 +34,7 @@ import StatStrip from '../components/StatStrip'
 import Markdown from '../components/Markdown'
 import { tagColor } from '../ui'
 import { del, get, patch, post, put } from '../api'
+import { codeEditorKeys } from '../codeEditorKeys'
 import type { TemplateContentInfo, TemplateExampleInfo, TemplateItemInfo, TemplatesResponse, TemplateStatus } from '../types'
 
 const STATUS_META: Array<{ key: TemplateStatus; label: string; icon: typeof CheckCircleOutlined }> = [
@@ -594,7 +595,7 @@ export default function Templates() {
             <Input.TextArea rows={2} placeholder="自己的理解、适用边界……（支持 Markdown）" maxLength={5000} />
           </Form.Item>
           <Form.Item name="code" label="模板代码">
-            <Input.TextArea rows={10} className="mono" placeholder="粘贴你的 C++ 模板……" maxLength={20000} />
+            <Input.TextArea rows={10} className="mono" onKeyDown={codeEditorKeys} placeholder="粘贴你的 C++ 模板……（支持 Tab 缩进）" maxLength={20000} />
           </Form.Item>
         </Form>
       </Modal>
@@ -627,9 +628,10 @@ export default function Templates() {
                 <Input.TextArea
                   rows={12}
                   className="mono"
+                  onKeyDown={codeEditorKeys}
                   value={contentDraft.code ?? ''}
                   onChange={(e) => setContentDraft((d) => ({ ...d, code: e.target.value }))}
-                  placeholder="粘贴 / 编写你的 C++ 模板……"
+                  placeholder="粘贴 / 编写你的 C++ 模板……（支持 Tab 缩进）"
                   maxLength={20000}
                 />
               </Form.Item>
