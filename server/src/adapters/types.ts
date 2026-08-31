@@ -17,7 +17,7 @@ export interface FetchOptions {
   since?: string;
   /** 平台登录 Cookie（洛谷/牛客等需登录平台使用） */
   cookie?: string;
-  /** 平台 CSRF token（洛谷需 x-csrf-token） */
+  /** 平台 CSRF token（历史遗留；同步请求均为 GET，无需用户提供） */
   csrf?: string;
   /**
    * 库中已有的平台提交号集合（同步层注入）。

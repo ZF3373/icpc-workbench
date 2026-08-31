@@ -47,11 +47,27 @@ const SYNC_NOTE_COLOR: Record<string, string> = {
   manual: 'default',
 }
 
+/** 输入框兼容纯值与整段粘贴：不含 = 视为直接填的值；含 = 时提取对应 cookie 字段（(?:^|;) 锚定，避免误匹配到其他同前缀 cookie 名的值） */
+function extractCookieValue(raw: string, name: string): string {
+  const s = raw.trim()
+  if (!s) return ''
+  if (!s.includes('=')) return s
+  const m = s.match(new RegExp(`(?:^|;)\\s*${name}=([^;\\s]+)`))
+  return m ? m[1] : ''
+}
+
+/** 用户只填 _uid / __client_id 两项的值，请求用 Cookie 头由这里拼装；C3VK 等挑战 Cookie 由适配器自动续期 */
+function assembleLuoguCookie(v: { uid: string; clientId: string }): string {
+  const uid = extractCookieValue(v.uid, '_uid') || extractCookieValue(v.clientId, '_uid')
+  const token = extractCookieValue(v.clientId, '__client_id') || extractCookieValue(v.uid, '__client_id')
+  return [uid && `_uid=${uid}`, token && `__client_id=${token}`].filter(Boolean).join('; ')
+}
+
 export default function Settings() {
   const [data, setData] = useState<SettingsData | null>(null)
   const [aiForm] = Form.useForm()
   const [handleInputs, setHandleInputs] = useState<Record<string, string>>({})
-  const [cookieInputs, setCookieInputs] = useState<Record<string, { cookie: string; csrf: string }>>({})
+  const [cookieInputs, setCookieInputs] = useState<Record<string, { uid: string; clientId: string }>>({})
   const [cookieCheck, setCookieCheck] = useState<Record<string, { ok: boolean; message: string } | 'checking'>>({})
   const [reminderEnabled, setReminderEnabled] = useState(false)
   const [reminderTime, setReminderTime] = useState<Dayjs>(dayjs('20:00', 'HH:mm'))
@@ -65,10 +81,15 @@ export default function Settings() {
         setData(d)
         aiForm.setFieldsValue(d.ai)
         const handles: Record<string, string> = {}
-        const cookies: Record<string, { cookie: string; csrf: string }> = {}
+        const cookies: Record<string, { uid: string; clientId: string }> = {}
         for (const a of d.accounts) handles[a.platform] = a.handle
         for (const [platform, c] of Object.entries(d.cookies)) {
-          cookies[platform] = { cookie: c.cookie ?? '', csrf: c.csrf ?? '' }
+          // 已保存的是拼装好的 Cookie 头，回填时拆回 _uid / __client_id 两个输入框
+          const saved = c.cookie ?? ''
+          cookies[platform] = {
+            uid: extractCookieValue(saved, '_uid'),
+            clientId: extractCookieValue(saved, '__client_id'),
+          }
         }
         setHandleInputs(handles)
         setCookieInputs(cookies)
@@ -127,9 +148,11 @@ export default function Settings() {
   }
 
   const saveCookie = async (platform: PlatformId) => {
-    const v = cookieInputs[platform] ?? { cookie: '', csrf: '' }
+    const v = cookieInputs[platform] ?? { uid: '', clientId: '' }
     try {
-      await post('/api/settings/cookies', { platform, cookie: v.cookie, csrf: v.csrf })
+      // 用户只填 _uid / __client_id 两项的值，请求头格式由前端拼装；
+      // csrf: '' 让后端清掉历史遗留的 csrf 记录——同步请求全是 GET，不需要 x-csrf-token
+      await post('/api/settings/cookies', { platform, cookie: assembleLuoguCookie(v), csrf: '' })
       message.success(`${PLATFORMS.find((p) => p.id === platform)?.name} Cookie 已保存`)
       load()
     } catch (e) {
@@ -138,14 +161,14 @@ export default function Settings() {
   }
 
   const checkCookie = async (platform: PlatformId) => {
-    const v = cookieInputs[platform] ?? { cookie: '', csrf: '' }
+    const v = cookieInputs[platform] ?? { uid: '', clientId: '' }
     setCookieCheck((s) => ({ ...s, [platform]: 'checking' }))
     try {
-      // 未填写输入框时检测已保存的 Cookie（后端兜底读取 settings）
+      // 两个输入框都为空时检测已保存的 Cookie（后端兜底读取 settings）
+      const cookie = assembleLuoguCookie(v)
       const r = await post<{ ok: boolean; message: string }>('/api/settings/cookies/check', {
         platform,
-        ...(v.cookie.trim() ? { cookie: v.cookie.trim() } : {}),
-        ...(v.csrf.trim() ? { csrf: v.csrf.trim() } : {}),
+        ...(cookie ? { cookie } : {}),
       })
       setCookieCheck((s) => ({ ...s, [platform]: r }))
     } catch (e) {
@@ -227,7 +250,7 @@ export default function Settings() {
             const enabled = data.adapterEnabled[p.id] !== false
             const syncNote =
               p.sync === 'auto' ? '自动同步' : p.sync === 'cookie' ? '配置 Cookie 后自动同步' : '仅手动导入'
-            const c = cookieInputs[p.id] ?? { cookie: '', csrf: '' }
+            const c = cookieInputs[p.id] ?? { uid: '', clientId: '' }
             return (
               <div key={p.id} className="platform-row">
                 <div className="platform-row-head">
@@ -262,30 +285,28 @@ export default function Settings() {
                       return (
                         <>
                           <Space wrap>
-                            <Input.Password
-                              placeholder="登录 Cookie"
-                              style={{ width: 260 }}
-                              value={c.cookie}
+                            <Input
+                              placeholder="_uid（洛谷用户 uid，纯数字）"
+                              style={{ width: 200 }}
+                              value={c.uid}
                               onChange={(e) =>
                                 setCookieInputs((s) => ({
                                   ...s,
-                                  [p.id]: { ...(s[p.id] ?? { csrf: '' }), cookie: e.target.value },
+                                  [p.id]: { ...(s[p.id] ?? { clientId: '' }), uid: e.target.value },
                                 }))
                               }
                             />
-                            {p.id === 'luogu' && (
-                              <Input
-                                placeholder="CSRF（x-csrf-token，可选）"
-                                style={{ width: 200 }}
-                                value={c.csrf}
-                                onChange={(e) =>
-                                  setCookieInputs((s) => ({
-                                    ...s,
-                                    [p.id]: { ...(s[p.id] ?? { cookie: '' }), csrf: e.target.value },
-                                  }))
-                                }
-                              />
-                            )}
+                            <Input.Password
+                              placeholder="__client_id（登录令牌，F12 → Application → Cookies 复制）"
+                              style={{ width: 300 }}
+                              value={c.clientId}
+                              onChange={(e) =>
+                                setCookieInputs((s) => ({
+                                  ...s,
+                                  [p.id]: { ...(s[p.id] ?? { uid: '' }), clientId: e.target.value },
+                                }))
+                              }
+                            />
                             <Button size="small" onClick={() => saveCookie(p.id)}>
                               保存 Cookie
                             </Button>
@@ -311,7 +332,7 @@ export default function Settings() {
             )
           })}
           <p className="muted-note">
-            说明：Codeforces / AtCoder 自动同步；洛谷 / 牛客在填写登录 Cookie 后可自动同步（未配置时请在「题目管理」手动导入）。
+            说明：Codeforces / AtCoder / 牛客自动同步；洛谷填写 `_uid` / `__client_id` 两项 Cookie 后自动同步（未配置时请在「题目管理」手动导入）。
           </p>
         </Card>
       </Col>
