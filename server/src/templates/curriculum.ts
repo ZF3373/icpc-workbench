@@ -38,9 +38,12 @@ const lg = (key: string, title: string): TemplateExample => ({
   url: `https://www.luogu.com.cn/problem/${key}`,
 });
 
+// 例题键必须与 CF 适配器的规范键一致（无斜杠，如 279B），
+// 否则同步的提交挂在 279B 行、例题查的是 279/B 行，AC 追踪永远匹配不上。
+// 入参沿用 279/B 书写便于阅读，出参统一规范化。
 const cf = (key: string, title: string): TemplateExample => ({
   platform: 'codeforces',
-  key,
+  key: key.replace('/', ''),
   title,
   url: `https://codeforces.com/problemset/problem/${key.split('/')[0]}/${key.split('/')[1]}`,
 });

@@ -34,8 +34,9 @@ export function createDb(dbPath: string): Db {
 }
 
 /**
- * 轻量列迁移：CREATE TABLE IF NOT EXISTS 不会给老库补新列，
- * 这里按 PRAGMA table_info 检查缺列后 ALTER TABLE 补齐。
+ * 轻量迁移：CREATE TABLE IF NOT EXISTS 不会给老库补新列，
+ * 这里按 PRAGMA table_info 检查缺列后 ALTER TABLE 补齐；
+ * 数据修复类迁移必须幂等（重复打开同一库不再产生变化）。
  */
 function migrate(db: Db): void {
   const columnsOf = (table: string): Set<string> => {
@@ -46,6 +47,58 @@ function migrate(db: Db): void {
   const progressCols = columnsOf('template_progress');
   for (const col of ['code', 'idea', 'complexity', 'url']) {
     if (!progressCols.has(col)) db.exec(`ALTER TABLE template_progress ADD COLUMN ${col} TEXT`);
+  }
+  mergeSlashedCfKeys(db);
+}
+
+/**
+ * v0.4.3 数据修复：模板库 CF 例题键曾写成 279/B，与适配器规范键 279B 不一致，
+ * 同一道题裂成两行（提交挂规范行、例题查斜杠行），例题 AC 追踪永远匹配不上。
+ * 把带斜杠的行合并进规范键行（无规范行时原地改名），清理冗余行。
+ */
+function mergeSlashedCfKeys(db: Db): void {
+  const slashed = db
+    .prepare(
+      "SELECT id, problem_key FROM problems WHERE platform = 'codeforces' AND instr(problem_key, '/') > 0",
+    )
+    .all() as unknown as Array<{ id: number; problem_key: string }>;
+  if (slashed.length === 0) return;
+
+  const canonicalOf = db.prepare(
+    "SELECT id FROM problems WHERE platform = 'codeforces' AND problem_key = ?",
+  );
+  const rename = db.prepare('UPDATE problems SET problem_key = ? WHERE id = ?');
+  const repointSubmissions = db.prepare(
+    'UPDATE submissions SET problem_id = ? WHERE problem_id = ?',
+  );
+  const repointPlanTasks = db.prepare('UPDATE plan_tasks SET problem_id = ? WHERE problem_id = ?');
+  // 复习条目同一题只留一条：规范行已有则丢弃斜杠行的
+  const repointReviews = db.prepare(
+    `UPDATE review_items SET problem_id = ? WHERE problem_id = ?
+       AND NOT EXISTS (SELECT 1 FROM review_items r WHERE r.user_id = review_items.user_id AND r.problem_id = ?)`,
+  );
+  const dropReviews = db.prepare('DELETE FROM review_items WHERE problem_id = ?');
+  const dropProblem = db.prepare('DELETE FROM problems WHERE id = ?');
+
+  db.exec('BEGIN');
+  try {
+    for (const row of slashed) {
+      const canonicalKey = row.problem_key.replaceAll('/', '');
+      const keep = canonicalOf.get(canonicalKey) as { id: number } | undefined;
+      if (!keep) {
+        rename.run(canonicalKey, row.id);
+        continue;
+      }
+      repointSubmissions.run(keep.id, row.id);
+      repointPlanTasks.run(keep.id, row.id);
+      repointReviews.run(keep.id, row.id, keep.id);
+      dropReviews.run(row.id);
+      dropProblem.run(row.id);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
   }
 }
 

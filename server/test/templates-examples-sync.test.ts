@@ -59,8 +59,8 @@ function registerFakeCf(rows: NormalizedSubmission[]): void {
 
 test('examples/sync: 拉取已绑定平台最新提交并刷新例题 AC 状态', async () => {
   await withServer(async (base, db) => {
-    // basic-binary-search 的例题：洛谷 P2249 + CF 279/B
-    registerFakeCf([acCf('279/B', 'e1')]);
+    // basic-binary-search 的例题：洛谷 P2249 + CF 279B（规范键与适配器一致）
+    registerFakeCf([acCf('279B', 'e1')]);
     db.prepare(
       `INSERT INTO platform_accounts (user_id, platform, handle, last_sync_at, enabled)
        VALUES (?, 'codeforces', 'tourist', NULL, 1)`,
@@ -84,7 +84,7 @@ test('examples/sync: 拉取已绑定平台最新提交并刷新例题 AC 状态'
     assert.equal(lgResult.imported, 0);
     assert.ok(lgResult.errors[0].includes('洛谷'));
 
-    // 例题状态已刷新：279/B 自动入库且 AC；P2249 未入库未 AC
+    // 例题状态已刷新：279B 自动入库且 AC；P2249 未入库未 AC
     const list = (await (await fetch(base)).json()) as {
       categories: Array<{
         templates: Array<{ id: string; examples: Array<{ key: string; inBank?: boolean; ac?: boolean }> }>;
@@ -93,7 +93,7 @@ test('examples/sync: 拉取已绑定平台最新提交并刷新例题 AC 状态'
     const examples = list.categories
       .flatMap((c) => c.templates)
       .find((t) => t.id === 'basic-binary-search')!.examples;
-    const solved = examples.find((e) => e.key === '279/B')!;
+    const solved = examples.find((e) => e.key === '279B')!;
     assert.equal(solved.inBank, true);
     assert.equal(solved.ac, true);
     const untouched = examples.find((e) => e.key === 'P2249')!;

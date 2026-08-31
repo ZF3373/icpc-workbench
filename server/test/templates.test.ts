@@ -19,6 +19,12 @@ test('curriculum: outline slots, unique ids, no pre-baked content', () => {
       // 大纲模式：不预置模板内容，只有要点说明
       assert.equal((t as unknown as { code?: string }).code, undefined, `${t.id} 不应预置代码`);
       assert.ok(t.outline.length > 10, `${t.id} 缺少大纲要点`);
+      // 例题键必须与平台适配器规范一致：CF 无斜杠（279B），否则同步提交匹配不上
+      for (const ex of t.examples) {
+        if (ex.platform === 'codeforces') {
+          assert.ok(!ex.key.includes('/'), `${t.id} CF 例题键应无斜杠: ${ex.key}`);
+        }
+      }
     }
   }
   assert.equal(ids.size, TEMPLATE_TOTAL);
