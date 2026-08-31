@@ -54,6 +54,12 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     const cfGroupsRow = db
       .prepare('SELECT value FROM settings WHERE key = ?')
       .get('contests.cfGroups') as { value: string } | undefined;
+    const cfApiKeyRow = db
+      .prepare('SELECT value FROM settings WHERE key = ?')
+      .get('codeforces.apiKey') as { value: string } | undefined;
+    const cfSecretRow = db
+      .prepare('SELECT value FROM settings WHERE key = ?')
+      .get('codeforces.secret') as { value: string } | undefined;
     res.json({
       ai,
       accounts,
@@ -62,21 +68,41 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       cookies,
       reminder: readReminder(db),
       cfGroups: cfGroupsRow?.value ?? '',
+      cfApiKey: cfApiKeyRow?.value ?? '',
+      cfSecret: cfSecretRow?.value ?? '',
     });
   });
 
-  // POST /api/settings/cf-groups  body: { groups: string }
-  // CF 小组 code 列表（空白/逗号分隔），赛事中心额外聚合小组内训练赛；空串清除
+  // POST /api/settings/cf-groups
+  // body: { groups: string, apiKey?: string, secret?: string }
+  // CF 小组赛配置：小组 code 列表 + contest.list 认证用的 API Key/Secret
+  //（codeforces.com/settings/api 生成，Key 主人须为小组成员）；对应字段空串清除
   r.post('/cf-groups', (req, res) => {
-    const raw = req.body?.groups;
-    if (typeof raw !== 'string') return res.status(400).json({ error: 'groups 需为字符串' });
-    const codes = parseCfGroupCodes(raw);
+    const { groups, apiKey, secret } = req.body ?? {};
+    if (typeof groups !== 'string') return res.status(400).json({ error: 'groups 需为字符串' });
+    if (apiKey !== undefined && typeof apiKey !== 'string') {
+      return res.status(400).json({ error: 'apiKey 需为字符串' });
+    }
+    if (secret !== undefined && typeof secret !== 'string') {
+      return res.status(400).json({ error: 'secret 需为字符串' });
+    }
     const upsert = db.prepare(
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     );
     const remove = db.prepare('DELETE FROM settings WHERE key = ?');
+
+    const codes = parseCfGroupCodes(groups);
     if (codes.length === 0) remove.run('contests.cfGroups');
     else upsert.run('contests.cfGroups', codes.join(' '));
+
+    const setOrClear = (key: string, raw: string | undefined): void => {
+      if (raw === undefined) return;
+      const v = raw.trim();
+      if (v === '') remove.run(key);
+      else upsert.run(key, v);
+    };
+    setOrClear('codeforces.apiKey', apiKey);
+    setOrClear('codeforces.secret', secret);
     res.json({ ok: true, codes });
   });
 

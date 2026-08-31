@@ -1,8 +1,9 @@
 import type { ContestInfo, PlatformId } from '../../../shared/src/index.ts';
 import { fetchAtcoderContests } from './atcoderContests.ts';
-import { fetchCfContests } from './cfContests.ts';
+import { fetchCfContests, type CfApiAuth } from './cfContests.ts';
 import { fetchLuoguContests } from './luoguContests.ts';
 import { fetchNowcoderContests } from './nowcoderContests.ts';
+
 /**
  * 多平台赛事聚合：Codeforces / AtCoder / 洛谷 / 牛客。
  * 单一数据源失败只降级跳过（记入 failures），全部失败才报错。
@@ -27,8 +28,10 @@ export interface AllContests {
 }
 
 export interface AllContestsOptions {
-  /** CF 小组 code 列表：额外聚合小组内训练赛（contest.list?group=） */
+  /** CF 小组 code 列表：额外聚合小组内训练赛 */
   cfGroupCodes?: string[];
+  /** CF API 认证：小组赛 contest.list?group= 必须认证（匿名会返回公开榜） */
+  cfApiAuth?: CfApiAuth;
 }
 
 export async function fetchAllContests(
@@ -36,7 +39,7 @@ export async function fetchAllContests(
   opts: AllContestsOptions = {},
 ): Promise<AllContests> {
   const results = await Promise.allSettled([
-    fetchCfContests(fetchFn, opts.cfGroupCodes ?? []),
+    fetchCfContests(fetchFn, opts.cfGroupCodes ?? [], opts.cfApiAuth),
     fetchAtcoderContests(fetchFn),
     fetchLuoguContests(fetchFn),
     fetchNowcoderContests(fetchFn),

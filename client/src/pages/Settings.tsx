@@ -41,6 +41,9 @@ interface SettingsData {
   reminder: ReminderConfig
   /** CF 小组 code 列表（空格分隔），赛事中心聚合小组内训练赛 */
   cfGroups: string
+  /** CF API 认证（contest.list?group= 小组赛必需，codeforces.com/settings/api 生成） */
+  cfApiKey: string
+  cfSecret: string
 }
 
 const SYNC_NOTE_COLOR: Record<string, string> = {
@@ -58,6 +61,8 @@ export default function Settings() {
   const [reminderEnabled, setReminderEnabled] = useState(false)
   const [reminderTime, setReminderTime] = useState<Dayjs>(dayjs('20:00', 'HH:mm'))
   const [cfGroupsInput, setCfGroupsInput] = useState('')
+  const [cfKeyInput, setCfKeyInput] = useState('')
+  const [cfSecretInput, setCfSecretInput] = useState('')
   const [importOpen, setImportOpen] = useState(false)
   const [exportDays, setExportDays] = useState(14)
   const [appVersion, setAppVersion] = useState('')
@@ -78,6 +83,8 @@ export default function Settings() {
         setReminderEnabled(d.reminder.enabled)
         setReminderTime(dayjs(d.reminder.time, 'HH:mm'))
         setCfGroupsInput(d.cfGroups ?? '')
+        setCfKeyInput(d.cfApiKey ?? '')
+        setCfSecretInput(d.cfSecret ?? '')
       })
       .catch((e: Error) => message.error(e.message))
   }
@@ -132,7 +139,11 @@ export default function Settings() {
 
   const saveCfGroups = async () => {
     try {
-      const r = await post<{ codes: string[] }>('/api/settings/cf-groups', { groups: cfGroupsInput })
+      const r = await post<{ codes: string[] }>('/api/settings/cf-groups', {
+        groups: cfGroupsInput,
+        apiKey: cfKeyInput,
+        secret: cfSecretInput,
+      })
       message.success(r.codes.length ? `已保存 ${r.codes.length} 个小组，赛事中心将展示组内比赛` : '已清空小组配置')
       load()
     } catch (e) {
@@ -337,11 +348,26 @@ export default function Settings() {
                 onChange={(e) => setCfGroupsInput(e.target.value)}
               />
               <Button size="small" onClick={saveCfGroups}>
-                保存小组
+                保存小组配置
               </Button>
             </Space>
+            <Space wrap style={{ marginTop: 8 }}>
+              <Input.Password
+                placeholder="CF API Key（拉小组赛必需）"
+                style={{ width: 260 }}
+                value={cfKeyInput}
+                onChange={(e) => setCfKeyInput(e.target.value)}
+              />
+              <Input.Password
+                placeholder="API Secret"
+                style={{ width: 260 }}
+                value={cfSecretInput}
+                onChange={(e) => setCfSecretInput(e.target.value)}
+              />
+            </Space>
             <p className="muted-note" style={{ marginBottom: 0 }}>
-              填写 Codeforces 小组链接中的 code（codeforces.com/group/<b>小组code</b>/…），组内训练赛会以「小组」标签出现在赛事中心，最多 10 个。
+              组内训练赛需 Codeforces 官方认证才能拉取：到 <b>codeforces.com/settings/api</b> 生成 API Key（Key 主人须为该小组成员），
+              与小组 code（codeforces.com/group/<b>小组code</b>/…）一同填写保存。组内比赛以「小组」标签出现在赛事中心，最多 10 个小组。
             </p>
           </div>
         </Card>

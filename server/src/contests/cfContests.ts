@@ -1,11 +1,18 @@
+import { createHash } from 'node:crypto';
 import type { ContestInfo, PlatformId } from '../../../shared/src/index.ts';
 
 /**
- * Codeforces 赛事数据源：官方公开 API contest.list（无需登录）。
- * 额外支持小组赛：contest.list?group=<code> 返回该小组内全部场次，
- * URL 形如 codeforces.com/group/<code>/contest/<id>（id 与公开赛独立编址）。
- * 公开榜与各小组独立缓存 30 分钟，单源失败降级跳过，全部失败才报错。
+ * Codeforces 赛事数据源：官方公开 API contest.list。
+ * - 公开榜：contest.list 匿名即可。
+ * - 小组赛：contest.list?group=<code> 必须 apiKey+apiSig 认证（Key 主人须为该小组成员）；
+ *   匿名调用 group 参数被静默忽略、返回公开榜（不能用作小组数据源）。
+ * - 公开榜与各小组独立缓存 30 分钟，单源失败降级跳过，全部失败才报错。
  */
+
+export interface CfApiAuth {
+  apiKey: string;
+  secret: string;
+}
 
 interface CfApiContest {
   id: number;
@@ -90,23 +97,51 @@ async function fetchPublicContests(fetchFn: typeof fetch): Promise<ContestInfo[]
 export async function fetchGroupContests(
   fetchFn: typeof fetch,
   groupCode: string,
+  auth?: CfApiAuth,
 ): Promise<ContestInfo[]> {
   const cached = groupCaches.get(groupCode);
   if (cached && Date.now() - cached.at < CACHE_MS) return cached.contests;
-  const url = `https://codeforces.com/api/contest.list?group=${encodeURIComponent(groupCode)}`;
+  if (!auth?.apiKey || !auth.secret) {
+    // 匿名 group= 返回公开榜（会被当成小组赛误展示），宁可不拉；
+    // 每组只提示一次，避免每次刷新都刷日志。
+    if (!warnedNoAuth.has(groupCode)) {
+      warnedNoAuth.add(groupCode);
+      console.warn(
+        `[contests] CF 小组 ${groupCode} 未配置 Codeforces API Key，跳过（设置页可配置，codeforces.com/settings/api 生成）`,
+      );
+    }
+    return [];
+  }
+  const url = signedContestListUrl(groupCode, auth);
   const contests = await fetchList(fetchFn, url, (c) => toGroupInfo(c, groupCode));
   groupCaches.set(groupCode, { at: Date.now(), contests });
   return contests;
+}
+
+const warnedNoAuth = new Set<string>();
+
+/** contest.list 认证请求：apiSig = sha512("contest.list?<按参数名排序的 k=v&…>#<secret>") */
+export function signedContestListUrl(groupCode: string, auth: CfApiAuth): string {
+  const params = new URLSearchParams({
+    group: groupCode,
+    apiKey: auth.apiKey,
+    time: String(Math.floor(Date.now() / 1000)),
+  });
+  const pairs = [...params.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${k}=${v}`);
+  const toSign = `contest.list?${pairs.join('&')}#${auth.secret}`;
+  const apiSig = createHash('sha512').update(toSign).digest('hex');
+  return `https://codeforces.com/api/contest.list?${pairs.join('&')}&apiSig=${apiSig}`;
 }
 
 /** 公开榜 + 各小组赛聚合；单源失败降级跳过（仅全空时报最后一个错） */
 export async function fetchCfContests(
   fetchFn: typeof fetch = fetch,
   groupCodes: string[] = [],
+  auth?: CfApiAuth,
 ): Promise<ContestInfo[]> {
   const results = await Promise.allSettled([
     fetchPublicContests(fetchFn),
-    ...groupCodes.map((code) => fetchGroupContests(fetchFn, code)),
+    ...groupCodes.map((code) => fetchGroupContests(fetchFn, code, auth)),
   ]);
   const contests: ContestInfo[] = [];
   let lastError: unknown;

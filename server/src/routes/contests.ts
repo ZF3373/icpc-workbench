@@ -19,9 +19,15 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = fetch): Router {
     const groupRow = db
       .prepare('SELECT value FROM settings WHERE key = ?')
       .get('contests.cfGroups') as { value: string } | undefined;
+    const readSetting = (key: string): string | undefined =>
+      (db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)
+        ?.value;
+    const apiKey = readSetting('codeforces.apiKey');
+    const secret = readSetting('codeforces.secret');
     try {
       const { contests, failures } = await fetchAllContests(fetchFn, {
         cfGroupCodes: parseCfGroupCodes(groupRow?.value),
+        ...(apiKey && secret ? { cfApiAuth: { apiKey, secret } } : {}),
       });
       res.json({
         contests: selectContests(contests, {
