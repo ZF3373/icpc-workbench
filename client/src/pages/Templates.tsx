@@ -28,6 +28,7 @@ import {
   PlayCircleOutlined,
   PlusOutlined,
   RightOutlined,
+  SyncOutlined,
 } from '@ant-design/icons'
 import PageHeader from '../components/PageHeader'
 import StatStrip from '../components/StatStrip'
@@ -74,6 +75,7 @@ export default function Templates() {
   const [customForm] = Form.useForm<CustomFormValues>()
   const [contentEditing, setContentEditing] = useState<TemplateItemInfo | null>(null)
   const [contentDraft, setContentDraft] = useState<TemplateContentInfo>({ code: '', idea: '', complexity: '', url: '' })
+  const [syncingId, setSyncingId] = useState<string>()
 
   const load = useCallback(() => {
     setLoading(true)
@@ -197,6 +199,31 @@ export default function Templates() {
       load()
     } catch (e) {
       message.error((e as Error).message)
+    }
+  }
+
+  // 例题写完后一键同步：按例题涉及平台拉取最新提交，刷新 AC 状态
+  const syncExamples = async (t: TemplateItemInfo) => {
+    setSyncingId(t.id)
+    try {
+      const { results } = await post<{ results: Array<{ imported: number; errors: string[] }> }>(
+        '/api/templates/examples/sync',
+        { templateId: t.id },
+      )
+      const errors = results.flatMap((r) => r.errors)
+      const imported = results.reduce((sum, r) => sum + r.imported, 0)
+      if (errors.length) {
+        message.warning(`部分平台未同步成功：${errors.join('；')}`)
+      } else if (imported > 0) {
+        message.success(`同步完成，新增 ${imported} 条提交记录`)
+      } else {
+        message.success('已是最新，例题暂无新提交')
+      }
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setSyncingId(undefined)
     }
   }
 
@@ -472,7 +499,23 @@ export default function Templates() {
 
                           {t.examples.length > 0 && (
                             <div className="template-section">
-                              <div className="section-label">例题实战（点击做题，入库后自动追踪 AC）</div>
+                              <div
+                                className="section-label"
+                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
+                              >
+                                <span>例题实战（点击做题，入库后自动追踪 AC）</span>
+                                <Tooltip title="拉取例题平台的最新提交，自动刷新 AC 状态">
+                                  <Button
+                                    size="small"
+                                    type="text"
+                                    icon={<SyncOutlined />}
+                                    loading={syncingId === t.id}
+                                    onClick={() => syncExamples(t)}
+                                  >
+                                    同步 AC
+                                  </Button>
+                                </Tooltip>
+                              </div>
                               <div className="template-examples">
                                 {t.examples.map((ex) => (
                                   <div className="template-example-row" key={`${ex.platform}-${ex.key}`}>

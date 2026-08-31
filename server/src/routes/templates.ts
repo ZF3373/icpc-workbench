@@ -10,7 +10,9 @@ import {
   type TemplateStatus,
 } from '../templates/progress.ts';
 import { upsertBankProblems } from '../import/bankService.ts';
-import type { PlatformId } from '../../../shared/src/index.ts';
+import { syncPlatform } from '../adapters/sync.ts';
+import type { PlatformId, SyncResult } from '../../../shared/src/index.ts';
+import { platformMeta } from '../../../shared/src/index.ts';
 
 interface ProgressRow {
   template_id: string;
@@ -354,6 +356,41 @@ export function templatesRoutes(db: Db): Router {
       },
     ]);
     res.json({ ok: true, ...(result[0] ?? { inserted: 0, updated: 0 }) });
+  });
+
+  // POST /api/templates/examples/sync
+  // body: { templateId } → 按该模板例题涉及的平台，用已绑定账号增量拉取最新提交，
+  // 刷新例题 AC 状态（写完例题后一键同步，无需去题目管理页手动同步）。
+  // 未绑定账号的平台返回引导提示而非失败，单平台失败不影响其余平台。
+  r.post('/examples/sync', async (req, res) => {
+    const templateId = req.body?.templateId;
+    if (typeof templateId !== 'string' || !templateId) {
+      return res.status(400).json({ error: 'templateId 必填' });
+    }
+    const item = CURRICULUM.flatMap((cat) => cat.templates).find((t) => t.id === templateId);
+    if (!item || item.examples.length === 0) {
+      return res.status(404).json({ error: `课程中不存在模板 ${templateId} 或该模板没有例题` });
+    }
+    const results: Array<Omit<SyncResult, 'handle'> & { handle: string | null }> = [];
+    for (const platform of new Set(item.examples.map((ex) => ex.platform))) {
+      const account = db
+        .prepare(
+          'SELECT handle FROM platform_accounts WHERE user_id = ? AND platform = ? AND enabled = 1',
+        )
+        .get(DEFAULT_USER_ID, platform) as { handle: string } | undefined;
+      if (!account) {
+        results.push({
+          platform,
+          handle: null,
+          imported: 0,
+          skipped: 0,
+          errors: [`未绑定 ${platformMeta(platform).name} 账号，请到「设置」绑定账号后重试`],
+        });
+        continue;
+      }
+      results.push(await syncPlatform(db, platform, account.handle));
+    }
+    res.json({ results });
   });
 
   // ---------- 学习进度 ----------
