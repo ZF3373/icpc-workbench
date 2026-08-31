@@ -321,6 +321,14 @@ export const CURRICULUM: TemplateCategory[] = [
         outline: '矩阵乘法（k 外层 + 稀疏剪枝）与单位阵初始化的快速幂；线性递推转矩阵的思想。',
         examples: [lg('P3390', '【模板】矩阵快速幂'), lg('P1962', '斐波那契数列')],
       },
+      {
+        id: 'math-game-theory',
+        name: '博弈论基础',
+        difficulty: 3,
+        tags: ['博弈论', '数学'],
+        outline: 'Nim：各堆异或和非零先手必胜；巴什：n % (m+1) != 0 先手必胜；威佐夫：d = (b-a)·(√5+1)/2 与 min(a,b) 比较；SG：SG(x)=mex{后继SG}，多子游戏取异或和。',
+        examples: [lg('P2197', '【模板】Nim游戏'), lg('P2252', '取石子游戏（威佐夫博弈）')],
+      },
     ],
   },
   {
