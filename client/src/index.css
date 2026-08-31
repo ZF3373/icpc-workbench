@@ -1140,6 +1140,17 @@ body {
   tab-size: 4;
 }
 
+.code-editor {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #101318;
+  overflow: hidden;
+}
+
+.code-editor .cm-editor {
+  background: transparent;
+}
+
 .template-examples {
   display: flex;
   flex-direction: column;

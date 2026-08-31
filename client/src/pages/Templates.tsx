@@ -33,9 +33,9 @@ import {
 import PageHeader from '../components/PageHeader'
 import StatStrip from '../components/StatStrip'
 import Markdown from '../components/Markdown'
+import CodeEditor from '../components/CodeEditor'
 import { tagColor } from '../ui'
 import { del, get, patch, post, put } from '../api'
-import { codeEditorKeys } from '../codeEditorKeys'
 import type { TemplateContentInfo, TemplateExampleInfo, TemplateItemInfo, TemplatesResponse, TemplateStatus } from '../types'
 
 const STATUS_META: Array<{ key: TemplateStatus; label: string; icon: typeof CheckCircleOutlined }> = [
@@ -635,10 +635,20 @@ export default function Templates() {
             </Form.Item>
           </Space>
           <Form.Item name="idea" label="思路与备注">
-            <Input.TextArea rows={2} placeholder="自己的理解、适用边界……（支持 Markdown）" maxLength={5000} />
+            <CodeEditor
+              language="markdown"
+              height={140}
+              maxLength={5000}
+              placeholder="自己的理解、适用边界……（Markdown 语法：列表 / 表格 / 代码块）"
+            />
           </Form.Item>
           <Form.Item name="code" label="模板代码">
-            <Input.TextArea rows={10} className="mono" onKeyDown={codeEditorKeys} placeholder="粘贴你的 C++ 模板……（支持 Tab 缩进）" maxLength={20000} />
+            <CodeEditor
+              language="cpp"
+              height={320}
+              maxLength={20000}
+              placeholder="粘贴 / 编写你的 C++ 模板……（语法高亮，支持 Tab 缩进）"
+            />
           </Form.Item>
         </Form>
       </Modal>
@@ -659,23 +669,23 @@ export default function Templates() {
             </p>
             <Form layout="vertical">
               <Form.Item label="我的思路（什么时候用 / 关键观察）" style={{ marginBottom: 12 }}>
-                <Input.TextArea
-                  rows={3}
-                  value={contentDraft.idea ?? ''}
-                  onChange={(e) => setContentDraft((d) => ({ ...d, idea: e.target.value }))}
-                  placeholder="用自己的话写下来，支持 Markdown（列表 / 表格 / 代码块）——复习时只看这一段……"
+                <CodeEditor
+                  language="markdown"
+                  height={140}
                   maxLength={5000}
+                  value={contentDraft.idea ?? ''}
+                  onChange={(v) => setContentDraft((d) => ({ ...d, idea: v }))}
+                  placeholder="用自己的话写下来，Markdown 语法（列表 / 表格 / 代码块）——复习时只看这一段……"
                 />
               </Form.Item>
               <Form.Item label="模板代码" style={{ marginBottom: 12 }}>
-                <Input.TextArea
-                  rows={12}
-                  className="mono"
-                  onKeyDown={codeEditorKeys}
-                  value={contentDraft.code ?? ''}
-                  onChange={(e) => setContentDraft((d) => ({ ...d, code: e.target.value }))}
-                  placeholder="粘贴 / 编写你的 C++ 模板……（支持 Tab 缩进）"
+                <CodeEditor
+                  language="cpp"
+                  height={320}
                   maxLength={20000}
+                  value={contentDraft.code ?? ''}
+                  onChange={(v) => setContentDraft((d) => ({ ...d, code: v }))}
+                  placeholder="粘贴 / 编写你的 C++ 模板……（语法高亮，支持 Tab 缩进）"
                 />
               </Form.Item>
               <Space size={12} style={{ display: 'flex' }}>
