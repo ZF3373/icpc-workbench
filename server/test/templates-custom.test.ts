@@ -194,6 +194,6 @@ test('templates list still exposes built-in curriculum invariants', async () => 
   await withServer(async (base) => {
     const list = (await (await fetch(base)).json()) as { total: number; categories: unknown[] };
     assert.equal(list.total, TEMPLATE_TOTAL);
-    assert.equal(list.categories.length, 8);
+    assert.equal(list.categories.length, CURRICULUM.length);
   });
 });

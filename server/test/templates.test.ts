@@ -8,7 +8,7 @@ import { nextTemplate, type ProgressEntry } from '../src/templates/progress.ts';
 import { templatesRoutes } from '../src/routes/templates.ts';
 
 test('curriculum: outline slots, unique ids, no pre-baked content', () => {
-  assert.equal(CURRICULUM.length, 8);
+  assert.equal(CURRICULUM.length, 10);
   const ids = new Set<string>();
   for (const cat of CURRICULUM) {
     assert.ok(cat.templates.length >= 3, `${cat.key} 模板过少`);
@@ -87,7 +87,7 @@ test('templates API: list with progress, status cycle, note persist', async () =
     };
     assert.equal(initial.total, TEMPLATE_TOTAL);
     assert.equal(initial.next!.id, CURRICULUM[0].templates[0].id);
-    assert.equal(initial.categories.length, 8);
+    assert.equal(initial.categories.length, CURRICULUM.length);
 
     const target = CURRICULUM[0].templates[0];
     // 写入自己的模板内容
