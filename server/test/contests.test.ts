@@ -10,6 +10,11 @@ import {
   toAtcoderContest,
 } from '../src/contests/atcoderContests.ts';
 import { classifyLuoguContest, toLuoguContest } from '../src/contests/luoguContests.ts';
+import {
+  classifyNowcoderContest,
+  parseContestListHtml,
+  toNowcoderContest,
+} from '../src/contests/nowcoderContests.ts';
 import { contestPhase, selectContests } from '../src/contests/index.ts';
 
 test('classifyContest recognises common CF series', () => {
@@ -92,6 +97,54 @@ test('toLuoguContest: lg- prefix, duration from start/end', () => {
   assert.equal(info.category, '重现赛');
   assert.equal(info.durationMinutes, 300); // (1789639200 - 1789621200) / 60
   assert.equal(info.url, 'https://www.luogu.com.cn/contest/353129');
+});
+
+test('classifyNowcoderContest branches（小白月赛优先于月赛）', () => {
+  assert.equal(classifyNowcoderContest('牛客周赛 Round 160'), '周赛');
+  assert.equal(classifyNowcoderContest('牛客小白月赛137'), '小白月赛');
+  assert.equal(classifyNowcoderContest('牛客月赛 9 月场'), '月赛');
+  assert.equal(classifyNowcoderContest('牛客挑战赛91'), '挑战赛');
+  assert.equal(classifyNowcoderContest('牛客练习赛156'), '练习赛');
+  assert.equal(classifyNowcoderContest('第49届 ICPC 区域赛（牛客）'), 'ICPC');
+  assert.equal(classifyNowcoderContest('XX大学第10届校赛'), '校赛');
+  assert.equal(classifyNowcoderContest('牛客2026年七夕节比赛'), '比赛');
+});
+
+test('parseContestListHtml: 双重转义 data-json 解码后解析，坏条目跳过', () => {
+  const html = `<div class="platform-item js-item" data-id="139989" data-json="{&amp;quot;isSignUp&amp;quot;:false,&amp;quot;contestId&amp;quot;:139989,&amp;quot;contestName&amp;quot;:&amp;quot;牛客周赛 Round 160&amp;quot;,&amp;quot;contestStartTime&amp;quot;:1788692400000,&amp;quot;contestEndTime&amp;quot;:1788699600000}">
+    <a href="/acm/contest/139989">牛客周赛 Round 160</a></div>
+    <div data-json="{&amp;quot;contestId&amp;quot;:139935,&amp;quot;contestName&amp;quot;:&amp;quot;L &amp;amp; R 挑战赛91&amp;quot;,&amp;quot;contestStartTime&amp;quot;:1788596400000,&amp;quot;contestEndTime&amp;quot;:1788607200000}"></div>
+    <div data-json="{&amp;quot;contestId&amp;quot;:oops"></div>`;
+  const items = parseContestListHtml(html);
+  assert.equal(items.length, 2);
+  assert.equal(items[0].contestId, 139989);
+  assert.equal(items[0].contestName, '牛客周赛 Round 160');
+  assert.equal(items[1].contestName, 'L & R 挑战赛91');
+});
+
+test('toNowcoderContest: nc- 前缀、毫秒时间戳、时长与链接', () => {
+  const info = toNowcoderContest({
+    contestId: 139989,
+    contestName: '牛客周赛 Round 160',
+    contestStartTime: 1788692400000,
+    contestEndTime: 1788699600000,
+  });
+  assert.equal(info.id, 'nc-139989');
+  assert.equal(info.platform, 'nowcoder');
+  assert.equal(info.category, '周赛');
+  assert.equal(info.startTimeIso, new Date(1788692400000).toISOString());
+  assert.equal(info.durationMinutes, 120);
+  assert.equal(info.url, 'https://ac.nowcoder.com/acm/contest/139989');
+});
+
+test('toNowcoderContest: 开始时间缺失（0）保留 null start', () => {
+  const info = toNowcoderContest({
+    contestId: 1,
+    contestName: '时间待定赛',
+    contestStartTime: 0,
+    contestEndTime: 0,
+  });
+  assert.equal(info.startTimeIso, null);
 });
 
 function contest(id: string, platform: ContestInfo['platform'], startIso: string | null, minutes = 120): ContestInfo {

@@ -24,6 +24,11 @@ const CATEGORY_COLOR: Record<string, string> = {
   入门赛: 'green',
   重现赛: 'default',
   训练: 'processing',
+  周赛: 'gold',
+  小白月赛: 'cyan',
+  挑战赛: 'volcano',
+  练习赛: 'blue',
+  校赛: 'geekblue',
 }
 
 type ContestType = 'upcoming' | 'finished'
@@ -84,7 +89,7 @@ export default function Contests() {
     <div>
       <PageHeader
         title="赛事中心"
-        description="Codeforces / AtCoder / 洛谷 场次一览 —— 赛前选场，赛后补题（公开数据，各源缓存 30 分钟）"
+        description="Codeforces / AtCoder / 洛谷 / 牛客 场次一览 —— 赛前选场，赛后补题（公开数据，各源缓存 30 分钟）"
         extra={
           <Space>
             <Button type={tab === 'upcoming' ? 'primary' : 'default'} onClick={() => setTab('upcoming')}>
@@ -161,4 +166,5 @@ const PLATFORM_OPTIONS = [
   { value: 'codeforces' as const, label: 'Codeforces' },
   { value: 'atcoder' as const, label: 'AtCoder' },
   { value: 'luogu' as const, label: '洛谷' },
+  { value: 'nowcoder' as const, label: '牛客' },
 ]
