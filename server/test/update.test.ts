@@ -10,7 +10,7 @@ import {
   nightlyCommitSha,
   resolveUpdate,
 } from '../src/routes/update.ts';
-import { parseChecksums, verifyChecksums } from '../src/updater.ts';
+import { parseChecksums, verifyChecksums, buildRanges, candidateUrls, mirrorPrefixes } from '../src/updater.ts';
 
 test('compareVersions 基本比较', () => {
   assert.equal(compareVersions('v0.2.1', 'v0.2.2'), -1);
@@ -184,4 +184,27 @@ test('parseChecksums / verifyChecksums', () => {
   assert.throws(() => verifyChecksums(`${'0'.repeat(64)}  icpc-core.exe\n`, dir, ['icpc-core.exe']), /SHA256/);
   assert.throws(() => verifyChecksums('空文件\n', dir, ['icpc-core.exe']), /缺少/);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------- 下载加速：分片与候选源 ----------
+
+test('buildRanges 均分区间、末段吃尾差', () => {
+  assert.deepEqual(buildRanges(100, 4), [[0, 24], [25, 49], [50, 74], [75, 99]]);
+  assert.deepEqual(buildRanges(10, 4), [[0, 2], [3, 5], [6, 8], [9, 9]]);
+  assert.deepEqual(buildRanges(3, 4), [[0, 0], [1, 1], [2, 2]]); // 片大小至少 1 字节
+  assert.deepEqual(buildRanges(0, 4), []); // 总长未知：退单流
+});
+
+test('candidateUrls 直连优先，镜像拼为 URL 前缀', () => {
+  const url = 'https://github.com/o/r/releases/download/v1/a.exe';
+  const urls = candidateUrls(url);
+  assert.equal(urls[0], url);
+  assert.ok(urls.length >= 2);
+  assert.ok(urls.slice(1).every((u) => /^https:\/\/[^/]+\/https:\/\/github\.com\//.test(u)));
+});
+
+test('mirrorPrefixes 可用环境变量覆盖，容忍尾斜杠与空值', () => {
+  assert.deepEqual(mirrorPrefixes('https://a.cn/,https://b.cn/mirror//'), ['https://a.cn', 'https://b.cn/mirror']);
+  assert.ok(mirrorPrefixes('').length >= 1); // 空值回默认镜像
+  assert.ok(mirrorPrefixes().length >= 1);
 });
