@@ -39,11 +39,6 @@ interface SettingsData {
   platforms: typeof PLATFORMS
   cookies: Record<string, { cookie?: string; csrf?: string }>
   reminder: ReminderConfig
-  /** CF 小组 code 列表（空格分隔），赛事中心聚合小组内训练赛 */
-  cfGroups: string
-  /** CF API 认证（contest.list?group= 小组赛必需，codeforces.com/settings/api 生成） */
-  cfApiKey: string
-  cfSecret: string
 }
 
 const SYNC_NOTE_COLOR: Record<string, string> = {
@@ -60,9 +55,6 @@ export default function Settings() {
   const [cookieCheck, setCookieCheck] = useState<Record<string, { ok: boolean; message: string } | 'checking'>>({})
   const [reminderEnabled, setReminderEnabled] = useState(false)
   const [reminderTime, setReminderTime] = useState<Dayjs>(dayjs('20:00', 'HH:mm'))
-  const [cfGroupsInput, setCfGroupsInput] = useState('')
-  const [cfKeyInput, setCfKeyInput] = useState('')
-  const [cfSecretInput, setCfSecretInput] = useState('')
   const [importOpen, setImportOpen] = useState(false)
   const [exportDays, setExportDays] = useState(14)
   const [appVersion, setAppVersion] = useState('')
@@ -82,9 +74,6 @@ export default function Settings() {
         setCookieInputs(cookies)
         setReminderEnabled(d.reminder.enabled)
         setReminderTime(dayjs(d.reminder.time, 'HH:mm'))
-        setCfGroupsInput(d.cfGroups ?? '')
-        setCfKeyInput(d.cfApiKey ?? '')
-        setCfSecretInput(d.cfSecret ?? '')
       })
       .catch((e: Error) => message.error(e.message))
   }
@@ -131,20 +120,6 @@ export default function Settings() {
   const toggleAdapter = async (platform: PlatformId, enabled: boolean) => {
     try {
       await post('/api/settings/adapters', { platform, enabled })
-      load()
-    } catch (e) {
-      message.error((e as Error).message)
-    }
-  }
-
-  const saveCfGroups = async () => {
-    try {
-      const r = await post<{ codes: string[] }>('/api/settings/cf-groups', {
-        groups: cfGroupsInput,
-        apiKey: cfKeyInput,
-        secret: cfSecretInput,
-      })
-      message.success(r.codes.length ? `已保存 ${r.codes.length} 个小组，赛事中心将展示组内比赛` : '已清空小组配置')
       load()
     } catch (e) {
       message.error((e as Error).message)
@@ -338,38 +313,6 @@ export default function Settings() {
           <p className="muted-note">
             说明：Codeforces / AtCoder 自动同步；洛谷 / 牛客在填写登录 Cookie 后可自动同步（未配置时请在「题目管理」手动导入）。
           </p>
-          <div style={{ marginTop: 14 }}>
-            <Space wrap>
-              <span className="adapter-label">CF 小组赛</span>
-              <Input
-                placeholder="小组 code，多个用空格 / 逗号分隔（如 MWSDmqGsZm）"
-                style={{ width: 380 }}
-                value={cfGroupsInput}
-                onChange={(e) => setCfGroupsInput(e.target.value)}
-              />
-              <Button size="small" onClick={saveCfGroups}>
-                保存小组配置
-              </Button>
-            </Space>
-            <Space wrap style={{ marginTop: 8 }}>
-              <Input.Password
-                placeholder="CF API Key（拉小组赛必需）"
-                style={{ width: 260 }}
-                value={cfKeyInput}
-                onChange={(e) => setCfKeyInput(e.target.value)}
-              />
-              <Input.Password
-                placeholder="API Secret"
-                style={{ width: 260 }}
-                value={cfSecretInput}
-                onChange={(e) => setCfSecretInput(e.target.value)}
-              />
-            </Space>
-            <p className="muted-note" style={{ marginBottom: 0 }}>
-              组内训练赛需 Codeforces 官方认证才能拉取：到 <b>codeforces.com/settings/api</b> 生成 API Key（Key 主人须为该小组成员），
-              与小组 code（codeforces.com/group/<b>小组code</b>/…）一同填写保存。组内比赛以「小组」标签出现在赛事中心，最多 10 个小组。
-            </p>
-          </div>
         </Card>
       </Col>
       <Col span={24}>
