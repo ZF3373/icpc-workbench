@@ -28,6 +28,9 @@ const appTheme = EditorView.theme(
       fontFamily: "'Cascadia Code', ui-monospace, 'SFMono-Regular', Consolas, monospace",
       caretColor: '#86a8ff',
       lineHeight: '1.6',
+      // Cascadia Code 默认开编程连字（!= 渲染成 ≠），代码里容易误读，关闭
+      fontVariantLigatures: 'none',
+      fontFeatureSettings: "'calt' 0, 'liga' 0",
     },
     '.cm-cursor': { borderLeftColor: '#86a8ff' },
     '.cm-gutters': { backgroundColor: 'transparent', color: '#5b6472', border: 'none' },

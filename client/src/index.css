@@ -1128,6 +1128,8 @@ body {
 }
 
 .template-code {
+  font-variant-ligatures: none; /* 关闭 Cascadia Code 连字：!= 不得显示成 ≠ */
+  font-feature-settings: 'calt' 0, 'liga' 0;
   margin: 0;
   padding: 14px 16px;
   border: 1px solid var(--line);
