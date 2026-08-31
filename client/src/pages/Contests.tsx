@@ -29,6 +29,7 @@ const CATEGORY_COLOR: Record<string, string> = {
   挑战赛: 'volcano',
   练习赛: 'blue',
   校赛: 'geekblue',
+  小组: 'processing',
 }
 
 type ContestType = 'upcoming' | 'finished'

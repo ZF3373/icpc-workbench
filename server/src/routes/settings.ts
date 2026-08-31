@@ -5,6 +5,7 @@ import { aiConfigFromDb, saveAiConfig, type AppConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { getAdapter } from '../adapters/registry.ts';
+import { parseCfGroupCodes } from '../contests/index.ts';
 
 const DEFAULT_REMINDER_TIME = '20:00';
 
@@ -50,7 +51,33 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
         };
       }
     }
-    res.json({ ai, accounts, adapterEnabled, platforms: PLATFORMS, cookies, reminder: readReminder(db) });
+    const cfGroupsRow = db
+      .prepare('SELECT value FROM settings WHERE key = ?')
+      .get('contests.cfGroups') as { value: string } | undefined;
+    res.json({
+      ai,
+      accounts,
+      adapterEnabled,
+      platforms: PLATFORMS,
+      cookies,
+      reminder: readReminder(db),
+      cfGroups: cfGroupsRow?.value ?? '',
+    });
+  });
+
+  // POST /api/settings/cf-groups  body: { groups: string }
+  // CF 小组 code 列表（空白/逗号分隔），赛事中心额外聚合小组内训练赛；空串清除
+  r.post('/cf-groups', (req, res) => {
+    const raw = req.body?.groups;
+    if (typeof raw !== 'string') return res.status(400).json({ error: 'groups 需为字符串' });
+    const codes = parseCfGroupCodes(raw);
+    const upsert = db.prepare(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    );
+    const remove = db.prepare('DELETE FROM settings WHERE key = ?');
+    if (codes.length === 0) remove.run('contests.cfGroups');
+    else upsert.run('contests.cfGroups', codes.join(' '));
+    res.json({ ok: true, codes });
   });
 
   // POST /api/settings/reminder  body: { enabled?, time? }  time 格式 HH:MM

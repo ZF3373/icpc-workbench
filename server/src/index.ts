@@ -34,7 +34,7 @@ app.use('/api/problems', problemsRoutes(db));
 app.use('/api/reviews', reviewsRoutes(db));
 app.use('/api/today', todayRoutes(db));
 app.use('/api/templates', templatesRoutes(db));
-app.use('/api/contests', contestsRoutes());
+app.use('/api/contests', contestsRoutes(db));
 app.use('/api/checkins', checkinsRoutes(db));
 app.use('/api/settings', settingsRoutes(db, config));
 app.use('/api/update', updateRoutes(config));

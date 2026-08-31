@@ -3,7 +3,6 @@ import { fetchAtcoderContests } from './atcoderContests.ts';
 import { fetchCfContests } from './cfContests.ts';
 import { fetchLuoguContests } from './luoguContests.ts';
 import { fetchNowcoderContests } from './nowcoderContests.ts';
-
 /**
  * 多平台赛事聚合：Codeforces / AtCoder / 洛谷 / 牛客。
  * 单一数据源失败只降级跳过（记入 failures），全部失败才报错。
@@ -27,9 +26,17 @@ export interface AllContests {
   failures: Partial<Record<PlatformId, string>>;
 }
 
-export async function fetchAllContests(fetchFn: typeof fetch = fetch): Promise<AllContests> {
+export interface AllContestsOptions {
+  /** CF 小组 code 列表：额外聚合小组内训练赛（contest.list?group=） */
+  cfGroupCodes?: string[];
+}
+
+export async function fetchAllContests(
+  fetchFn: typeof fetch = fetch,
+  opts: AllContestsOptions = {},
+): Promise<AllContests> {
   const results = await Promise.allSettled([
-    fetchCfContests(fetchFn),
+    fetchCfContests(fetchFn, opts.cfGroupCodes ?? []),
     fetchAtcoderContests(fetchFn),
     fetchLuoguContests(fetchFn),
     fetchNowcoderContests(fetchFn),
@@ -49,6 +56,21 @@ export async function fetchAllContests(fetchFn: typeof fetch = fetch): Promise<A
     );
   }
   return { contests, failures };
+}
+
+/**
+ * 解析 CF 小组 code 配置（设置存量字符串）：空白/逗号/分号分隔，
+ * 去重去非法项（小组 code 为字母数字_-，3-64 位），最多 10 个。
+ */
+export function parseCfGroupCodes(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  const codes = raw
+    .split(/[\s,;，；]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set(codes)]
+    .filter((c) => /^[A-Za-z0-9_-]{2,64}$/.test(c))
+    .slice(0, 10);
 }
 
 export interface ContestFilter {

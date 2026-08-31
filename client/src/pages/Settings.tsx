@@ -39,6 +39,8 @@ interface SettingsData {
   platforms: typeof PLATFORMS
   cookies: Record<string, { cookie?: string; csrf?: string }>
   reminder: ReminderConfig
+  /** CF 小组 code 列表（空格分隔），赛事中心聚合小组内训练赛 */
+  cfGroups: string
 }
 
 const SYNC_NOTE_COLOR: Record<string, string> = {
@@ -55,6 +57,7 @@ export default function Settings() {
   const [cookieCheck, setCookieCheck] = useState<Record<string, { ok: boolean; message: string } | 'checking'>>({})
   const [reminderEnabled, setReminderEnabled] = useState(false)
   const [reminderTime, setReminderTime] = useState<Dayjs>(dayjs('20:00', 'HH:mm'))
+  const [cfGroupsInput, setCfGroupsInput] = useState('')
   const [importOpen, setImportOpen] = useState(false)
   const [exportDays, setExportDays] = useState(14)
   const [appVersion, setAppVersion] = useState('')
@@ -74,6 +77,7 @@ export default function Settings() {
         setCookieInputs(cookies)
         setReminderEnabled(d.reminder.enabled)
         setReminderTime(dayjs(d.reminder.time, 'HH:mm'))
+        setCfGroupsInput(d.cfGroups ?? '')
       })
       .catch((e: Error) => message.error(e.message))
   }
@@ -120,6 +124,16 @@ export default function Settings() {
   const toggleAdapter = async (platform: PlatformId, enabled: boolean) => {
     try {
       await post('/api/settings/adapters', { platform, enabled })
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  const saveCfGroups = async () => {
+    try {
+      const r = await post<{ codes: string[] }>('/api/settings/cf-groups', { groups: cfGroupsInput })
+      message.success(r.codes.length ? `已保存 ${r.codes.length} 个小组，赛事中心将展示组内比赛` : '已清空小组配置')
       load()
     } catch (e) {
       message.error((e as Error).message)
@@ -313,6 +327,23 @@ export default function Settings() {
           <p className="muted-note">
             说明：Codeforces / AtCoder 自动同步；洛谷 / 牛客在填写登录 Cookie 后可自动同步（未配置时请在「题目管理」手动导入）。
           </p>
+          <div style={{ marginTop: 14 }}>
+            <Space wrap>
+              <span className="adapter-label">CF 小组赛</span>
+              <Input
+                placeholder="小组 code，多个用空格 / 逗号分隔（如 MWSDmqGsZm）"
+                style={{ width: 380 }}
+                value={cfGroupsInput}
+                onChange={(e) => setCfGroupsInput(e.target.value)}
+              />
+              <Button size="small" onClick={saveCfGroups}>
+                保存小组
+              </Button>
+            </Space>
+            <p className="muted-note" style={{ marginBottom: 0 }}>
+              填写 Codeforces 小组链接中的 code（codeforces.com/group/<b>小组code</b>/…），组内训练赛会以「小组」标签出现在赛事中心，最多 10 个。
+            </p>
+          </div>
         </Card>
       </Col>
       <Col span={24}>
