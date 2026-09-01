@@ -16,6 +16,7 @@ import { spawn } from 'node:child_process';
 import type { Server } from 'node:http';
 import { isSea, getAsset } from 'node:sea';
 import express, { type Express } from 'express';
+import { looksLikeOurInstance } from './instance-health.ts';
 import { aiConfigFromDb, loadConfig, DEFAULT_CONFIG, type AppConfig } from './config.ts';
 import { tryLaunchWidget } from './widget-launcher.ts';
 import { createDb } from './db/index.ts';
@@ -265,8 +266,7 @@ async function isOurInstance(port: number): Promise<boolean> {
       signal: AbortSignal.timeout(1500),
     });
     if (!res.ok) return false;
-    const data = (await res.json()) as { ok?: boolean; platforms?: unknown };
-    return data.ok === true && Array.isArray(data.platforms);
+    return looksLikeOurInstance(await res.json());
   } catch {
     return false;
   }

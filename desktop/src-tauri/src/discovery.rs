@@ -13,8 +13,11 @@ pub async fn check(port: u16) -> bool {
     };
     let Ok(resp) = client.get(&url).send().await else { return false; };
     let Ok(v) = resp.json::<serde_json::Value>().await else { return false; };
+    // 必须是 SEA 核心（sea:true）：同机 dev server 也是本仓库服务（ok+platforms
+    // 齐全但 sea:false），不校验会把窗口/挂件劫持到 dev server 上
     v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false)
         && v.get("platforms").map(|p| p.is_array()).unwrap_or(false)
+        && v.get("sea").and_then(|s| s.as_bool()).unwrap_or(false)
 }
 
 pub async fn find_server(hint: Option<u16>) -> Option<u16> {
@@ -61,9 +64,17 @@ mod tests {
 
     #[tokio::test]
     async fn check_ok() {
-        spawn_fake(13579, r#"{"ok":true,"platforms":["cf"]}"#);
+        spawn_fake(13579, r#"{"ok":true,"platforms":["cf"],"sea":true}"#);
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(check(13579).await);
+    }
+
+    #[tokio::test]
+    async fn check_rejects_dev_server() {
+        // dev server：ok + platforms 齐全但 sea:false（或缺失）——不可认作本程序
+        spawn_fake(13582, r#"{"ok":true,"platforms":["cf"],"sea":false}"#);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!check(13582).await);
     }
 
     #[tokio::test]
