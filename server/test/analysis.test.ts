@@ -132,8 +132,18 @@ test('computeWeakness excludes noise tags (year/contest/source)', () => {
 
 test('computeTrend aggregates by ISO week', () => {
   seed();
-  const t = computeTrend(db, 1, 12);
-  assert.equal(t.length, 2); // 2026-W31 与 2026-W32
+  // 锚定 2026-08-04（W32）：返回含当前周在内最近 12 个连续自然周，空周补 0
+  const t = computeTrend(db, 1, 12, new Date('2026-08-04T12:00:00Z'));
+  assert.equal(t.length, 12);
+  assert.equal(t[0].week, '2026-W21');
+  assert.equal(t[11].week, '2026-W32');
+  // 无提交的周补 0，保证横轴连续（此前空周被跳过导致图表日期错位）
+  const empty = t.find((p) => p.week === '2026-W25')!;
+  assert.ok(empty);
+  assert.equal(empty.attempts, 0);
+  assert.equal(empty.ac, 0);
+  assert.equal(empty.avgDifficulty, null);
+  assert.deepEqual(empty.difficultyDist, {});
   const w31 = t.find((p) => p.week === '2026-W31')!;
   const w32 = t.find((p) => p.week === '2026-W32')!;
   assert.ok(w31);

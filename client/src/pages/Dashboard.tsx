@@ -274,7 +274,14 @@ export default function Dashboard() {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_STROKE} />
-                <XAxis dataKey="week" tick={AXIS_TICK} axisLine={false} tickLine={false} />
+                <XAxis
+                  dataKey="week"
+                  tick={AXIS_TICK}
+                  tickFormatter={(w: string) => w.slice(5)}
+                  interval={0}
+                  axisLine={false}
+                  tickLine={false}
+                />
                 <YAxis yAxisId="left" allowDecimals={false} tick={AXIS_TICK} axisLine={false} tickLine={false} />
                 <YAxis yAxisId="right" orientation="right" domain={[0, 100]} unit="%" tick={AXIS_TICK} axisLine={false} tickLine={false} />
                 <Tooltip {...TOOLTIP_STYLE} cursor={{ fill: 'rgba(134, 168, 255, 0.05)' }} />

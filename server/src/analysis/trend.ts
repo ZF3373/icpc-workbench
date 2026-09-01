@@ -32,6 +32,8 @@ export function computeTrend(
   db: Db,
   userId: number,
   weeks = 12,
+  /** 锚定"当前周"，默认系统时间；测试注入固定时间 */
+  now: Date = new Date(),
 ): TrendPoint[] {
   const rows = fetchRows(db, userId);
   const byWeek = new Map<string, MutableStat>();
@@ -57,10 +59,15 @@ export function computeTrend(
     }
   }
 
-  const allWeeks = [...byWeek.keys()].sort();
-  const recent = allWeeks.slice(-weeks);
-  return recent.map((wk) => {
-    const s = byWeek.get(wk)!;
+  // 横轴固定为含当前周在内的最近 N 个连续自然周，无提交的周补 0：
+  // 若只取有数据的周，空周会被跳过，柱子位置与日期标注错位
+  const cursor = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - (weeks - 1) * 7 * 86400000,
+  );
+  const points: TrendPoint[] = [];
+  for (let i = 0; i < weeks; i++) {
+    const wk = getWeekKey(cursor);
+    const s = byWeek.get(wk) ?? { attempts: 0, ac: 0 };
     const diffs = acDifficultyByWeek.get(wk) ?? [];
     const avg =
       diffs.length === 0
@@ -70,15 +77,17 @@ export function computeTrend(
     for (const [bucket, count] of distByWeek.get(wk) ?? new Map()) {
       dist[bucket] = count;
     }
-    return {
+    points.push({
       week: wk,
       attempts: s.attempts,
       ac: s.ac,
       solved: solvedByWeek.get(wk)?.size ?? 0,
       avgDifficulty: avg,
       difficultyDist: dist,
-    };
-  });
+    });
+    cursor.setUTCDate(cursor.getUTCDate() + 7);
+  }
+  return points;
 }
 
 function bump(map: Map<string, MutableStat>, key: string, isAc: boolean): void {
