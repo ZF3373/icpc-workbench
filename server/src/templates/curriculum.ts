@@ -60,7 +60,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 1,
         tags: ['二分'],
         outline: '写一个自己背得熟的整数二分（求下界/上界），明确 mid 取整方向与区间收缩的配套关系。',
-        examples: [lg('P2249', '【深基13.例1】查找'), cf('279/B', 'Books')],
+        examples: [
+        lg('P2249', '【深基13.例1】查找'),
+        cf('279/B', 'Books'),
+        lg('P1102', 'A-B 数对'),
+        lg('P1678', '烦恼的高考志愿'),
+      ],
       },
       {
         id: 'basic-two-pointers',
@@ -68,7 +73,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['双指针', 'two pointers'],
         outline: '固定右端点、收缩左端点的窗口模板，含窗口内计数维护与撤销。',
-        examples: [cf('279/B', 'Books'), lg('P1638', '逛画展')],
+        examples: [
+        cf('279/B', 'Books'),
+        lg('P1638', '逛画展'),
+        cf('676/C', 'Vasya and String'),
+        lg('P1102', 'A-B 数对'),
+      ],
       },
       {
         id: 'basic-prefix-sum',
@@ -76,7 +86,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 1,
         tags: ['前缀和', '差分'],
         outline: '一维/二维前缀和与区间查询公式；差分完成区间加减后一遍前缀和还原。',
-        examples: [lg('P1115', '最大子段和'), lg('P2367', '语文成绩')],
+        examples: [
+        lg('P1115', '最大子段和'),
+        lg('P2367', '语文成绩'),
+        lg('P1719', '最大加权矩形'),
+        lg('P3406', '海底高铁'),
+      ],
       },
       {
         id: 'basic-discretization',
@@ -84,7 +99,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['离散化', '排序'],
         outline: '排序 + 去重 + lower_bound 映射三步，值域大而点稀疏时的标准前置。',
-        examples: [lg('P1496', '火烧赤壁')],
+        examples: [
+        lg('P1496', '火烧赤壁'),
+        lg('P1955', '[NOI2015] 程序自动分析'),
+        lg('P1908', '逆序对'),
+        lg('P1966', '[NOIP 2013 提高组] 火柴排队'),
+      ],
       },
       {
         id: 'basic-greedy',
@@ -92,7 +112,14 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['贪心'],
         outline: '按右端点排序选不相交区间的经典贪心，附一句交换论证为什么它对。',
-        examples: [lg('P1803', '凌乱的yyy / 线段覆盖')],
+        examples: [
+        lg('P1803', '凌乱的yyy / 线段覆盖'),
+        lg('P1223', '排队接水'),
+        lg('P1208', '[USACO1.3] 混合牛奶 Mixing Milk'),
+        lg('P5019', '[NOIP 2018 提高组] 铺设道路'),
+        cf('2245/A', 'Who Watches the Watchpig?'),
+        cf('2241/A', 'Divide and Conquer'),
+      ],
       },
       {
         id: 'basic-binary-answer',
@@ -100,7 +127,14 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['二分', '贪心'],
         outline: '「最大化最小值 / 最小化最大值」在值域上二分 + O(n) check 判定，注意值域上下界与无解时的输出约定。',
-        examples: [lg('P1873', '[COCI 2011/2012 #5] EKO / 砍树'), lg('P2678', '[NOIP 2015 提高组] 跳石头')],
+        examples: [
+        lg('P1873', '[COCI 2011/2012 #5] EKO / 砍树'),
+        lg('P2678', '[NOIP 2015 提高组] 跳石头'),
+        lg('P2440', '木材加工'),
+        lg('P1462', '通往奥格瑞玛的道路'),
+        cf('1983/C', 'Have Your Cake and Eat It Too'),
+        cf('2028/B', 'Alice\'s Adventures in Permuting'),
+      ],
       },
       {
         id: 'basic-doubling',
@@ -108,7 +142,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['倍增'],
         outline: '预处理 2^k 级跳跃表，把线性步数换成二进制拼装；核心是想清楚 f[k][x] 的状态定义与合并顺序。',
-        examples: [lg('P1613', '跑路')],
+        examples: [
+        lg('P1613', '跑路'),
+        lg('P4155', '[SCOI2015] 国旗计划'),
+        lg('P1084', '[NOIP 2012 提高组] 疫情控制'),
+      ],
       },
       {
         id: 'basic-divide-conquer',
@@ -116,7 +154,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['分治', '递归'],
         outline: '「切一半、递归、跨中合并」三段式：棋盘覆盖式构造与平面最近点对都靠跨中线的一次线性扫描完成合并。',
-        examples: [lg('P1228', '地毯填补问题'), lg('P1429', '平面最近点对（加强版）')],
+        examples: [
+        lg('P1228', '地毯填补问题'),
+        lg('P1429', '平面最近点对（加强版）'),
+        lg('P1257', '平面上的最接近点对'),
+        lg('P1908', '逆序对'),
+      ],
       },
     ],
   },
@@ -131,7 +174,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['DFS', '搜索', '回溯'],
         outline: '「做选择 → 递归 → 撤销选择」三段式框架，现场恢复完整。',
-        examples: [lg('P1706', '全排列问题')],
+        examples: [
+        lg('P1706', '全排列问题'),
+        lg('P1219', '[USACO1.5] 八皇后 Checker Challenge'),
+        lg('P1605', '迷宫'),
+        lg('P1019', '[NOIP 2000 提高组] 单词接龙（疑似错题）'),
+      ],
       },
       {
         id: 'search-bfs-grid',
@@ -139,7 +187,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['BFS', '搜索'],
         outline: '网格 BFS：方向数组、越界/障碍/访问判断、入队时标记，第一次到达即最少步数。',
-        examples: [lg('P1443', '马的遍历')],
+        examples: [
+        lg('P1443', '马的遍历'),
+        lg('P1135', '奇怪的电梯'),
+        lg('P1032', '[NOIP 2002 提高组] 字串变换（疑似错题）'),
+        lg('P2895', '[USACO08FEB] Meteor Shower S'),
+      ],
       },
       {
         id: 'search-floodfill',
@@ -147,7 +200,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 1,
         tags: ['DFS', 'BFS', '连通性'],
         outline: '扫描全图 + 从每个未访问目标格染色整个连通块，统计块数；想清楚四连通还是八连通。',
-        examples: [lg('P1596', '[USACO10OCT]Lake Counting S')],
+        examples: [
+        lg('P1596', '[USACO10OCT] Lake Counting S'),
+        lg('P1451', '求细胞数量'),
+        lg('P1141', '01迷宫'),
+      ],
       },
       {
         id: 'search-memo',
@@ -155,7 +212,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['DFS', '记忆化', '动态规划'],
         outline: 'DFS 暴力 + memo 缓存的写法（引用取位前先判未算），与递推 DP 的等价关系。',
-        examples: [lg('P1434', '滑雪')],
+        examples: [
+        lg('P1434', '[SHOI2002] 滑雪'),
+        lg('P1464', '[PacNW 1999] Function'),
+        lg('P1216', '[IOI 1994 / USACO1.5] 数字三角形 Number Triangles'),
+      ],
       },
       {
         id: 'search-bidirectional-bfs',
@@ -163,7 +224,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['BFS', '搜索'],
         outline: '起点终点交替扩展、始终扩队列较小的一侧，相遇即最短；每层用整层 for 控制，避免跳层漏解。',
-        examples: [lg('P1379', '八数码难题')],
+        examples: [
+        lg('P1379', '八数码难题'),
+        lg('P2730', '[IOI 1996 / USACO3.2] 魔板 Magic Squares'),
+      ],
       },
       {
         id: 'search-astar',
@@ -171,7 +235,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['A*', '启发式搜索'],
         outline: '按 g+h 出堆的优先队列搜索，h 必须是可采纳的下界估计才保证最优；迭代加深版以 f = g+h 限深剪枝。',
-        examples: [lg('P2324', '[SCOI2005] 骑士精神')],
+        examples: [
+        lg('P2324', '[SCOI2005] 骑士精神'),
+        lg('P1379', '八数码难题'),
+        lg('P1074', '[NOIP 2009 提高组] 靶形数独'),
+      ],
       },
       {
         id: 'search-meet-in-middle',
@@ -179,7 +247,13 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['搜索', '折半搜索'],
         outline: '枚举减半：两半各自 2^(n/2) 张表，一半排序后另一半二分/哈希拼接答案，O(2^n) 降到 O(2^(n/2)·log)。',
-        examples: [lg('P4799', '[CEOI 2015] 世界冰球锦标赛 (Day2)'), cf('888/E', 'Maximum Subsequence')],
+        examples: [
+        lg('P4799', '[CEOI 2015] 世界冰球锦标赛 (Day2)'),
+        cf('888/E', 'Maximum Subsequence'),
+        cf('525/E', 'Anya and Cubes'),
+        cf('1006/F', 'Xor-Paths'),
+        cf('799/D', 'Field expansion'),
+      ],
       },
       {
         id: 'search-annealing',
@@ -187,7 +261,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['随机化', '模拟退火'],
         outline: '温度从高到低，以 exp(-Δ/T) 的概率接受劣解逃离局部最优；while 卡到时限边缘多跑几轮取最优。',
-        examples: [lg('P1337', '[JSOI2004] 平衡点 / 吊打XXX')],
+        examples: [
+        lg('P1337', '[JSOI2004] 平衡点 / 吊打XXX'),
+        lg('P2503', '[HAOI2006] 均分数据'),
+        lg('P3878', '[TJOI2010] 分金币'),
+        lg('P2962', '[USACO09NOV] Lights G'),
+      ],
       },
       {
         id: 'search-dlx',
@@ -195,7 +274,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['搜索', 'DLX', '精确覆盖'],
         outline: '十字双向链表 O(1) 覆盖/恢复，递归回溯时选剩余元素最少的列；数独是精确覆盖，重复覆盖改用估价函数剪枝。',
-        examples: [lg('P4929', '【模板】舞蹈链（DLX）')],
+        examples: [
+        lg('P4929', '【模板】舞蹈链（DLX）'),
+        lg('P1784', '数独'),
+        lg('P1074', '[NOIP 2009 提高组] 靶形数独'),
+      ],
       },
     ],
   },
@@ -210,7 +293,15 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['并查集', '数据结构'],
         outline: 'find 路径压缩 + unite 按秩合并的完整实现，能说明为什么均摊近 O(1)。',
-        examples: [lg('P1551', '亲戚'), lg('P3367', '【模板】并查集')],
+        examples: [
+        lg('P1551', '亲戚'),
+        lg('P3367', '【模板】并查集'),
+        lg('P1536', '村村通'),
+        lg('P1111', '修复公路'),
+        cf('1249/B1', 'Books Exchange (easy version)'),
+        cf('217/A', 'Ice Skating'),
+        cf('501/B', 'Misha and Changing Handles'),
+      ],
       },
       {
         id: 'ds-bit',
@@ -218,7 +309,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['树状数组', '数据结构'],
         outline: 'lowbit 原理 + add/query 双循环，区间和 = 两次前缀查询；想清楚下标为何从 1 起。',
-        examples: [lg('P3374', '【模板】树状数组 1'), lg('P1908', '逆序对')],
+        examples: [
+        lg('P3374', '【模板】树状数组 1'),
+        lg('P1908', '逆序对'),
+        lg('P3368', '【模板】树状数组 2'),
+        lg('P1966', '[NOIP 2013 提高组] 火柴排队'),
+      ],
       },
       {
         id: 'ds-segtree',
@@ -226,7 +322,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['线段树', '数据结构'],
         outline: 'pushup / pushdown / apply 骨架 + 整段命中返回；数组 4 倍空间的原因。',
-        examples: [lg('P3373', '【模板】线段树 2'), lg('P3372', '【模板】线段树 1')],
+        examples: [
+        lg('P3373', '【模板】线段树 2'),
+        lg('P3372', '【模板】线段树 1'),
+        lg('P2574', 'XOR 的艺术'),
+        lg('P4513', '小白逛公园'),
+      ],
       },
       {
         id: 'ds-sparse-table',
@@ -234,7 +335,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['ST表', '倍增', 'RMQ'],
         outline: '倍增预处理 2^k 区间最值 + 查询两段可重叠覆盖；为什么只能用于可重复贡献运算。',
-        examples: [lg('P3865', '【模板】ST 表')],
+        examples: [
+        lg('P3865', '【模板】ST 表 & RMQ 问题'),
+        lg('P1816', '忠诚'),
+        lg('P2880', '[USACO07JAN] Balanced Lineup G'),
+        lg('P2251', '质量检测'),
+      ],
       },
       {
         id: 'ds-mono-stack',
@@ -242,7 +348,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['单调栈', '数据结构'],
         outline: '求「左侧第一个更小元素」的四向问题同构说明 + 每元素至多进出栈一次的均摊论证。',
-        examples: [lg('P5788', '【模板】单调栈')],
+        examples: [
+        lg('P5788', '【模板】单调栈'),
+        lg('P2947', '[USACO09MAR] Look Up S'),
+        lg('P1908', '逆序对'),
+      ],
       },
       {
         id: 'ds-mono-deque',
@@ -250,7 +360,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['单调队列', '队列'],
         outline: '队尾弹失去单调性、队头弹滑出窗口，队头即当前最值；队列里存下标，出队判断用下标而非值。',
-        examples: [lg('P1886', '【模板】单调队列 / 滑动窗口')],
+        examples: [
+        lg('P1886', '【模板】单调队列 / 滑动窗口'),
+        lg('P1440', '求m区间内的最小值'),
+        lg('P2032', '扫描'),
+        lg('P1419', '寻找段落'),
+      ],
       },
       {
         id: 'ds-heap',
@@ -258,7 +373,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['堆', '优先队列'],
         outline: '大根堆配小根堆动态维护第 k 大（对顶堆）的平衡条件；pair 入堆时的比较方向易错。',
-        examples: [lg('P1090', '[NOIP2004 提高组] 合并果子'), lg('P1801', '黑匣子')],
+        examples: [
+        lg('P1090', '[NOIP 2004 提高组] 合并果子'),
+        lg('P1801', '黑匣子'),
+        lg('P1168', '中位数'),
+        lg('P6033', '[NOIP 2004 提高组] 合并果子 加强版'),
+      ],
       },
       {
         id: 'ds-weighted-dsu',
@@ -266,7 +386,14 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['并查集', '数据结构'],
         outline: '路径压缩时顺带递推节点到根的权值（先递归再更新）；关系类问题也可拆「真/假」扩展域建双份集合。',
-        examples: [lg('P1196', '[NOI2002] 银河英雄传说'), lg('P1892', '[BalticOI 2003] 团伙 (Day 2)')],
+        examples: [
+        lg('P1196', '[NOI2002] 银河英雄传说'),
+        lg('P1892', '[BalticOI 2003] 团伙 (Day 2)'),
+        lg('P2024', '[NOI2001] 食物链'),
+        lg('P5937', '[CEOI 1999] Parity Game'),
+        cf('2033/E', 'Sakurako, Kosuke, and the Permutation'),
+        cf('1559/D1', 'Mocha and Diana (Easy Version)'),
+      ],
       },
       {
         id: 'ds-chairman-tree',
@@ -274,7 +401,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['线段树', '可持久化', '数据结构'],
         outline: '每次插入只新建 O(log n) 个节点、复用旧版本；静态区间第 k 小按权值域比较左右子树大小下潜。',
-        examples: [lg('P3834', '【模板】可持久化线段树 2（静态区间第 k 小）')],
+        examples: [
+        lg('P3834', '【模板】可持久化线段树 2（静态区间第 k 小）'),
+        lg('P2617', 'Dynamic Rankings'),
+        lg('P3168', '[CQOI2015] 任务查询系统'),
+      ],
       },
       {
         id: 'ds-fhq-treap',
@@ -282,7 +413,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['平衡树', '数据结构'],
         outline: '按权值分裂 + 按大小分裂，merge/split 两个函数撑起全部操作；随机键维持期望平衡，无需旋转。',
-        examples: [lg('P3369', '【模板】普通平衡树')],
+        examples: [
+        lg('P3369', '【模板】普通平衡树'),
+        lg('P3391', '【模板】文艺平衡树'),
+        lg('P2042', '[NOI2005] 维护数列'),
+      ],
       },
       {
         id: 'ds-sqrt-decomposition',
@@ -290,7 +425,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['分块', '数据结构'],
         outline: '整块打懒标记、散块暴力扫的维护框架，块长取 √n 附近平衡两类代价；「优雅的暴力」是万能保底。',
-        examples: [lg('P2801', '教主的魔法')],
+        examples: [
+        lg('P2801', '教主的魔法'),
+        lg('P3203', '[HNOI2010] 弹飞绵羊'),
+        lg('P4168', '[Violet] 蒲公英'),
+      ],
       },
       {
         id: 'ds-mo-algorithm',
@@ -298,7 +437,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['莫队', '离线'],
         outline: '按（左端点块, 右端点奇偶）排序后双指针暴力增删；带修加时间维变三维排序，注意奇偶优化与增删次序。',
-        examples: [lg('P2709', '【模板】莫队 / 小 B 的询问'), lg('P1903', '【模板】带修莫队 / [国家集训队] 数颜色 / 维护队列')],
+        examples: [
+        lg('P2709', '【模板】莫队 / 小 B 的询问'),
+        lg('P1903', '【模板】带修莫队 / [国家集训队] 数颜色 / 维护队列'),
+        lg('P1494', '[国家集训队] 小 Z 的袜子'),
+      ],
       },
       {
         id: 'ds-kd-tree',
@@ -306,7 +449,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['数据结构', 'KD树', '计算几何'],
         outline: '交替按维度切分建树，矩形到目标点的最小/最大距离做剪枝查最近/最远点对；插入过深时按替罪羊思路重构子树。',
-        examples: [lg('P4169', '[Violet] 天使玩偶/SJY摆棋子'), lg('P4357', '[CQOI2016] K 远点对')],
+        examples: [
+        lg('P4169', '[Violet] 天使玩偶/SJY摆棋子'),
+        lg('P4357', '[CQOI2016] K 远点对'),
+      ],
       },
       {
         id: 'ds-tree-in-tree',
@@ -314,7 +460,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['数据结构', '树套树', '平衡树'],
         outline: '外层线段树按位置、内层平衡树/权值线段树按值域，查询 = O(log n) 个内层结构的拼合；单点版常见，带区间改要在内层打标记。',
-        examples: [lg('P3380', '【模板】树套树')],
+        examples: [
+        lg('P3380', '【模板】树套树'),
+        lg('P3332', '[ZJOI2013] K 大数查询'),
+      ],
       },
       {
         id: 'ds-partition-tree',
@@ -337,7 +486,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['树上算法', '树的直径'],
         outline: '两次 DFS 或树形 DP（最长下行链 + 次长下行链拼过点路径）皆可，负权边只能用 DP 法；「直径中点」常是结论题入口。',
-        examples: [lg('P3304', '直径')],
+        examples: [
+        lg('P3304', '[SDOI2013] 直径'),
+        lg('P1099', '[NOIP 2007 提高组] 树网的核'),
+      ],
       },
       {
         id: 'tree-centroid',
@@ -345,7 +497,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['树上算法', '树的重心'],
         outline: '一次 DFS 求 max(最大子树, n-子树) 最小的点；重心性质（最大子树 ≤ n/2、换根时 O(1) 转移距离和）要能现场推导。',
-        examples: [lg('P1364', '医院设置')],
+        examples: [
+        lg('P1364', '医院设置'),
+        lg('P1395', '会议'),
+        lg('P5536', '【XR-3】核心城市'),
+        lg('P2986', '[USACO10MAR] Great Cow Gathering G'),
+      ],
       },
       {
         id: 'tree-lca',
@@ -353,7 +510,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['LCA', '倍增', '树上算法'],
         outline: '深度对齐后二进制上跳的倍增写法；配合树上差分可把路径统计降到 O(1) 标记 + O(n) 还原。',
-        examples: [lg('P3379', '【模板】最近公共祖先（LCA）')],
+        examples: [
+        lg('P3379', '【模板】最近公共祖先（LCA）'),
+        lg('P1967', '[NOIP 2013 提高组] 货车运输'),
+        lg('P3128', '[USACO15DEC] Max Flow P'),
+      ],
       },
       {
         id: 'tree-dfs-order',
@@ -361,7 +522,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['DFS序', '树状数组', '树上算法'],
         outline: '进出栈时间戳把子树映射成连续区间（tin/tout），子树修改查询即区间操作，接 BIT/线段树；换根的 delta 推导。',
-        examples: [lg('P3178', '[HAOI2015] 树上操作')],
+        examples: [
+        lg('P3178', '[HAOI2015] 树上操作'),
+        lg('P2146', '[NOI2015] 软件包管理器'),
+        lg('P3258', '[JLOI2014] 松鼠的新家'),
+      ],
       },
       {
         id: 'tree-hld',
@@ -369,7 +534,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['树上算法', '树链剖分', '线段树'],
         outline: '重儿子优先分配 dfn 保证重链连续，任意路径拆成 O(log n) 段连续区间交给线段树；两次 DFS 维护 fa/son/top/dfn。',
-        examples: [lg('P3384', '【模板】重链剖分 / 树链剖分')],
+        examples: [
+        lg('P3384', '【模板】重链剖分 / 树链剖分'),
+        lg('P2590', '[ZJOI2008] 树的统计'),
+        lg('P2680', '[NOIP 2015 提高组] 运输计划'),
+      ],
       },
       {
         id: 'tree-centroid-decomp',
@@ -377,7 +546,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['树上算法', '点分治', '分治'],
         outline: '每层选重心为根统计跨根路径再删根递归，共 O(log n) 层；容斥减去同子树路径防重复计数。',
-        examples: [lg('P3806', '【模板】点分治')],
+        examples: [
+        lg('P3806', '【模板】点分治'),
+        lg('P4178', 'Tree'),
+        lg('P2634', '[国家集训队] 聪聪可可'),
+      ],
       },
       {
         id: 'tree-pseudo',
@@ -385,7 +558,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['树上算法', '基环树'],
         outline: '找环、断环成「环 + 两棵树」分别处理后合并结果；n 条边的连通图先判定是不是基环树。',
-        examples: [lg('P5022', '[NOIP 2018 提高组] 旅行'), lg('P2607', '[ZJOI2008] 骑士')],
+        examples: [
+        lg('P5022', '[NOIP 2018 提高组] 旅行'),
+        lg('P2607', '[ZJOI2008] 骑士'),
+        lg('P4381', '[IOI 2008] Island'),
+      ],
       },
       {
         id: 'tree-virtual',
@@ -393,7 +570,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['树上算法', '虚树', 'LCA'],
         outline: '只保留关键点与其 LCA 的压缩树：关键点按 dfs 序排序、栈维护右链，相邻两点 LCA 判插入；原树 DP 搬到 O(k) 规模上跑。',
-        examples: [lg('P2495', '【模板】虚树 / [SDOI2011] 消耗战')],
+        examples: [
+        lg('P2495', '【模板】虚树 / [SDOI2011] 消耗战'),
+        lg('P4103', '[HEOI2014] 大工程'),
+      ],
       },
       {
         id: 'tree-lct',
@@ -401,7 +581,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['树上算法', 'LCT', 'splay'],
         outline: 'splay 维护偏好路径 + access 打通根到当前点的实链，makeroot 翻转、link/cut 换父是三个基本件；动态连边删边下的路径/子树信息靠它。',
-        examples: [lg('P3690', '【模板】动态树（LCT）')],
+        examples: [
+        lg('P3690', '【模板】动态树（LCT）'),
+        lg('P2147', '[SDOI2008] 洞穴勘测'),
+      ],
       },
       {
         id: 'tree-cactus',
@@ -409,7 +592,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['树上算法', '仙人掌', '圆方树'],
         outline: '每条边至多属一个环的结构：Tarjan 建圆方树，环变方点；DP 遇到环先拆环成链（断一端枚举或两次 DP）再合并。',
-        examples: [lg('P4244', '[SHOI2008] 仙人掌图 II')],
+        examples: [
+        lg('P4244', '[SHOI2008] 仙人掌图 II'),
+        lg('P5236', '【模板】静态仙人掌'),
+      ],
       },
     ],
   },
@@ -424,7 +610,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['动态规划', '背包'],
         outline: '一维滚动数组：01 倒序、完全正序的原因；「恰好装满」与「不超过容量」的初始化差异。',
-        examples: [lg('P1048', '采药'), lg('P1616', '疯狂的采药')],
+        examples: [
+        lg('P1048', '[NOIP 2005 普及组] 采药'),
+        lg('P1616', '疯狂的采药'),
+        lg('P1064', '[NOIP 2006 提高组] 金明的预算方案'),
+        lg('P1164', '小 A 点菜'),
+      ],
       },
       {
         id: 'dp-lis',
@@ -432,7 +623,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['动态规划', '二分', 'LIS'],
         outline: 'tail 数组的含义（每长度最优末尾）+ lower/upper_bound 对应严格升与不降。',
-        examples: [lg('B3637', '最长上升子序列'), lg('P1020', '导弹拦截')],
+        examples: [
+        lg('B3637', '最长上升子序列'),
+        lg('P1020', '[NOIP 1999 提高组] 导弹拦截'),
+        lg('P2782', '友好城市'),
+        lg('P1439', '两个排列的最长公共子序列'),
+      ],
       },
       {
         id: 'dp-interval',
@@ -440,7 +636,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['动态规划', '区间DP'],
         outline: '按长度枚举 + 分割点转移的骨架（石子合并），环状断环为链的处理。',
-        examples: [lg('P1880', '[NOI1995]石子合并')],
+        examples: [
+        lg('P1880', '[NOI1995] 石子合并'),
+        lg('P1063', '[NOIP 2006 提高组] 能量项链'),
+        lg('P1220', '关路灯'),
+      ],
       },
       {
         id: 'dp-tree',
@@ -448,7 +648,14 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['动态规划', '树形DP', 'DFS'],
         outline: '子树为状态域的后序合并（选/不选当前点 0/1 维），DFS 记 fa 防回走。',
-        examples: [lg('P1352', '没有上司的舞会')],
+        examples: [
+        lg('P1352', '没有上司的舞会'),
+        lg('P2014', '[CTSC1997] 选课'),
+        lg('P2015', '二叉苹果树'),
+        lg('P3177', '[HAOI2015] 树上染色'),
+        cf('161/D', 'Distance in Tree'),
+        cf('1975/D', 'Paint the Tree'),
+      ],
       },
       {
         id: 'dp-bitmask',
@@ -456,7 +663,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['动态规划', '状态压缩', '位运算'],
         outline: '行状态压整数 + 相邻行转移合法性（纵/斜冲突位运算判断），滚动数组降维。',
-        examples: [lg('P1896', '[SCOI2005]互不侵犯')],
+        examples: [
+        lg('P1896', '[SCOI2005] 互不侵犯'),
+        lg('P2704', '[NOI2001] 炮兵阵地'),
+        lg('P1879', '[USACO06NOV] Corn Fields G'),
+      ],
       },
       {
         id: 'dp-digit',
@@ -464,7 +675,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['动态规划', '数位DP'],
         outline: '逐位枚举 + limit/前导零状态记忆化，答案 = solve(r) - solve(l-1)；状态只记「贴不贴上界」往往就够。',
-        examples: [lg('P2602', '[ZJOI2010] 数字计数')],
+        examples: [
+        lg('P2602', '[ZJOI2010] 数字计数'),
+        lg('P4127', '[AHOI2009] 同类分布'),
+        cf('1036/C', 'Classy Numbers'),
+      ],
       },
       {
         id: 'dp-probability',
@@ -472,7 +687,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['动态规划', '概率期望'],
         outline: '概率正推、期望逆推（f[u] = Σ p·f[后继] + 边代价）；「期望的线性性」拆开各贡献独立算，是卡住时的突破口。',
-        examples: [lg('P4316', '绿豆蛙的归宿')],
+        examples: [
+        lg('P4316', '绿豆蛙的归宿'),
+        lg('P1654', 'OSU!'),
+        lg('P1365', 'WJMZBMR打osu! / Easy'),
+      ],
       },
       {
         id: 'dp-mono-queue-opt',
@@ -480,7 +699,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['动态规划', '单调队列'],
         outline: '转移形如 f[i] = max(f[j] + w(i) - w(j)) 且 j 落在定长窗口内时，滑动窗口维护决策点均摊 O(1)。',
-        examples: [lg('P1725', '琪露诺')],
+        examples: [
+        lg('P1725', '琪露诺'),
+        lg('P2627', '[USACO11OPEN] Mowing the Lawn G'),
+        lg('P3957', '[NOIP 2017 普及组] 跳房子'),
+      ],
       },
       {
         id: 'dp-slope-opt',
@@ -488,7 +711,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['动态规划', '斜率优化', '凸壳'],
         outline: '把含 i²/j² 的转移整理成斜截式，决策点构成下凸壳：斜率单调弹队首 O(1)，否则二分凸壳 O(log)。',
-        examples: [lg('P3195', '[HNOI2008] 玩具装箱')],
+        examples: [
+        lg('P3195', '[HNOI2008] 玩具装箱'),
+        lg('P3648', '[APIO2014] 序列分割'),
+        lg('P2120', '[ZJOI2007] 仓库建设'),
+        lg('P4027', '[NOI2007] 货币兑换'),
+      ],
       },
       {
         id: 'dp-steiner',
@@ -496,7 +724,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['动态规划', '状压DP', '最短路'],
         outline: 'f[u][S] 连通关键点集 S 的最小代价：子集枚举「合并两半」与最短路松弛「同集转移」交替直到收敛。',
-        examples: [lg('P6192', '【模板】最小斯坦纳树')],
+        examples: [
+        lg('P6192', '【模板】最小斯坦纳树'),
+        lg('P4294', '[WC2008] 游览计划'),
+      ],
       },
       {
         id: 'dp-plug',
@@ -504,7 +735,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['动态规划', '状压DP', '插头DP'],
         outline: '逐格转移维护轮廓线上插头的连通性（最小表示法编码），分新建/延续/合并三类讨论；哈希表存状态防膨胀。',
-        examples: [lg('P5056', '【模板】插头 DP')],
+        examples: [
+        lg('P5056', '【模板】插头 DP'),
+        lg('P5074', 'Eat the Trees'),
+      ],
       },
     ],
   },
@@ -519,7 +753,13 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['图论', '最短路', '堆'],
         outline: '小根堆 + done 惰性删除的写法；为什么负权边会使其出错。',
-        examples: [lg('P4779', '【模板】单源最短路径（标准版）')],
+        examples: [
+        lg('P4779', '【模板】单源最短路径（标准版）'),
+        cf('20/C', 'Dijkstra?'),
+        lg('P1629', '邮递员送信'),
+        cf('1547/E', 'Air Conditioners'),
+        cf('35/C', 'Fire Again'),
+      ],
       },
       {
         id: 'graph-spfa',
@@ -527,7 +767,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['图论', '最短路'],
         outline: '队列松弛框架 + 「入队次数 ≥ n 判负环」；何时会被卡到 O(nm)。',
-        examples: [lg('P3385', '【模板】负环')],
+        examples: [
+        lg('P3385', '【模板】负环'),
+        lg('P1938', '[USACO09NOV] Job Hunt S'),
+        lg('P2850', '[USACO06DEC] Wormholes G'),
+      ],
       },
       {
         id: 'graph-kruskal',
@@ -535,7 +779,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['图论', '最小生成树', '并查集'],
         outline: '边排序 + 并查集判环 + 选满 n-1 条；不连通时的判定输出。',
-        examples: [lg('P3366', '【模板】最小生成树')],
+        examples: [
+        lg('P3366', '【模板】最小生成树'),
+        lg('P1991', '无线通讯网'),
+        lg('P2820', '局域网'),
+        lg('P1111', '修复公路'),
+      ],
       },
       {
         id: 'graph-topo',
@@ -543,7 +792,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['图论', '拓扑排序', 'DAG'],
         outline: '入度数组反复摘 0 入点，输出数量 < n 即有环；字典序最小用小根堆。',
-        examples: [lg('B3644', '【模板】拓扑排序 / 家谱树')],
+        examples: [
+        lg('B3644', '【模板】拓扑排序 / 家谱树'),
+        lg('P4017', '最大食物链计数'),
+        lg('P1113', '[USACO02FEB] 杂务'),
+        cf('1851/E', 'Nastya and Potions'),
+      ],
       },
       {
         id: 'graph-hungarian',
@@ -551,7 +805,14 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['图论', '二分图', '匹配'],
         outline: '增广路递归腾位写法 + vis 每轮清空；matchR 下标方向（右 → 左）。',
-        examples: [lg('P3386', '【模板】二分图最大匹配')],
+        examples: [
+        lg('P3386', '【模板】二分图最大匹配'),
+        lg('P2756', '飞行员配对方案问题'),
+        lg('P2055', '[ZJOI2009] 假期的宿舍'),
+        lg('P1640', '[SCOI2010] 连续攻击游戏'),
+        cf('1525/D', 'Armchairs'),
+        cf('1437/C', 'Chef Monocarp'),
+      ],
       },
       {
         id: 'graph-floyd',
@@ -559,7 +820,13 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['图论', '最短路'],
         outline: 'dp[k][i][j] = 只经前 k 个中转点的最短路，k 必须在最外层；按「中转点开放时间」排序可处理动态加点。',
-        examples: [lg('P1119', '灾后重建')],
+        examples: [
+        lg('P1119', '灾后重建'),
+        lg('P1522', '[USACO2.4] 牛的旅行 Cow Tours'),
+        lg('P2910', '[USACO08OPEN] Clear And Present Danger S'),
+        cf('601/A', 'The Two Routes'),
+        cf('954/D', 'Fight Against Traffic'),
+      ],
       },
       {
         id: 'graph-euler',
@@ -567,7 +834,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['图论', '欧拉路'],
         outline: '先按度数判存在性（无向图奇度点 0/2 个，有向图出入度平衡或差 1），Hierholzer 算法用栈倒序输出路径。',
-        examples: [lg('P7771', '【模板】欧拉路径'), lg('P2731', '[USACO3.3] 骑马修栅栏 Riding the Fences')],
+        examples: [
+        lg('P7771', '【模板】欧拉路径'),
+        lg('P2731', '[USACO3.3] 骑马修栅栏 Riding the Fences'),
+        lg('P1341', '无序字母对'),
+      ],
       },
       {
         id: 'graph-diff-constraint',
@@ -575,7 +846,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['图论', '最短路', '差分约束'],
         outline: '不等式统一成 x_i ≤ x_j + w 后建边跑最短路，超级源点保证连通；求最大解跑最长路、等式拆成两条。',
-        examples: [lg('P5960', '【模板】差分约束')],
+        examples: [
+        lg('P5960', '【模板】差分约束'),
+        lg('P1250', '种树'),
+        lg('P1993', '小 K 的农场'),
+      ],
       },
       {
         id: 'graph-tarjan-scc',
@@ -583,7 +858,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['图论', 'Tarjan', 'DAG'],
         outline: 'dfn/low 回溯收分量（栈内即当前 SCC），缩点后成 DAG；通常接拓扑 DP 求最长链、可达性或点权并。',
-        examples: [lg('P3387', '【模板】缩点 / 强连通分量')],
+        examples: [
+        lg('P3387', '【模板】缩点 / 强连通分量'),
+        lg('P2341', '[USACO03FALL / HAOI2006] 受欢迎的牛 G'),
+        lg('P2812', '校园网络 / [IOI 1996 / USACO5.3] 校园网 Network of Schools 加强版'),
+      ],
       },
       {
         id: 'graph-cut',
@@ -591,7 +870,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['图论', 'Tarjan', '双连通'],
         outline: 'low 只用「子树 + 反向边」更新（不用父边）；割点 root 特判儿子数，边双/点双缩点后建分量树。',
-        examples: [lg('P3388', '【模板】割点（割顶）'), lg('P2860', '[USACO06JAN] Redundant Paths G')],
+        examples: [
+        lg('P3388', '【模板】割点（割顶）'),
+        lg('P2860', '[USACO06JAN] Redundant Paths G'),
+        lg('P4320', '道路相遇'),
+      ],
       },
       {
         id: 'graph-2sat',
@@ -599,7 +882,13 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['图论', '2-SAT'],
         outline: '「选 a 则必选 b」建单向边，Tarjan 求 SCC 后取分量编号（逆拓扑）当真值；x 与 ¬x 同分量即无解。',
-        examples: [lg('P4782', '【模板】2-SAT')],
+        examples: [
+        lg('P4782', '【模板】2-SAT'),
+        lg('P4171', '[JSOI2010] 满汉全席'),
+        cf('776/D', 'The Door Problem'),
+        cf('468/B', 'Two Sets'),
+        cf('1715/D', '2+ doors'),
+      ],
       },
       {
         id: 'graph-dinic',
@@ -607,7 +896,14 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['图论', '网络流'],
         outline: 'BFS 分层 + DFS 沿层增广 + 当前弧优化，O(n²m)；反向边流量做抵消是整个算法的精髓，链式前向星异或配对。',
-        examples: [lg('P3376', '【模板】网络最大流')],
+        examples: [
+        lg('P3376', '【模板】网络最大流'),
+        lg('P2764', '最小路径覆盖问题'),
+        lg('P2762', '太空飞行计划问题'),
+        lg('P1345', '[USACO5.4] 奶牛的电信 Telecowmunication'),
+        cf('1214/D', 'Treasure Island'),
+        cf('965/D', 'Single-use Stones'),
+      ],
       },
       {
         id: 'graph-mcmf',
@@ -615,7 +911,13 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['图论', '网络流', '费用流'],
         outline: '每次在残余图上 SPFA 找费用最短增广路，增广到满流为止；反向边费用取负保证可撤销。',
-        examples: [lg('P3381', '【模板】最小费用最大流')],
+        examples: [
+        lg('P3381', '【模板】最小费用最大流'),
+        lg('P1251', '餐巾计划问题'),
+        lg('P4016', '负载平衡问题'),
+        lg('P4013', '数字梯形问题'),
+        cf('653/D', 'Delivery Bears'),
+      ],
       },
       {
         id: 'graph-second-mst',
@@ -623,7 +925,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['图论', '最小生成树', 'LCA'],
         outline: '枚举非树边 (u,v,w)，替换树上 u→v 路径中严格小于 w 的最大边权；倍增维护路径前两大值。',
-        examples: [lg('P4180', '[BJWC2010] 严格次小生成树')],
+        examples: [
+        lg('P4180', '[BJWC2010] 严格次小生成树'),
+        cf('609/E', 'Minimum spanning tree for each edge'),
+      ],
       },
       {
         id: 'graph-kth-path',
@@ -631,7 +936,9 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['图论', '最短路', 'A*'],
         outline: '反图跑终点最短路作为 h，正向堆按 g+h 弹出，第 k 次到达终点即 k 短路；限制弹出次数防内存爆炸。',
-        examples: [lg('P2483', '【模板】k 短路 / [SDOI2010] 魔法猪学院')],
+        examples: [
+        lg('P2483', '【模板】k 短路 / [SDOI2010] 魔法猪学院'),
+      ],
       },
       {
         id: 'graph-matrix-tree',
@@ -639,7 +946,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['图论', '线性代数', '行列式'],
         outline: 'Kirchhoff 矩阵（度数 - 邻接）去掉任意一行一列，其行列式 = 生成树个数；模质数域用高斯消元，非质模换辗转相除消元。',
-        examples: [lg('P4111', '[HEOI2015] 小 Z 的房间')],
+        examples: [
+        lg('P4111', '[HEOI2015] 小 Z 的房间'),
+        lg('P3317', '[SDOI2014] 重建'),
+        lg('P4336', '[SHOI2016] 黑暗前的幻想乡'),
+      ],
       },
       {
         id: 'graph-chu-liu',
@@ -647,7 +958,9 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['图论', '生成树'],
         outline: '每轮给除根外每个点选最小入边，出现环则整体缩点、入边权减去环内被替换边权后重跑；先判根可达所有点。',
-        examples: [lg('P4716', '【模板】最小树形图')],
+        examples: [
+        lg('P4716', '【模板】最小树形图'),
+      ],
       },
       {
         id: 'graph-planar',
@@ -655,7 +968,9 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['图论', '平面图', '2-SAT'],
         outline: '判定走「找哈密顿回路 + 圈内圈外边建 2-SAT 染色」的经典路线；对偶图把平面图最短路 ↔ 对偶图最小割互相转化。',
-        examples: [lg('P3209', '[HNOI2010] 平面图判定')],
+        examples: [
+        lg('P3209', '[HNOI2010] 平面图判定'),
+      ],
       },
       {
         id: 'graph-chordal',
@@ -678,7 +993,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 1,
         tags: ['数学', '快速幂', '取模'],
         outline: '指数二进制分解循环写法；中间乘法溢出时的 __int128 / 龟速乘。',
-        examples: [lg('P1226', '【模板】快速幂')],
+        examples: [
+        lg('P1226', '【模板】快速幂'),
+        lg('P1962', '斐波那契数列'),
+        lg('P1593', '因子和'),
+      ],
       },
       {
         id: 'math-sieve',
@@ -686,7 +1005,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['数学', '筛法', '欧拉函数'],
         outline: '合数只被最小质因子筛掉一次的循环结构 + 欧拉函数两分支递推。',
-        examples: [lg('P3383', '【模板】线性筛素数'), lg('P2158', '仪仗队')],
+        examples: [
+        lg('P3383', '【模板】线性筛素数'),
+        lg('P2158', '[SDOI2008] 仪仗队'),
+        lg('P1865', 'A % B Problem'),
+        lg('P2568', 'GCD'),
+      ],
       },
       {
         id: 'math-exgcd',
@@ -694,7 +1018,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['数学', '数论', '逆元'],
         outline: '递归回溯求 ax+by=gcd 的系数（x/y 交换传参），逆元结果统一 (x % p + p) % p。',
-        examples: [lg('P1082', '[NOIP2012 提高组] 同余方程'), lg('P3811', '【模板】乘法逆元')],
+        examples: [
+        lg('P1082', '[NOIP 2012 提高组] 同余方程'),
+        lg('P3811', '【模板】模意义下的乘法逆元'),
+        lg('P1516', '青蛙的约会'),
+        lg('P2613', '【模板】有理数取余'),
+      ],
       },
       {
         id: 'math-comb',
@@ -702,7 +1031,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['数学', '组合计数'],
         outline: '阶乘 + 阶乘逆元线性预处理，C(a,b) O(1) 查询；适用前提模数为质数。',
-        examples: [lg('P2822', '[NOIP2016 提高组] 组合数问题')],
+        examples: [
+        lg('P2822', '[NOIP 2016 提高组] 组合数问题'),
+        lg('P4071', '[SDOI2016] 排列计数'),
+        lg('P1313', '[NOIP 2011 提高组] 计算系数'),
+      ],
       },
       {
         id: 'math-matrix-pow',
@@ -710,7 +1043,14 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['数学', '矩阵', '快速幂'],
         outline: '矩阵乘法（k 外层 + 稀疏剪枝）与单位阵初始化的快速幂；线性递推转矩阵的思想。',
-        examples: [lg('P3390', '【模板】矩阵快速幂'), lg('P1962', '斐波那契数列')],
+        examples: [
+        lg('P3390', '【模板】矩阵快速幂'),
+        lg('P1962', '斐波那契数列'),
+        lg('P1939', '矩阵加速（数列）'),
+        lg('P3193', '[HNOI2008] GT考试'),
+        cf('691/E', 'Xor-sequences'),
+        cf('222/E', 'Decoding Genome'),
+      ],
       },
       {
         id: 'math-game-theory',
@@ -718,7 +1058,14 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['博弈论', '数学'],
         outline: 'Nim：各堆异或和非零先手必胜；巴什：n % (m+1) != 0 先手必胜；威佐夫：d = (b-a)·(√5+1)/2 与 min(a,b) 比较；SG：SG(x)=mex{后继SG}，多子游戏取异或和。',
-        examples: [lg('P2197', '【模板】Nim游戏'), lg('P2252', '取石子游戏（威佐夫博弈）')],
+        examples: [
+        lg('P2197', '【模板】Nim 游戏'),
+        lg('P2252', '【模板】威佐夫博弈 / [SHOI2002] 取石子游戏'),
+        lg('P1247', '取火柴游戏'),
+        lg('P1290', '欧几里德的游戏'),
+        cf('276/B', 'Little Girl and Game'),
+        cf('2239/A', 'Nim Game Is XOR Game'),
+      ],
       },
       {
         id: 'math-euler-theorem',
@@ -726,7 +1073,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['数学', '欧拉函数', '取模'],
         outline: 'a^b ≡ a^(b mod φ(p))（mod p，gcd(a,p)=1）；扩展欧拉定理对 b ≥ φ(p) 分层处理，配合快速幂实现指数降幂。',
-        examples: [lg('P5091', '【模板】扩展欧拉定理')],
+        examples: [
+        lg('P5091', '【模板】扩展欧拉定理'),
+        lg('P4139', '上帝与集合的正确用法'),
+      ],
       },
       {
         id: 'math-lucas',
@@ -734,7 +1084,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['数学', '组合计数'],
         outline: '模小质数 p 时 C(n,m) 按 p 进制逐位相乘，组合数只需预处理到 p-1；不互质模数走 exLucas 拆质因数。',
-        examples: [lg('P3807', '【模板】卢卡斯定理 / Lucas 定理')],
+        examples: [
+        lg('P3807', '【模板】卢卡斯定理 / Lucas 定理'),
+        lg('P4345', '[SHOI2015] 超能粒子炮·改'),
+        lg('P2480', '[SDOI2010] 古代猪文'),
+      ],
       },
       {
         id: 'math-crt',
@@ -742,7 +1096,13 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['数学', '同余方程'],
         outline: '互质模数直接合并余数；不互质用 EXCRT 两两合并同余方程，exgcd 解 ax ≡ c (mod m) 时注意无解判定与最小非负解。',
-        examples: [lg('P1495', '【模板】中国剩余定理（CRT）/ 曹冲养猪'), lg('P4777', '【模板】扩展中国剩余定理（EXCRT）')],
+        examples: [
+        lg('P1495', '【模板】中国剩余定理（CRT）/ 曹冲养猪'),
+        lg('P4777', '【模板】扩展中国剩余定理（EXCRT）'),
+        lg('P4774', '[NOI2018] 屠龙勇士'),
+        cf('919/E', 'Congruence Equation'),
+        cf('1500/B', 'Two chandeliers'),
+      ],
       },
       {
         id: 'math-gauss',
@@ -750,7 +1110,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['数学', '线性代数'],
         outline: '列主元消元 + 回代解线性方程组；用 eps 判无解/无穷解，01 异或方程组按 bit 消元且行数 = 状态维数。',
-        examples: [lg('P3389', '【模板】高斯消元法')],
+        examples: [
+        lg('P3389', '【模板】高斯消元法'),
+        lg('P2455', '[SDOI2006] 线性方程组'),
+        lg('P2447', '[SDOI2010] 外星千足虫'),
+      ],
       },
       {
         id: 'math-linear-basis',
@@ -758,7 +1122,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['数学', '位运算', '线性基'],
         outline: '按最高位插入消元维护一组异或基，支持查最大异或值/第 k 小/判可达；两个基的合并就是逐个插入，O(log²)。',
-        examples: [lg('P3812', '【模板】线性基')],
+        examples: [
+        lg('P3812', '【模板】线性基'),
+        cf('1100/F', 'Ivan and Burgers'),
+        lg('P4151', '[WC2011] 最大 XOR 和路径'),
+      ],
       },
       {
         id: 'math-lagrange',
@@ -766,7 +1134,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['数学', '多项式'],
         outline: 'n+1 个点唯一确定 n 次多项式；横坐标连续（1..k+1）时用前缀/后缀积把求单点值降到 O(n)。',
-        examples: [lg('P4781', '【模板】拉格朗日插值')],
+        examples: [
+        lg('P4781', '【模板】拉格朗日插值'),
+        cf('622/F', 'The Sum of the k-th Powers'),
+      ],
       },
       {
         id: 'math-mobius',
@@ -774,7 +1145,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['数学', '莫比乌斯反演', '数论分块'],
         outline: 'F = f * 1 时 f(n) = Σ μ(d)·F(n/d)；套路是交换枚举顺序把「统计 gcd 为定值」转成「整除值域分段」，配合数论分块。',
-        examples: [lg('P2522', '[HAOI2011] Problem b')],
+        examples: [
+        lg('P2522', '[HAOI2011] Problem b'),
+        lg('P3455', '[POI 2007] ZAP-Queries'),
+        lg('P2257', 'YY的GCD'),
+      ],
       },
       {
         id: 'math-fft',
@@ -782,7 +1157,13 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['数学', 'FFT', '多项式'],
         outline: '分治蝶形在系数/点值表示间 O(n log n) 互化；NTT 用原根替代单位根避免精度问题，注意长度补到 2 的幂。',
-        examples: [lg('P3803', '【模板】多项式乘法（FFT）')],
+        examples: [
+        lg('P3803', '【模板】多项式乘法（FFT）'),
+        lg('P3723', '[AHOI2017/HNOI2017] 礼物'),
+        lg('P4238', '【模板】多项式乘法逆'),
+        cf('993/E', 'Nikita and Order Statistics'),
+        cf('1342/E', 'Placing Rooks'),
+      ],
       },
       {
         id: 'math-bsgs',
@@ -790,7 +1171,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['数学', '同余方程', 'BSGS'],
         outline: '分块 a^⌈√p⌉ 哈希查表解 a^x ≡ b (mod p)，O(√p)；a 与 p 不互质时先 exBSGS 逐步归一 gcd 再转互质情形。',
-        examples: [lg('P3846', '【模板】BSGS / [TJOI2007] 可爱的质数'), lg('P4195', '【模板】扩展 BSGS / exBSGS')],
+        examples: [
+        lg('P3846', '【模板】BSGS / [TJOI2007] 可爱的质数'),
+        lg('P4195', '【模板】扩展 BSGS / exBSGS'),
+        lg('P4884', '多少个 1？'),
+      ],
       },
       {
         id: 'math-polya',
@@ -798,7 +1183,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['数学', '置换群', '组合计数'],
         outline: '在置换群下计不等价染色数：等价类数 = 各置换不动点数的平均，不动点数由循环节个数决定（c^轮数）。',
-        examples: [lg('P4980', '【模板】Pólya 定理')],
+        examples: [
+        lg('P4980', '【模板】Pólya 定理'),
+        lg('P1446', '[HNOI2008] Cards'),
+      ],
       },
       {
         id: 'math-simpson',
@@ -806,7 +1194,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['数学', '数值积分'],
         outline: '二次插值近似定积分，中点二分递归、|左右和 - 整段| 足够小才接受；先确认被积函数可计算再谈精度。',
-        examples: [lg('P4525', '【模板】自适应辛普森法 1')],
+        examples: [
+        lg('P4525', '【模板】自适应辛普森法 1'),
+        lg('P4526', '【模板】自适应辛普森法 2'),
+      ],
       },
       {
         id: 'math-simplex',
@@ -814,7 +1205,9 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['数学', '线性规划', '单纯形'],
         outline: '标准型上选入基/出基变量转轴迭代，pivot 选取防死循环；对偶转化（不等式组 ↔ 变量上下界）常比直接建模好写。',
-        examples: [lg('P3980', '[NOI2008] 志愿者招募')],
+        examples: [
+        lg('P3980', '[NOI2008] 志愿者招募'),
+      ],
       },
     ],
   },
@@ -829,7 +1222,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['字符串', 'KMP'],
         outline: 'nxt 数组构建 + 主串匹配双循环；可重叠计数时失配后 j = nxt[j-1]。',
-        examples: [lg('P3375', '【模板】KMP')],
+        examples: [
+        lg('P3375', '【模板】KMP'),
+        lg('P4391', '[BalticOI 2009] Radio Transmission 无线传输'),
+        lg('P3435', '[POI 2006] OKR-Periods of Words'),
+      ],
       },
       {
         id: 'str-hash',
@@ -837,7 +1234,13 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['字符串', '哈希'],
         outline: '前缀哈希 + 幂次数组的 O(1) 子串截取公式；自然溢出 vs 双哈希的取舍。',
-        examples: [lg('P3370', '【模板】字符串哈希')],
+        examples: [
+        lg('P3370', '【模板】字符串哈希'),
+        cf('1200/E', 'Compress Words'),
+        lg('P4391', '[BalticOI 2009] Radio Transmission 无线传输'),
+        cf('1849/C', 'Binary String Copying'),
+        cf('1536/C', 'Diluc and Kaeya'),
+      ],
       },
       {
         id: 'str-trie',
@@ -845,7 +1248,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['字符串', 'Trie'],
         outline: '静态数组儿子表 + 插入/查询框架；空间按 26 × 总字符数估算。',
-        examples: [lg('P2580', '于是他错误的点名开始了')],
+        examples: [
+        lg('P2580', '于是他错误的点名开始了'),
+        lg('P1481', '魔族密码'),
+      ],
       },
       {
         id: 'str-manacher',
@@ -853,7 +1259,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['字符串', '回文'],
         outline: '插 # 统一奇偶 + 镜像继承半径 + 右边界外暴力扩展；原串/新串下标换算。',
-        examples: [lg('P3805', '【模板】manacher')],
+        examples: [
+        lg('P3805', '【模板】Manacher'),
+        lg('P4555', '[国家集训队] 最长双回文串'),
+        lg('P1659', '[国家集训队] 拉拉队排练'),
+        lg('P4287', '[SHOI2011] 双倍回文'),
+      ],
       },
       {
         id: 'str-z-function',
@@ -861,7 +1272,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['字符串'],
         outline: '维护最右匹配段 [l,r] + z[i-l] 继承；拼接分隔符求模式匹配。',
-        examples: [lg('P5410', '【模板】扩展 KMP（Z 函数）')],
+        examples: [
+        lg('P5410', '【模板】扩展 KMP / exKMP（Z 函数）'),
+        cf('1200/E', 'Compress Words'),
+      ],
       },
       {
         id: 'str-ac-automaton',
@@ -869,7 +1283,14 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['字符串', 'AC自动机', 'Trie'],
         outline: 'Trie 上 BFS 建 fail 指针（指向最长真后缀），匹配时沿 fail 跳跃统计；本质是多模式串版 KMP。',
-        examples: [lg('P3808', 'AC 自动机（简单版）'), lg('P3796', 'AC 自动机（简单版 II）')],
+        examples: [
+        lg('P3808', 'AC 自动机（简单版）'),
+        lg('P3796', 'AC 自动机（简单版 II）'),
+        lg('P5357', '【模板】AC 自动机'),
+        lg('P2444', '[POI 2000 R1] 病毒'),
+        cf('633/C', 'Spy Syndrome 2'),
+        cf('514/C', 'Watto and Mechanism'),
+      ],
       },
       {
         id: 'str-suffix-array',
@@ -877,7 +1298,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['字符串', '后缀数组'],
         outline: '倍增 + 基数排序双关键字 O(n log n)；height[i] 为相邻排名后缀的 LCP，h[i] ≥ h[i-1]-1 保证均摊线性。',
-        examples: [lg('P3809', '【模板】后缀排序')],
+        examples: [
+        lg('P3809', '【模板】后缀排序'),
+        lg('P2408', '不同子串个数'),
+        lg('P2870', '[USACO07DEC] Best Cow Line G'),
+        cf('432/D', 'Prefixes and Suffixes'),
+      ],
       },
       {
         id: 'str-sam',
@@ -885,7 +1311,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['字符串', '后缀自动机'],
         outline: '增量构造维护 len/link（endpos 等价类），子串个数 = Σ(len(v)-len(link(v)))；parent 树上 DP 是绝大多数题的后续。',
-        examples: [lg('P3804', '【模板】后缀自动机（SAM）')],
+        examples: [
+        lg('P3804', '【模板】后缀自动机（SAM）'),
+        lg('P4070', '[SDOI2016] 生成魔咒'),
+        lg('P3975', '[TJOI2015] 弦论'),
+        cf('427/D', 'Match & Catch'),
+      ],
       },
       {
         id: 'str-minimal-rotation',
@@ -893,7 +1324,9 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['字符串', '最小表示法'],
         outline: '双指针比较循环同构串，失配时按结果 i += k+1 跳过整段，均摊线性求最小循环起点。',
-        examples: [lg('P1368', '工艺')],
+        examples: [
+        lg('P1368', '工艺'),
+      ],
       },
       {
         id: 'str-01trie',
@@ -901,7 +1334,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['Trie', '位运算', '字符串'],
         outline: '数值按二进制高位到低位建 Trie，异或最大值在树上贪心走相反分支；配合前缀异或可查任意区间极值。',
-        examples: [lg('P4551', '最长异或路径')],
+        examples: [
+        lg('P4551', '最长异或路径'),
+        cf('706/D', 'Vasiliy\'s Multiset'),
+        lg('P4735', '最大异或和'),
+      ],
       },
       {
         id: 'str-pam',
@@ -909,7 +1346,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['字符串', '回文', '回文自动机'],
         outline: '每加一个字符至多新增一个本质不同回文节点，fail 指向最长回文后缀；以节点回文长度/出现次数为状态做统计。',
-        examples: [lg('P5496', '【模板】回文树 / 回文自动机（PAM）')],
+        examples: [
+        lg('P5496', '【模板】回文树 / 回文自动机（PAM）'),
+        lg('P3649', '[APIO2014] 回文串'),
+        lg('P4287', '[SHOI2011] 双倍回文'),
+      ],
       },
     ],
   },
@@ -924,7 +1365,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['计算几何'],
         outline: '叉积符号 = 旋转方向的原语地位；全程整型避免精度问题的坐标约定。',
-        examples: [],
+        examples: [
+        lg('P1183', '多边形的面积'),
+        lg('P2742', '【模板】二维凸包 / [USACO5.1] 圈奶牛Fencing the Cows'),
+      ],
       },
       {
         id: 'geo-convex-hull',
@@ -932,7 +1376,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['计算几何', '凸包'],
         outline: '排序去重 + 下链/上链两遍扫（叉积 ≤0 弹栈）；共线点保留与否的选择。',
-        examples: [lg('P2742', '【模板】二维凸包')],
+        examples: [
+        lg('P2742', '【模板】二维凸包 / [USACO5.1] 圈奶牛Fencing the Cows'),
+        cf('166/B', 'Polygons'),
+      ],
       },
       {
         id: 'geo-point-in-polygon',
@@ -948,7 +1395,9 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['计算几何', '凸包'],
         outline: '在凸包上维护对踵点双指针：固定一条边移动第三点，叉积单峰所以均摊线性；先求凸包是前提。',
-        examples: [lg('P1452', '[USACO03FALL] Beauty Contest G')],
+        examples: [
+        lg('P1452', '[USACO03FALL] Beauty Contest G'),
+      ],
       },
       {
         id: 'geo-pick',
@@ -956,7 +1405,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['计算几何', '数学'],
         outline: 'S = a + b/2 - 1（a 内部格点、b 边上格点），边上格点数 = gcd(|dx|, |dy|)；三角形容斥算多边形。',
-        examples: [lg('P2735', '[USACO3.4] 网 Electric Fences')],
+        examples: [
+        lg('P2735', '[USACO3.4] 网 Electric Fences'),
+        lg('P1183', '多边形的面积'),
+      ],
       },
       {
         id: 'geo-scanline',
@@ -964,7 +1416,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['计算几何', '线段树', '扫描线'],
         outline: '按 y 排序上下边事件，线段树维护 x 轴覆盖长度；只算不散播的「覆盖长度」无需 pushdown。',
-        examples: [lg('P5490', '【模板】扫描线 & 矩形面积并')],
+        examples: [
+        lg('P5490', '【模板】扫描线 & 矩形面积并'),
+        lg('P1856', '[IOI 1998 / USACO5.5] 矩形周长 Picture'),
+        lg('P1904', '天际线'),
+      ],
       },
       {
         id: 'geo-half-plane',
@@ -972,7 +1428,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['计算几何', '半平面交'],
         outline: '按极角排序后双端队列维护有效半平面（叉积判淘汰）；平行同向取更紧的一条、反向则无交。',
-        examples: [lg('P4196', '【模板】半平面交 / [CQOI2006] 凸多边形')],
+        examples: [
+        lg('P4196', '【模板】半平面交 / [CQOI2006] 凸多边形'),
+        lg('P2600', '[ZJOI2008] 瞭望塔'),
+      ],
       },
     ],
   },
@@ -987,7 +1446,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 1,
         tags: ['STL'],
         outline: 'map/set 的 lower_bound/erase 迭代器陷阱、multiset 只删一个的正确写法、deque 两端 O(1) 的适用边界。',
-        examples: [lg('P1449', '后缀表达式')],
+        examples: [
+        lg('P1449', '后缀表达式'),
+        lg('P1177', '【模板】排序'),
+        lg('P1059', '[NOIP 2006 普及组] 明明的随机数'),
+        lg('P1093', '[NOIP 2007 普及组] 奖学金'),
+      ],
       },
       {
         id: 'misc-bitwise',
@@ -995,7 +1459,13 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 1,
         tags: ['位运算'],
         outline: 'lowbit、popcount、枚举子集 s = (s-1) & S 的循环写法；「按位拆贡献」独立统计每一位是通用思考方式。',
-        examples: [lg('P2114', '[NOI2014] 起床困难综合症')],
+        examples: [
+        lg('P2114', '[NOI2014] 起床困难综合症'),
+        lg('P1469', '找筷子'),
+        lg('P5657', '[CSP-S 2019] 格雷码'),
+        cf('1514/B', 'AND 0, Sum Big'),
+        cf('1420/B', 'Rock and Lever'),
+      ],
       },
       {
         id: 'misc-bignum',
@@ -1003,7 +1473,12 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['高精度'],
         outline: 'vector 按位存十进制（或压 9 位省内存）实现加减乘除：进借位方向、除法的高位试商与商前导零。',
-        examples: [lg('P1601', '高精度加法'), lg('P1303', 'A*B Problem')],
+        examples: [
+        lg('P1601', '高精度加法'),
+        lg('P1303', 'A*B Problem'),
+        lg('P2142', '高精度减法'),
+        lg('P1009', '[NOIP 1998 普及组] 阶乘之和'),
+      ],
       },
       {
         id: 'misc-bitset',
@@ -1011,7 +1486,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 4,
         tags: ['bitset', '位运算'],
         outline: '把布尔转移并行化，可达性/背包计数等 O(n²) 过程整体除以 64；左移位数超类型宽度是未定义行为，需分段。',
-        examples: [lg('P4141', '消失之物')],
+        examples: [
+        lg('P4141', '消失之物'),
+        lg('P3674', '小清新人渣的本愿'),
+      ],
       },
       {
         id: 'misc-cdq-whole',
@@ -1019,7 +1497,10 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['分治', '离线', 'CDQ分治'],
         outline: 'CDQ：左半的修改贡献给右半的查询，三维偏序逐维消去；整体二分：操作序列与值域同时二分，离线求第 k 大类问题。',
-        examples: [lg('P3810', '【模板】三维偏序 / 陌上花开'), lg('P3527', '[POI 2011] MET-Meteors')],
+        examples: [
+        lg('P3810', '【模板】三维偏序 / 陌上花开'),
+        lg('P3527', '[POI 2011] MET-Meteors'),
+      ],
       },
       {
         id: 'misc-table-cast',
