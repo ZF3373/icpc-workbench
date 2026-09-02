@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
+import { asyncHandler } from '../asyncHandler.ts';
 import { CURRICULUM, TEMPLATE_TOTAL } from '../templates/curriculum.ts';
 import {
   isTemplateId,
@@ -362,7 +363,7 @@ export function templatesRoutes(db: Db): Router {
   // body: { templateId } → 按该模板例题涉及的平台，用已绑定账号增量拉取最新提交，
   // 刷新例题 AC 状态（写完例题后一键同步，无需去题目管理页手动同步）。
   // 未绑定账号的平台返回引导提示而非失败，单平台失败不影响其余平台。
-  r.post('/examples/sync', async (req, res) => {
+  r.post('/examples/sync', asyncHandler(async (req, res) => {
     const templateId = req.body?.templateId;
     if (typeof templateId !== 'string' || !templateId) {
       return res.status(400).json({ error: 'templateId 必填' });
@@ -391,7 +392,7 @@ export function templatesRoutes(db: Db): Router {
       results.push(await syncPlatform(db, platform, account.handle));
     }
     res.json({ results });
-  });
+  }));
 
   // ---------- 学习进度 ----------
 

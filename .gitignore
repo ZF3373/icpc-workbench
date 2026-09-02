@@ -15,3 +15,6 @@ server/release/
 
 # 代码签名证书（含私钥，绝不入库）
 server/certs/
+
+# 临时验证脚本
+server/tmp-*

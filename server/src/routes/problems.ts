@@ -3,6 +3,7 @@ import type { PlatformId } from '../../../shared/src/index.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
+import { asyncHandler } from '../asyncHandler.ts';
 import { bucketForDifficulty, safeTags } from '../analysis/stats.ts';
 import { backfillDifficulties } from '../analysis/difficultyBackfill.ts';
 import { fetchLuoguBank, fetchNowcoderBank } from '../adapters/problemBank.ts';
@@ -72,7 +73,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = fetch): Router {
 
   // POST /api/problems/bank  body: { platform: 'luogu' | 'nowcoder', max?, luoguMinDifficulty? }
   // 拉取公开题库入库（匿名可访问），扩充待选题目池（不产生提交记录）
-  r.post('/bank', async (req, res) => {
+  r.post('/bank', asyncHandler(async (req, res) => {
     const { platform, max, luoguMinDifficulty } = req.body ?? {};
     if (platform !== 'luogu' && platform !== 'nowcoder') {
       return res.status(400).json({ error: 'platform 需为 luogu 或 nowcoder' });
@@ -100,14 +101,14 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = fetch): Router {
     } catch (e) {
       res.status(502).json({ error: (e as Error).message });
     }
-  });
+  }));
 
   // POST /api/problems/backfill-difficulty
   // 对库内未知难度的洛谷/牛客题逐题查询公开接口回填（匿名可访问）：
   // - 牛客顺带修复标题污染/空标签（题库搜索接口返回分离的标题与算法标签）
   // - CF 未知难度题为 gym/官方 Unrated 比赛，官方无 rating，不参与回填
   // 耗时与待补题数成正比（牛客 ~0.5s/题），大库时前端需提示等待
-  r.post('/backfill-difficulty', async (_req, res) => {
+  r.post('/backfill-difficulty', asyncHandler(async (_req, res) => {
     try {
       const results = await backfillDifficulties(db, fetchFn);
       const unknownLeft = (
@@ -117,7 +118,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = fetch): Router {
     } catch (e) {
       res.status(502).json({ error: (e as Error).message });
     }
-  });
+  }));
 
   return r;
 }

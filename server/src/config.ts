@@ -45,7 +45,7 @@ export function loadConfig(filePath: string = DEFAULT_CONFIG_PATH): AppConfig {
       throw new Error(`config.json 解析失败: ${(e as Error).message}`);
     }
   } else {
-    console.warn(`[config] 未找到 ${filePath}，使用默认配置（可复制 config.example.json）`);
+    // 缺省时静默回退默认值——开发模式每次 tsx watch 重启都会触发，反复 warn 反而干扰
   }
 
   const cfg: AppConfig = {

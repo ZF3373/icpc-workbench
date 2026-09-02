@@ -2,13 +2,14 @@ import { Router } from 'express';
 import type { AiConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
+import { asyncHandler } from '../asyncHandler.ts';
 import { generatePlan, parsePlanJson, savePlan, TASK_KINDS, today } from '../plans/planService.ts';
 
 export function plansRoutes(db: Db, getAiConfig: () => AiConfig): Router {
   const r = Router();
 
   // POST /api/plans/generate  body: { days?, startDate? }
-  r.post('/generate', async (req, res) => {
+  r.post('/generate', asyncHandler(async (req, res) => {
     const { days, startDate } = req.body ?? {};
     try {
       const result = await generatePlan(db, getAiConfig(), {
@@ -19,7 +20,7 @@ export function plansRoutes(db: Db, getAiConfig: () => AiConfig): Router {
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
     }
-  });
+  }));
 
   // POST /api/plans/import  body: { raw, startDate?, days? }
   // 「导出提示词 → 手动喂给任意 AI」通道的导入入口：raw 为 AI 返回的完整文本

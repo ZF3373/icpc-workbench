@@ -21,6 +21,7 @@ import { aiConfigFromDb, loadConfig, DEFAULT_CONFIG, type AppConfig } from './co
 import { tryLaunchWidget } from './widget-launcher.ts';
 import { createDb } from './db/index.ts';
 import { initAdapters } from './adapters/index.ts';
+import { errorHandler, securityHeaders } from './middleware.ts';
 import { checkinsRoutes } from './routes/checkins.ts';
 import { contestsRoutes } from './routes/contests.ts';
 import { exportRoutes } from './routes/export.ts';
@@ -54,6 +55,7 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
 
   const app = express();
   app.use(express.json({ limit: '2mb' }));
+  app.use(securityHeaders);
 
   app.use('/api/import', importRoutes(db));
   app.use('/api/sync', syncRoutes(db));
@@ -91,6 +93,9 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
       sea: isSea(),
     });
   });
+
+  // 全局错误中间件：必须放在所有路由之后
+  app.use(errorHandler);
 
   const port = Number(process.env.PORT ?? config.port);
   return { app, port, config };
@@ -237,6 +242,16 @@ async function bootSea(app: Express, config: AppConfig, desiredPort: number): Pr
   if (port !== desiredPort) {
     console.log(`提示：默认端口 ${desiredPort} 被其他程序占用，已自动改用 ${port}。`);
   }
+  // Graceful shutdown：关窗/系统关机时优雅关闭，避免 WAL 写入中途被强制终止
+  let shuttingDown = false;
+  const shutdown = (): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    server?.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3000).unref();
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
   const url = `http://localhost:${port}`;
   console.log(banner(url, APP_VERSION));
   // 桌面壳（Tauri）拉起的嵌入模式：窗口由壳提供，不再抢占默认浏览器

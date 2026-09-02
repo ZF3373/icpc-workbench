@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { Router } from 'express';
 import { applyUpdate, startDownload, updateState, cleanupOldFiles } from '../updater.ts';
+import { asyncHandler } from '../asyncHandler.ts';
 import type { AppConfig } from '../config.ts';
 
 /**
@@ -301,14 +302,14 @@ export function updateRoutes(config: AppConfig): Router {
   const r = Router();
   const stagingDir = `${config.dataDir}/update-staging`;
   if (canSelfUpdate()) cleanupOldFiles(); // 清理上次更新遗留的 *.exe.old
-  r.get('/check', async (_req, res) => {
+  r.get('/check', asyncHandler(async (_req, res) => {
     const info = await checkForUpdate(APP_VERSION, GITHUB_REPO, fetch, BUILD_COMMIT);
     res.json({ ...info, canSelfUpdate: canSelfUpdate() && info.download !== null });
-  });
+  }));
   r.get('/progress', (_req, res) => {
     res.json(updateState());
   });
-  r.post('/download', async (_req, res) => {
+  r.post('/download', asyncHandler(async (_req, res) => {
     if (!canSelfUpdate()) {
       res.json({ ok: false, message: '当前环境不支持一键更新（开发模式或非 Windows），请手动下载替换' });
       return;
@@ -319,7 +320,7 @@ export function updateRoutes(config: AppConfig): Router {
       return;
     }
     res.json(startDownload(info.download, stagingDir));
-  });
+  }));
   r.post('/apply', (_req, res) => {
     if (!canSelfUpdate()) {
       res.json({ ok: false, message: '当前环境不支持一键更新' });
