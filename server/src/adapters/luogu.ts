@@ -3,11 +3,13 @@ import type {
   PlatformId,
   Verdict,
 } from '../../../shared/src/index.ts';
-import type { PlatformAdapter } from './types.ts';
+import type { FetchOptions, PlatformAdapter } from './types.ts';
 import { ManualImportRequiredError } from './types.ts';
 
 const API = 'https://www.luogu.com.cn';
-const MAX_PAGES = 100;
+// 每页约 20 条：500 页 ≈ 1 万条提交，保证重度用户（>2000 条）首次全量同步可拉完
+const MAX_PAGES = 500;
+const PAGE_DELAY_MS = 300;
 const PROBLEM_FETCH_CONCURRENCY = 6;
 
 // 洛谷提交状态数字枚举 → 统一 Verdict（官方 /_lfe/config 现行枚举，2026 验证）
@@ -223,7 +225,7 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
 
     async fetchUserSubmissions(
       handle: string,
-      opts?: { since?: string; cookie?: string; csrf?: string; knownExternalIds?: Set<string> },
+      opts?: FetchOptions,
     ): Promise<NormalizedSubmission[]> {
       const cookie = opts?.cookie;
       const known = opts?.knownExternalIds;
@@ -272,7 +274,7 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
           raws.push(rec);
         }
         if (known && knownInPage === records.length) break;
-        await sleep(300);
+        await sleep(opts?.pageDelayMs ?? PAGE_DELAY_MS);
       }
 
       // 按需补充题目难度/标签（并发受限，失败静默降级）；仅对合法 pid 查询

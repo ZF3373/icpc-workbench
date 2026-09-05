@@ -25,6 +25,8 @@ export interface FetchOptions {
    * 并跳过已知条目，实现真实增量拉取。
    */
   knownExternalIds?: Set<string>;
+  /** 分页间隔（毫秒），仅测试用：传 0 跳过限速 sleep，缺省由适配器自定（洛谷 300ms） */
+  pageDelayMs?: number;
 }
 
 /**

@@ -142,6 +142,36 @@ test('luogu: with cookie normalizes records and problem info', async () => {
   assert.equal(rows[2].verdict, 'RE'); // status 11 = UKE → RE
 });
 
+test('luogu: 分页可超过 100 页（>2000 条提交的首次全量同步不被截断）', async () => {
+  // 回归：原 MAX_PAGES=100，洛谷提交 >2000 的用户首次同步只拉到最近 100 页
+  const PAGES = 120;
+  let pageHits = 0;
+  const fetchFn = router({
+    'record/list': (url) => {
+      const page = Number(new URL(url).searchParams.get('page'));
+      pageHits += 1;
+      if (page <= PAGES) {
+        return {
+          code: 200,
+          currentData: {
+            records: {
+              result: [
+                // 同一题目的多条提交（题目信息走缓存，避免逐题抓取拖慢测试）
+                { id: 1000 + page, status: 12, submitTime: 1700000000000 + page, language: 'C++17', problem: { pid: 'P1001', title: 'A+B Problem', difficulty: 2 } },
+              ],
+            },
+          },
+        };
+      }
+      return { code: 200, currentData: { records: { result: [] } } }; // 空页 → 终止
+    },
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  const rows = await adapter.fetchUserSubmissions('123', { cookie: COOKIE, csrf: 'tok', pageDelayMs: 0 });
+  assert.equal(rows.length, PAGES);
+  assert.equal(pageHits, PAGES + 1); // 拉到空页才停
+});
+
 test('luogu: non-success code throws (cookie invalid/risk control)', async () => {
   const fetchFn = router({
     'record/list': () => ({ code: 401, message: 'invalid token' }),

@@ -54,7 +54,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = fetch): Router {
       sql += ' AND (p.title LIKE ? OR p.problem_key LIKE ?)';
       params.push(`%${q}%`, `%${q}%`);
     }
-    sql += ' GROUP BY p.id ORDER BY p.difficulty IS NULL, p.difficulty DESC LIMIT 300';
+    sql += ' GROUP BY p.id ORDER BY p.difficulty IS NULL, p.difficulty DESC';
     let rows = db.prepare(sql).all(...params) as unknown as ProblemRow[];
     if (typeof difficulty === 'string') {
       rows = rows.filter((r) => bucketForDifficulty(r.difficulty) === difficulty);

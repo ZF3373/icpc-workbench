@@ -284,10 +284,13 @@ test('practicePool: includes bank problems in level range, excludes far-below-le
 async function withServer(
   fn: (base: string) => Promise<void>,
   fetchFn?: typeof fetch,
+  seed?: (db: Db) => void,
 ): Promise<void> {
   const app = express();
   app.use(express.json());
-  app.use('/api/problems', problemsRoutes(createDb(':memory:'), fetchFn));
+  const db = createDb(':memory:');
+  if (seed) seed(db);
+  app.use('/api/problems', problemsRoutes(db, fetchFn));
   const srv = app.listen(0);
   await new Promise<void>((resolve) => srv.once('listening', resolve));
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/problems`;
@@ -297,6 +300,21 @@ async function withServer(
     srv.close();
   }
 }
+
+test('GET /api/problems: 做过题超过 300 时返回全部，不被截断', async () => {
+  // 回归：洛谷提交 >1999 的用户同步后题目管理只显示 300 题（原 SQL 硬编码 LIMIT 300）
+  const subs: NormalizedSubmission[] = Array.from({ length: 400 }, (_, i) =>
+    sub(`R${i}`, 800 + i, `ext-${i}`),
+  );
+  await withServer(
+    async (base) => {
+      const list = (await (await fetch(base)).json()) as Array<{ problem_key: string }>;
+      assert.equal(list.length, 400);
+    },
+    undefined,
+    (db) => insertNormalized(db, 1, subs),
+  );
+});
 
 test('POST /api/problems/bank: rejects invalid platform', async () => {
   await withServer(async (base) => {
