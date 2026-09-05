@@ -123,8 +123,8 @@ test('buildPracticeSummary 卡壳题 / 近期 AC / 复习库 / 课程进度 / �
 
   assert.deepEqual(s.checkins, { currentStreak: 2, longestStreak: 2, totalDays: 2 });
 
-  // 掌握度摘要：dp 练过但档位低（2 题）应出现在 weak；AC 数少无 level>=3
-  assert.ok(s.mastery.weak.some((m) => m.tag === 'dp'));
+  // 掌握度摘要：dp 练过但档位低（2 题）应出现在 weak（英文 dp 按别名归并为动态规划）；AC 数少无 level>=3
+  assert.ok(s.mastery.weak.some((m) => m.tag === '动态规划'));
   assert.equal(s.mastery.masteredCount, 0);
 
   // 「练过但 0 AC」的知识点（贪心：3 次 WA）必须进 weak，而不是被标成「从未练过」

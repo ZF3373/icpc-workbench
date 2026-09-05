@@ -316,6 +316,24 @@ test('GET /api/problems: 做过题超过 300 时返回全部，不被截断', as
   );
 });
 
+test('GET /api/problems: tag 筛选命中同义别名（二分 ↔ binary search）', async () => {
+  const cfSub = sub('1001A', 1500, 'e-alias');
+  cfSub.problem.tags = ['binary search'];
+  await withServer(
+    async (base) => {
+      const byCn = (await (await fetch(`${base}?tag=二分`)).json()) as Array<{ problem_key: string }>;
+      assert.equal(byCn.length, 1);
+      assert.equal(byCn[0].problem_key, '1001A');
+      // 反向：用英文 tag 查同样命中
+      const byEn = (await (await fetch(`${base}?tag=binary%20search`)).json()) as Array<{ problem_key: string }>;
+      assert.equal(byEn.length, 1);
+      assert.equal(byEn[0].problem_key, '1001A');
+    },
+    undefined,
+    (db) => insertNormalized(db, 1, [cfSub]),
+  );
+});
+
 test('POST /api/problems/bank: rejects invalid platform', async () => {
   await withServer(async (base) => {
     const res = await fetch(`${base}/bank`, {

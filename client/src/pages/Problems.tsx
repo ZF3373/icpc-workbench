@@ -17,8 +17,9 @@ import {
 } from 'antd'
 import { ClearOutlined, CloudDownloadOutlined, InboxOutlined, PlusOutlined, ReadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import { useSearchParams } from 'react-router-dom'
 import type { PlatformId } from '../../../shared/src/index.ts'
-import { PLATFORMS } from '../../../shared/src/index.ts'
+import { expandTag, PLATFORMS } from '../../../shared/src/index.ts'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
 import { difficultyColor, PLATFORM_COLOR, tagColor } from '../ui'
@@ -61,11 +62,13 @@ const DIFF_BUCKETS: Array<{ key: string; min: number | null; max: number | null 
 const TAXONOMY_MAX = 60
 
 export default function Problems() {
+  const [searchParams] = useSearchParams()
   const [rows, setRows] = useState<ProblemRow[]>([])
   const [loading, setLoading] = useState(false)
   const [platform, setPlatform] = useState<string>()
   const [difficulty, setDifficulty] = useState<string>()
-  const [tagFilter, setTagFilter] = useState<string>()
+  // 支持从其它页面带 ?tag= 跳入（如掌握度地图「查看全部」）
+  const [tagFilter, setTagFilter] = useState<string | undefined>(() => searchParams.get('tag') ?? undefined)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [q, setQ] = useState<string>()
   const [qInput, setQInput] = useState('')
@@ -97,15 +100,16 @@ export default function Problems() {
     return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, TAXONOMY_MAX)
   }, [rows])
 
-  // 标签 / 状态为客户端过滤（平台、难度、搜索仍走服务端）
+  // 标签 / 状态为客户端过滤（平台、难度、搜索仍走服务端）；标签用同义别名命中（二分 ↔ binary search）
+  const tagAliases = useMemo(() => new Set(tagFilter ? expandTag(tagFilter) : []), [tagFilter])
   const filtered = useMemo(
     () =>
       rows.filter((r) => {
-        if (tagFilter && !r.tags.includes(tagFilter)) return false
+        if (tagFilter && !r.tags.some((t) => tagAliases.has(t))) return false
         if (statusFilter !== 'all' && r.status !== statusFilter) return false
         return true
       }),
-    [rows, tagFilter, statusFilter],
+    [rows, tagFilter, tagAliases, statusFilter],
   )
 
   // 概览面板：难度 / 平台分布（随当前数据集联动）

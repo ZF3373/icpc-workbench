@@ -209,6 +209,61 @@ export interface ContestInfo {
 
 // ---------- 知识点掌握度地图（刷题数据 × 模板课程联动） ----------
 
+/**
+ * 平台英文标签 → 课程大纲中文规范名。
+ * CF 等平台同步的算法标签是英文（如 binary search），与课程大纲的中文 tag
+ * （二分）精确匹配不上，会把同一知识点拆成两个掌握度点。只收录与课程大纲
+ * tag 明确对应的映射；没有把握的一律保持原样（宁可两个点也不错误归并）。
+ */
+export const TAG_ALIAS_TO_CANONICAL: Record<string, string> = {
+  'binary search': '二分',
+  'two pointers': '双指针',
+  dp: '动态规划',
+  greedy: '贪心',
+  math: '数学',
+  'data structures': '数据结构',
+  graphs: '图论',
+  trees: '树上算法',
+  strings: '字符串',
+  sortings: '排序',
+  'number theory': '数论',
+  combinatorics: '组合计数',
+  bitmasks: '位运算',
+  dsu: '并查集',
+  'shortest paths': '最短路',
+  'divide and conquer': '分治',
+  probabilities: '概率期望',
+  hashing: '哈希',
+  games: '博弈论',
+  matrices: '矩阵',
+  geometry: '计算几何',
+  flows: '网络流',
+  fft: 'FFT',
+  '2-sat': '2-SAT',
+  'meet-in-the-middle': '折半搜索',
+  'dfs and similar': 'DFS',
+  'graph matchings': '二分图',
+};
+
+/** 标签的规范名：有别名映射则归并到中文知识点，否则原样返回 */
+export function canonicalTag(tag: string): string {
+  return TAG_ALIAS_TO_CANONICAL[tag] ?? tag;
+}
+
+/**
+ * 标签的同义集合（含自身）：用于题目筛选时「中文 tag 命中英文标签的题」及反向。
+ * 例：expandTag('二分') → ['二分', 'binary search']。
+ */
+export function expandTag(tag: string): string[] {
+  const names = [tag];
+  const canonical = TAG_ALIAS_TO_CANONICAL[tag];
+  if (canonical) names.push(canonical);
+  for (const [alias, target] of Object.entries(TAG_ALIAS_TO_CANONICAL)) {
+    if (target === tag && alias !== tag) names.push(alias);
+  }
+  return names;
+}
+
 /** 掌握度档位：0 未开始 / 1 接触 / 2 入门 / 3 掌握 / 4 熟练 */
 export type MasteryLevel = 0 | 1 | 2 | 3 | 4;
 

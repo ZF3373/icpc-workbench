@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { expandTag } from '../../../shared/src/index.ts';
 import type { PlatformId } from '../../../shared/src/index.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
@@ -60,7 +61,9 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = fetch): Router {
       rows = rows.filter((r) => bucketForDifficulty(r.difficulty) === difficulty);
     }
     if (typeof tag === 'string' && tag !== '') {
-      rows = rows.filter((r) => safeTags(r.tags).includes(tag));
+      // 同义别名一并命中：中文知识点 tag 能匹配到 CF 英文标签的题（二分 ↔ binary search）
+      const aliases = new Set(expandTag(tag));
+      rows = rows.filter((r) => safeTags(r.tags).some((t) => aliases.has(t)));
     }
     res.json(
       rows.map((r) => ({

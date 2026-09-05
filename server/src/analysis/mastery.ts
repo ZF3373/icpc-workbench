@@ -11,6 +11,7 @@ import type {
   MasteryReport,
   MasteryTemplateLink,
 } from '../../../shared/src/index.ts';
+import { canonicalTag, expandTag } from '../../../shared/src/index.ts';
 import { CURRICULUM } from '../templates/curriculum.ts';
 import type { Db } from '../db/index.ts';
 import { fetchRows, rate, round2, safeTags } from './stats.ts';
@@ -62,9 +63,10 @@ export function templatesForTag(
 ): MasteryTemplateLink[] {
   const statusOf = preloadStatus ?? loadTemplateStatuses(db, userId);
   const links: MasteryTemplateLink[] = [];
+  const aliases = new Set(expandTag(tag));
   for (const cat of CURRICULUM) {
     for (const t of cat.templates) {
-      if (!t.tags.includes(tag)) continue;
+      if (!t.tags.some((tt) => aliases.has(tt))) continue;
       links.push({
         id: t.id,
         name: t.name,
@@ -94,7 +96,9 @@ export function computeMastery(db: Db, userId: number, opts: MasteryOptions = {}
 
   for (const r of rows) {
     const isAc = r.verdict === 'AC';
-    for (const tag of filterNoiseTags(safeTags(r.tags))) {
+    for (const rawTag of filterNoiseTags(safeTags(r.tags))) {
+      // CF 等平台的英文标签归并到课程中文知识点（binary search → 二分），避免同一知识点拆成两个点
+      const tag = canonicalTag(rawTag);
       let acc = byTag.get(tag);
       if (!acc) {
         acc = { attempts: 0, ac: 0, solved: new Set(), recentSolved: new Set() };
@@ -109,9 +113,10 @@ export function computeMastery(db: Db, userId: number, opts: MasteryOptions = {}
     }
   }
 
-  // 课程大纲中出现的知识点即使 0 练习也纳入（「未开始」正是地图要暴露的盲区）
+  // 课程大纲中出现的知识点即使 0 练习也纳入（「未开始」正是地图要暴露的盲区）；
+  // 同样做别名归并（课程里个别模板直接写了英文别名 tag，如 two pointers）
   const curriculumTags = new Set<string>();
-  for (const cat of CURRICULUM) for (const t of cat.templates) for (const tag of t.tags) curriculumTags.add(tag);
+  for (const cat of CURRICULUM) for (const t of cat.templates) for (const tag of t.tags) curriculumTags.add(canonicalTag(tag));
 
   const tags = new Set<string>([...byTag.keys(), ...curriculumTags]);
   // 学习状态一次性加载，避免逐 tag 重复查询 template_progress（tag 数量 100+）

@@ -55,6 +55,35 @@ function seedSubmission(
   ).run(platform, pid, verdict, submittedAt, `${key}-${verdict}-${submittedAt}`);
 }
 
+test('computeMastery：CF 英文标签按别名归并到课程中文知识点（binary search → 二分）', (t) => {
+  const db = createDb(':memory:');
+  t.after(() => db.close());
+  const now = new Date().toISOString();
+  for (let i = 0; i < 3; i += 1) seedSubmission(db, 'codeforces', `700${i}A`, ['binary search'], 'AC', now);
+  seedSubmission(db, 'codeforces', '7010A', ['two pointers'], 'AC', now);
+
+  const report = computeMastery(db, 1);
+  // 英文标签不再单独立点，而是并入中文知识点
+  assert.equal(report.points.find((p) => p.tag === 'binary search'), undefined);
+  const bin = report.points.find((p) => p.tag === '二分');
+  assert.ok(bin, 'binary search 应归并到「二分」');
+  assert.equal(bin.solved, 3);
+  assert.equal(bin.attempts, 3);
+  // 课程大纲里直接写英文别名的 tag（two pointers）同样归并，不产生重复知识点
+  assert.equal(report.points.find((p) => p.tag === 'two pointers'), undefined);
+  const tp = report.points.find((p) => p.tag === '双指针');
+  assert.ok(tp, 'two pointers 应归并到「双指针」');
+  assert.equal(tp.solved, 1);
+});
+
+test('computeMastery：无别名映射的英文标签保持原样（brute force 不强行归并）', (t) => {
+  const db = createDb(':memory:');
+  t.after(() => db.close());
+  seedSubmission(db, 'codeforces', '8000A', ['brute force'], 'AC', new Date().toISOString());
+  const report = computeMastery(db, 1);
+  assert.ok(report.points.find((p) => p.tag === 'brute force'));
+});
+
 test('computeMastery：按 tag 聚合、联动课程、0 练习的知识点标记未开始', (t) => {
   const db = createDb(':memory:');
   t.after(() => db.close());
