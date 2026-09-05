@@ -53,9 +53,12 @@ export function bandRanges(level: number): Record<TodayBandKey, BandRange> {
   };
 }
 
-/** 近期 AC 难度中位数 → 能力值（四舍五入到百；空数据回退 1200） */
+/**
+ * 近期 AC 难度中位数 → 能力值（四舍五入到百；空数据回退 1200）。
+ * 过滤 ≤0：AtCoder Problems 难度标尺可为负（水题），混入会把中位数拉到不存在的 rating 段。
+ */
 export function estimateLevel(acDifficulties: number[], fallback = 1200): number {
-  const xs = acDifficulties.filter((d) => Number.isFinite(d)).sort((a, b) => a - b);
+  const xs = acDifficulties.filter((d) => Number.isFinite(d) && d > 0).sort((a, b) => a - b);
   if (xs.length === 0) return fallback;
   const mid = Math.floor(xs.length / 2);
   const median = xs.length % 2 ? xs[mid] : Math.round((xs[mid - 1] + xs[mid]) / 2);

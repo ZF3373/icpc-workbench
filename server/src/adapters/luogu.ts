@@ -88,9 +88,13 @@ interface LuoguListResp {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** 洛谷 submitTime 为毫秒时间戳；缺失/非法时回退当前时间 */
+/**
+ * 洛谷 submitTime 为秒级 Unix 时间戳（10 位）；历史版本曾按毫秒解析导致全部落回 1970。
+ * 兼容容错：< 1e12 视为秒 ×1000，≥ 1e12 视为毫秒；缺失/非法时回退当前时间。
+ */
 function toIso(ts: number | string | undefined): string {
-  const ms = typeof ts === 'number' ? ts : Date.parse(String(ts ?? ''));
+  let ms = typeof ts === 'number' ? ts : Date.parse(String(ts ?? ''));
+  if (Number.isFinite(ms) && ms > 0 && ms < 1e12) ms *= 1000;
   return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : new Date().toISOString();
 }
 

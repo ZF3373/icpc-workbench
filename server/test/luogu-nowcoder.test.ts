@@ -142,6 +142,32 @@ test('luogu: with cookie normalizes records and problem info', async () => {
   assert.equal(rows[2].verdict, 'RE'); // status 11 = UKE → RE
 });
 
+test('luogu: 秒级 submitTime 正确转毫秒（回归：曾被当毫秒解析全部落回 1970）', async () => {
+  // 线上实测洛谷 record.submitTime 是 10 位秒级时间戳
+  const fetchFn = router({
+    'record/list': (url) => {
+      const page = new URL(url).searchParams.get('page');
+      if (page !== '1') return { code: 200, currentData: { records: { result: [] } } };
+      return {
+        code: 200,
+        currentData: {
+          records: {
+            result: [
+              { id: 9101, status: 12, submitTime: 1790000000, problem: { pid: 'P1001', difficulty: 2 } },
+            ],
+          },
+        },
+      };
+    },
+    '/problem/': () => ({ code: 200, currentData: { problem: { pid: 'P1001', difficulty: 2, tags: [] } } }),
+    '_lfe/tags': () => ({ tags: [] }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  const rows = await adapter.fetchUserSubmissions('123', { cookie: COOKIE });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].submittedAt, new Date(1790000000 * 1000).toISOString());
+});
+
 test('luogu: 分页可超过 100 页（>2000 条提交的首次全量同步不被截断）', async () => {
   // 回归：原 MAX_PAGES=100，洛谷提交 >2000 的用户首次同步只拉到最近 100 页
   const PAGES = 120;

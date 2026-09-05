@@ -25,6 +25,12 @@ test('estimateLevel: median of recent AC, rounded to 100', () => {
   assert.equal(estimateLevel([]), 1200); // 空数据回退
 });
 
+test('estimateLevel: 过滤 ≤0 的难度（AtCoder 负难度不拉低中位数）', () => {
+  // AtCoder Problems 难度标尺可为负，混入会把中位数拉到不存在的 rating 段
+  assert.equal(estimateLevel([-1152, -921, 800, 1000, 1100, 1200, 1300]), 1100);
+  assert.equal(estimateLevel([-500, -800]), 1200); // 全为非正 → 回退
+});
+
 test('bandRanges: three bands around the level', () => {
   const r = bandRanges(1400);
   assert.deepEqual(

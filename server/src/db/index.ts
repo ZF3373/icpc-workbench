@@ -49,6 +49,8 @@ function migrate(db: Db): void {
     if (!progressCols.has(col)) db.exec(`ALTER TABLE template_progress ADD COLUMN ${col} TEXT`);
   }
   mergeSlashedCfKeys(db);
+  // v0.4.5 数据修复：洛谷秒级时间戳曾被按毫秒解析（见 fixLuoguTimestamps）
+  fixLuoguTimestamps(db);
 }
 
 /**
@@ -94,6 +96,33 @@ function mergeSlashedCfKeys(db: Db): void {
       repointReviews.run(keep.id, row.id, keep.id);
       dropReviews.run(row.id);
       dropProblem.run(row.id);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+/**
+ * v0.4.5 数据修复：洛谷 submitTime 是秒级时间戳，曾被按毫秒解析，
+ * 全部洛谷提交的 submitted_at 落在 1970 年（连带能力值近 60 天窗口、趋势图看不到洛谷）。
+ * 把 1970 年的洛谷行按「现值当作秒」×1000 换算回真实时间；幂等：修复后即不再命中 1990 前。
+ */
+function fixLuoguTimestamps(db: Db): void {
+  const broken = db
+    .prepare(
+      "SELECT id, submitted_at FROM submissions WHERE platform = 'luogu' AND submitted_at < '1990-01-01'",
+    )
+    .all() as Array<{ id: number; submitted_at: string }>;
+  if (broken.length === 0) return;
+  const update = db.prepare('UPDATE submissions SET submitted_at = ? WHERE id = ?');
+  db.exec('BEGIN');
+  try {
+    for (const row of broken) {
+      const seconds = Date.parse(row.submitted_at); // 存储值本是被当毫秒解析的秒数
+      if (!Number.isFinite(seconds) || seconds <= 0) continue;
+      update.run(new Date(seconds * 1000).toISOString(), row.id);
     }
     db.exec('COMMIT');
   } catch (e) {
