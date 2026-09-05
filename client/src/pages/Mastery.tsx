@@ -12,6 +12,7 @@ import {
   Spin,
   Switch,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
 import { SearchOutlined } from '@ant-design/icons'
@@ -43,6 +44,8 @@ export default function Mastery() {
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
   const [onlyWeak, setOnlyWeak] = useState(false)
+  /** 课程大纲里从未练过的知识点（0 提交、无关联题目）默认不进地图，避免淹没真实练习画像 */
+  const [showUntouched, setShowUntouched] = useState(false)
   const [active, setActive] = useState<MasteryPoint | null>(null)
 
   const load = useCallback(() => {
@@ -57,7 +60,11 @@ export default function Mastery() {
     load()
   }, [load])
 
-  const points = report?.points ?? []
+  const points = useMemo(
+    () => (report?.points ?? []).filter((p) => showUntouched || p.attempts > 0),
+    [report, showUntouched],
+  )
+  const untouchedCount = (report?.points ?? []).length - points.length
   const byLevel = useMemo(() => {
     const map = new Map<number, MasteryPoint[]>()
     for (const p of points) {
@@ -93,6 +100,14 @@ export default function Mastery() {
               <Typography.Text type="secondary">只看弱项</Typography.Text>
               <Switch size="small" checked={onlyWeak} onChange={setOnlyWeak} />
             </Space>
+            {untouchedCount > 0 && (
+              <Tooltip title="课程大纲涉及、但还没有做过任何题的知识点（学习盲区）">
+                <Space size={4}>
+                  <Typography.Text type="secondary">显示未练习（{untouchedCount}）</Typography.Text>
+                  <Switch size="small" checked={showUntouched} onChange={setShowUntouched} />
+                </Space>
+              </Tooltip>
+            )}
           </Space>
         }
       />
