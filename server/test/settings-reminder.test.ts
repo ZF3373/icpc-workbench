@@ -74,3 +74,42 @@ test('POST /reminder rejects malformed time and non-boolean enabled', async () =
     assert.equal(res.status, 400);
   });
 });
+
+test('contest reminder: defaults, save and validation', async () => {
+  await withServer(async (_db, base) => {
+    const res = await fetch(base);
+    const body = (await res.json()) as { contestReminder: { enabled: boolean; minutesBefore: number } };
+    assert.deepEqual(body.contestReminder, { enabled: false, minutesBefore: 30 });
+
+    const saved = await fetch(`${base}/contest-reminder`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true, minutesBefore: 15 }),
+    });
+    assert.deepEqual(await saved.json(), { enabled: true, minutesBefore: 15 });
+
+    // 仅更新开关不动分钟数
+    const saved2 = await fetch(`${base}/contest-reminder`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    assert.deepEqual(await saved2.json(), { enabled: false, minutesBefore: 15 });
+
+    // 非法值：非布尔开关 / 分钟越界
+    const badEnabled = await fetch(`${base}/contest-reminder`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: 1 }),
+    });
+    assert.equal(badEnabled.status, 400);
+    for (const bad of [4, 121, 30.5, 'x']) {
+      const badRes = await fetch(`${base}/contest-reminder`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ minutesBefore: bad }),
+      });
+      assert.equal(badRes.status, 400, `minutesBefore=${bad} 应被拒绝`);
+    }
+  });
+});

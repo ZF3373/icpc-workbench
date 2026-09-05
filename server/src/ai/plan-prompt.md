@@ -3,6 +3,9 @@
 ## 用户当前水平（JSON：已 AC 题难度分位与建议训练区间）
 {level}
 
+## 用户练习数据汇总（Markdown，含活跃度 / 掌握薄弱知识点 / 课程盲区 / 近期在练的题 / 卡壳题 / 复习库 / 课程进度 / 打卡）
+{summary}
+
 ## 用户弱项画像（JSON）
 {weakness}
 
@@ -38,4 +41,5 @@
 - 清单外选题时也必须给出可访问的题目链接（该平台的题目页 URL）
 - 每 3-4 天安排一次 kind=review 的回顾任务
 - 每周安排一次 kind=contest 的模拟比赛任务，url 给虚拟赛入口（如 https://codeforces.com/problemset?order=BY_SOLVED_DESC）
+- 结合「练习数据汇总」编排：卡壳题（多次尝试未通过）优先安排重做或同知识点新题；复习库到期的题安排 review 任务；「课程盲区」中的知识点可安排 1-2 个 kind=topic 的学习任务（先补模板再刷题）；保持用户已有的连续打卡节奏
 - task 里的 date 必须是计划期内（{startDate} 起 {days} 天）的具体日期

@@ -8,6 +8,7 @@ import { DEFAULT_USER_ID } from '../constants.ts';
 import { AiProvider } from '../ai/provider.ts';
 import { computeTrend } from '../analysis/trend.ts';
 import { computeWeakness, type WeaknessProfile } from '../analysis/weakness.ts';
+import { buildPracticeSummary, renderSummaryForPrompt, type PracticeSummary } from '../analysis/summary.ts';
 import { filterNoiseTags } from '../analysis/tags.ts';
 import { getAdapter } from '../adapters/registry.ts';
 
@@ -77,6 +78,10 @@ export interface PlanPackage {
   /** 弱项 tag 分组结构（problems 的分组视图） */
   problemGroups: WeakTagGroup[];
   level: UserLevel;
+  /** 完整个人练习数据汇总（结构化，含趋势/近期 AC/卡壳题/复习库/课程进度/打卡） */
+  summary: PracticeSummary;
+  /** 注入提示词的数据汇总精简版（Markdown 行） */
+  summaryPrompt: string;
   prompt: string;
   meta: { startDate: string; days: number; generatedAt: string };
 }
@@ -240,6 +245,8 @@ export function buildPlanPackage(
   const profile = computeWeakness(db, userId, { minAttempts: 5, topN: 8 });
   const trend = computeTrend(db, userId, 12);
   const level = computeUserLevel(db, userId);
+  const summary = buildPracticeSummary(db, userId);
+  const summaryPrompt = renderSummaryForPrompt(summary);
   const problems = recommendProblemsByWeakTag(db, profile, {
     level,
     // 新题冗余：计划每天约 1 道练习题，×2 保证 AI 选漏/剔除某题后仍有充足余量
@@ -252,6 +259,7 @@ export function buildPlanPackage(
     level: JSON.stringify(level),
     weakness: JSON.stringify(profile.items),
     trend: JSON.stringify(trend),
+    summary: summaryPrompt,
     problems: renderProblemGroups(problems),
   });
 
@@ -261,6 +269,8 @@ export function buildPlanPackage(
     problems: problems.flatMap((g) => g.problems),
     problemGroups: problems,
     level,
+    summary,
+    summaryPrompt,
     prompt,
     meta: { startDate, days, generatedAt: new Date().toISOString() },
   };

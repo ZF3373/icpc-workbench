@@ -3,3 +3,31 @@
   padding: 48px;
   line-height: 1.7;
 }
+
+/* ---------- 掌握度地图：知识点标签 ---------- */
+.mastery-tag {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  background: rgba(128, 128, 128, 0.08);
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s;
+  font: inherit;
+  color: inherit;
+}
+
+.mastery-tag:hover {
+  background: rgba(128, 128, 128, 0.16);
+  transform: translateY(-1px);
+}
+
+.mastery-tag-meta {
+  font-size: 12px;
+  color: #8993a2;
+}

@@ -131,3 +131,4 @@ CREATE TABLE IF NOT EXISTS custom_templates (
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at   TEXT
 );
+

@@ -30,7 +30,7 @@ import PlatformTag from '../components/PlatformTag'
 import { get, post } from '../api'
 import { openExternal } from '../externalLinks'
 import { useSoftwareUpdate } from '../useSoftwareUpdate'
-import type { ReminderConfig } from '../types'
+import type { ContestReminderConfig, ReminderConfig } from '../types'
 
 interface SettingsData {
   ai: { enabled: boolean; baseURL: string; apiKey: string; model: string }
@@ -39,6 +39,7 @@ interface SettingsData {
   platforms: typeof PLATFORMS
   cookies: Record<string, { cookie?: string; csrf?: string }>
   reminder: ReminderConfig
+  contestReminder: ContestReminderConfig
 }
 
 const SYNC_NOTE_COLOR: Record<string, string> = {
@@ -71,6 +72,7 @@ export default function Settings() {
   const [cookieCheck, setCookieCheck] = useState<Record<string, { ok: boolean; message: string } | 'checking'>>({})
   const [reminderEnabled, setReminderEnabled] = useState(false)
   const [reminderTime, setReminderTime] = useState<Dayjs>(dayjs('20:00', 'HH:mm'))
+  const [contestReminder, setContestReminder] = useState<ContestReminderConfig>({ enabled: false, minutesBefore: 30 })
   const [importOpen, setImportOpen] = useState(false)
   const [exportDays, setExportDays] = useState(14)
   const [appVersion, setAppVersion] = useState('')
@@ -95,6 +97,7 @@ export default function Settings() {
         setCookieInputs(cookies)
         setReminderEnabled(d.reminder.enabled)
         setReminderTime(dayjs(d.reminder.time, 'HH:mm'))
+        setContestReminder(d.contestReminder)
       })
       .catch((e: Error) => message.error(e.message))
   }
@@ -202,15 +205,29 @@ export default function Settings() {
     await saveReminder(true, reminderTime)
   }
 
-  const downloadPrompt = async () => {
+  const saveContestReminder = async (next: ContestReminderConfig) => {
+    const prev = contestReminder
+    setContestReminder(next) // 开关即时反馈，失败回滚
     try {
-      const url = `/api/export/plan-prompt.md?days=${exportDays}`
+      const saved = await post<ContestReminderConfig>('/api/settings/contest-reminder', next)
+      setContestReminder(saved)
+      message.success(
+        saved.enabled ? `赛前提醒已开启：开赛前 ${saved.minutesBefore} 分钟通知` : '赛前提醒已关闭',
+      )
+    } catch (e) {
+      setContestReminder(prev)
+      message.error((e as Error).message)
+    }
+  }
+
+  const downloadPrompt = async (url: string, filename: string) => {
+    try {
       const res = await fetch(url)
       const text = await res.text()
       const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
       const a = document.createElement('a')
       a.href = URL.createObjectURL(blob)
-      a.download = 'plan-prompt.md'
+      a.download = filename
       a.click()
       URL.revokeObjectURL(a.href)
     } catch (e) {
@@ -337,7 +354,7 @@ export default function Settings() {
         </Card>
       </Col>
       <Col span={24}>
-        <Card title={<span className="settings-section-title"><BellOutlined />打卡提醒</span>} size="small">
+        <Card title={<span className="settings-section-title"><BellOutlined />打卡与赛前提醒</span>} size="small">
           <Space wrap>
             <span>每日提醒</span>
             <Switch checked={reminderEnabled} onChange={toggleReminder} />
@@ -349,37 +366,72 @@ export default function Settings() {
               disabled={!reminderEnabled}
               onChange={(v) => v && saveReminder(reminderEnabled, v)}
             />
-            {(() => {
-              if (typeof Notification === 'undefined') {
-                return <span className="perm-note" style={{ color: '#8993a2' }}>当前浏览器不支持系统通知，仅页面内提醒</span>
-              }
-              if (Notification.permission === 'granted') {
-                return <span className="perm-note" style={{ color: '#69d7a5' }}>系统通知已授权 ✓</span>
-              }
-              return (
-                <span className="perm-note" style={{ color: '#f2c46d' }}>
-                  系统通知未授权（关闭再开启开关可重新授权，否则仅页面内提醒）
-                </span>
-              )
-            })()}
           </Space>
+          <div style={{ marginTop: 12 }}>
+            <Space wrap>
+              <span>赛前提醒</span>
+              <Switch
+                checked={contestReminder.enabled}
+                onChange={(enabled) => {
+                  if (!enabled) {
+                    void saveContestReminder({ ...contestReminder, enabled: false })
+                    return
+                  }
+                  if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+                    void Notification.requestPermission().then((perm) => {
+                      if (perm !== 'granted') message.warning('未授权系统通知，仅会在页面内弹出提醒')
+                    })
+                  }
+                  void saveContestReminder({ ...contestReminder, enabled: true })
+                }}
+              />
+              <span>提前</span>
+              <InputNumber
+                min={5}
+                max={120}
+                step={5}
+                value={contestReminder.minutesBefore}
+                disabled={!contestReminder.enabled}
+                onChange={(v) => v && void saveContestReminder({ ...contestReminder, minutesBefore: v })}
+                addonAfter="分钟"
+                style={{ width: 120 }}
+              />
+            </Space>
+          </div>
+          {(() => {
+            if (typeof Notification === 'undefined') {
+              return <span className="perm-note" style={{ color: '#8993a2' }}>当前浏览器不支持系统通知，仅页面内提醒</span>
+            }
+            if (Notification.permission === 'granted') {
+              return <span className="perm-note" style={{ color: '#69d7a5' }}>系统通知已授权 ✓</span>
+            }
+            return (
+              <span className="perm-note" style={{ color: '#f2c46d' }}>
+                系统通知未授权（关闭再开启开关可重新授权，否则仅页面内提醒）
+              </span>
+            )
+          })()}
           <p className="muted-note" style={{ marginBottom: 0 }}>
-            应用保持打开时，到达提醒时间若当天仍有未打卡任务，会弹出系统通知与页面内通知，点击跳转日历打卡；当天任务全部完成或无任务则不打扰。
+            每日提醒：应用保持打开时，到达提醒时间若当天仍有未打卡任务，会弹出通知并跳转日历打卡，任务全部完成或无任务则不打扰。
+            赛前提醒：开赛前指定分钟数提醒一次（每场只提醒一次），点击直达赛事中心。
           </p>
         </Card>
       </Col>
       <Col span={24}>
-        <Card title={<span className="settings-section-title"><FileMarkdownOutlined />导出提示词（手动喂给任意 AI）</span>} size="small">
+        <Card title={<span className="settings-section-title"><FileMarkdownOutlined />导出（手动喂给任意 AI）</span>} size="small">
           <Space wrap>
             <InputNumber min={1} max={90} value={exportDays} onChange={(v) => setExportDays(v ?? 14)} style={{ width: 80 }} />
-            <Button onClick={downloadPrompt}>
+            <Button onClick={() => void downloadPrompt(`/api/export/plan-prompt.md?days=${exportDays}`, 'plan-prompt.md')}>
               下载提示词 .md
+            </Button>
+            <Button onClick={() => void downloadPrompt('/api/export/summary.md', 'practice-summary.md')}>
+              下载练习数据汇总 .md
             </Button>
             <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>
               导入 AI 计划
             </Button>
             <span style={{ color: '#8993a2', fontSize: 12 }}>
-              下载后把内容粘贴给任何 AI，再把返回的 JSON 计划通过「导入 AI 计划」粘贴进来即可入库。
+              提示词已内置你的完整练习数据汇总（弱项、掌握度、卡壳题、复习库、课程进度）；「数据汇总」也可单独下载，用于复盘或喂给其他 AI。
             </span>
           </Space>
         </Card>

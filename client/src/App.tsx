@@ -7,6 +7,7 @@ import {
   DashboardOutlined,
   FileTextOutlined,
   FlagOutlined,
+  HeatMapOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   ReadOutlined,
@@ -25,7 +26,9 @@ import Today from './pages/Today'
 import Reviews from './pages/Reviews'
 import Contests from './pages/Contests'
 import Templates from './pages/Templates'
+import Mastery from './pages/Mastery'
 import Reminder from './Reminder'
+import ContestReminder from './ContestReminder'
 import UpdateChecker from './UpdateChecker'
 import { get } from './api'
 
@@ -36,6 +39,7 @@ const MENU: Array<{ key: string; icon: ReactNode; label: string }> = [
   { key: '/today', icon: <ThunderboltOutlined />, label: '今日训练' },
   { key: '/templates', icon: <CodeOutlined />, label: '模板库' },
   { key: '/problems', icon: <FileTextOutlined />, label: '题目管理' },
+  { key: '/mastery', icon: <HeatMapOutlined />, label: '掌握度地图' },
   { key: '/plans', icon: <ScheduleOutlined />, label: '训练计划' },
   { key: '/calendar', icon: <CalendarOutlined />, label: '日历打卡' },
   { key: '/reviews', icon: <ReadOutlined />, label: '复习库' },
@@ -64,6 +68,7 @@ const MENU_ITEMS: ItemType[] = [
     label: '题库与记录',
     children: [
       { key: '/problems', icon: menuIcon('/problems'), label: menuLabel('/problems') },
+      { key: '/mastery', icon: menuIcon('/mastery'), label: menuLabel('/mastery') },
       { key: '/calendar', icon: menuIcon('/calendar'), label: menuLabel('/calendar') },
       { key: '/contests', icon: menuIcon('/contests'), label: menuLabel('/contests') },
     ],
@@ -88,6 +93,7 @@ export default function App() {
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Reminder />
+      <ContestReminder />
       <Sider
         width={200}
         collapsedWidth={68}
@@ -142,6 +148,7 @@ export default function App() {
             <Route path="/today" element={<Today />} />
             <Route path="/templates" element={<Templates />} />
             <Route path="/problems" element={<Problems />} />
+            <Route path="/mastery" element={<Mastery />} />
             <Route path="/plans" element={<Plans />} />
             <Route path="/calendar" element={<CalendarPage />} />
             <Route path="/reviews" element={<Reviews />} />

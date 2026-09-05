@@ -5,6 +5,8 @@ import type { Db } from '../db/index.ts';
 import { computeOverall } from '../analysis/stats.ts';
 import { computeTrend } from '../analysis/trend.ts';
 import { computeWeakness } from '../analysis/weakness.ts';
+import { computeMastery } from '../analysis/mastery.ts';
+import { buildPracticeSummary } from '../analysis/summary.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 
 export function statsRoutes(db: Db): Router {
@@ -36,6 +38,17 @@ export function statsRoutes(db: Db): Router {
   r.get('/trend', (req, res) => {
     const weeks = num(req.query.weeks, 12, 1, 52);
     res.json(computeTrend(db, DEFAULT_USER_ID, weeks));
+  });
+
+  // GET /api/stats/mastery?minSolved=  → 知识点掌握度地图（刷题数据 × 模板课程联动）
+  r.get('/mastery', (req, res) => {
+    const minSolved = num(req.query.minSolved, 0, 0, 1000);
+    res.json(computeMastery(db, DEFAULT_USER_ID, { minSolved }));
+  });
+
+  // GET /api/stats/summary → 完整个人练习数据汇总（JSON：总量/平台/难度/标签/弱项/掌握度/趋势/近期 AC/卡壳题/复习库/课程进度/打卡）
+  r.get('/summary', (_req, res) => {
+    res.json(buildPracticeSummary(db, DEFAULT_USER_ID));
   });
 
   return r;

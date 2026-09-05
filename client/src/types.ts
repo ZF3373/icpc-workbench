@@ -230,3 +230,14 @@ export interface TemplatesResponse {
   next: { id: string; name: string; difficulty: number } | null
   categories: TemplateCategoryInfo[]
 }
+
+// ---------- 掌握度地图 / 赛前提醒（与 shared 类型对齐） ----------
+export type {
+  ContestReminderConfig,
+  MasteryLevel,
+  MasteryPoint,
+  MasteryReport,
+  MasteryTemplateLink,
+} from '../../shared/src/index.ts'
+
+export { MASTERY_LEVEL_LABELS } from '../../shared/src/index.ts'

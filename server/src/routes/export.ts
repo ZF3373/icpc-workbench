@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { buildPlanPackage, today } from '../plans/planService.ts';
+import { buildPracticeSummary, renderSummaryMarkdown } from '../analysis/summary.ts';
 
 export function exportRoutes(db: Db): Router {
   const r = Router();
@@ -21,6 +22,14 @@ export function exportRoutes(db: Db): Router {
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="plan-prompt.md"');
     res.send(pkg.prompt);
+  });
+
+  // GET /api/export/summary.md → 完整个人练习数据汇总（独立下载，可喂给任意 AI 或存档复盘）
+  r.get('/summary.md', (_req, res) => {
+    const md = renderSummaryMarkdown(buildPracticeSummary(db, DEFAULT_USER_ID));
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="practice-summary.md"');
+    res.send(md);
   });
 
   return r;

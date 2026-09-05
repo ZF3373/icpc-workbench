@@ -206,3 +206,52 @@ export interface ContestInfo {
   phase: string;
   url: string;
 }
+
+// ---------- 知识点掌握度地图（刷题数据 × 模板课程联动） ----------
+
+/** 掌握度档位：0 未开始 / 1 接触 / 2 入门 / 3 掌握 / 4 熟练 */
+export type MasteryLevel = 0 | 1 | 2 | 3 | 4;
+
+export const MASTERY_LEVEL_LABELS: Record<MasteryLevel, string> = {
+  0: '未开始',
+  1: '接触',
+  2: '入门',
+  3: '掌握',
+  4: '熟练',
+};
+
+export interface MasteryTemplateLink {
+  id: string;
+  name: string;
+  categoryKey: string;
+  categoryName: string;
+  status: 'todo' | 'learning' | 'mastered';
+}
+
+export interface MasteryPoint {
+  tag: string;
+  solved: number;
+  attempts: number;
+  acRate: number;
+  /** 全部提交的总体 AC 率（弱项 gap 基准，与弱项画像一致） */
+  avgAcRate: number;
+  /** avgAcRate - acRate，正值表示弱于自身平均 */
+  gap: number;
+  level: MasteryLevel;
+  /** 近 8 周通过题数（近期活跃度） */
+  recentSolved: number;
+  templates: MasteryTemplateLink[];
+}
+
+export interface MasteryReport {
+  generatedAt: string;
+  points: MasteryPoint[];
+}
+
+// ---------- 赛前提醒 ----------
+
+export interface ContestReminderConfig {
+  enabled: boolean;
+  /** 开赛前多少分钟提醒（5-120） */
+  minutesBefore: number;
+}

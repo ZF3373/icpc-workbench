@@ -20,6 +20,22 @@ function readReminder(db: Db): { enabled: boolean; time: string } {
   };
 }
 
+const DEFAULT_CONTEST_REMINDER_MINUTES = 30;
+
+export function readContestReminder(db: Db): { enabled: boolean; minutesBefore: number } {
+  const get = (key: string): string | undefined =>
+    (db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)
+      ?.value;
+  const minutes = Number(get('contestReminder.minutesBefore'));
+  return {
+    enabled: get('contestReminder.enabled') === 'true',
+    minutesBefore:
+      Number.isInteger(minutes) && minutes >= 5 && minutes <= 120
+        ? minutes
+        : DEFAULT_CONTEST_REMINDER_MINUTES,
+  };
+}
+
 export function settingsRoutes(db: Db, config: AppConfig): Router {
   const r = Router();
 
@@ -51,7 +67,15 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
         };
       }
     }
-    res.json({ ai, accounts, adapterEnabled, platforms: PLATFORMS, cookies, reminder: readReminder(db) });
+    res.json({
+      ai,
+      accounts,
+      adapterEnabled,
+      platforms: PLATFORMS,
+      cookies,
+      reminder: readReminder(db),
+      contestReminder: readContestReminder(db),
+    });
   });
 
   // POST /api/settings/reminder  body: { enabled?, time? }  time 格式 HH:MM
@@ -73,6 +97,28 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       upsert.run('reminder.time', time);
     }
     res.json(readReminder(db));
+  });
+
+  // POST /api/settings/contest-reminder  body: { enabled?, minutesBefore? }（5-120 分钟）
+  r.post('/contest-reminder', (req, res) => {
+    const { enabled, minutesBefore } = req.body ?? {};
+    const upsert = db.prepare(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    );
+    if (enabled !== undefined) {
+      if (typeof enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled 需为布尔值' });
+      }
+      upsert.run('contestReminder.enabled', String(enabled));
+    }
+    if (minutesBefore !== undefined) {
+      const n = Number(minutesBefore);
+      if (!Number.isInteger(n) || n < 5 || n > 120) {
+        return res.status(400).json({ error: 'minutesBefore 需为 5-120 的整数分钟' });
+      }
+      upsert.run('contestReminder.minutesBefore', String(n));
+    }
+    res.json(readContestReminder(db));
   });
 
   // POST /api/settings/cookies  body: { platform, cookie?, csrf? }（空串可清除）
