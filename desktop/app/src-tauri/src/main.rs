@@ -44,8 +44,13 @@ fn exe_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+#[cfg(windows)]
+const CORE_FILE: &str = "icpc-core.exe";
+#[cfg(not(windows))]
+const CORE_FILE: &str = "icpc-core";
+
 fn core_path() -> PathBuf {
-    exe_dir().join("icpc-core.exe")
+    exe_dir().join(CORE_FILE)
 }
 
 /// 拉起核心（无窗口、嵌入模式）。若核心进程仍在运行则跳过。

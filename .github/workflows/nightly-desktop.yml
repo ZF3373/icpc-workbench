@@ -1,5 +1,8 @@
-# 桌面版 nightly 自动构建：每次 push 到 master 构建三件套并发布/覆盖 nightly 预发布版。
-# 应用内「检查更新」会把它作为提交通道，感知未打 tag 的新提交并支持一键更新。
+# 桌面版 nightly 自动构建：每次 push 到 master 构建全平台安装包并发布/覆盖 nightly 预发布版。
+# 应用内「检查更新」会把它作为提交通道，感知未打 tag 的新提交并支持一键更新（Windows）。
+# 平台覆盖：
+#   - Windows：NSIS 安装程序 + 便携版双 exe
+#   - macOS（Apple Silicon）：.dmg 安装镜像（未签名，首开需右键打开，见 release notes）
 name: 桌面版 nightly 构建
 
 on:
@@ -15,7 +18,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -40,17 +43,69 @@ jobs:
       - name: 构建桌面版（核心 SEA + Tauri 壳 + NSIS 安装程序）
         run: node server/scripts/build-desktop.mjs
 
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          path: |
+            server/release/icpc-workbench.exe
+            server/release/icpc-core.exe
+            server/release/*-setup.exe
+          if-no-files-found: error
+
+  build-mac:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/app/src-tauri
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建 macOS 桌面版（核心 SEA + Tauri 壳 + .app/.dmg，Apple Silicon）
+        run: node server/scripts/build-desktop-mac.mjs
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-mac
+          path: |
+            server/release/*.dmg
+            server/release/icpc-core-*
+          if-no-files-found: error
+
+  publish:
+    needs: [build-windows, build-mac]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 下载全部构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: server/release
+          merge-multiple: true
+
       - name: 生成 SHA256 校验文件
-        shell: pwsh
         run: |
-          $lines = Get-ChildItem server/release/*.exe | ForEach-Object {
-            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
-          }
-          $lines | Set-Content server/release/checksums.sha256
-          Get-Content server/release/checksums.sha256
+          cd server/release
+          ls -la
+          sha256sum icpc-workbench.exe icpc-core.exe *-setup.exe *.dmg icpc-core-* > checksums.sha256
+          cat checksums.sha256
 
       - name: 发布 nightly 预发布版（覆盖旧的）
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
@@ -62,8 +117,12 @@ jobs:
             --prerelease \
             --target "$SHA" \
             --title "nightly · $SHORT · $DATE" \
-            --notes "master 分支提交 ${SHORT} 的自动构建（开发版，稳定性低于正式发布版）。应用内「一键更新」会自动选择此通道；校验文件见 checksums.sha256。" \
+            --notes "master 分支提交 ${SHORT} 的自动构建（开发版，稳定性低于正式发布版）。
+          - Windows：icpc-workbench-<版本>-x64-setup.exe 安装程序，或便携版双 exe；支持应用内一键更新
+          - macOS（Apple Silicon M 系列）：*.dmg 安装镜像，未签名——首次打开请右键 →「打开」，或终端执行 xattr -cr /Applications/icpc-workbench.app；暂不支持 Intel Mac 与应用内一键更新，更新请手动下载覆盖" \
             server/release/icpc-workbench.exe \
             server/release/icpc-core.exe \
             server/release/checksums.sha256 \
-            server/release/*-setup.exe
+            server/release/*-setup.exe \
+            server/release/*.dmg \
+            server/release/icpc-core-*

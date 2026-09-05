@@ -23,9 +23,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(serverRoot, '..');
 const outDir = path.join(serverRoot, 'dist');
-// --core-only：桌面壳打包用的无窗口核心（icpc-core.exe），跳过 release 目录组装
+const isWindows = process.platform === 'win32';
+const isMac = process.platform === 'darwin';
+const exe = (name) => (isWindows ? `${name}.exe` : name);
+// --core-only：桌面壳打包用的无窗口核心（Windows: icpc-core.exe / mac: icpc-core），跳过 release 目录组装
 const coreOnly = process.argv.includes('--core-only');
-const exePath = path.join(outDir, coreOnly ? 'icpc-core.exe' : 'icpc-workbench.exe');
+const exePath = path.join(outDir, coreOnly ? exe('icpc-core') : exe('icpc-workbench'));
 
 console.log('[1/5] 构建前端 client/dist ...');
 execSync('npm run build', { cwd: repoRoot, stdio: 'inherit' });
@@ -133,9 +136,13 @@ fs.writeFileSync(seaConfigPath, JSON.stringify(seaConfig, null, 2));
 console.log('[4/5] 生成 SEA blob ...');
 execSync(`node --experimental-sea-config "${seaConfigPath}"`, { stdio: 'inherit' });
 
-console.log('[5/5] 注入 node.exe ...');
-// 复制 node.exe → 移除签名（Windows）→ postject 注入
+console.log('[5/5] 注入 node 可执行文件 ...');
+// 复制 node 可执行文件 → mac 先去签名 → postject 注入 → mac 重新 ad-hoc 签名
 fs.copyFileSync(process.execPath, exePath);
+if (isMac) {
+  // macOS（尤其 arm64）要求有效签名：先去掉 node 的原始签名，注入后再 ad-hoc 重签
+  execSync(`codesign --remove-signature "${exePath}"`, { stdio: 'inherit' });
+}
 try {
   execSync(`npx postject "${exePath}" NODE_SEA_BLOB "${seaConfig.output}" --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2`, {
     stdio: 'inherit',
@@ -147,6 +154,10 @@ try {
     `npx postject "${exePath}" NODE_SEA_BLOB "${seaConfig.output}" --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 --overwrite`,
     { stdio: 'inherit' },
   );
+}
+if (isMac) {
+  // ad-hoc 签名：本机可运行；分发给他人仍属未签名（与 Windows 未购证书同状况）
+  execSync(`codesign --sign - "${exePath}"`, { stdio: 'inherit' });
 }
 
 const sizeMb = (fs.statSync(exePath).size / 1024 / 1024).toFixed(1);
