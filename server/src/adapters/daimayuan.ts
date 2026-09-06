@@ -173,9 +173,15 @@ export function createDaimayuanAdapter(fetchFn: typeof fetch = fetch): PlatformA
       return `${BASE}/p/${String(problemKey)}`;
     },
 
-    async checkAuth({ cookie }) {
+    /** 校验登录态：按已绑定账号请求"自己的"评测记录页（与同步同款接口）。
+     * Hydro 仅"查自己的记录"免权限校验——不带 handle 的 /record 对普通登录用户也会 403，
+     * 因此 handle 缺省时提示先绑定账号而非盲判 Cookie 失效。 */
+    async checkAuth({ cookie, handle }) {
+      if (!handle) {
+        return { ok: false, message: '请先在上方填写用户名并保存，再检测 Cookie（检测需按账号访问评测记录页）' };
+      }
       try {
-        const res = await fetchFn(`${BASE}/record`, {
+        const res = await fetchFn(`${BASE}/record?uidOrName=${encodeURIComponent(handle)}`, {
           headers: {
             Cookie: cookie,
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',

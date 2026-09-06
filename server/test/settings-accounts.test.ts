@@ -168,3 +168,41 @@ test('POST /cookies/check reports missing cookie and unsupported platform', asyn
   });
   if (original) register(original);
 });
+
+test('cookies/check passes bound account handle to adapter checkAuth', async () => {
+  await withServer(async (db, base) => {
+    db.prepare(
+      `INSERT INTO platform_accounts (user_id, platform, handle, enabled)
+       VALUES (?, 'daimayuan', '5441', 1)`,
+    ).run(DEFAULT_USER_ID);
+    db.prepare(
+      "INSERT INTO settings (key, value) VALUES ('cookie.daimayuan', 'sid=tok')",
+    ).run();
+
+    // 通过临时替换 daimayuan 适配器捕获 checkAuth 收到的参数
+    const { register, getAdapter } = await import('../src/adapters/registry.ts');
+    const { initAdapters } = await import('../src/adapters/index.ts');
+    initAdapters(); // 本文件其他测试未初始化适配器注册表
+    const seen: Array<{ cookie?: string; handle?: string }> = [];
+    const real = getAdapter('daimayuan')!;
+    register({
+      ...real,
+      checkAuth: async (opts) => {
+        seen.push(opts);
+        return { ok: true, message: 'captured' };
+      },
+    });
+    try {
+      const res = await fetch(`${base}/cookies/check`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform: 'daimayuan' }),
+      });
+      const body = (await res.json()) as { ok: boolean; message: string };
+      assert.equal(body.ok, true);
+      assert.deepEqual(seen, [{ cookie: 'sid=tok', handle: '5441' }]);
+    } finally {
+      register(real); // 还原，避免污染其他测试
+    }
+  });
+});

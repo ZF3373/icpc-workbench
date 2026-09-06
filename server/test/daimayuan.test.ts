@@ -179,22 +179,28 @@ test('daimayuan: empty first page with table = 0 records (valid), sends cookie h
 
 // ---------- checkAuth / 注册 ----------
 
-test('daimayuan: checkAuth validates via /record access', async () => {
+test('daimayuan: checkAuth validates via own /record page (needs handle)', async () => {
   const ok = createDaimayuanAdapter(
-    router({ '/record': page([hydroRow({ rid: '1', pid: 1, title: 'a', result: '100 Accepted', ts: 1 })]) }),
+    router({ 'uidOrName=hieZF1123': page([hydroRow({ rid: '1', pid: 1, title: 'a', result: '100 Accepted', ts: 1 })]) }),
   );
-  const rOk = await ok.checkAuth!({ cookie: COOKIE });
+  const rOk = await ok.checkAuth!({ cookie: COOKIE, handle: 'hieZF1123' });
   assert.equal(rOk.ok, true);
 
-  const bad = createDaimayuanAdapter(router({ '/record': EMPTY_PAGE }, { status: 302 }));
-  const rBad = await bad.checkAuth!({ cookie: 'stale' });
+  // 未绑定账号时给出引导而非误判 Cookie 失效
+  const noHandle = createDaimayuanAdapter(router({}));
+  const rNo = await noHandle.checkAuth!({ cookie: COOKIE });
+  assert.equal(rNo.ok, false);
+  assert.match(rNo.message, /填写用户名/);
+
+  const bad = createDaimayuanAdapter(router({ 'uidOrName=h': EMPTY_PAGE }, { status: 302 }));
+  const rBad = await bad.checkAuth!({ cookie: 'stale', handle: 'h' });
   assert.equal(rBad.ok, false);
   assert.match(rBad.message, /Cookie 无效或已过期/);
 
   const netFail = createDaimayuanAdapter((async () => {
     throw new Error('fetch failed');
   }) as typeof fetch);
-  const rNet = await netFail.checkAuth!({ cookie: 'c' });
+  const rNet = await netFail.checkAuth!({ cookie: 'c', handle: 'h' });
   assert.equal(rNet.ok, false);
   assert.match(rNet.message, /无法连接/);
 });

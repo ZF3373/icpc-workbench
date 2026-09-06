@@ -197,7 +197,7 @@ GET  /api/checkins/streak         # 连续打卡统计（current/longest/totalDa
 POST /api/checkins { taskId }     # 打卡 | DELETE /api/checkins/:taskId 取消
 GET  /api/settings                # 设置（AI/账号/适配器开关/打卡提醒）
 POST /api/settings/reminder       # 打卡提醒配置（body: enabled?, time? "HH:MM"）
-POST /api/settings/cookies/check  # 检测 Cookie 登录态（洛谷：302/非 JSON 判定过期；代码源：/submissions 403/登录页判定过期）
+POST /api/settings/cookies/check  # 检测 Cookie 登录态（检测与同步走同一数据页：洛谷 record/list 自检、代码源按绑定账号访问评测记录页）
 GET  /api/export/plan-package     # 数据包（弱项+趋势+题目+提示词）
 GET  /api/export/plan-prompt.md   # 渲染好的提示词下载（已内置练习数据汇总）
 GET  /api/export/summary.md       # 完整个人练习数据汇总 .md 下载（复盘 / 喂给任意 AI）

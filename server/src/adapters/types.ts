@@ -58,6 +58,11 @@ export interface PlatformAdapter {
   /**
    * 校验登录凭据（需登录平台实现；公开 API 平台无需实现）。
    * 设置页「检测 Cookie」按钮调用，用于在同步前发现 Cookie 过期。
+   * @param opts.handle 已绑定账号的用户名/uid（设置页注入）：检测需访问"自己的"数据页时使用
    */
-  checkAuth?(opts: { cookie: string; csrf?: string }): Promise<{ ok: boolean; message: string }>;
+  checkAuth?(opts: {
+    cookie: string;
+    csrf?: string;
+    handle?: string;
+  }): Promise<{ ok: boolean; message: string }>;
 }

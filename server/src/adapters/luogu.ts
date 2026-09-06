@@ -327,14 +327,24 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
       return `https://www.luogu.com.cn/problem/${String(problemKey)}`;
     },
 
-    /** 校验 Cookie 登录态：请求 /user/info 自检接口，302/未登录结构 = Cookie 失效。 */
+    /** 校验 Cookie 登录态：从 Cookie 提取 _uid，请求同步同款 record/list 自检接口（旧 /user/info 已 404 下线）。
+     * 302（无新 C3VK 下发）/ 非 JSON / 响应结构异常 = Cookie 失效。 */
     async checkAuth(opts: { cookie: string; csrf?: string }): Promise<{ ok: boolean; message: string }> {
       try {
-        const res = await fetchWithChallenge(fetchFn, `${API}/user/info`, opts.cookie, opts.csrf, {
-          'x-lentille-request': 'content-only',
-          Accept: 'application/json',
-          Referer: `${API}/`,
-        });
+        const uid = opts.cookie.match(/(?:^|;)\s*_uid=([^;\s]+)/)?.[1];
+        if (!uid) {
+          return { ok: false, message: 'Cookie 中缺少 _uid：请重新复制包含 _uid 与 __client_id 的完整 Cookie' };
+        }
+        const res = await fetchWithChallenge(
+          fetchFn,
+          `${API}/record/list?user=${encodeURIComponent(uid)}&page=1&_contentOnly=1`,
+          opts.cookie,
+          opts.csrf,
+          { Accept: 'application/json' },
+        );
+        if (res.status === 504) {
+          return { ok: false, message: '洛谷挑战重试超限（可能触发风控），请稍后重试' };
+        }
         if ([301, 302, 303].includes(res.status)) {
           return { ok: false, message: 'Cookie 无效或已过期（洛谷返回登录跳转），请重新登录洛谷后复制最新 Cookie' };
         }
@@ -344,6 +354,10 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
         const text = await res.text();
         if (!text.trim().startsWith('{')) {
           return { ok: false, message: '返回非 JSON（Cookie 无效或已过期），请重新登录洛谷后复制最新 Cookie' };
+        }
+        const data = JSON.parse(text) as { code?: number; currentData?: { records?: unknown } };
+        if (![0, 200].includes(data.code ?? -1) || !data.currentData?.records) {
+          return { ok: false, message: '响应结构异常（Cookie 可能已过期或触发风控），请重新复制 Cookie' };
         }
         return { ok: true, message: 'Cookie 有效 ✓（登录态正常）' };
       } catch (e) {

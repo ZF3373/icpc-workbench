@@ -172,7 +172,15 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
               | { value: string }
               | undefined
           )?.value;
-    const result = await adapter.checkAuth({ cookie: cookieVal, ...(csrfVal ? { csrf: csrfVal } : {}) });
+    // 检测应与同步走同一数据页：带上已绑定账号的 handle（如代码源 Hydro 需按"自己的记录"访问）
+    const account = db
+      .prepare('SELECT handle FROM platform_accounts WHERE user_id = ? AND platform = ?')
+      .get(DEFAULT_USER_ID, platform) as { handle: string } | undefined;
+    const result = await adapter.checkAuth({
+      cookie: cookieVal,
+      ...(csrfVal ? { csrf: csrfVal } : {}),
+      ...(account ? { handle: account.handle } : {}),
+    });
     res.json(result);
   }));
 
