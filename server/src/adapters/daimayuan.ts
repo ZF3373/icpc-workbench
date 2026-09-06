@@ -7,27 +7,32 @@ import { ManualImportRequiredError } from './types.ts';
 import type { PlatformAdapter } from './types.ts';
 
 /**
- * 代码源（Daimayuan Online Judge，oj.daimayuan.top）适配器。
+ * 代码源（bs.daimayuan.top，基于 Hydro OJ 搭建）适配器。
  *
- * 平台基于 UOJ-System 搭建（页面页脚链接 UniversalOJ/UOJ-System），无公开 API：
- * - 提交列表：GET /submissions?submitter={用户名}&page={n}，服务端渲染 HTML 表格，
- *   每页 10 条、order by id desc（新→旧），匿名访问 403 → 需登录 Cookie。
- * - 登录凭据：UOJ remember-me 双 Cookie `uoj_username` + `uoj_remember_token`（浏览器 F12 复制）。
- * - 结果展示：已评测且有分 → 仅显示分数（class="uoj-score"），score=100 视为 AC；
- *   已评测无分 → result_error 文本（Compile Error 等）；未评测 → Waiting/Judging，跳过。
- * - 证书注意：该站 HTTPS 配置异常（自签名默认证书），因此走 HTTP 明文（仅拉公开做题数据）。
- * - 难度/标签：题目页同样需要登录且 UOJ 无统一难度标尺，暂不下发（difficulty 空）。
+ * - 评测记录页：GET /record?uidOrName={用户名或uid}&page={n}（每页 100 条，按记录 id 新→旧）
+ *   Hydro 源码约定：仅「查自己的记录」免 PERM_VIEW_RECORD，游客一律 302 → /login，
+ *   因此服务端同步需要登录态——浏览器里能直接看是因为已登录，Cookie 只需复制会话 `sid` 一项。
+ * - 列表默认过滤 { contest: null }：与站点「评测记录」页一致，仅含非比赛（练习/作业）提交。
+ * - 结果单元格：`{score} {STATUS_TEXT}`（如 100 Accepted / 0 Compile Error），
+ *   状态文本来自 Hydro STATUS_TEXTS（英文，不随站点语言变化）。
+ * - 递交时间：`<span data-timestamp="{epoch 秒}">`（datetimeSpan，ObjectId 时间戳），精确无需时区换算。
+ * - 题目链接 /p/{pid} 公开可访问；难度/标签 Hydro 无统一标尺，暂不下发。
  */
 
-const BASE = 'http://oj.daimayuan.top';
-const PAGE_SIZE = 10; // UOJ Paginator 默认 page_len
-const MAX_PAGES = 300;
+const BASE = 'https://bs.daimayuan.top';
+const PAGE_SIZE = 100; // Hydro pagination.record 默认值
+const MAX_PAGES = 100;
 
-/** UOJ 结果单元格文本 → 统一 Verdict；分数制平台无法区分 WA/TLE/RE，低于满分一律 WA */
-const RESULT_ERROR_MAP: Record<string, Verdict> = {
+/** Hydro STATUS_TEXTS → 统一 Verdict；Waiting/Running 等评测中状态与 Hack/Cancelled 落到 null 跳过 */
+const STATUS_MAP: Record<string, Verdict> = {
+  Accepted: 'AC',
+  'Wrong Answer': 'WA',
+  'Time Exceeded': 'TLE',
+  'Memory Exceeded': 'MLE',
+  'Output Exceeded': 'RE',
+  'Runtime Error': 'RE',
   'Compile Error': 'CE',
-  'Judgement Failed': 'RE',
-  'Extra Test Failed': 'SKIPPED',
+  'Format Error': 'WA',
 };
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -44,58 +49,47 @@ const strip = (s: string): string =>
     .replace(/\s+/g, ' ')
     .trim();
 
-interface UojRow {
-  submissionId: string;
+interface HydroRow {
+  recordId: string;
   pid: string;
   title: string;
-  /** 已评测有分：分数；已评测无分：result_error 文本；未评测：状态文本 */
-  result: { kind: 'score'; score: number } | { kind: 'text'; text: string };
+  statusText: string;
   language?: string;
-  timeText: string;
+  /** data-timestamp（epoch 秒，来自记录 ObjectId） */
+  timeSec: number;
 }
 
-/** 解析 UOJ /submissions 表格行（与 echoSubmission 输出的列顺序一致，共 10 列） */
-export function parseUojSubmissionRows(html: string): UojRow[] {
-  const rows: UojRow[] = [];
-  const trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+/** 解析 Hydro /record 列表行（record_main_tr.html：7 列，tr 带 data-rid） */
+export function parseDaimayuanRows(html: string): HydroRow[] {
+  const rows: HydroRow[] = [];
+  const trRe = /<tr\s+data-rid="([^"]+)">([\s\S]*?)<\/tr>/g;
   let m: RegExpExecArray | null;
   while ((m = trRe.exec(html)) !== null) {
-    const tds = [...m[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((x) => x[1]);
-    if (tds.length !== 10) continue; // 登录后本人未评测行附带 status_details 展开行（colspan）/表头 → 列数不符跳过
-    const submissionId = (tds[0].match(/href="\/submission\/(\d+)"/) ?? [])[1];
-    const problemMatch = tds[1].match(/href="\/(?:contest\/\d+\/)?problem\/(\d+)"[^>]*>([\s\S]*?)<\/a>/);
-    if (!submissionId || !problemMatch) continue; // 异常行/分页脚，跳过
-    const title = strip(problemMatch[2]).replace(/^#\d+\.\s*/, '');
-    // 结果列：uoj-score 链接 = 已评测有分；否则纯文本（result_error 或评测中状态）
-    const scoreMatch = tds[3].match(/class="uoj-score"[^>]*>\s*(-?\d+)\s*</);
-    const result = scoreMatch
-      ? ({ kind: 'score', score: Number(scoreMatch[1]) } as const)
-      : ({ kind: 'text', text: strip(tds[3]) } as const);
+    const recordId = m[1];
+    const tds = [...m[2].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((x) => x[1]);
+    if (tds.length !== 7) continue; // 结构异常行跳过
+    const problemMatch = tds[1].match(/href="\/p\/([^"'?]+)"[^>]*>([\s\S]*?)<\/a>/);
+    if (!problemMatch) continue; // 题目已被隐藏/失效（渲染为 *）等
+    const pid = problemMatch[1];
+    const title = strip(problemMatch[2])
+      .replace(new RegExp(`^${pid}\\s+`), ''); // 渲染为 "<b>pid</b>&nbsp;&nbsp;标题"
+    const statusText = strip(tds[0]).replace(/^-?\d+\s+/, ''); // 去掉前导分数（100 Accepted）
+    const timeMatch = tds[6].match(/data-timestamp="(\d+)"/);
+    if (!statusText || !timeMatch) continue;
     rows.push({
-      submissionId,
-      pid: problemMatch[1],
+      recordId,
+      pid,
       title,
-      result,
-      language: strip(tds[6]) || undefined,
-      timeText: strip(tds[8]),
+      statusText,
+      language: strip(tds[5]) || undefined,
+      timeSec: Number(timeMatch[1]),
     });
   }
   return rows;
 }
 
-/** UOJ submit_time 为服务器本地时间（无时区后缀）；代码源面向国内用户，按 UTC+8 解析 */
-function parseTime(t: string): number {
-  if (!t) return 0;
-  const ms = Date.parse(`${t.replace(' ', 'T')}+08:00`);
-  return Number.isFinite(ms) && ms > 0 ? ms : 0;
-}
-
-function toVerdict(row: UojRow): Verdict | null {
-  if (row.result.kind === 'score') {
-    return row.result.score === 100 ? 'AC' : 'WA'; // 满分 AC，未满分（含部分分）WA
-  }
-  if (!row.result.text) return null; // 空结果 = 评测中，跳过
-  return RESULT_ERROR_MAP[row.result.text] ?? null; // Waiting/Judging/未知状态 → 跳过
+function toVerdict(statusText: string): Verdict | null {
+  return STATUS_MAP[statusText] ?? null;
 }
 
 export function createDaimayuanAdapter(fetchFn: typeof fetch = fetch): PlatformAdapter {
@@ -111,84 +105,77 @@ export function createDaimayuanAdapter(fetchFn: typeof fetch = fetch): PlatformA
       if (!cookie) {
         throw new ManualImportRequiredError(
           'daimayuan',
-          '代码源提交列表需登录后访问：请在设置页填写 uoj_username / uoj_remember_token 两项 Cookie（浏览器登录代码源后 F12 → Application → Cookies 复制）',
+          '代码源评测记录页需登录后访问：请在设置页填写 sid 会话 Cookie（浏览器登录 bs.daimayuan.top 后 F12 → Application → Cookies 复制 sid 一项）',
         );
       }
       const out: NormalizedSubmission[] = [];
       for (let page = 1; page <= MAX_PAGES; page += 1) {
-        const url = `${BASE}/submissions?submitter=${encodeURIComponent(handle)}&page=${page}`;
+        const url = `${BASE}/record?uidOrName=${encodeURIComponent(handle)}&page=${page}`;
         const res = await fetchFn(url, {
           headers: {
             Cookie: cookie,
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            Referer: `${BASE}/submissions`,
           },
-          redirect: 'manual', // 登录失效时 UOJ 不一定 403，避免跟随重定向拿到登录页当成功
+          redirect: 'manual', // 登录失效时 Hydro 302 → /login，避免跟随重定向拿到登录页当成功
           signal: AbortSignal.timeout(20000),
         });
         const html = await res.text();
-        if (res.status === 403 || /href="\/login"/.test(html)) {
+        if (res.status === 302 || res.status === 403 || /href="\/login"/.test(html)) {
           throw new ManualImportRequiredError(
             'daimayuan',
-            '登录态已失效（页面跳转登录/403），请重新复制 uoj_username / uoj_remember_token Cookie',
+            '登录态已失效（评测记录页跳转登录），请重新登录 bs.daimayuan.top 并更新 sid Cookie',
           );
         }
         if (!res.ok) {
           throw new Error(`代码源页面 HTTP ${res.status}，请稍后重试`);
         }
-        const rows = parseUojSubmissionRows(html);
+        const rows = parseDaimayuanRows(html);
         if (rows.length === 0) {
-          if (page === 1) {
-            // 首页无行：账号确实无提交（正常空态）或页面结构变化。用"提交人筛选条件是否存在"区分：
-            // UOJ 空表会渲染 "无" 占位行；连表格都没有则视为结构异常
-            if (!/<table[\s\S]*?<tbody>[\s\S]*?<td colspan="233">/.test(html)) {
-              throw new Error('代码源页面未解析到提交记录（可能页面结构变化），请反馈或使用手动导入');
-            }
-            break;
+          // Hydro 空列表不渲染表格，仅保留过滤表单：以 name="uidOrName" 标记确认仍在记录页
+          if (page === 1 && !/name="uidOrName"/.test(html)) {
+            throw new Error('代码源页面未解析到提交记录（可能页面结构变化），请反馈或使用手动导入');
           }
-          break; // 后续页为空 = 正常翻页结束
+          break; // 空页 = 翻页结束（首页空 = 该账号暂无非比赛提交）
         }
 
         // 已知 externalId 全命中 → 更旧的都在库中，提前终止增量
         const known = opts?.knownExternalIds;
-        if (known && rows.every((r) => known.has(r.submissionId))) break;
+        if (known && rows.every((r) => known.has(r.recordId))) break;
 
         let added = 0;
         for (const row of rows) {
-          if (known?.has(row.submissionId)) continue;
-          const verdict = toVerdict(row);
-          if (verdict === null) continue; // 评测中/未知状态不落库
-          const timeMs = parseTime(row.timeText);
+          if (known?.has(row.recordId)) continue;
+          const verdict = toVerdict(row.statusText);
+          if (verdict === null) continue; // 评测中/Hack/取消等不落库
           out.push({
             problem: {
               platform: 'daimayuan' as PlatformId,
               problemKey: row.pid,
               title: row.title || row.pid,
-              url: `${BASE}/problem/${row.pid}`,
+              url: `${BASE}/p/${row.pid}`,
               tags: [],
             },
             verdict,
             ...(row.language ? { language: row.language } : {}),
-            submittedAt:
-              timeMs > 0 ? new Date(timeMs).toISOString() : new Date().toISOString(),
-            externalId: row.submissionId,
+            submittedAt: new Date(row.timeSec * 1000).toISOString(),
+            externalId: row.recordId,
           });
           added += 1;
         }
-        if (added === 0 && !known) break; // 全量模式下整页无有效条目 → 结束
         if (rows.length < PAGE_SIZE) break; // 最后一页
+        if (added === 0 && known) break; // 增量模式下整页无新增（含已知的评测中记录）→ 更旧多半已入库
         await sleep(opts?.pageDelayMs ?? 400); // 页间限速，降低对站点的压力
       }
       return out;
     },
 
     problemUrl({ problemKey }) {
-      return `${BASE}/problem/${String(problemKey)}`;
+      return `${BASE}/p/${String(problemKey)}`;
     },
 
     async checkAuth({ cookie }) {
       try {
-        const res = await fetchFn(`${BASE}/submissions`, {
+        const res = await fetchFn(`${BASE}/record`, {
           headers: {
             Cookie: cookie,
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -196,12 +183,15 @@ export function createDaimayuanAdapter(fetchFn: typeof fetch = fetch): PlatformA
           redirect: 'manual',
           signal: AbortSignal.timeout(15000),
         });
-        const html = await res.text();
-        if (res.status === 403 || /href="\/login"/.test(html)) {
-          return { ok: false, message: 'Cookie 无效或已过期：请重新登录代码源并复制 uoj_username / uoj_remember_token' };
+        if (res.status === 302 || res.status === 403) {
+          return { ok: false, message: 'Cookie 无效或已过期：请重新登录 bs.daimayuan.top 并复制 sid' };
         }
         if (!res.ok) {
           return { ok: false, message: `代码源返回 HTTP ${res.status}，请稍后重试` };
+        }
+        const html = await res.text();
+        if (/href="\/login"/.test(html)) {
+          return { ok: false, message: 'Cookie 无效或已过期：请重新登录 bs.daimayuan.top 并复制 sid' };
         }
         return { ok: true, message: 'Cookie 有效，已通过代码源登录校验' };
       } catch (e) {

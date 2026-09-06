@@ -20,8 +20,8 @@ export const PLATFORMS: PlatformMeta[] = [
   { id: 'atcoder', name: 'AtCoder', nameEn: 'AtCoder', hasOfficialApi: false, homepage: 'https://atcoder.jp', sync: 'auto' },
   { id: 'luogu', name: '洛谷', nameEn: 'Luogu', hasOfficialApi: false, homepage: 'https://www.luogu.com.cn', sync: 'cookie' },
   { id: 'nowcoder', name: '牛客', nameEn: 'Nowcoder', hasOfficialApi: false, homepage: 'https://ac.nowcoder.com', sync: 'auto' },
-  // 代码源（UOJ 系）：提交列表需登录（uoj_username + uoj_remember_token），HTTPS 证书异常走 HTTP
-  { id: 'daimayuan', name: '代码源', nameEn: 'Daimayuan', hasOfficialApi: false, homepage: 'http://oj.daimayuan.top', sync: 'cookie' },
+  // 代码源（Hydro 系）：评测记录页需登录（会话 Cookie sid），题库公开
+  { id: 'daimayuan', name: '代码源', nameEn: 'Daimayuan', hasOfficialApi: false, homepage: 'https://bs.daimayuan.top', sync: 'cookie' },
 ];
 
 export function platformMeta(id: PlatformId): PlatformMeta {

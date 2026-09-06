@@ -70,8 +70,7 @@ const COOKIE_FORM: Partial<Record<PlatformId, CookieFieldDef[]>> = {
     { key: 'clientId', cookieName: '__client_id', placeholder: '__client_id（登录令牌，F12 → Application → Cookies 复制）', password: true },
   ],
   daimayuan: [
-    { key: 'username', cookieName: 'uoj_username', placeholder: 'uoj_username（代码源用户名，F12 → Application → Cookies 复制）' },
-    { key: 'token', cookieName: 'uoj_remember_token', placeholder: 'uoj_remember_token（登录令牌，同上复制）', password: true },
+    { key: 'sid', cookieName: 'sid', placeholder: 'sid（登录会话，F12 → Application → Cookies 复制）', password: true },
   ],
 }
 
@@ -376,7 +375,7 @@ export default function Settings() {
             )
           })}
           <p className="muted-note">
-            说明：Codeforces / AtCoder / 牛客自动同步；洛谷、代码源填写 Cookie 后自动同步（未配置时请在「题目管理」手动导入）。代码源站点 HTTPS 证书异常，同步走 HTTP 访问公开做题数据。
+            说明：Codeforces / AtCoder / 牛客自动同步；洛谷、代码源填写 Cookie 后自动同步（未配置时请在「题目管理」手动导入）。代码源基于 Hydro 搭建，只需复制 sid 一项会话 Cookie。
           </p>
         </Card>
       </Col>
