@@ -1671,3 +1671,83 @@ body {
 .perm-note {
   font-size: 12px;
 }
+
+/* ---------- 计划 AI 助手抽屉 ---------- */
+.plan-chat-layout {
+  display: flex;
+  gap: 14px;
+  height: calc(100vh - 160px);
+  min-height: 420px;
+}
+
+.plan-chat-side {
+  width: 240px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--border, #2a2f3a);
+  padding-right: 12px;
+}
+
+.plan-chat-tasks {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-chat-task {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.plan-chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.plan-chat-msgs {
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.plan-chat-msg {
+  margin-bottom: 12px;
+  max-width: 92%;
+}
+
+.plan-chat-msg-user {
+  margin-left: auto;
+  background: var(--accent-bg, rgba(88, 163, 255, 0.12));
+  border-radius: 10px 10px 2px 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.plan-chat-msg-assistant {
+  background: var(--panel-2, rgba(255, 255, 255, 0.04));
+  border-radius: 10px 10px 10px 2px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.plan-chat-msg-assistant .markdown-body {
+  font-size: 13px;
+}
+
+.plan-chat-msg-assistant .markdown-body p:first-child {
+  margin-top: 0;
+}
+
+.plan-chat-msg-assistant .markdown-body p:last-child {
+  margin-bottom: 0;
+}
+
+.plan-chat-input {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  margin-top: 10px;
+}

@@ -39,3 +39,24 @@ export const put = <T>(path: string, body?: unknown): Promise<T> =>
   });
 
 export const del = <T>(path: string): Promise<T> => api<T>(path, { method: 'DELETE' });
+
+// ---------- 计划 AI 助手 ----------
+
+export interface PlanChatTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export const chatWithPlan = <T>(planId: number, messages: PlanChatTurn[]): Promise<T> =>
+  post<T>(`/api/plans/${planId}/chat`, { messages })
+
+export interface PlanApplyResult {
+  ok: boolean
+  added: number
+  removed: number
+  kept: number
+  checkinsKept: number
+}
+
+export const applyPlanModification = <T>(planId: number, raw: string): Promise<T> =>
+  post<T>(`/api/plans/${planId}/apply`, { raw })

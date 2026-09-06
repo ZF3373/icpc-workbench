@@ -18,10 +18,11 @@ import {
   Table,
   Tag,
 } from 'antd'
-import { CheckOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
+import { CheckOutlined, DeleteOutlined, EditOutlined, PlusOutlined, RobotOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import type { ColumnsType } from 'antd/es/table'
 import PageHeader from '../components/PageHeader'
+import PlanChatDrawer from '../components/PlanChatDrawer'
 import { del, get, patch, post } from '../api'
 import type { GenerateResult, PlanDetail, PlanListItem, PlanTask } from '../types'
 
@@ -48,6 +49,7 @@ export default function Plans() {
   const [plans, setPlans] = useState<PlanListItem[]>([])
   const [loading, setLoading] = useState(false)
   const [genOpen, setGenOpen] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
   const [detail, setDetail] = useState<PlanDetail | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [editing, setEditing] = useState<PlanTask | null>(null)
@@ -194,9 +196,19 @@ export default function Plans() {
         title="训练计划"
         description="AI 生成（需在设置中配置 API Key）；未配置时自动生成模板计划。也可到「设置 → 导出提示词」手动喂给任意 AI。"
         extra={
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setGenOpen(true)}>
-            生成新计划
-          </Button>
+          <Space>
+            <Button
+              icon={<RobotOutlined />}
+              disabled={plans.length === 0}
+              title={plans.length === 0 ? '先创建一个计划后可与 AI 讨论' : undefined}
+              onClick={() => setChatOpen(true)}
+            >
+              AI 助手
+            </Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setGenOpen(true)}>
+              生成新计划
+            </Button>
+          </Space>
         }
       />
       <Table rowKey="id" size="small" loading={loading} columns={cols} dataSource={plans} pagination={{ pageSize: 10 }} />
@@ -317,6 +329,13 @@ export default function Plans() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <PlanChatDrawer
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        plans={plans}
+        onPlanMutated={load}
+      />
 
       <GenerateModal
         open={genOpen}

@@ -3,9 +3,45 @@ import type { AiConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
-import { generatePlan, parsePlanJson, savePlan, TASK_KINDS, today } from '../plans/planService.ts';
+import { AiProvider } from '../ai/provider.ts';
+import {
+  applyPlanModification,
+  buildChatSystemPrompt,
+  generatePlan,
+  parsePlanModifyJson,
+  parsePlanJson,
+  savePlan,
+  TASK_KINDS,
+  today,
+} from '../plans/planService.ts';
 
-export function plansRoutes(db: Db, getAiConfig: () => AiConfig): Router {
+/** 计划 AI 助手聊天消息（客户端上报的历史轮次） */
+interface ChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+function isChatTurns(v: unknown): v is ChatTurn[] {
+  return (
+    Array.isArray(v) &&
+    v.length > 0 &&
+    v.length <= 40 &&
+    v.every(
+      (m) =>
+        typeof m === 'object' &&
+        m !== null &&
+        ((m as ChatTurn).role === 'user' || (m as ChatTurn).role === 'assistant') &&
+        typeof (m as ChatTurn).content === 'string' &&
+        (m as ChatTurn).content.trim() !== '',
+    )
+  );
+}
+
+export function plansRoutes(
+  db: Db,
+  getAiConfig: () => AiConfig,
+  opts: { createProvider?: () => Pick<AiProvider, 'chat' | 'enabled'> } = {},
+): Router {
   const r = Router();
 
   // POST /api/plans/generate  body: { days?, startDate? }
@@ -165,6 +201,72 @@ export function plansRoutes(db: Db, getAiConfig: () => AiConfig): Router {
       return res.status(404).json({ error: '任务不存在' });
     }
     res.json({ ok: true });
+  });
+
+  // POST /api/plans/:id/chat  body: { messages: [{role: 'user'|'assistant', content}] }
+  // 计划 AI 助手：system 注入计划详情+弱项画像+练习汇总；AI 回复可能含 plan-modify 块
+  // （前端解析后引导用户到 /apply 应用）。非流式 v1；聊天历史由前端上报并保存，服务端不落库。
+  r.post('/:id/chat', asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'id 非法' });
+    }
+    const { messages } = req.body ?? {};
+    if (!isChatTurns(messages)) {
+      return res.status(400).json({ error: 'messages 必填：1-40 条 {role: user|assistant, content} 轮次' });
+    }
+    const plan = db.prepare('SELECT id FROM plans WHERE id = ? AND user_id = ?').get(id, DEFAULT_USER_ID);
+    if (!plan) {
+      return res.status(404).json({ error: '计划不存在' });
+    }
+    const provider = opts.createProvider?.() ?? new AiProvider(getAiConfig());
+    if (!provider.enabled) {
+      return res.status(400).json({
+        error: 'AI 未配置：请到「设置 → AI 配置」填写 OpenAI 兼容接口后使用',
+        needConfig: true,
+      });
+    }
+    try {
+      const system = buildChatSystemPrompt(db, id);
+      const reply = await provider.chat(
+        [{ role: 'system', content: system }, ...(messages as ChatTurn[])],
+        { maxTokens: 8000 }, // plan-modify 块是完整任务列表 JSON，预留充足输出空间
+      );
+      res.json({ reply });
+    } catch (e) {
+      res.status(502).json({ error: `AI 调用失败：${(e as Error).message}` });
+    }
+  }));
+
+  // POST /api/plans/:id/apply  body: { raw }
+  // 应用 AI 的计划修改：raw 为 AI 回复全文（自动提取 plan-modify 块/裸 JSON），
+  // 任务按「日期+标题」匹配保留打卡，其余增删；原位更新不另存新计划。
+  r.post('/:id/apply', (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'id 非法' });
+    }
+    const { raw } = req.body ?? {};
+    if (typeof raw !== 'string' || raw.trim() === '') {
+      return res.status(400).json({ error: 'raw 必填：AI 回复全文（含 plan-modify 块）或计划修改 JSON' });
+    }
+    const plan = db
+      .prepare('SELECT start_date, end_date FROM plans WHERE id = ? AND user_id = ?')
+      .get(id, DEFAULT_USER_ID) as { start_date: string; end_date: string } | undefined;
+    if (!plan) {
+      return res.status(404).json({ error: '计划不存在' });
+    }
+    const planDays =
+      Math.round(
+        (Date.parse(`${plan.end_date}T00:00:00Z`) - Date.parse(`${plan.start_date}T00:00:00Z`)) / 86_400_000,
+      ) + 1;
+    try {
+      const mod = parsePlanModifyJson(raw, plan.start_date, planDays);
+      const result = applyPlanModification(db, DEFAULT_USER_ID, id, mod);
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      res.status(400).json({ error: `应用修改失败：${(e as Error).message}` });
+    }
   });
 
   // DELETE /api/plans/:id → 删除计划（plan_tasks 与 checkins 由外键级联删除）

@@ -36,11 +36,11 @@ test('schema creates all tables', () => {
   }
 });
 
-test('seeds platforms (4) and default user (me)', () => {
+test('seeds platforms (5) and default user (me)', () => {
   const platformCount = db.prepare('SELECT COUNT(*) AS c FROM platforms').get() as {
     c: number;
   };
-  assert.equal(platformCount.c, 4);
+  assert.equal(platformCount.c, 5);
   const user = db.prepare('SELECT id, username FROM users').get() as {
     id: number;
     username: string;

@@ -25,7 +25,7 @@
       "date": "YYYY-MM-DD",
       "title": "任务标题",
       "kind": "practice | review | topic | contest",
-      "platform": "codeforces | atcoder | luogu | nowcoder",
+      "platform": "codeforces | atcoder | luogu | nowcoder | daimayuan",
       "problemKey": "题目 key（不安排具体题可省略）",
       "url": "题目链接（可省略）",
       "note": "说明（如：重点练习的 tag、回顾要点）"

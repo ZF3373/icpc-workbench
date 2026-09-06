@@ -1,10 +1,10 @@
 # ICPC Workbench · ICPC 备赛工作台
 
-基于刷题记录（Codeforces / AtCoder / 洛谷 / 牛客）分析弱项、由 AI 生成个性化训练计划，并提供日历打卡的**本地 Web 应用**。
+基于刷题记录（Codeforces / AtCoder / 洛谷 / 牛客 / 代码源）分析弱项、由 AI 生成个性化训练计划，并提供日历打卡的**本地 Web 应用**。
 
 ## 功能
 
-- **多平台刷题导入**：Codeforces / AtCoder 自动同步（官方/社区公开 API，增量去重）；洛谷 / 牛客手动导入（JSON / CSV / 表单）
+- **多平台刷题导入**：Codeforces / AtCoder 自动同步（官方/社区公开 API，增量去重）；洛谷 / 代码源配置 Cookie 后自动同步；全平台支持手动导入（JSON / CSV / 表单）
 - **弱项分析**：按标签 / 难度区间 / 平台统计 AC 率，输出相对自身平均的弱项画像；近 12 周趋势
 - **掌握度地图**：按知识点五档评估掌握度（未开始→接触→入门→掌握→熟练），串联刷题数据、弱项画像与模板课程；每个知识点可直达对应练习题目（含题库未做题，按难度从低到高）与课程；CF 等平台的英文标签与课程中文知识点自动归并（binary search ↔ 二分），同一知识点不分裂；掌握/熟练带 ⭐/🏆 徽章、升档进度条与新达成 🎉 标记
 - **练习数据汇总**：一键生成完整个人画像（总量/平台/难度/知识点/弱项/掌握度/趋势/近期 AC/卡壳题/复习库/课程进度/打卡），可下载 `.md` 存档复盘
@@ -14,6 +14,7 @@
   - 导出通道：无 Key 也可下载数据包 + 提示词 `.md`，手动喂给任意 AI，返回的 JSON 通过设置页「导入 AI 计划」粘贴/上传即可入库（自动清洗围栏与解释文字）
   - 提示词已内置完整练习数据汇总：AI 能看到掌握薄弱知识点、课程盲区、近期在练的题、卡壳题、复习库到期与打卡节奏，据此编排重做/补模板/复习任务
   - 任务全部附带可点击的题目链接：练习任务直接跳题目页；回顾/模拟赛任务跳 CF 提交记录/题集入口；AI 输出缺链接时自动按题库回退补链
+  - **计划 AI 助手**：训练计划页「AI 助手」打开对话抽屉（左侧计划概览、右侧聊天），AI 自动携带当前计划 + 弱项画像上下文；要求修改计划时 AI 输出完整新任务列表，前端确认后一键原位应用——「日期+标题」相同的任务保留原任务与打卡记录，其余增删
 - **复习库**：题目复评与遗忘曲线调度（到期数量提醒、正/负反馈调节复习间隔）
 - **模板库**：114 节内置算法模板课程（分 10 大类），学习状态/笔记/进度追踪；自建模板支持 Tab 缩进的代码编辑框（Tab 缩进、Shift+Tab 反缩进、回车自动缩进，保留撤销栈）
 - **赛事中心**：Codeforces / AtCoder / 洛谷 / 牛客 四平台场次聚合（即将开始 / 已结束，单源失败自动降级），赛前选场、赛后补题
@@ -27,9 +28,9 @@
 ```
 icpc-workbench/
 ├── server/          # Node.js + Express + node:sqlite（内置 SQLite，零原生依赖）
-│   ├── adapters/    # 平台适配器（CF/AtCoder 自动；洛谷/牛客受限）+ 增量同步
+│   ├── adapters/    # 平台适配器（CF/AtCoder 自动；洛谷/牛客/代码源受限）+ 增量同步
 │   ├── analysis/    # 聚合统计 / 弱项画像 / 周趋势
-│   ├── ai/          # OpenAI 兼容 provider + plan-prompt.md 提示词模板
+│   ├── ai/          # OpenAI 兼容 provider + plan-prompt.md / plan-chat-prompt.md 提示词模板
 │   ├── contests/    # 四平台赛事聚合（CF/AtCoder/洛谷/牛客，单源失败降级）
 │   ├── plans/       # 计划生成（AI 优先，失败/未配置降级模板）+ 入库
 │   ├── import/      # 手动导入（JSON/CSV/表单）+ 事务入库
@@ -147,15 +148,17 @@ node server/scripts/build-exe.mjs
 | AtCoder | ✅ | 社区 API `kenkoooo.com` v3 | 支持增量（from_second）；题目资源 24h 磁盘缓存；官方要求页间 ≥1s |
 | 洛谷 | ✅（需 Cookie） | `record/list` 非官方 API | 设置页填写 `_uid` / `__client_id` 两项 Cookie 后自动同步；难度分级（0-8）自动映射为 CF rating；标签经 `x-lentille-request` 头 + `/_lfe/tags` 字典获取 |
 | 牛客 | ✅ | 公开 HTML `acm/contest/profile/{uid}/practice-coding` | 无需登录/Cookie（牛客已下线 JSON API）；解析提交表格，支持增量与分页；题目无难度/标签字段（数据源限制） |
+| 代码源 | ✅（需 Cookie） | UOJ 系统 HTML `/submissions?submitter=` | 设置页填写 `uoj_username` / `uoj_remember_token` 两项 Cookie 后自动同步；解析 UOJ 提交表格（每页 10 条），满分 100 视为 AC；暂无难度/标签（需登录题目页，后续支持）；站点 HTTPS 证书异常，走 HTTP 访问公开做题数据 |
 
 > 洛谷基于社区维护的非官方 API，接口结构可能随平台变更；若同步失败请更新 Cookie 重试。Cookie 仅保存在本机数据库，请勿外泄。
 
-## Cookie 配置方法（仅洛谷需要）
+## Cookie 配置方法（洛谷 / 代码源需要）
 
 1. 浏览器登录洛谷后，F12 → Application（应用）→ Cookies → `https://www.luogu.com.cn`
 2. 复制 `_uid` 与 `__client_id` 两项的值，分别填入「设置 → 洛谷」的两个输入框后保存（请求用 Cookie 头由应用拼装，C3VK 等其余 Cookie 自动续期，无需填写）
-3. 到「题目管理」→ 平台同步 → 输入用户名/uid → 同步
-4. 换绑账号时，新同步会自动清空该平台旧账号的提交数据
+3. 代码源同理：浏览器登录 oj.daimayuan.top 后，F12 → Application → Cookies 复制 `uoj_username` 与 `uoj_remember_token` 两项，填入「设置 → 代码源」后保存（支持直接整段粘贴 Cookie 头，自动提取字段）
+4. 到「题目管理」→ 平台同步 → 输入用户名/uid → 同步
+5. 换绑账号时，新同步会自动清空该平台旧账号的提交数据
 
 ## API 一览
 
@@ -186,13 +189,15 @@ GET  /api/plans | POST /api/plans/generate | POST /api/plans/import | GET /api/p
                                    # import body: { raw, startDate?, days? } ← 任意 AI 返回的计划 JSON 文本
 PATCH /api/plans/tasks/:taskId    # 编辑单条任务（taskDate/title/kind/url/note，仅更新提交字段）
 DELETE /api/plans/tasks/:taskId   # 删除单条任务（打卡记录级联删除）
+POST /api/plans/:id/chat          # 计划 AI 助手对话（body: { messages }；AI 未配置返回 needConfig）
+POST /api/plans/:id/apply         # 应用 AI 计划修改（body: { raw }；按「日期+标题」匹配保留打卡）
 GET  /api/checkins?month=YYYY-MM  # 月打卡视图
 GET  /api/checkins/date/:date     # 当天任务（桌面挂件复用）
 GET  /api/checkins/streak         # 连续打卡统计（current/longest/totalDays）
 POST /api/checkins { taskId }     # 打卡 | DELETE /api/checkins/:taskId 取消
 GET  /api/settings                # 设置（AI/账号/适配器开关/打卡提醒）
 POST /api/settings/reminder       # 打卡提醒配置（body: enabled?, time? "HH:MM"）
-POST /api/settings/cookies/check  # 检测 Cookie 登录态（洛谷：302/非 JSON 判定过期）
+POST /api/settings/cookies/check  # 检测 Cookie 登录态（洛谷：302/非 JSON 判定过期；代码源：/submissions 403/登录页判定过期）
 GET  /api/export/plan-package     # 数据包（弱项+趋势+题目+提示词）
 GET  /api/export/plan-prompt.md   # 渲染好的提示词下载（已内置练习数据汇总）
 GET  /api/export/summary.md       # 完整个人练习数据汇总 .md 下载（复盘 / 喂给任意 AI）

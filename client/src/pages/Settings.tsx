@@ -57,18 +57,46 @@ function extractCookieValue(raw: string, name: string): string {
   return m ? m[1] : ''
 }
 
-/** 用户只填 _uid / __client_id 两项的值，请求用 Cookie 头由这里拼装；C3VK 等挑战 Cookie 由适配器自动续期 */
-function assembleLuoguCookie(v: { uid: string; clientId: string }): string {
-  const uid = extractCookieValue(v.uid, '_uid') || extractCookieValue(v.clientId, '_uid')
-  const token = extractCookieValue(v.clientId, '__client_id') || extractCookieValue(v.uid, '__client_id')
-  return [uid && `_uid=${uid}`, token && `__client_id=${token}`].filter(Boolean).join('; ')
+/** 需配置 Cookie 的平台输入项定义：用户只填各字段值（或整段粘贴），请求头 Cookie 由 assemble 统一拼装 */
+interface CookieFieldDef {
+  key: string
+  cookieName: string
+  placeholder: string
+  password?: boolean
+}
+const COOKIE_FORM: Partial<Record<PlatformId, CookieFieldDef[]>> = {
+  luogu: [
+    { key: 'uid', cookieName: '_uid', placeholder: '_uid（洛谷用户 uid，纯数字）' },
+    { key: 'clientId', cookieName: '__client_id', placeholder: '__client_id（登录令牌，F12 → Application → Cookies 复制）', password: true },
+  ],
+  daimayuan: [
+    { key: 'username', cookieName: 'uoj_username', placeholder: 'uoj_username（代码源用户名，F12 → Application → Cookies 复制）' },
+    { key: 'token', cookieName: 'uoj_remember_token', placeholder: 'uoj_remember_token（登录令牌，同上复制）', password: true },
+  ],
+}
+
+/** 各输入框填的值拼装为请求用 Cookie 头：每个 cookie 名优先取同名字段，取不到再从所有输入框整段粘贴的内容里提取 */
+function assembleCookie(platform: PlatformId, values: Record<string, string> | undefined): string {
+  const defs = COOKIE_FORM[platform]
+  if (!defs || !values) return ''
+  const pasted = defs
+    .map((f) => values[f.key] ?? '')
+    .filter(Boolean)
+    .join('; ')
+  return defs
+    .map((f) => {
+      const val = extractCookieValue(values[f.key] ?? '', f.cookieName) || extractCookieValue(pasted, f.cookieName)
+      return val ? `${f.cookieName}=${val}` : ''
+    })
+    .filter(Boolean)
+    .join('; ')
 }
 
 export default function Settings() {
   const [data, setData] = useState<SettingsData | null>(null)
   const [aiForm] = Form.useForm()
   const [handleInputs, setHandleInputs] = useState<Record<string, string>>({})
-  const [cookieInputs, setCookieInputs] = useState<Record<string, { uid: string; clientId: string }>>({})
+  const [cookieInputs, setCookieInputs] = useState<Record<string, Record<string, string>>>({})
   const [cookieCheck, setCookieCheck] = useState<Record<string, { ok: boolean; message: string } | 'checking'>>({})
   const [reminderEnabled, setReminderEnabled] = useState(false)
   const [reminderTime, setReminderTime] = useState<Dayjs>(dayjs('20:00', 'HH:mm'))
@@ -83,15 +111,14 @@ export default function Settings() {
         setData(d)
         aiForm.setFieldsValue(d.ai)
         const handles: Record<string, string> = {}
-        const cookies: Record<string, { uid: string; clientId: string }> = {}
+        const cookies: Record<string, Record<string, string>> = {}
         for (const a of d.accounts) handles[a.platform] = a.handle
         for (const [platform, c] of Object.entries(d.cookies)) {
-          // 已保存的是拼装好的 Cookie 头，回填时拆回 _uid / __client_id 两个输入框
+          // 已保存的是拼装好的 Cookie 头，回填时按平台字段定义拆回各输入框
           const saved = c.cookie ?? ''
-          cookies[platform] = {
-            uid: extractCookieValue(saved, '_uid'),
-            clientId: extractCookieValue(saved, '__client_id'),
-          }
+          cookies[platform] = Object.fromEntries(
+            (COOKIE_FORM[platform as PlatformId] ?? []).map((f) => [f.key, extractCookieValue(saved, f.cookieName)]),
+          )
         }
         setHandleInputs(handles)
         setCookieInputs(cookies)
@@ -151,11 +178,10 @@ export default function Settings() {
   }
 
   const saveCookie = async (platform: PlatformId) => {
-    const v = cookieInputs[platform] ?? { uid: '', clientId: '' }
     try {
-      // 用户只填 _uid / __client_id 两项的值，请求头格式由前端拼装；
+      // 用户只填各字段值，请求头格式由前端按平台定义拼装；
       // csrf: '' 让后端清掉历史遗留的 csrf 记录——同步请求全是 GET，不需要 x-csrf-token
-      await post('/api/settings/cookies', { platform, cookie: assembleLuoguCookie(v), csrf: '' })
+      await post('/api/settings/cookies', { platform, cookie: assembleCookie(platform, cookieInputs[platform]), csrf: '' })
       message.success(`${PLATFORMS.find((p) => p.id === platform)?.name} Cookie 已保存`)
       load()
     } catch (e) {
@@ -164,11 +190,10 @@ export default function Settings() {
   }
 
   const checkCookie = async (platform: PlatformId) => {
-    const v = cookieInputs[platform] ?? { uid: '', clientId: '' }
     setCookieCheck((s) => ({ ...s, [platform]: 'checking' }))
     try {
-      // 两个输入框都为空时检测已保存的 Cookie（后端兜底读取 settings）
-      const cookie = assembleLuoguCookie(v)
+      // 各输入框都为空时检测已保存的 Cookie（后端兜底读取 settings）
+      const cookie = assembleCookie(platform, cookieInputs[platform])
       const r = await post<{ ok: boolean; message: string }>('/api/settings/cookies/check', {
         platform,
         ...(cookie ? { cookie } : {}),
@@ -267,7 +292,7 @@ export default function Settings() {
             const enabled = data.adapterEnabled[p.id] !== false
             const syncNote =
               p.sync === 'auto' ? '自动同步' : p.sync === 'cookie' ? '配置 Cookie 后自动同步' : '仅手动导入'
-            const c = cookieInputs[p.id] ?? { uid: '', clientId: '' }
+            const c = cookieInputs[p.id] ?? {}
             return (
               <div key={p.id} className="platform-row">
                 <div className="platform-row-head">
@@ -299,31 +324,33 @@ export default function Settings() {
                   <div style={{ marginTop: 10 }}>
                     {(() => {
                       const check = cookieCheck[p.id]
+                      const fields = COOKIE_FORM[p.id] ?? []
                       return (
                         <>
                           <Space wrap>
-                            <Input
-                              placeholder="_uid（洛谷用户 uid，纯数字）"
-                              style={{ width: 200 }}
-                              value={c.uid}
-                              onChange={(e) =>
-                                setCookieInputs((s) => ({
-                                  ...s,
-                                  [p.id]: { ...(s[p.id] ?? { clientId: '' }), uid: e.target.value },
-                                }))
-                              }
-                            />
-                            <Input.Password
-                              placeholder="__client_id（登录令牌，F12 → Application → Cookies 复制）"
-                              style={{ width: 300 }}
-                              value={c.clientId}
-                              onChange={(e) =>
-                                setCookieInputs((s) => ({
-                                  ...s,
-                                  [p.id]: { ...(s[p.id] ?? { uid: '' }), clientId: e.target.value },
-                                }))
-                              }
-                            />
+                            {fields.map((f) =>
+                              f.password ? (
+                                <Input.Password
+                                  key={f.key}
+                                  placeholder={f.placeholder}
+                                  style={{ width: 300 }}
+                                  value={c[f.key] ?? ''}
+                                  onChange={(e) =>
+                                    setCookieInputs((s) => ({ ...s, [p.id]: { ...(s[p.id] ?? {}), [f.key]: e.target.value } }))
+                                  }
+                                />
+                              ) : (
+                                <Input
+                                  key={f.key}
+                                  placeholder={f.placeholder}
+                                  style={{ width: 200 }}
+                                  value={c[f.key] ?? ''}
+                                  onChange={(e) =>
+                                    setCookieInputs((s) => ({ ...s, [p.id]: { ...(s[p.id] ?? {}), [f.key]: e.target.value } }))
+                                  }
+                                />
+                              ),
+                            )}
                             <Button size="small" onClick={() => saveCookie(p.id)}>
                               保存 Cookie
                             </Button>
@@ -349,7 +376,7 @@ export default function Settings() {
             )
           })}
           <p className="muted-note">
-            说明：Codeforces / AtCoder / 牛客自动同步；洛谷填写 `_uid` / `__client_id` 两项 Cookie 后自动同步（未配置时请在「题目管理」手动导入）。
+            说明：Codeforces / AtCoder / 牛客自动同步；洛谷、代码源填写 Cookie 后自动同步（未配置时请在「题目管理」手动导入）。代码源站点 HTTPS 证书异常，同步走 HTTP 访问公开做题数据。
           </p>
         </Card>
       </Col>

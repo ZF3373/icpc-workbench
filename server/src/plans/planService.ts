@@ -30,6 +30,22 @@ export function PROMPT_TEMPLATE(): string {
   return promptFromDisk;
 }
 
+/** 计划 AI 助手聊天提示词模板：懒加载（SEA bundle 注入值优先，同 PROMPT_TEMPLATE 惯例） */
+let chatPromptOverride: string | null = null;
+let chatPromptFromDisk: string | null = null;
+
+export function setChatPromptTemplate(tpl: string): void {
+  chatPromptOverride = tpl;
+}
+
+export function CHAT_PROMPT_TEMPLATE(): string {
+  if (chatPromptOverride !== null) return chatPromptOverride;
+  if (chatPromptFromDisk === null) {
+    chatPromptFromDisk = fs.readFileSync(path.join(__dirname, '..', 'ai', 'plan-chat-prompt.md'), 'utf8');
+  }
+  return chatPromptFromDisk;
+}
+
 export const TASK_KINDS = ['practice', 'review', 'topic', 'contest'] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
 
@@ -100,6 +116,51 @@ export function renderTemplate(tpl: string, vars: Record<string, string>): strin
   return tpl.replace(/\{(\w+)\}/g, (_, k: string) => vars[k] ?? `{${k}}`);
 }
 
+/**
+ * 任务选题补链：platform/problemKey 精确匹配题库 → 题名模糊匹配 → 适配器按 key 构造链接。
+ * savePlan 与 applyPlanModification 共用，保证任务可点击跳转的兜底行为一致。
+ */
+function resolveTaskLink(
+  db: Db,
+  t: { title: string; platform?: PlatformId; problemKey?: string; url?: string },
+): { problemId: number | null; url: string | null } {
+  let problemId: number | null = null;
+  let finalUrl = t.url ?? null;
+  if (t.platform && t.problemKey) {
+    const p = db
+      .prepare('SELECT id, url FROM problems WHERE platform = ? AND problem_key = ?')
+      .get(t.platform, t.problemKey) as { id: number; url: string | null } | undefined;
+    problemId = p?.id ?? null;
+    // url 兜底 1：任务未带链接但题目有链接 → 用题目链接，保证可点击跳转
+    if (!finalUrl && p?.url) finalUrl = p.url;
+  }
+  // url 兜底 2：platform/problemKey 没匹配上（AI 编造 key 或只给标题）→
+  // 反向模糊匹配：题名出现在任务标题里（instr(taskTitle, title)）即视为同一题；
+  // 仍找不到再用平台适配器按 key 构造链接（用户要求任务可点击跳转）
+  if (!finalUrl && t.platform) {
+    const p = db
+      .prepare(
+        `SELECT id, url FROM problems
+          WHERE platform = ?
+            AND url IS NOT NULL
+            AND (problem_key = ? COLLATE NOCASE
+                 OR (length(title) >= 3 AND instr(?, title) > 0))
+          LIMIT 1`,
+      )
+      .get(t.platform, t.problemKey ?? '', t.title) as
+      | { id: number; url: string }
+      | undefined;
+    if (p) {
+      problemId = p.id;
+      finalUrl = p.url;
+    }
+  }
+  if (!finalUrl && t.platform) {
+    finalUrl = getAdapter(t.platform)?.problemUrl({ problemKey: t.problemKey ?? '' }) ?? null;
+  }
+  return { problemId, url: finalUrl };
+}
+
 /** 校验并持久化一份计划（plans + plan_tasks 事务），返回 planId。 */
 export function savePlan(
   db: Db,
@@ -157,41 +218,8 @@ export function savePlan(
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const t of tasks) {
-      let problemId: number | null = null;
-      let finalUrl = t.url ?? null;
-      if (t.platform && t.problemKey) {
-        const p = db
-          .prepare('SELECT id, url FROM problems WHERE platform = ? AND problem_key = ?')
-          .get(t.platform, t.problemKey) as { id: number; url: string | null } | undefined;
-        problemId = p?.id ?? null;
-        // url 兜底 1：任务未带链接但题目有链接 → 用题目链接，保证可点击跳转
-        if (!finalUrl && p?.url) finalUrl = p.url;
-      }
-      // url 兜底 2：platform/problemKey 没匹配上（AI 编造 key 或只给标题）→
-      // 反向模糊匹配：题名出现在任务标题里（instr(taskTitle, title)）即视为同一题；
-      // 仍找不到再用平台适配器按 key 构造链接（用户要求任务可点击跳转）
-      if (!finalUrl && t.platform) {
-        const p = db
-          .prepare(
-            `SELECT id, url FROM problems
-              WHERE platform = ?
-                AND url IS NOT NULL
-                AND (problem_key = ? COLLATE NOCASE
-                     OR (length(title) >= 3 AND instr(?, title) > 0))
-              LIMIT 1`,
-          )
-          .get(t.platform, t.problemKey ?? '', t.title) as
-          | { id: number; url: string }
-          | undefined;
-        if (p) {
-          problemId = p.id;
-          finalUrl = p.url;
-        }
-      }
-      if (!finalUrl && t.platform) {
-        finalUrl = getAdapter(t.platform)?.problemUrl({ problemKey: t.problemKey ?? '' }) ?? null;
-      }
-      insTask.run(planId, t.date, t.title, t.kind, problemId, finalUrl, t.note ?? null);
+      const { problemId, url } = resolveTaskLink(db, { title: t.title, platform: t.platform, problemKey: t.problemKey, url: t.url });
+      insTask.run(planId, t.date, t.title, t.kind, problemId, url, t.note ?? null);
     }
     db.exec('COMMIT');
     return planId;
@@ -615,6 +643,237 @@ export function parsePlanJson(raw: string, _startDate: string, _days: number): P
     days: _days,
     tasks,
   };
+}
+
+// ---------- 计划 AI 助手（聊天上下文 + 计划修改应用） ----------
+
+/** 构建计划 AI 助手的 system prompt：注入计划详情（任务+打卡进度）、弱项画像、练习数据汇总。 */
+export function buildChatSystemPrompt(db: Db, planId: number, userId: number = DEFAULT_USER_ID): string {
+  const plan = db
+    .prepare('SELECT id, title, goal, start_date, end_date FROM plans WHERE id = ? AND user_id = ?')
+    .get(planId, userId) as
+    | { id: number; title: string; goal: string; start_date: string; end_date: string }
+    | undefined;
+  if (!plan) throw new Error('计划不存在');
+  const tasks = db
+    .prepare(
+      `SELECT t.task_date, t.title, t.kind, t.url, t.note,
+              (SELECT 1 FROM checkins c WHERE c.task_id = t.id) AS checked
+         FROM plan_tasks t
+        WHERE t.plan_id = ?
+        ORDER BY t.task_date, t.id`,
+    )
+    .all(planId) as Array<{
+    task_date: string;
+    title: string;
+    kind: string;
+    url: string | null;
+    note: string | null;
+    checked: number;
+  }>;
+  const checkedCount = tasks.filter((t) => t.checked).length;
+  const days = Math.round((Date.parse(`${plan.end_date}T00:00:00Z`) - Date.parse(`${plan.start_date}T00:00:00Z`)) / 86_400_000) + 1;
+  const planMd = [
+    `- 标题：${plan.title}`,
+    `- 目标：${plan.goal || '（未填写）'}`,
+    `- 周期：${plan.start_date} ~ ${plan.end_date}（${days} 天）`,
+    `- 进度：${checkedCount}/${tasks.length} 个任务已打卡`,
+    '',
+    '| 日期 | 任务 | 类型 | 已打卡 | 链接 | 说明 |',
+    '| --- | --- | --- | --- | --- | --- |',
+    ...tasks.map(
+      (t) =>
+        `| ${t.task_date} | ${t.title} | ${t.kind} | ${t.checked ? '✓' : ''} | ${t.url ?? ''} | ${t.note ?? ''} |`,
+    ),
+  ].join('\n');
+
+  const profile = computeWeakness(db, userId, { minAttempts: 5, topN: 8 });
+  const summaryPrompt = renderSummaryForPrompt(buildPracticeSummary(db, userId));
+  return renderTemplate(CHAT_PROMPT_TEMPLATE(), {
+    plan: planMd,
+    weakness: JSON.stringify(profile.items),
+    summary: summaryPrompt,
+  });
+}
+
+/** AI 回复中 plan-modify 围栏块 + JSON 提取（与 parsePlanJson 相同的容错思路） */
+function extractJsonText(raw: string): string {
+  let text = raw.trim();
+  if (text.includes('```')) {
+    text = text.replace(/```[a-zA-Z-]*\s*/g, '').trim();
+  }
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start !== -1 && end > start) text = text.slice(start, end + 1);
+  return text;
+}
+
+function parseJsonLoose(text: string): Record<string, unknown> {
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch (e) {
+    // 二次容错：模型常见错误——对象/数组末尾多余逗号
+    try {
+      return JSON.parse(text.replace(/,\s*([}\]])/g, '$1')) as Record<string, unknown>;
+    } catch {
+      throw new Error(`AI 输出不是合法 JSON: ${(e as Error).message}`);
+    }
+  }
+}
+
+/** 计划修改指令（AI plan-modify 块解析结果）：字段均可缺省 = 保持原值，tasks 全量替换 */
+export interface PlanModification {
+  title?: string;
+  goal?: string;
+  startDate: string;
+  days: number;
+  tasks: PlanTaskInput[];
+}
+
+/**
+ * 解析 AI 回复中的计划修改 JSON（plan-modify 块或裸 JSON）。
+ * 修改语义：title/goal 缺省保持原值；startDate/days 缺省沿用原计划周期；
+ * tasks 必填且为全量替换（打卡按「日期+标题」匹配保留）。
+ */
+export function parsePlanModifyJson(raw: string, planStartDate: string, planDays: number): PlanModification {
+  const obj = parseJsonLoose(extractJsonText(raw));
+  const startDate =
+    typeof obj.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(obj.startDate) ? obj.startDate : planStartDate;
+  const rawDays = obj.days;
+  const days =
+    Number.isInteger(rawDays) && (rawDays as number) > 0 && (rawDays as number) <= 90 ? (rawDays as number) : planDays;
+  if (!Array.isArray(obj.tasks) || obj.tasks.length === 0) {
+    throw new Error('修改指令缺少 tasks（需为完整的新任务列表）');
+  }
+  const startMs = Date.parse(`${startDate}T00:00:00Z`);
+  const endMs = startMs + (days - 1) * 86_400_000;
+  const inRange = (d: string): boolean => {
+    const ms = Date.parse(`${d}T00:00:00Z`);
+    return Number.isFinite(ms) && ms >= startMs && ms <= endMs;
+  };
+  const tasks = (obj.tasks as unknown[])
+    .filter((t): t is Record<string, unknown> => typeof t === 'object' && t !== null)
+    .filter((t) => typeof t.title === 'string' && t.title.trim() && typeof t.date === 'string')
+    .filter((t) => inRange(t.date as string))
+    .map((t) => ({
+      date: t.date as string,
+      title: t.title as string,
+      kind: TASK_KINDS.includes(t.kind as TaskKind) ? (t.kind as string) : 'practice',
+      platform: t.platform as PlatformId | undefined,
+      problemKey: t.problemKey as string | undefined,
+      url: t.url as string | undefined,
+      note: t.note as string | undefined,
+    }));
+  if (tasks.length === 0) throw new Error('修改指令 tasks 中没有有效任务（需在计划期内且带标题）');
+  return {
+    ...(typeof obj.title === 'string' && obj.title.trim() ? { title: obj.title.trim() } : {}),
+    ...(typeof obj.goal === 'string' ? { goal: obj.goal } : {}),
+    startDate,
+    days,
+    tasks,
+  };
+}
+
+export interface PlanModifyResult {
+  added: number;
+  removed: number;
+  kept: number;
+  checkinsKept: number;
+}
+
+/**
+ * 将 AI 的修改指令应用到现有计划（原位更新，非另存新计划）：
+ * - 计划元信息（title/goal/start_date/end_date）按指令更新
+ * - 任务全量替换：新任务按 (task_date, title) 与旧任务匹配，命中者保留原 id
+ *   （checkins 外键挂在 task_id 上，保留 id 即保留打卡记录），并刷新 kind/url/note/题目关联；
+ *   未命中的新任务插入，未匹配的旧任务删除（打卡级联删除）
+ * - 整体事务包裹，任一步失败回滚
+ */
+export function applyPlanModification(
+  db: Db,
+  userId: number,
+  planId: number,
+  mod: PlanModification,
+): PlanModifyResult {
+  const plan = db
+    .prepare('SELECT id, title, goal, start_date FROM plans WHERE id = ? AND user_id = ?')
+    .get(planId, userId) as { id: number; title: string; goal: string; start_date: string } | undefined;
+  if (!plan) throw new Error('计划不存在');
+  const endDate = addDays(mod.startDate, mod.days - 1);
+
+  db.exec('BEGIN');
+  try {
+    db.prepare('UPDATE plans SET title = ?, goal = ?, start_date = ?, end_date = ? WHERE id = ?').run(
+      mod.title ?? plan.title,
+      mod.goal ?? plan.goal,
+      mod.startDate,
+      endDate,
+      planId,
+    );
+
+    const existing = db
+      .prepare(
+        `SELECT t.id, t.task_date, t.title,
+                (SELECT 1 FROM checkins c WHERE c.task_id = t.id) AS checked
+           FROM plan_tasks t
+          WHERE t.plan_id = ?
+          ORDER BY t.task_date, t.id`,
+      )
+      .all(planId) as Array<{ id: number; task_date: string; title: string; checked: number }>;
+    // 同 key 多条旧任务（理论上有 UNIQUE 约束不该发生）时保留最新一条可匹配
+    const pending = new Map<
+      string,
+      Array<{ id: number; task_date: string; title: string; checked: number }>
+    >();
+    for (const t of existing) {
+      const key = `${t.task_date}|${t.title}`;
+      pending.set(key, [...(pending.get(key) ?? []), t]);
+    }
+
+    const updTask = db.prepare(
+      'UPDATE plan_tasks SET kind = ?, problem_id = ?, url = ?, note = ? WHERE id = ?',
+    );
+    const insTask = db.prepare(
+      `INSERT INTO plan_tasks (plan_id, task_date, title, kind, problem_id, url, note)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    let kept = 0;
+    let checkinsKept = 0;
+    for (const t of mod.tasks) {
+      const key = `${t.date}|${t.title.trim()}`;
+      const candidates = pending.get(key);
+      const match = candidates?.pop();
+      if (candidates && candidates.length === 0) pending.delete(key);
+      const { problemId, url } = resolveTaskLink(db, {
+        title: t.title,
+        platform: t.platform,
+        problemKey: t.problemKey,
+        url: t.url,
+      });
+      if (match) {
+        updTask.run(t.kind ?? 'practice', problemId, url, t.note ?? null, match.id);
+        kept += 1;
+        checkinsKept += match.checked ? 1 : 0;
+      } else {
+        insTask.run(planId, t.date, t.title.trim(), t.kind ?? 'practice', problemId, url, t.note ?? null);
+      }
+    }
+    let removed = 0;
+    for (const list of pending.values()) {
+      for (const t of list) {
+        db.prepare('DELETE FROM plan_tasks WHERE id = ?').run(t.id);
+        removed += 1;
+      }
+    }
+    db.exec('COMMIT');
+    return { added: mod.tasks.length - kept, removed, kept, checkinsKept };
+  } catch (e) {
+    db.exec('ROLLBACK');
+    if (String((e as Error).message).includes('UNIQUE')) {
+      throw new Error('同一天已存在同名任务，修改无法应用');
+    }
+    throw e;
+  }
 }
 
 /** 无 AI 时的降级模板：每日练习任务均挑选具体题目（可点击跳转），定期回顾/模拟。 */

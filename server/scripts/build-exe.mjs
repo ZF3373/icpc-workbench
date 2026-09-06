@@ -98,6 +98,7 @@ console.log('[3/5] 收集 SEA 资源 ...');
 const assets = {};
 assets['src/db/schema.sql'] = path.join(serverRoot, 'src', 'db', 'schema.sql');
 assets['src/ai/plan-prompt.md'] = path.join(serverRoot, 'src', 'ai', 'plan-prompt.md');
+assets['src/ai/plan-chat-prompt.md'] = path.join(serverRoot, 'src', 'ai', 'plan-chat-prompt.md');
 assets['public/widget.html'] = path.join(serverRoot, 'src', 'public', 'widget.html');
 
 // 前端 dist：二进制原样内嵌，附 manifest.txt 清单（运行时按清单提取）

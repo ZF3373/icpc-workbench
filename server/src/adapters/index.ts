@@ -1,5 +1,6 @@
 import { createAtcoderAdapter } from './atcoder.ts';
 import { createCodeforcesAdapter } from './codeforces.ts';
+import { createDaimayuanAdapter } from './daimayuan.ts';
 import { createLuoguAdapter } from './luogu.ts';
 import { createNowcoderAdapter } from './nowcoder.ts';
 import { register } from './registry.ts';
@@ -15,6 +16,7 @@ export function initAdapters(dataDir?: string): void {
   register(createAtcoderAdapter(dataDir));
   register(createLuoguAdapter());
   register(createNowcoderAdapter());
+  register(createDaimayuanAdapter());
 }
 export * from './registry.ts';
 export type { PlatformAdapter } from './types.ts';

@@ -1,7 +1,7 @@
 // 跨端共享类型与常量（server / client 通过相对路径 import）
 // 1.2 阶段会扩展 Submission / Problem / Plan 等数据结构。
 
-export type PlatformId = 'codeforces' | 'atcoder' | 'luogu' | 'nowcoder';
+export type PlatformId = 'codeforces' | 'atcoder' | 'luogu' | 'nowcoder' | 'daimayuan';
 
 export type PlatformSync = 'auto' | 'cookie' | 'manual';
 
@@ -20,6 +20,8 @@ export const PLATFORMS: PlatformMeta[] = [
   { id: 'atcoder', name: 'AtCoder', nameEn: 'AtCoder', hasOfficialApi: false, homepage: 'https://atcoder.jp', sync: 'auto' },
   { id: 'luogu', name: '洛谷', nameEn: 'Luogu', hasOfficialApi: false, homepage: 'https://www.luogu.com.cn', sync: 'cookie' },
   { id: 'nowcoder', name: '牛客', nameEn: 'Nowcoder', hasOfficialApi: false, homepage: 'https://ac.nowcoder.com', sync: 'auto' },
+  // 代码源（UOJ 系）：提交列表需登录（uoj_username + uoj_remember_token），HTTPS 证书异常走 HTTP
+  { id: 'daimayuan', name: '代码源', nameEn: 'Daimayuan', hasOfficialApi: false, homepage: 'http://oj.daimayuan.top', sync: 'cookie' },
 ];
 
 export function platformMeta(id: PlatformId): PlatformMeta {
