@@ -7,7 +7,7 @@ import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { bucketForDifficulty, safeTags } from '../analysis/stats.ts';
 import { backfillDifficulties } from '../analysis/difficultyBackfill.ts';
-import { fetchLuoguBank, fetchNowcoderBank } from '../adapters/problemBank.ts';
+import { fetchLuoguBank, fetchNowcoderBank, fetchCodeforcesBank } from '../adapters/problemBank.ts';
 import { upsertBankProblems } from '../import/bankService.ts';
 
 interface ProblemRow {
@@ -74,23 +74,28 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = fetch): Router {
     );
   });
 
-  // POST /api/problems/bank  body: { platform: 'luogu' | 'nowcoder', max?, luoguMinDifficulty? }
-  // 拉取公开题库入库（匿名可访问），扩充待选题目池（不产生提交记录）
+  // POST /api/problems/bank  body: { platform: 'luogu' | 'nowcoder' | 'codeforces', max?, luoguMinDifficulty? }
+  // 拉取公开题库入库（匿名可访问），扩充待选题目池（不产生提交记录）。
+  // codeforces 为单次 API 调用（全量约 1 万题），通常仅在刷新内置快照后的新题时使用。
   r.post('/bank', asyncHandler(async (req, res) => {
     const { platform, max, luoguMinDifficulty } = req.body ?? {};
-    if (platform !== 'luogu' && platform !== 'nowcoder') {
-      return res.status(400).json({ error: 'platform 需为 luogu 或 nowcoder' });
+    if (platform !== 'luogu' && platform !== 'nowcoder' && platform !== 'codeforces') {
+      return res.status(400).json({ error: 'platform 需为 luogu / nowcoder / codeforces' });
     }
+    const maxCap = platform === 'codeforces' ? 20000 : 5000;
     const maxN =
       typeof max === 'number' && Number.isFinite(max)
-        ? Math.min(5000, Math.max(50, Math.floor(max)))
-        : 2000;
+        ? Math.min(maxCap, Math.max(50, Math.floor(max)))
+        : platform === 'codeforces'
+          ? 20000
+          : 2000;
     const minDiff =
       typeof luoguMinDifficulty === 'number' && Number.isFinite(luoguMinDifficulty)
         ? luoguMinDifficulty
         : undefined;
     try {
-      const fetcher = platform === 'luogu' ? fetchLuoguBank : fetchNowcoderBank;
+      const fetcher =
+        platform === 'luogu' ? fetchLuoguBank : platform === 'nowcoder' ? fetchNowcoderBank : fetchCodeforcesBank;
       const result = await fetcher(fetchFn, { max: maxN, ...(minDiff !== undefined ? { luoguMinDifficulty: minDiff } : {}) });
       const imported = upsertBankProblems(db, result.problems);
       res.json({

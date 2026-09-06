@@ -30,6 +30,7 @@ export interface BankFetchResult {
 
 const LUOGU_API = 'https://www.luogu.com.cn';
 const NOWCODER_API = 'https://ac.nowcoder.com';
+const CODEFORCES_API = 'https://codeforces.com/api';
 const LUOGU_PER_PAGE = 50;
 const NOWCODER_PER_PAGE = 50;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -215,6 +216,61 @@ function parseNcRows(html: string): NcBankRow[] {
     rows.push({ problemId, title: tds[1], difficulty });
   }
   return rows;
+}
+
+// ---------- Codeforces ----------
+
+interface CfProblemsetProblem {
+  contestId?: number;
+  index?: string;
+  name?: string;
+  rating?: number;
+  tags?: string[];
+}
+
+/**
+ * Codeforces 官方公开接口 problemset.problems（匿名）：单次调用返回全量题库
+ * （约 1 万题，自带 CF rating 与算法标签），无翻页、无限速压力。
+ * 无 contestId 的条目（acmsguru 等）不在 /contest/{id}/problem/ 链接体系内，跳过。
+ */
+export async function fetchCodeforcesBank(
+  fetchFn: typeof fetch,
+  opts: BankFetchOptions = {},
+): Promise<BankFetchResult> {
+  const max = opts.max ?? 20000;
+  const res = await fetchFn(`${CODEFORCES_API}/problemset.problems`, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      Accept: 'application/json',
+    },
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok) {
+    throw new Error(`Codeforces 题库接口 HTTP ${res.status}，请稍后重试`);
+  }
+  const data = JSON.parse(await res.text()) as {
+    status?: string;
+    comment?: string;
+    result?: { problems?: CfProblemsetProblem[] };
+  };
+  const list = data.result?.problems;
+  if (data.status !== 'OK' || !Array.isArray(list)) {
+    throw new Error(`Codeforces 题库接口响应异常${data.comment ? `：${data.comment}` : ''}`);
+  }
+  const problems: BankProblem[] = [];
+  for (const p of list) {
+    if (typeof p.contestId !== 'number' || typeof p.index !== 'string' || !p.index) continue;
+    problems.push({
+      platform: 'codeforces',
+      problemKey: `${p.contestId}${p.index}`.toUpperCase(),
+      title: p.name ?? `${p.contestId}${p.index}`,
+      difficulty: typeof p.rating === 'number' ? p.rating : null,
+      url: `https://codeforces.com/contest/${p.contestId}/problem/${p.index}`,
+      tags: Array.isArray(p.tags) ? p.tags : [],
+    });
+    if (problems.length >= max) break;
+  }
+  return { platform: 'codeforces', problems, total: list.length };
 }
 
 function clamp(n: number, lo: number, hi: number): number {

@@ -72,7 +72,8 @@ export default function Problems() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [q, setQ] = useState<string>()
   const [qInput, setQInput] = useState('')
-  const [includeBank, setIncludeBank] = useState(false)
+  // 内置题库开箱即用：默认包含未做题库题（否则题库再大默认视图也只有做过的题）
+  const [includeBank, setIncludeBank] = useState(true)
   const [importOpen, setImportOpen] = useState(false)
   const [manualForm] = Form.useForm()
 
@@ -144,7 +145,7 @@ export default function Problems() {
     setStatusFilter('all')
     setQ(undefined)
     setQInput('')
-    setIncludeBank(false)
+    setIncludeBank(true)
   }
 
   const markAc = async (r: ProblemRow) => {
@@ -562,13 +563,25 @@ const LUOGU_DIFFICULTY_OPTIONS = [
   { value: 6, label: '省选/NOI- 及以上' },
 ]
 
-/** 「拉取题库」页签：从洛谷/牛客公开题库批量入库，扩充训练计划待选题池（无需账号）。 */
+/** 「拉取题库」页签：从公开题库批量入库，扩充训练计划待选题池（无需账号）。 */
 function BankTab({ onDone }: { onDone: () => void }) {
-  const [platform, setPlatform] = useState<'luogu' | 'nowcoder'>('luogu')
+  const [platform, setPlatform] = useState<'luogu' | 'nowcoder' | 'codeforces'>('luogu')
   const [max, setMax] = useState(1000)
   const [luoguMin, setLuoguMin] = useState(3)
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<string>()
+
+  const BANK_PLATFORM_NAMES: Record<typeof platform, string> = {
+    luogu: '洛谷',
+    nowcoder: '牛客',
+    codeforces: 'Codeforces',
+  }
+
+  const switchPlatform = (v: 'luogu' | 'nowcoder' | 'codeforces') => {
+    setPlatform(v)
+    // Codeforces 单次 API 调用即可拿全量（约 1 万题），默认直接全拉
+    setMax(v === 'codeforces' ? 10000 : 1000)
+  }
 
   const run = async () => {
     setBusy(true)
@@ -583,7 +596,7 @@ function BankTab({ onDone }: { onDone: () => void }) {
       })
       const totalPart = r.total ? `（题库共 ${r.total} 题）` : ''
       setResult(`拉取 ${r.fetched} 题${totalPart}：新增 ${r.inserted}，更新 ${r.updated}`)
-      message.success(`${platform === 'luogu' ? '洛谷' : '牛客'}题库已入库，训练计划选题池已扩充`)
+      message.success(`${BANK_PLATFORM_NAMES[platform]}题库已入库，训练计划选题池已扩充`)
       onDone()
     } catch (e) {
       message.error((e as Error).message)
@@ -595,20 +608,29 @@ function BankTab({ onDone }: { onDone: () => void }) {
   return (
     <div>
       <p style={{ color: '#8993a2' }}>
-        从洛谷 / 牛客公开题库批量拉取题目入库，扩充训练计划的待选题池（无需账号/Cookie，不影响刷题统计）。
-        拉取量越大耗时越长（约 1-2 分钟/千题），请耐心等待。
+        软件已内置 Codeforces 等题库，开箱即可供训练计划/题单选题；需要更多题目时从这里扩充（无需账号/Cookie，不影响刷题统计）。
+        Codeforces 一次调用秒级完成；洛谷/牛客按页拉取，拉取量越大耗时越长（约 1-2 分钟/千题）。
       </p>
       <Space wrap>
         <Select
-          style={{ width: 120 }}
+          style={{ width: 140 }}
           value={platform}
-          onChange={(v) => setPlatform(v)}
+          onChange={switchPlatform}
           options={[
             { value: 'luogu' as const, label: '洛谷' },
             { value: 'nowcoder' as const, label: '牛客' },
+            { value: 'codeforces' as const, label: 'Codeforces' },
           ]}
         />
-        <InputNumber min={50} max={5000} step={50} value={max} onChange={(v) => setMax(v ?? 1000)} addonAfter="题" style={{ width: 140 }} />
+        <InputNumber
+          min={50}
+          max={platform === 'codeforces' ? 20000 : 5000}
+          step={platform === 'codeforces' ? 500 : 50}
+          value={max}
+          onChange={(v) => setMax(v ?? 1000)}
+          addonAfter="题"
+          style={{ width: 140 }}
+        />
         <Button type="primary" icon={<CloudDownloadOutlined />} loading={busy} onClick={run}>
           拉取题库
         </Button>

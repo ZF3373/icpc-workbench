@@ -339,11 +339,11 @@ test('POST /api/problems/bank: rejects invalid platform', async () => {
     const res = await fetch(`${base}/bank`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ platform: 'codeforces' }),
+      body: JSON.stringify({ platform: 'topcoder' }),
     });
     assert.equal(res.status, 400);
     const body = (await res.json()) as { error: string };
-    assert.match(body.error, /luogu 或 nowcoder/);
+    assert.match(body.error, /luogu \/ nowcoder \/ codeforces/);
   });
 });
 

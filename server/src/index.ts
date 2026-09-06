@@ -2,6 +2,7 @@ import express from 'express';
 import type { Server } from 'node:http';
 import { aiConfigFromDb, loadConfig } from './config.ts';
 import { createDb } from './db/index.ts';
+import { seedBuiltinBank } from './db/builtinBank.ts';
 import { initAdapters } from './adapters/index.ts';
 import { asyncHandler } from './asyncHandler.ts';
 import { errorHandler, securityHeaders } from './middleware.ts';
@@ -25,6 +26,7 @@ import { PLATFORMS } from '../../shared/src/index.ts';
 
 const config = loadConfig();
 const db = createDb(config.dbPath);
+seedBuiltinBank(db); // 内置题库播种：版本变化时 upsert 一次，日常启动零开销
 initAdapters(config.dataDir);
 
 const app = express();
