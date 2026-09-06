@@ -44,13 +44,18 @@ export function plansRoutes(
 ): Router {
   const r = Router();
 
-  // POST /api/plans/generate  body: { days?, startDate? }
+  // POST /api/plans/generate  body: { days?, startDate?, dailyTasks? }
   r.post('/generate', asyncHandler(async (req, res) => {
-    const { days, startDate } = req.body ?? {};
+    const { days, startDate, dailyTasks } = req.body ?? {};
     try {
       const result = await generatePlan(db, getAiConfig(), {
         days: Number(days) || 14,
         startDate: typeof startDate === 'string' && startDate ? startDate : undefined,
+        // 每天任务数（1-6）；缺省 = 由 AI 自行安排（提示词默认 1-3）
+        dailyTasks:
+          Number.isInteger(dailyTasks) && (dailyTasks as number) >= 1 && (dailyTasks as number) <= 6
+            ? (dailyTasks as number)
+            : undefined,
       });
       res.json(result);
     } catch (e) {

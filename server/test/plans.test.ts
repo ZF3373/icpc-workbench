@@ -288,6 +288,59 @@ test('generatePlan uses AI when enabled and saves raw prompt', async () => {
   assert.ok(plan.raw_prompt.includes('2026-08-10')); // 渲染后的完整提示词已保存
 });
 
+test('generatePlan injects dailyTasks into AI prompt', async () => {
+  seed();
+  let capturedPrompt = '';
+  const fetchFn = (async (url: string, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+    capturedPrompt = body.messages.map((m) => m.content).join('\n');
+    return new Response(JSON.stringify({ error: 'boom' }), { status: 500 }); // 触发降级即可，只为捕获提示词
+  }) as typeof fetch;
+  const provider = new AiProvider({ enabled: true, baseURL: 'https://api.example.com/v1', apiKey: 'k', model: 'm' }, fetchFn);
+  await generatePlan(db, AI_DISABLED, { days: 7, startDate: '2026-08-10', dailyTasks: 3, provider });
+  assert.match(capturedPrompt, /每天 3 个任务/);
+
+  // 缺省时回落 1-3
+  let defaultPrompt = '';
+  const fetchFn2 = (async (_url: string, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+    defaultPrompt = body.messages.map((m) => m.content).join('\n');
+    return new Response(JSON.stringify({ error: 'boom' }), { status: 500 });
+  }) as typeof fetch;
+  const provider2 = new AiProvider({ enabled: true, baseURL: 'https://api.example.com/v1', apiKey: 'k', model: 'm' }, fetchFn2);
+  await generatePlan(db, AI_DISABLED, { days: 7, startDate: '2026-08-10', provider: provider2 });
+  assert.match(defaultPrompt, /每天 1-3 个任务/);
+});
+
+test('templatePlan honors dailyTasks density (concrete problems, no duplicate same-day titles)', () => {
+  seed();
+  // 追加 18 道未 AC 题（D 之外补 E-U）：6 个练习日 × 每天 3 题 = 18 道，恰好覆盖
+  insertNormalized(
+    db,
+    1,
+    Array.from({ length: 17 }, (_, i) => {
+      const key = String.fromCharCode('E'.charCodeAt(0) + i);
+      return sub('codeforces', key, 'WA', ['dp'], 1500, `2026-07-28T1${i % 10}:00:00.000Z`, `https://codeforces.com/contest/${key}`);
+    }),
+  );
+  const p = templatePlan(db, { items: [{ tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 7, 3);
+  // 每天任务数指练习题密度：回顾/模拟赛按既有节奏额外穿插
+  const practiceByDate = new Map<string, string[]>();
+  for (const t of p.tasks) {
+    if (t.kind !== 'practice') continue;
+    practiceByDate.set(t.date, [...(practiceByDate.get(t.date) ?? []), t.title]);
+  }
+  assert.equal(practiceByDate.size, 6); // 第 7 天是模拟赛
+  for (const [, titles] of practiceByDate) {
+    assert.equal(titles.length, 3);
+    assert.equal(new Set(titles).size, titles.length); // 同日无重名（UNIQUE 约束安全）
+  }
+  assert.ok(p.tasks.some((t) => t.kind === 'review')); // 回顾节奏保留
+  // 全部落到具体题目（可点击跳转）
+  const practice = p.tasks.filter((t) => t.kind === 'practice');
+  assert.equal(practice.filter((t) => t.problemKey).length, practice.length);
+});
+
 test('generatePlan falls back to template when AI call fails', async () => {
   seed();
   const fetchFn = async () => new Response(JSON.stringify({ error: 'boom' }), { status: 500 });

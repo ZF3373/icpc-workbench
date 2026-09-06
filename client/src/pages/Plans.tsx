@@ -356,13 +356,15 @@ function GenerateModal({ open, form, onClose, onDone }: { open: boolean; form: R
   const submit = async () => {
     const v = (await form
       .validateFields()
-      .catch(() => null)) as unknown as { days: number; startDate: { format(f: string): string } } | null
+      .catch(() => null)) as unknown as { days: number; startDate: { format(f: string): string }; dailyTasks?: number } | null
     if (!v) return
     setBusy(true)
     try {
       const r = await post<GenerateResult>('/api/plans/generate', {
         days: v.days,
         startDate: v.startDate.format('YYYY-MM-DD'),
+        // 每天任务数留空 = AI 自行安排（1-3）
+        dailyTasks: v.dailyTasks ?? undefined,
       })
       message.success(`已生成「${r.title}」（${r.source === 'ai' ? 'AI' : '模板'}）`)
       onDone()
@@ -377,6 +379,9 @@ function GenerateModal({ open, form, onClose, onDone }: { open: boolean; form: R
       <Form form={form} layout="vertical">
         <Form.Item name="days" label="周期（天）" rules={[{ required: true }]}>
           <InputNumber min={1} max={90} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="dailyTasks" label="每天任务数" extra="留空 = AI 自行安排（1-3）；无 AI 时按此密度生成练习任务">
+          <InputNumber min={1} max={6} style={{ width: '100%' }} placeholder="1-6" />
         </Form.Item>
         <Form.Item name="startDate" label="开始日期" rules={[{ required: true }]}>
           <DatePicker style={{ width: '100%' }} />

@@ -7,18 +7,24 @@ import { buildPracticeSummary, renderSummaryMarkdown } from '../analysis/summary
 export function exportRoutes(db: Db): Router {
   const r = Router();
 
-  // GET /api/export/plan-package?days=&startDate= → 数据包（profile/trend/problems/prompt）
+  // 每天任务数（1-6）；缺省 = 提示词默认 1-3
+  const dailyTasksParam = (v: unknown): number | undefined => {
+    const n = Number(v);
+    return Number.isInteger(n) && n >= 1 && n <= 6 ? n : undefined;
+  };
+
+  // GET /api/export/plan-package?days=&startDate=&dailyTasks= → 数据包（profile/trend/problems/prompt）
   r.get('/plan-package', (req, res) => {
     const days = num(req.query.days, 14, 1, 90);
     const startDate = str(req.query.startDate) ?? today();
-    res.json(buildPlanPackage(db, DEFAULT_USER_ID, { days, startDate }));
+    res.json(buildPlanPackage(db, DEFAULT_USER_ID, { days, startDate, dailyTasks: dailyTasksParam(req.query.dailyTasks) }));
   });
 
-  // GET /api/export/plan-prompt.md?days=&startDate= → 渲染好的提示词（可下载喂给任意 AI）
+  // GET /api/export/plan-prompt.md?days=&startDate=&dailyTasks= → 渲染好的提示词（可下载喂给任意 AI）
   r.get('/plan-prompt.md', (req, res) => {
     const days = num(req.query.days, 14, 1, 90);
     const startDate = str(req.query.startDate) ?? today();
-    const pkg = buildPlanPackage(db, DEFAULT_USER_ID, { days, startDate });
+    const pkg = buildPlanPackage(db, DEFAULT_USER_ID, { days, startDate, dailyTasks: dailyTasksParam(req.query.dailyTasks) });
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="plan-prompt.md"');
     res.send(pkg.prompt);

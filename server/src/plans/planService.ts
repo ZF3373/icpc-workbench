@@ -235,12 +235,12 @@ export function savePlan(
 export async function generatePlan(
   db: Db,
   aiConfig: AiConfig,
-  opts: { days?: number; startDate?: string; provider?: AiProvider } = {},
+  opts: { days?: number; startDate?: string; dailyTasks?: number; provider?: AiProvider } = {},
 ): Promise<{ planId: number; source: 'ai' | 'template'; title: string }> {
   const userId = DEFAULT_USER_ID;
   const days = opts.days ?? 14;
   const startDate = opts.startDate ?? today();
-  const pkg = buildPlanPackage(db, userId, { days, startDate });
+  const pkg = buildPlanPackage(db, userId, { days, startDate, dailyTasks: opts.dailyTasks });
   const provider = opts.provider ?? new AiProvider(aiConfig);
 
   if (provider.enabled) {
@@ -256,7 +256,7 @@ export async function generatePlan(
       console.warn(`[plans] AI 生成失败，降级为模板计划: ${(e as Error).message}`);
     }
   }
-  const tpl = templatePlan(db, pkg.profile, startDate, days);
+  const tpl = templatePlan(db, pkg.profile, startDate, days, opts.dailyTasks);
   const planId = savePlan(db, userId, tpl, 'template');
   return { planId, source: 'template', title: tpl.title };
 }
@@ -265,10 +265,11 @@ export async function generatePlan(
 export function buildPlanPackage(
   db: Db,
   userId: number,
-  opts: { days?: number; startDate?: string } = {},
+  opts: { days?: number; startDate?: string; dailyTasks?: number } = {},
 ): PlanPackage {
   const days = opts.days ?? 14;
   const startDate = opts.startDate ?? today();
+  const dailyTasks = typeof opts.dailyTasks === 'number' ? opts.dailyTasks : undefined;
   // minAttempts=5：过小的样本（如 3 次提交 0AC）不足以支撑"弱项"结论
   const profile = computeWeakness(db, userId, { minAttempts: 5, topN: 8 });
   const trend = computeTrend(db, userId, 12);
@@ -277,13 +278,15 @@ export function buildPlanPackage(
   const summaryPrompt = renderSummaryForPrompt(summary);
   const problems = recommendProblemsByWeakTag(db, profile, {
     level,
-    // 新题冗余：计划每天约 1 道练习题，×2 保证 AI 选漏/剔除某题后仍有充足余量
-    minNewProblems: days * 2,
+    // 新题冗余：按每天任务密度 ×2 备选（未指定密度按 2 题/天 估算），
+    // 保证 AI 选漏/剔除某题后仍有充足余量
+    minNewProblems: days * (dailyTasks ?? 2) * 2,
   });
 
   const prompt = renderTemplate(PROMPT_TEMPLATE(), {
     days: String(days),
     startDate,
+    dailyTasks: dailyTasks !== undefined ? String(dailyTasks) : '1-3',
     level: JSON.stringify(level),
     weakness: JSON.stringify(profile.items),
     trend: JSON.stringify(trend),
@@ -876,12 +879,15 @@ export function applyPlanModification(
   }
 }
 
-/** 无 AI 时的降级模板：每日练习任务均挑选具体题目（可点击跳转），定期回顾/模拟。 */
+/** 无 AI 时的降级模板：每日练习任务均挑选具体题目（可点击跳转），定期回顾/模拟。
+ *  dailyTasks：每天练习题数（1-6，缺省 1）；候选池耗尽时多余空位不再生成重复的抽象任务
+ *  （同一天同名任务会触发 UNIQUE 约束，故抽象兜底任务每天至多 1 个）。 */
 export function templatePlan(
   db: Db,
   profile: WeaknessProfile,
   startDate: string,
   days: number,
+  dailyTasks?: number,
 ): PlanInput {
   const weakTags = profile.items.map((i) => i.tag);
   const tags = weakTags.length > 0 ? weakTags : ['综合练习'];
@@ -912,6 +918,7 @@ export function templatePlan(
   const CONTEST_URL = 'https://codeforces.com/problemset?order=BY_SOLVED_DESC';
   const REVIEW_URL = 'https://codeforces.com/submissions/me';
   const tasks: PlanTaskInput[] = [];
+  const practicePerDay = Math.max(1, Math.min(6, Math.round(dailyTasks ?? 1)));
   for (let d = 0; d < days; d += 1) {
     const date = addDays(startDate, d);
     if (d % 7 === 6) {
@@ -924,25 +931,28 @@ export function templatePlan(
       });
     } else {
       const tag = tags[d % tags.length];
-      const pb = takeNext(queue.get(tag) ?? []) ?? takeAny();
-      tasks.push(
-        pb
-          ? {
-              date,
-              title: pb.title,
-              kind: 'practice',
-              platform: pb.platform,
-              problemKey: pb.problemKey,
-              url: pb.url ?? undefined,
-              note: `重点突破弱项：${tag}`,
-            }
-          : {
-              date,
-              title: `练习：${tag}`,
-              kind: 'practice',
-              note: `重点突破弱项：${tag}`,
-            },
-      );
+      for (let k = 0; k < practicePerDay; k += 1) {
+        const pb = takeNext(queue.get(tag) ?? []) ?? takeAny();
+        if (pb) {
+          tasks.push({
+            date,
+            title: pb.title,
+            kind: 'practice',
+            platform: pb.platform,
+            problemKey: pb.problemKey,
+            url: pb.url ?? undefined,
+            note: `重点突破弱项：${tag}`,
+          });
+        } else if (k === 0) {
+          // 候选池耗尽：每天至多一个抽象任务（同天同名会触发 UNIQUE 约束）
+          tasks.push({
+            date,
+            title: `练习：${tag}`,
+            kind: 'practice',
+            note: `重点突破弱项：${tag}`,
+          });
+        }
+      }
     }
     if ((d + 1) % 4 === 0) {
       tasks.push({
