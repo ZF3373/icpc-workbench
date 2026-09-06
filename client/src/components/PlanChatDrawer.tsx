@@ -5,6 +5,7 @@ import { RobotOutlined, SendOutlined } from '@ant-design/icons'
 import { applyPlanModification, chatWithPlan, get, type PlanApplyResult, type PlanChatTurn } from '../api'
 import type { PlanDetail, PlanListItem } from '../types'
 import Markdown from './Markdown'
+import { extractModifyBlock, stripModifyBlock } from '../aiBlocks'
 
 /**
  * 计划 AI 助手抽屉：左侧当前计划概览、右侧聊天流。
@@ -16,17 +17,6 @@ import Markdown from './Markdown'
 interface ChatMsg extends PlanChatTurn {
   /** 该条 AI 回复是否已应用其计划修改（应用后按钮失效，防止重复提交） */
   applied?: boolean
-}
-
-/** 提取 AI 回复中的 ```plan-modify 围栏块（容错 ```json 变体：正文含块名即可） */
-function extractModifyBlock(reply: string): string | null {
-  const m = reply.match(/```[a-zA-Z-]*plan-modify[\s\S]*?\n([\s\S]*?)```/)
-  return m ? m[1] : null
-}
-
-/** 剥离 plan-modify 块后的可见文本 */
-function stripModifyBlock(reply: string): string {
-  return reply.replace(/```[a-zA-Z-]*plan-modify[\s\S]*?```/g, '').trim()
 }
 
 export default function PlanChatDrawer({

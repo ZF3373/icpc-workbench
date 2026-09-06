@@ -3,7 +3,8 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { safeTags } from '../analysis/stats.ts';
 import { computeWeakness } from '../analysis/weakness.ts';
-import { bandRanges, estimateLevel, pickBand, type CandidateProblem } from '../today/select.ts';
+import { bandRanges, pickBand, type CandidateProblem } from '../today/select.ts';
+import { effectiveAbility } from '../today/ability.ts';
 import type { TodayBandKey, TodayProblem } from '../../../shared/src/index.ts';
 
 /** 每档默认题量：巩固 2 / 同段 3 / 挑战 1（cf-compass 同段承担主训练量） */
@@ -23,29 +24,11 @@ export function todayRoutes(db: Db): Router {
   r.get('/', (req, res) => {
     const todayStr = new Date().toISOString().slice(0, 10);
 
-    // 1) 能力值：近 N 天 AC 难度中位数（N 默认 60），回退全部 AC，再回退 1200
+    // 1) 能力值：近 N 天 AC 难度中位数（N 默认 60），回退全部 AC，再回退 1200；
+    //    AI 助手调整过的能力值（settings.ability.override）优先于计算值
     const windowDays = Math.min(365, Math.max(7, Number(req.query.windowDays) || 60));
-    const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
-    const recentAc = db
-      .prepare(
-        `SELECT p.difficulty FROM submissions s JOIN problems p ON p.id = s.problem_id
-          WHERE s.user_id = ? AND s.verdict = 'AC' AND p.difficulty IS NOT NULL AND s.submitted_at >= ?
-          ORDER BY s.submitted_at DESC`,
-      )
-      .all(DEFAULT_USER_ID, since) as Array<{ difficulty: number | null }>;
-    const recentDifficulties = recentAc.map((x) => x.difficulty as number);
-    let level: number;
-    if (recentDifficulties.length >= 5) {
-      level = estimateLevel(recentDifficulties);
-    } else {
-      const allAc = db
-        .prepare(
-          `SELECT p.difficulty FROM submissions s JOIN problems p ON p.id = s.problem_id
-            WHERE s.user_id = ? AND s.verdict = 'AC' AND p.difficulty IS NOT NULL`,
-        )
-        .all(DEFAULT_USER_ID) as Array<{ difficulty: number | null }>;
-      level = estimateLevel(allAc.map((x) => x.difficulty as number));
-    }
+    const ability = effectiveAbility(db, DEFAULT_USER_ID, windowDays);
+    const level = ability.effective;
 
     // 2) 候选题：题库中有难度、未 AC 的题（提交记录里 AC 过的排除）
     const candidates = db
@@ -94,6 +77,8 @@ export function todayRoutes(db: Db): Router {
     res.json({
       date: todayStr,
       level,
+      levelComputed: ability.computed,
+      levelOverride: ability.override,
       bands,
       dueReviews,
       planProgress: planProgressRow.total > 0 ? { total: planProgressRow.total, checked: planProgressRow.checked } : null,

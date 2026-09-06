@@ -60,3 +60,17 @@ export interface PlanApplyResult {
 
 export const applyPlanModification = <T>(planId: number, raw: string): Promise<T> =>
   post<T>(`/api/plans/${planId}/apply`, { raw })
+
+// ---------- AI 助手（全局） ----------
+
+export const chatWithAssistant = <T>(body: { messages: PlanChatTurn[]; planId?: number }): Promise<T> =>
+  post<T>('/api/ai/chat', body)
+
+export type AbilityInfo = {
+  computed: number
+  override: { level: number; reason?: string; updatedAt: string } | null
+  effective: number
+}
+
+export const applyAbility = <T>(body: { level: number; reason?: string } | { reset: true }): Promise<T> =>
+  post<T>('/api/ai/ability', body)

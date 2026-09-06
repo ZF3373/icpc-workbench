@@ -1751,3 +1751,37 @@ body {
   align-items: flex-end;
   margin-top: 10px;
 }
+
+/* ---------- AI 助手页 / 题单整理 ---------- */
+.assistant-layout {
+  display: flex;
+  gap: 14px;
+  height: calc(100vh - 190px);
+  min-height: 420px;
+}
+
+.assistant-side {
+  width: 260px;
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+
+.assistant-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.list-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+
+.list-item-row:hover {
+  background: var(--panel-2, rgba(255, 255, 255, 0.04));
+}

@@ -132,3 +132,25 @@ CREATE TABLE IF NOT EXISTS custom_templates (
   updated_at   TEXT
 );
 
+
+-- 题单整理（issue #4）：导入平台题单并按知识点分类
+CREATE TABLE IF NOT EXISTS problem_lists (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id),
+  title      TEXT NOT NULL,
+  source_url TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS problem_list_items (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  list_id     INTEGER NOT NULL REFERENCES problem_lists(id) ON DELETE CASCADE,
+  platform    TEXT NOT NULL,
+  problem_key TEXT NOT NULL,
+  title       TEXT,
+  url         TEXT,
+  category    TEXT NOT NULL DEFAULT '未分类',
+  position    INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (list_id, platform, problem_key)
+);
+CREATE INDEX IF NOT EXISTS idx_problem_list_items_list ON problem_list_items(list_id, category, position);

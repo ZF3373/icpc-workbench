@@ -650,8 +650,8 @@ export function parsePlanJson(raw: string, _startDate: string, _days: number): P
 
 // ---------- 计划 AI 助手（聊天上下文 + 计划修改应用） ----------
 
-/** 构建计划 AI 助手的 system prompt：注入计划详情（任务+打卡进度）、弱项画像、练习数据汇总。 */
-export function buildChatSystemPrompt(db: Db, planId: number, userId: number = DEFAULT_USER_ID): string {
+/** 计划上下文 Markdown（标题/目标/周期/进度/任务表），供计划聊天与通用助手提示词注入。 */
+export function renderPlanContext(db: Db, planId: number, userId: number = DEFAULT_USER_ID): string {
   const plan = db
     .prepare('SELECT id, title, goal, start_date, end_date FROM plans WHERE id = ? AND user_id = ?')
     .get(planId, userId) as
@@ -676,7 +676,7 @@ export function buildChatSystemPrompt(db: Db, planId: number, userId: number = D
   }>;
   const checkedCount = tasks.filter((t) => t.checked).length;
   const days = Math.round((Date.parse(`${plan.end_date}T00:00:00Z`) - Date.parse(`${plan.start_date}T00:00:00Z`)) / 86_400_000) + 1;
-  const planMd = [
+  return [
     `- 标题：${plan.title}`,
     `- 目标：${plan.goal || '（未填写）'}`,
     `- 周期：${plan.start_date} ~ ${plan.end_date}（${days} 天）`,
@@ -689,7 +689,11 @@ export function buildChatSystemPrompt(db: Db, planId: number, userId: number = D
         `| ${t.task_date} | ${t.title} | ${t.kind} | ${t.checked ? '✓' : ''} | ${t.url ?? ''} | ${t.note ?? ''} |`,
     ),
   ].join('\n');
+}
 
+/** 构建计划 AI 助手的 system prompt：注入计划详情（任务+打卡进度）、弱项画像、练习数据汇总。 */
+export function buildChatSystemPrompt(db: Db, planId: number, userId: number = DEFAULT_USER_ID): string {
+  const planMd = renderPlanContext(db, planId, userId);
   const profile = computeWeakness(db, userId, { minAttempts: 5, topN: 8 });
   const summaryPrompt = renderSummaryForPrompt(buildPracticeSummary(db, userId));
   return renderTemplate(CHAT_PROMPT_TEMPLATE(), {

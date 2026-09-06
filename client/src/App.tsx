@@ -11,15 +11,19 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   ReadOutlined,
+  RobotOutlined,
   ScheduleOutlined,
   SettingOutlined,
   ThunderboltOutlined,
+  TagsOutlined,
 } from '@ant-design/icons'
 import type { ItemType } from 'antd/es/menu/interface'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
 import Problems from './pages/Problems'
 import Plans from './pages/Plans'
+import Assistant from './pages/Assistant'
+import Lists from './pages/Lists'
 import CalendarPage from './pages/Calendar'
 import Settings from './pages/Settings'
 import Today from './pages/Today'
@@ -37,7 +41,9 @@ const { Sider, Content } = Layout
 const MENU: Array<{ key: string; icon: ReactNode; label: string }> = [
   { key: '/', icon: <DashboardOutlined />, label: '数据概览' },
   { key: '/today', icon: <ThunderboltOutlined />, label: '今日训练' },
+  { key: '/ai', icon: <RobotOutlined />, label: 'AI 助手' },
   { key: '/templates', icon: <CodeOutlined />, label: '模板库' },
+  { key: '/lists', icon: <TagsOutlined />, label: '题单整理' },
   { key: '/problems', icon: <FileTextOutlined />, label: '题目管理' },
   { key: '/mastery', icon: <HeatMapOutlined />, label: '掌握度地图' },
   { key: '/plans', icon: <ScheduleOutlined />, label: '训练计划' },
@@ -58,7 +64,9 @@ const MENU_ITEMS: ItemType[] = [
     label: '训练',
     children: [
       { key: '/today', icon: menuIcon('/today'), label: menuLabel('/today') },
+      { key: '/ai', icon: menuIcon('/ai'), label: menuLabel('/ai') },
       { key: '/templates', icon: menuIcon('/templates'), label: menuLabel('/templates') },
+      { key: '/lists', icon: menuIcon('/lists'), label: menuLabel('/lists') },
       { key: '/plans', icon: menuIcon('/plans'), label: menuLabel('/plans') },
       { key: '/reviews', icon: menuIcon('/reviews'), label: menuLabel('/reviews') },
     ],
@@ -146,7 +154,9 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/today" element={<Today />} />
+            <Route path="/ai" element={<Assistant />} />
             <Route path="/templates" element={<Templates />} />
+            <Route path="/lists" element={<Lists />} />
             <Route path="/problems" element={<Problems />} />
             <Route path="/mastery" element={<Mastery />} />
             <Route path="/plans" element={<Plans />} />
