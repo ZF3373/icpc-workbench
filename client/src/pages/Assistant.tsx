@@ -1,6 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Alert, Button, Card, Input, message, Modal, Select, Space, Spin, Tag } from 'antd'
-import { ClearOutlined, RobotOutlined, SendOutlined } from '@ant-design/icons'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { Alert, App as AntdApp, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag } from 'antd'
+import {
+  DeleteOutlined,
+  PlusOutlined,
+  PushpinFilled,
+  PushpinOutlined,
+  RobotOutlined,
+  SendOutlined,
+} from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   applyAbility,
@@ -27,43 +34,244 @@ import {
 
 /**
  * AI 助手（issue #4）：全局 AI 交流窗口。
- * 自动携带练习数据汇总（含问题分布统计）与弱项画像，可回答问题/调试代码；
- * 关联训练计划后支持直接修改计划（plan-modify 块 → 用户确认应用）；
- * AI 评估后可输出 ability-update 块，用户一键更新估算能力值（今日训练分档随之生效）。
- * 聊天记录存内存；切换关联计划仅影响后续 system prompt，不强制清空会话。
+ *
+ * - 自动携带练习数据汇总（含问题分布统计）与弱项画像，可回答问题/调试代码
+ * - 关联训练计划后支持直接修改计划（plan-modify 块 → 用户确认应用）
+ * - AI 评估后可输出 ability-update 块，用户一键更新估算能力值
+ * - 多会话管理：侧边栏会话记录列表，支持切换/删除/置顶，localStorage 持久化
+ * - 聊天状态存模块级 store（useSyncExternalStore）：切模块再回来不丢，生成中切走
+ *   回来也能看到回复自动出现——async 回调直接写 store，不依赖组件是否挂载
  */
+
+// ---------- 类型 ----------
 
 interface ChatMsg extends PlanChatTurn {
   applied?: boolean
 }
 
-export default function Assistant() {
-  const nav = useNavigate()
-  // ?plan=<id>：从「训练计划 → AI 助手」跳入时自动关联该计划
-  const [searchParams, setSearchParams] = useSearchParams()
-  const [plans, setPlans] = useState<PlanListItem[]>([])
-  const [planId, setPlanId] = useState<number | undefined>(() => {
-    const v = Number(searchParams.get('plan'))
-    return Number.isInteger(v) && v > 0 ? v : undefined
+interface ChatSession {
+  id: string
+  title: string
+  messages: ChatMsg[]
+  planId: number | undefined
+  createdAt: number
+  updatedAt: number
+  pinned: boolean
+}
+
+interface ChatState {
+  sessions: ChatSession[]
+  activeId: string
+  input: string
+  sendingId: string | null
+}
+
+// ---------- localStorage 持久化 ----------
+
+const STORAGE_KEY = 'icpc-ai-sessions-v1'
+const MAX_SESSIONS = 50
+
+function loadFromStorage(): ChatSession[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return []
+    const data = JSON.parse(raw) as ChatSession[]
+    if (!Array.isArray(data)) return []
+    return data
+      .filter(
+        (s) =>
+          typeof s.id === 'string' && Array.isArray(s.messages) && typeof s.createdAt === 'number',
+      )
+      .map((s) => ({
+        id: s.id,
+        title: typeof s.title === 'string' ? s.title : '新会话',
+        messages: s.messages,
+        planId: typeof s.planId === 'number' ? s.planId : undefined,
+        createdAt: s.createdAt,
+        updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : s.createdAt,
+        pinned: !!s.pinned,
+      }))
+  } catch {
+    return []
+  }
+}
+
+function saveToStorage(sessions: ChatSession[]): void {
+  try {
+    const toSave = sessions.filter((s) => s.messages.length > 0).slice(0, MAX_SESSIONS)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave))
+  } catch {
+    /* localStorage 可能不可用或已满，静默忽略 */
+  }
+}
+
+// ---------- 模块级 store ----------
+
+function newSessionId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+}
+
+function createSession(planId?: number): ChatSession {
+  const now = Date.now()
+  return {
+    id: newSessionId(),
+    title: '新会话',
+    messages: [],
+    planId,
+    createdAt: now,
+    updatedAt: now,
+    pinned: false,
+  }
+}
+
+function sortSessions(sessions: ChatSession[]): ChatSession[] {
+  return [...sessions].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+    return b.updatedAt - a.updatedAt
   })
+}
+
+function initChatState(): ChatState {
+  const saved = sortSessions(loadFromStorage())
+  const sessions = saved.length > 0 ? saved : [createSession()]
+  return { sessions, activeId: sessions[0].id, input: '', sendingId: null }
+}
+
+let chatState: ChatState = initChatState()
+const chatListeners = new Set<() => void>()
+
+function setChatState(updater: (prev: ChatState) => ChatState): void {
+  const prev = chatState
+  chatState = updater(chatState)
+  // 仅在 sessions 引用变化时写 localStorage（input/sendingId 变化不触发写入）
+  if (chatState.sessions !== prev.sessions) saveToStorage(chatState.sessions)
+  chatListeners.forEach((l) => l())
+}
+
+function subscribeChat(listener: () => void): () => void {
+  chatListeners.add(listener)
+  return () => {
+    chatListeners.delete(listener)
+  }
+}
+
+function getChatSnapshot(): ChatState {
+  return chatState
+}
+
+// ---------- 会话操作 ----------
+
+function createNewSession(): void {
+  const s = createSession()
+  setChatState((prev) => ({ ...prev, sessions: [s, ...prev.sessions], activeId: s.id, input: '' }))
+}
+
+function switchToSession(id: string): void {
+  setChatState((prev) => (prev.activeId === id ? prev : { ...prev, activeId: id, input: '' }))
+}
+
+function deleteSessionById(id: string): void {
+  setChatState((prev) => {
+    const remaining = prev.sessions.filter((s) => s.id !== id)
+    const sessions = remaining.length > 0 ? remaining : [createSession()]
+    const activeId = prev.activeId === id ? sessions[0].id : prev.activeId
+    return { ...prev, sessions, activeId, input: '' }
+  })
+}
+
+function toggleSessionPin(id: string): void {
+  setChatState((prev) => ({
+    ...prev,
+    sessions: prev.sessions.map((s) => (s.id === id ? { ...s, pinned: !s.pinned } : s)),
+  }))
+}
+
+function renameSession(id: string, title: string): void {
+  const t = title.trim()
+  setChatState((prev) => ({
+    ...prev,
+    sessions: prev.sessions.map((s) => (s.id === id ? { ...s, title: t || '新会话' } : s)),
+  }))
+}
+
+function updateActiveSessionPlanId(planId: number | undefined): void {
+  setChatState((prev) => ({
+    ...prev,
+    sessions: prev.sessions.map((s) => (s.id === prev.activeId ? { ...s, planId } : s)),
+  }))
+}
+
+/** 更新当前会话的消息列表（async 回调安全：直接写 store，不依赖组件挂载） */
+function patchActiveSessionMessages(
+  sessionId: string,
+  fn: (msgs: ChatMsg[]) => ChatMsg[],
+): void {
+  setChatState((prev) => ({
+    ...prev,
+    sessions: prev.sessions.map((s) =>
+      s.id === sessionId ? { ...s, messages: fn(s.messages), updatedAt: Date.now() } : s,
+    ),
+  }))
+}
+
+// ---------- 相对时间 ----------
+
+function relTime(ts: number): string {
+  const diff = Date.now() - ts
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}小时前`
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}天前`
+  const d = new Date(ts)
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
+// ---------- 组件 ----------
+
+export default function Assistant() {
+  const { message } = AntdApp.useApp()
+  const nav = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const chat = useSyncExternalStore(subscribeChat, getChatSnapshot)
+  const { sessions, activeId, input, sendingId } = chat
+  const activeSession = sessions.find((s) => s.id === activeId)
+  const messages = activeSession?.messages ?? []
+  const planId = activeSession?.planId
+  const sending = sendingId !== null && sendingId === activeId
+
+  const [plans, setPlans] = useState<PlanListItem[]>([])
   const [ability, setAbility] = useState<AbilityInfo | null>(null)
   const [abilityError, setAbilityError] = useState(false)
-  const [messages, setMessages] = useState<ChatMsg[]>([])
-  const [input, setInput] = useState('')
-  const [sending, setSending] = useState(false)
   const [needConfig, setNeedConfig] = useState(false)
   const [applyTarget, setApplyTarget] = useState<{ planId: number; raw: string } | null>(null)
   const [applying, setApplying] = useState(false)
   const [tplWriting, setTplWriting] = useState<string | null>(null)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
+  // ?plan=<id> 消费 + 计划列表加载 + 清理已删除的计划关联
   useEffect(() => {
+    const urlPlan = searchParams.get('plan')
+    if (urlPlan !== null) {
+      const v = Number(urlPlan)
+      if (Number.isInteger(v) && v > 0) updateActiveSessionPlanId(v)
+      setSearchParams({}, { replace: true })
+    }
     get<PlanListItem[]>('/api/plans')
       .then((list) => {
         setPlans(list)
-        // ?plan= 指向的计划已不存在时清除关联；URL 参数消费后即清（仅看首帧 URL，故依赖为空）
-        setPlanId((cur) => (cur !== undefined && !list.some((p) => p.id === cur) ? undefined : cur))
-        if (searchParams.has('plan')) setSearchParams({}, { replace: true })
+        setChatState((prev) => {
+          const active = prev.sessions.find((s) => s.id === prev.activeId)
+          if (active?.planId !== undefined && !list.some((p) => p.id === active.planId)) {
+            return {
+              ...prev,
+              sessions: prev.sessions.map((s) =>
+                s.id === prev.activeId ? { ...s, planId: undefined } : s,
+              ),
+            }
+          }
+          return prev
+        })
       })
       .catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -73,7 +281,7 @@ export default function Assistant() {
     setAbilityError(false)
     get<AbilityInfo>('/api/ai/ability')
       .then(setAbility)
-      .catch(() => setAbilityError(true)) // 失败要可见，不能静默吞掉后永远转圈
+      .catch(() => setAbilityError(true))
   }, [])
 
   useEffect(loadAbility, [loadAbility])
@@ -84,25 +292,56 @@ export default function Assistant() {
 
   const send = async () => {
     const text = input.trim()
-    if (!text || sending) return
-    const next: ChatMsg[] = [...messages, { role: 'user', content: text }]
-    setMessages(next)
-    setInput('')
-    setSending(true)
+    if (!text || sendingId !== null) return
+    const sessionId = activeId
+    const session = sessions.find((s) => s.id === sessionId)
+    if (!session) return
+
+    const nextMessages: ChatMsg[] = [...session.messages, { role: 'user', content: text }]
+    const sendPlanId = session.planId
+
+    // 写入用户消息 + 进入 sending 态（标题取首条消息前 30 字）
+    setChatState((prev) => ({
+      ...prev,
+      input: '',
+      sendingId: sessionId,
+      sessions: prev.sessions.map((s) =>
+        s.id === sessionId
+          ? {
+              ...s,
+              messages: nextMessages,
+              title: s.messages.length === 0 ? text.slice(0, 30) : s.title,
+              updatedAt: Date.now(),
+            }
+          : s,
+      ),
+    }))
     setNeedConfig(false)
+
     try {
-      const r = planId !== undefined
-        ? await chatWithAssistant<{ reply: string }>({ messages: next.map(({ role, content }) => ({ role, content })), planId })
-        : await chatWithAssistant<{ reply: string }>({ messages: next.map(({ role, content }) => ({ role, content })) })
-      setMessages((s) => [...s, { role: 'assistant', content: r.reply }])
+      const r =
+        sendPlanId !== undefined
+          ? await chatWithAssistant<{ reply: string }>({
+              messages: nextMessages.map(({ role, content }) => ({ role, content })),
+              planId: sendPlanId,
+            })
+          : await chatWithAssistant<{ reply: string }>({
+              messages: nextMessages.map(({ role, content }) => ({ role, content })),
+            })
+      // 写入 AI 回复到同一会话（用户可能已切换到其他会话）
+      patchActiveSessionMessages(sessionId, (msgs) => [
+        ...msgs,
+        { role: 'assistant', content: r.reply },
+      ])
     } catch (e) {
       const err = e as Error & { needConfig?: boolean }
       if (err.needConfig) setNeedConfig(true)
-      setMessages(messages)
-      setInput(text)
-      message.error(err.message)
+      patchActiveSessionMessages(sessionId, (msgs) => [
+        ...msgs,
+        { role: 'assistant', content: `⚠️ ${err.message}` },
+      ])
     } finally {
-      setSending(false)
+      setChatState((prev) => (prev.sendingId === sessionId ? { ...prev, sendingId: null } : prev))
     }
   }
 
@@ -114,7 +353,9 @@ export default function Assistant() {
       message.success(
         `已应用修改：新增 ${r.added}、删除 ${r.removed}、保留 ${r.kept} 个任务（保留打卡 ${r.checkinsKept} 条）`,
       )
-      setMessages((s) => s.map((m) => (m.content === applyTarget.raw ? { ...m, applied: true } : m)))
+      patchActiveSessionMessages(activeId, (msgs) =>
+        msgs.map((m) => (m.content === applyTarget.raw ? { ...m, applied: true } : m)),
+      )
       setApplyTarget(null)
     } catch (e) {
       message.error((e as Error).message)
@@ -127,7 +368,9 @@ export default function Assistant() {
     try {
       const r = await applyAbility<AbilityInfo>({ level: suggestion.level, reason: suggestion.reason })
       setAbility(r)
-      setMessages((s) => s.map((m) => (m.content === raw ? { ...m, applied: true } : m)))
+      patchActiveSessionMessages(activeId, (msgs) =>
+        msgs.map((m) => (m.content === raw ? { ...m, applied: true } : m)),
+      )
       message.success(`估算能力值已更新为 ${r.effective}，今日训练三档将按新值分档`)
     } catch (e) {
       message.error((e as Error).message)
@@ -144,7 +387,6 @@ export default function Assistant() {
     }
   }
 
-  // 把 AI 建议的模板写入模板库：复用自建模板接口（后端校验分类/难度/长度），应用前已由用户点击确认
   const confirmTemplate = async (draft: TemplateAddDraft, raw: string) => {
     setTplWriting(raw)
     try {
@@ -158,7 +400,9 @@ export default function Assistant() {
         complexity: draft.complexity,
         url: draft.url,
       })
-      setMessages((s) => s.map((m) => (m.content === raw ? { ...m, applied: true } : m)))
+      patchActiveSessionMessages(activeId, (msgs) =>
+        msgs.map((m) => (m.content === raw ? { ...m, applied: true } : m)),
+      )
       message.success(`「${draft.name}」已写入模板库，到「模板库」页可继续完善`)
     } catch (e) {
       message.error((e as Error).message)
@@ -167,7 +411,6 @@ export default function Assistant() {
     }
   }
 
-  /** 计划存在性/日期范围由 /apply 端点校验，这里仅打包待确认内容 */
   const openPlanApply = (raw: string) => {
     if (planId === undefined) {
       message.warning('AI 回复包含计划修改，但当前未关联计划：请在左侧选择要修改的计划后让 AI 重新生成')
@@ -175,6 +418,8 @@ export default function Assistant() {
     }
     setApplyTarget({ planId, raw })
   }
+
+  const sortedSessions = sortSessions(sessions)
 
   return (
     <div>
@@ -198,30 +443,151 @@ export default function Assistant() {
       )}
       <div className="assistant-layout">
         <div className="assistant-side">
-          <Card size="small" title="对话上下文">
+          {/* 会话记录 */}
+          <Card
+            size="small"
+            title="会话记录"
+            extra={
+              <Button
+                size="small"
+                type="text"
+                icon={<PlusOutlined />}
+                onClick={createNewSession}
+              >
+                新建
+              </Button>
+            }
+          >
+            <div style={{ maxHeight: 280, overflowY: 'auto', margin: '0 -4px' }}>
+              {sortedSessions.map((s) => {
+                const isActive = s.id === activeId
+                return (
+                  <div
+                    key={s.id}
+                    onClick={() => switchToSession(s.id)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '6px 8px',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                      marginBottom: 2,
+                      background: isActive ? 'rgba(134, 168, 255, 0.13)' : 'transparent',
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isActive) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isActive) e.currentTarget.style.background = 'transparent'
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }} onDoubleClick={() => setRenamingId(s.id)}>
+                      {renamingId === s.id ? (
+                        <Input
+                          size="small"
+                          autoFocus
+                          defaultValue={s.title}
+                          onClick={(e) => e.stopPropagation()}
+                          onPressEnter={(e) => {
+                            renameSession(s.id, (e.target as HTMLInputElement).value)
+                            setRenamingId(null)
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape') setRenamingId(null)
+                          }}
+                          onBlur={(e) => {
+                            renameSession(s.id, e.target.value)
+                            setRenamingId(null)
+                          }}
+                          style={{ fontSize: 13, height: 24 }}
+                        />
+                      ) : (
+                        <>
+                          <div
+                            style={{
+                              fontSize: 13,
+                              fontWeight: isActive ? 600 : 400,
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              color: s.pinned ? '#f2c46d' : undefined,
+                            }}
+                            title="双击重命名"
+                          >
+                            {s.title || '新会话'}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#8993a2' }}>{relTime(s.updatedAt)}</div>
+                        </>
+                      )}
+                    </div>
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={s.pinned ? <PushpinFilled style={{ color: '#f2c46d' }} /> : <PushpinOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        toggleSessionPin(s.id)
+                      }}
+                      style={{ flexShrink: 0, padding: '0 4px' }}
+                    />
+                    <Popconfirm
+                      title="删除这条会话？"
+                      okText="删除"
+                      cancelText="取消"
+                      onConfirm={(e) => {
+                        e?.stopPropagation()
+                        deleteSessionById(s.id)
+                      }}
+                      onCancel={(e) => e?.stopPropagation()}
+                    >
+                      <Button
+                        size="small"
+                        type="text"
+                        danger
+                        icon={<DeleteOutlined />}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ flexShrink: 0, padding: '0 4px' }}
+                      />
+                    </Popconfirm>
+                  </div>
+                )
+              })}
+            </div>
+          </Card>
+
+          {/* 对话上下文 */}
+          <Card size="small" title="对话上下文" style={{ marginTop: 12 }}>
             <p style={{ fontSize: 12, color: '#8993a2', marginBottom: 8 }}>
               AI 自动携带你的练习数据汇总（含问题分布统计）与弱项画像。
             </p>
-            <Space.Compact style={{ width: '100%' }}>
-              <Select
-                style={{ width: '100%' }}
-                placeholder="关联训练计划（可选）"
-                value={planId}
-                allowClear
-                onClear={() => setPlanId(undefined)}
-                onChange={(v) => setPlanId(v)}
-                options={plans.map((p) => ({ value: p.id, label: p.title }))}
-              />
-            </Space.Compact>
+            <Select
+              style={{ width: '100%' }}
+              placeholder="关联训练计划（可选）"
+              value={planId}
+              allowClear
+              onClear={() => updateActiveSessionPlanId(undefined)}
+              onChange={(v) => updateActiveSessionPlanId(v)}
+              options={plans.map((p) => ({ value: p.id, label: p.title }))}
+            />
             <p style={{ fontSize: 12, color: '#8993a2', margin: '8px 0 0' }}>
               关联后可让 AI 直接修改该计划（应用前会向你确认）。
             </p>
           </Card>
+
+          {/* 估算能力值 */}
           <Card
             size="small"
             title="估算能力值"
             style={{ marginTop: 12 }}
-            extra={ability?.override ? <Button size="small" type="link" onClick={() => void resetAbility()}>恢复计算值</Button> : undefined}
+            extra={
+              ability?.override ? (
+                <Button size="small" type="link" onClick={() => void resetAbility()}>
+                  恢复计算值
+                </Button>
+              ) : undefined
+            }
           >
             {ability ? (
               <>
@@ -244,15 +610,9 @@ export default function Assistant() {
               <Spin size="small" />
             )}
           </Card>
-          <Button
-            block
-            style={{ marginTop: 12 }}
-            icon={<ClearOutlined />}
-            onClick={() => setMessages([])}
-          >
-            清空会话
-          </Button>
         </div>
+
+        {/* 聊天主区 */}
         <div className="assistant-main">
           <div className="plan-chat-msgs">
             {messages.length === 0 && !sending && (
@@ -285,7 +645,12 @@ export default function Assistant() {
                   {(modify || abilityUpd || tplAdd) && (
                     <Space style={{ marginTop: 8 }} wrap>
                       {modify && (
-                        <Button size="small" type="primary" disabled={m.applied} onClick={() => void openPlanApply(m.content)}>
+                        <Button
+                          size="small"
+                          type="primary"
+                          disabled={m.applied}
+                          onClick={() => void openPlanApply(m.content)}
+                        >
                           {m.applied ? '已应用' : '应用计划修改'}
                         </Button>
                       )}
@@ -317,13 +682,17 @@ export default function Assistant() {
                 </div>
               )
             })}
-            {sending && <div className="plan-chat-msg plan-chat-msg-assistant"><Spin size="small" /></div>}
+            {sending && (
+              <div className="plan-chat-msg plan-chat-msg-assistant">
+                <Spin size="small" />
+              </div>
+            )}
             <div ref={bottomRef} />
           </div>
           <div className="plan-chat-input">
             <Input.TextArea
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => setChatState((prev) => ({ ...prev, input: e.target.value }))}
               placeholder="向 AI 教练提问…（可粘贴代码）Enter 发送，Shift+Enter 换行"
               autoSize={{ minRows: 1, maxRows: 6 }}
               disabled={sending}
@@ -334,7 +703,13 @@ export default function Assistant() {
                 }
               }}
             />
-            <Button type="primary" icon={<SendOutlined />} loading={sending} disabled={!input.trim()} onClick={() => void send()} />
+            <Button
+              type="primary"
+              icon={<SendOutlined />}
+              loading={sending}
+              disabled={!input.trim() || sendingId !== null}
+              onClick={() => void send()}
+            />
           </div>
         </div>
       </div>

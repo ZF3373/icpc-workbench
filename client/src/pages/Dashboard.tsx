@@ -208,7 +208,7 @@ export default function Dashboard() {
             label: '活跃平台',
             value: (
               <>
-                {stats.byPlatform.length}
+                {stats.byPlatform.filter((p) => p.attempts > 0).length}
                 <span className="stat-suffix">个</span>
               </>
             ),

@@ -6,6 +6,8 @@ import { useSoftwareUpdate } from './useSoftwareUpdate'
 const LAST_CHECK_KEY = 'update.lastCheckAt'
 const DISMISS_KEY = 'update.dismissed'
 const CHECK_INTERVAL = 24 * 60 * 60 * 1000
+/** 检查失败时的重试间隔：网络抖动/限流不该把下次静默检查推迟整整一天 */
+const RETRY_INTERVAL = 30 * 60 * 1000
 
 /**
  * 应用打开时静默检查更新（24 小时一次，localStorage 节流），
@@ -18,9 +20,17 @@ export default function UpdateChecker() {
 
   useEffect(() => {
     const last = Number(localStorage.getItem(LAST_CHECK_KEY) ?? 0)
-    if (Date.now() - last < CHECK_INTERVAL) return
-    localStorage.setItem(LAST_CHECK_KEY, String(Date.now()))
-    void check()
+    if (Date.now() - last < RETRY_INTERVAL) return
+    let cancelled = false
+    void check().then((info) => {
+      if (cancelled) return
+      // 仅检查成功才记满 24h 节流；失败 30 分钟后即可重试（本地时间回拨写成负偏移同样成立）
+      const stamp = info?.ok ? Date.now() : Date.now() - CHECK_INTERVAL + RETRY_INTERVAL
+      localStorage.setItem(LAST_CHECK_KEY, String(stamp))
+    })
+    return () => {
+      cancelled = true
+    }
   }, [check])
 
   useEffect(() => {

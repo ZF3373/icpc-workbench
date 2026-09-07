@@ -12,6 +12,7 @@ import { buildPracticeSummary, renderSummaryForPrompt } from '../analysis/summar
 import { effectiveAbility, renderAbilityEvidence, setAbilityOverride } from '../today/ability.ts';
 import { renderPlanContext, renderTemplate } from '../plans/planService.ts';
 import { CURRICULUM } from '../templates/curriculum.ts';
+import { fetchAllContests, selectContests } from '../contests/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -106,6 +107,29 @@ export function aiRoutes(
       }
     }
 
+    // 近 14 天赛事日历（赛事源各自有 30 分钟缓存，失败降级为空，不阻断对话）
+    let upcomingContests = '（赛事数据暂不可用）';
+    try {
+      const { contests: all } = await fetchAllContests();
+      const upcoming = selectContests(all, { type: 'upcoming', limit: 10 })
+        .filter((c) => {
+          if (!c.startTimeIso) return false;
+          return new Date(c.startTimeIso).getTime() <= Date.now() + 14 * 86_400_000;
+        })
+        .map((c) => ({
+          platform: c.platform,
+          name: c.name,
+          start: c.startTimeIso,
+          durationMin: c.durationMinutes,
+          url: c.url,
+        }));
+      upcomingContests = upcoming.length > 0
+        ? JSON.stringify(upcoming, null, 2)
+        : '（近 14 天暂无已排期赛事）';
+    } catch {
+      // 赛事拉取失败不阻断 AI 对话
+    }
+
     const system = renderTemplate(ASSISTANT_PROMPT_TEMPLATE(), {
       summary: summaryPrompt,
       weakness: JSON.stringify(weakness.items),
@@ -114,6 +138,7 @@ export function aiRoutes(
       abilityOverrideNote: overrideNote,
       abilityEvidence: renderAbilityEvidence(db, DEFAULT_USER_ID, summary),
       planSection,
+      upcomingContests,
       // 模板库写入（template-add 块）可选的课程分类清单，跟内置课程大纲保持同步
       templateCategories: CURRICULUM.map((c) => `${c.key}（${c.name}）`).join('、'),
     });

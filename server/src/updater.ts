@@ -401,10 +401,13 @@ async function downloadFile(
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
-/** PowerShell 下载兜底。url 来自 GitHub API 返回值，路径由本模块拼装，均转义后拼入。 */
+/** PowerShell 下载兜底。url 来自 GitHub API 返回值，路径由本模块拼装，均转义后拼入。
+ *  必须关掉进度条渲染（$ProgressPreference）并跳过 IE 引擎（-UseBasicParsing）：
+ *  Windows PowerShell 5.1 的 Invoke-WebRequest 渲染进度条时大文件下载可慢十倍以上，
+ *  极易撞上超时；未完成 IE 首启配置的机器上不带 -UseBasicParsing 会直接报错。 */
 function downloadViaPowerShell(url: string, dest: string): Promise<void> {
   const esc = (s: string) => s.replace(/'/g, "''");
-  const script = `Invoke-WebRequest -Uri '${esc(url)}' -UserAgent 'icpc-workbench' -OutFile '${esc(dest)}'`;
+  const script = `$ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -Uri '${esc(url)}' -UserAgent 'icpc-workbench' -OutFile '${esc(dest)}' -UseBasicParsing`;
   return new Promise((resolve, reject) => {
     execFile('powershell.exe', ['-NoProfile', '-Command', script], { timeout: 10 * 60_000, windowsHide: true }, (err) => {
       if (err) {
@@ -458,32 +461,57 @@ export function verifyChecksums(checksumsText: string, dir: string, names: strin
   }
 }
 
+/**
+ * 文件替换：target 改名为 *.old（Windows 允许改名运行中的 exe）→ 新文件拷入原位。
+ * - 改名失败（上次更新后的运行进程仍锁着 *.old）→ 目标文件本身未被占用，直接覆盖拷入；
+ *   这是「未重启就再次一键更新」的场景，不回退直接拷贝即可继续更新。
+ * - 拷入失败（磁盘满等）→ 把刚改名的旧文件改回原位，避免软件目录只剩 *.old 无法启动。
+ * 供 applyUpdate 与测试使用（可注入文件名，模拟 exe 布局）。
+ */
+export function replaceStagedFiles(stagingDir: string, exeDir: string, names: string[]): void {
+  for (const name of names) {
+    const target = path.join(exeDir, name);
+    const old = `${target}.old`;
+    try {
+      fs.rmSync(old, { force: true });
+    } catch {
+      /* 上次更新遗留且仍被运行进程锁定：忽略，走下方改名失败回退 */
+    }
+    let renamed = false;
+    if (fs.existsSync(target)) {
+      try {
+        fs.renameSync(target, old);
+        renamed = true;
+      } catch {
+        /* *.old 被锁 → 目标文件未被占用，直接覆盖 */
+      }
+    }
+    try {
+      fs.copyFileSync(path.join(stagingDir, name), target);
+    } catch (e) {
+      if (renamed) {
+        try {
+          fs.renameSync(old, target);
+        } catch {
+          /* 尽力恢复原文件 */
+        }
+      }
+      throw e;
+    }
+  }
+}
+
 /** 原地替换已暂存的新 exe。成功后需要用户重启软件生效。 */
 export function applyUpdate(stagingDir: string): { ok: boolean; message?: string } {
   if (state.phase !== 'staged') {
     return { ok: false, message: '没有已下载待应用的更新' };
   }
   const exeDir = path.dirname(process.execPath);
-  const targets = [
-    { name: SHELL_NAME, target: path.join(exeDir, SHELL_NAME) },
-    { name: CORE_NAME, target: path.join(exeDir, CORE_NAME) },
-  ];
   try {
-    for (const t of targets) {
-      const old = `${t.target}.old`;
-      try {
-        fs.rmSync(old, { force: true });
-      } catch {
-        /* 上次更新遗留且仍被锁定时忽略，不影响本次 */
-      }
-      if (fs.existsSync(t.target)) {
-        fs.renameSync(t.target, old);
-      }
-      fs.copyFileSync(path.join(stagingDir, t.name), t.target);
-    }
+    replaceStagedFiles(stagingDir, exeDir, [SHELL_NAME, CORE_NAME]);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return { ok: false, message: `替换文件失败（文件可能被占用，请关闭软件后手动覆盖）：${message}` };
+    return { ok: false, message: `替换文件失败（请重启软件后再试一次更新，或关闭软件后手动覆盖）：${message}` };
   }
   state.phase = 'idle';
   state.received = 0;

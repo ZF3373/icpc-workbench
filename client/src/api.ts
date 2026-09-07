@@ -6,14 +6,18 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-    let message = `HTTP ${res.status}`;
+    let msg = `HTTP ${res.status}`;
+    let needConfig = false;
     try {
-      const body = (await res.json()) as { error?: string };
-      if (body.error) message = body.error;
+      const body = (await res.json()) as { error?: string; needConfig?: boolean };
+      if (body.error) msg = body.error;
+      if (body.needConfig) needConfig = true;
     } catch {
       /* 非 JSON 响应，保留默认消息 */
     }
-    throw new Error(message);
+    const err = new Error(msg) as Error & { needConfig?: boolean };
+    if (needConfig) err.needConfig = true;
+    throw err;
   }
   return (await res.json()) as T;
 }

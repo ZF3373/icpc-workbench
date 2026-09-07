@@ -108,24 +108,30 @@ jobs:
           sha256sum icpc-workbench.exe icpc-core.exe *-setup.exe *.dmg icpc-core-* > checksums.sha256
           cat checksums.sha256
 
-      - name: 发布 nightly 预发布版（覆盖旧的）
+      - name: 发布 nightly 预发布版（在位覆盖，避免删除重建造成检查/下载 404 窗口）
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
         run: |
           SHORT="${SHA::7}"
           DATE=$(date +%Y-%m-%d)
-          gh release delete nightly --yes --cleanup-tag || true
-          gh release create nightly \
-            --prerelease \
-            --target "$SHA" \
-            --title "nightly · $SHORT · $DATE" \
-            --notes "master 分支提交 ${SHORT} 的自动构建（开发版，稳定性低于正式发布版）。
+          TITLE="nightly · $SHORT · $DATE"
+          NOTES="master 分支提交 ${SHORT} 的自动构建（开发版，稳定性低于正式发布版）。
           - Windows：icpc-workbench-<版本>-x64-setup.exe 安装程序，或便携版双 exe；支持应用内一键更新
-          - macOS（Apple Silicon M 系列）：*.dmg 安装镜像，未签名——首次打开请右键 →「打开」，或终端执行 xattr -cr /Applications/icpc-workbench.app；暂不支持 Intel Mac 与应用内一键更新，更新请手动下载覆盖" \
-            server/release/icpc-workbench.exe \
-            server/release/icpc-core.exe \
-            server/release/checksums.sha256 \
-            server/release/*-setup.exe \
-            server/release/*.dmg \
-            server/release/icpc-core-*
+          - macOS（Apple Silicon M 系列）：*.dmg 安装镜像，未签名——首次打开请右键 →「打开」，或终端执行 xattr -cr /Applications/icpc-workbench.app；暂不支持 Intel Mac 与应用内一键更新，更新请手动下载覆盖"
+          ASSETS="server/release/icpc-workbench.exe server/release/icpc-core.exe server/release/*-setup.exe server/release/*.dmg server/release/icpc-core-*"
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release edit nightly --prerelease --title "$TITLE" --notes "$NOTES"
+            # exe 先行、checksums 最后上传：应用内更新先取校验文件再下载产物，
+            # 尽量缩短「新产物 + 旧校验文件」短暂不一致的窗口（校验不过会自动重试）
+            gh release upload nightly --clobber $ASSETS
+            gh release upload nightly --clobber server/release/checksums.sha256
+          else
+            gh release create nightly \
+              --prerelease \
+              --target "$SHA" \
+              --title "$TITLE" \
+              --notes "$NOTES" \
+              $ASSETS \
+              server/release/checksums.sha256
+          fi

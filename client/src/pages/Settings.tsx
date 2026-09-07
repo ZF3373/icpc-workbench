@@ -29,6 +29,7 @@ import { PLATFORMS } from '../../../shared/src/index.ts'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
 import { get, post } from '../api'
+import { assembleCookie as assembleCookieHeader, extractCookieValue, type CookieFieldDef } from '../cookies'
 import { openExternal } from '../externalLinks'
 import { useSoftwareUpdate } from '../useSoftwareUpdate'
 import type { ContestReminderConfig, ReminderConfig } from '../types'
@@ -49,22 +50,12 @@ const SYNC_NOTE_COLOR: Record<string, string> = {
   manual: 'default',
 }
 
-/** 输入框兼容纯值与整段粘贴：不含 = 视为直接填的值；含 = 时提取对应 cookie 字段（(?:^|;) 锚定，避免误匹配到其他同前缀 cookie 名的值） */
-function extractCookieValue(raw: string, name: string): string {
-  const s = raw.trim()
-  if (!s) return ''
-  if (!s.includes('=')) return s
-  const m = s.match(new RegExp(`(?:^|;)\\s*${name}=([^;\\s]+)`))
-  return m ? m[1] : ''
+/** 按平台定义拼装 Cookie 头（纯逻辑见 ../cookies.ts，附带回归测试） */
+function assembleCookie(platform: PlatformId, values: Record<string, string> | undefined): string {
+  return assembleCookieHeader(COOKIE_FORM[platform] ?? [], values)
 }
 
-/** 需配置 Cookie 的平台输入项定义：用户只填各字段值（或整段粘贴），请求头 Cookie 由 assemble 统一拼装 */
-interface CookieFieldDef {
-  key: string
-  cookieName: string
-  placeholder: string
-  password?: boolean
-}
+/** 需配置 Cookie 的平台输入项定义：用户只填各字段值（或整段粘贴），请求头 Cookie 由 assembleCookie 统一拼装 */
 const COOKIE_FORM: Partial<Record<PlatformId, CookieFieldDef[]>> = {
   luogu: [
     { key: 'uid', cookieName: '_uid', placeholder: '_uid（洛谷用户 uid，纯数字）' },
@@ -73,23 +64,10 @@ const COOKIE_FORM: Partial<Record<PlatformId, CookieFieldDef[]>> = {
   daimayuan: [
     { key: 'sid', cookieName: 'sid', placeholder: 'sid（登录会话，F12 → Application → Cookies 复制）', password: true },
   ],
-}
-
-/** 各输入框填的值拼装为请求用 Cookie 头：每个 cookie 名优先取同名字段，取不到再从所有输入框整段粘贴的内容里提取 */
-function assembleCookie(platform: PlatformId, values: Record<string, string> | undefined): string {
-  const defs = COOKIE_FORM[platform]
-  if (!defs || !values) return ''
-  const pasted = defs
-    .map((f) => values[f.key] ?? '')
-    .filter(Boolean)
-    .join('; ')
-  return defs
-    .map((f) => {
-      const val = extractCookieValue(values[f.key] ?? '', f.cookieName) || extractCookieValue(pasted, f.cookieName)
-      return val ? `${f.cookieName}=${val}` : ''
-    })
-    .filter(Boolean)
-    .join('; ')
+  leetcode: [
+    { key: 'session', cookieName: 'LEETCODE_SESSION', placeholder: 'LEETCODE_SESSION（登录会话，F12 → Application → Cookies 复制）', password: true },
+    { key: 'csrftoken', cookieName: 'csrftoken', placeholder: 'csrftoken（CSRF 令牌，同处复制；支持整段粘贴）', password: true },
+  ],
 }
 
 export default function Settings() {
@@ -438,7 +416,7 @@ export default function Settings() {
             )
           })}
           <p className="muted-note">
-            说明：Codeforces / AtCoder / 牛客自动同步；洛谷、代码源填写 Cookie 后自动同步（未配置时请在「题目管理」手动导入）。代码源基于 Hydro 搭建，只需复制 sid 一项会话 Cookie。
+            说明：Codeforces / AtCoder / 牛客自动同步；洛谷、代码源、LeetCode 填写 Cookie 后自动同步（未配置时请在「题目管理」手动导入）。代码源基于 Hydro 搭建，只需复制 sid 一项会话 Cookie；LeetCode 为力扣中国（leetcode.cn），需复制 LEETCODE_SESSION 与 csrftoken 两项 Cookie。
           </p>
         </Card>
       </Col>

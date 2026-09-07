@@ -24,12 +24,15 @@ export function useSoftwareUpdate() {
 
   useEffect(() => stopPolling, [stopPolling])
 
-  const check = useCallback(async () => {
+  const check = useCallback(async (): Promise<UpdateInfo | null> => {
     setChecking(true)
     try {
-      setInfo(await get<UpdateInfo>('/api/update/check'))
+      const info = await get<UpdateInfo>('/api/update/check')
+      setInfo(info)
+      return info
     } catch (e) {
       message.error((e as Error).message)
+      return null
     } finally {
       setChecking(false)
     }

@@ -42,6 +42,9 @@ const URL_PATTERNS: UrlPattern[] = [
   { re: /bs\.daimayuan\.top\/p\/(\d+)/, platform: 'daimayuan', key: (m) => m[1] },
   { re: /oj\.daimayuan\.top\/(?:problem|course\/\d+)\/(\d+)/, platform: 'daimayuan', key: (m) => m[1] },
   { re: /ac\.nowcoder\.com\/acm\/problem\/(\d+)/, platform: 'nowcoder', key: (m) => m[1] },
+  // 力扣题单：slug 即 problemKey（同步/题库同键）。cn 为接入平台，com 链接同 slug 一并识别
+  { re: /leetcode\.cn\/problems\/([a-z0-9_-]+)/i, platform: 'leetcode', key: (m) => m[1].toLowerCase() },
+  { re: /leetcode\.com\/problems\/([a-z0-9_-]+)/i, platform: 'leetcode', key: (m) => m[1].toLowerCase() },
 ];
 
 const CF_KEY_RE = /^(?:CF)?(\d{1,6}[A-Z][0-9]?)$/i;

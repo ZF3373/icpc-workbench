@@ -239,10 +239,17 @@ async function bootSea(app: Express, config: AppConfig, desiredPort: number): Pr
       server = await listenOn(app, port);
       break;
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw e;
+      // EADDRINUSE=被其他程序占用；EACCES=被 Windows winnat/Hyper-V 动态保留
+      // （netsh excludedportrange，端口看似空闲却拒绝绑定）——都换下一个端口再试
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== 'EADDRINUSE' && code !== 'EACCES') throw e;
     }
   }
-  if (!server) throw new Error(`端口 ${desiredPort} 起连续 20 个端口均被占用，无法启动`);
+  if (!server)
+    throw new Error(
+      `端口 ${desiredPort} 起连续 20 个端口均无法监听（被占用或被系统保留），无法启动。` +
+        `若为 Windows，可尝试管理员 PowerShell 执行: net stop winnat; net start winnat 释放动态保留区间`,
+    );
 
   server.on('error', (e) => {
     void fatal(`运行出错：${(e as Error).message}`);

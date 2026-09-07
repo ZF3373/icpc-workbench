@@ -565,7 +565,7 @@ const LUOGU_DIFFICULTY_OPTIONS = [
 
 /** 「拉取题库」页签：从公开题库批量入库，扩充训练计划待选题池（无需账号）。 */
 function BankTab({ onDone }: { onDone: () => void }) {
-  const [platform, setPlatform] = useState<'luogu' | 'nowcoder' | 'codeforces'>('luogu')
+  const [platform, setPlatform] = useState<'luogu' | 'nowcoder' | 'codeforces' | 'leetcode'>('luogu')
   const [max, setMax] = useState(1000)
   const [luoguMin, setLuoguMin] = useState(3)
   const [busy, setBusy] = useState(false)
@@ -575,12 +575,14 @@ function BankTab({ onDone }: { onDone: () => void }) {
     luogu: '洛谷',
     nowcoder: '牛客',
     codeforces: 'Codeforces',
+    leetcode: 'LeetCode',
   }
 
-  const switchPlatform = (v: 'luogu' | 'nowcoder' | 'codeforces') => {
+  const switchPlatform = (v: 'luogu' | 'nowcoder' | 'codeforces' | 'leetcode') => {
     setPlatform(v)
     // Codeforces 单次 API 调用即可拿全量（约 1 万题），默认直接全拉
-    setMax(v === 'codeforces' ? 10000 : 1000)
+    // LeetCode 全量约 3300+ 题（按页拉取，约 1 分钟）
+    setMax(v === 'codeforces' ? 10000 : v === 'leetcode' ? 3500 : 1000)
   }
 
   const run = async () => {
@@ -609,7 +611,7 @@ function BankTab({ onDone }: { onDone: () => void }) {
     <div>
       <p style={{ color: '#8993a2' }}>
         软件已内置 Codeforces 等题库，开箱即可供训练计划/题单选题；需要更多题目时从这里扩充（无需账号/Cookie，不影响刷题统计）。
-        Codeforces 一次调用秒级完成；洛谷/牛客按页拉取，拉取量越大耗时越长（约 1-2 分钟/千题）。
+        Codeforces 一次调用秒级完成；洛谷/牛客/LeetCode 按页拉取，拉取量越大耗时越长（约 1-2 分钟/千题）。
       </p>
       <Space wrap>
         <Select
@@ -620,6 +622,7 @@ function BankTab({ onDone }: { onDone: () => void }) {
             { value: 'luogu' as const, label: '洛谷' },
             { value: 'nowcoder' as const, label: '牛客' },
             { value: 'codeforces' as const, label: 'Codeforces' },
+            { value: 'leetcode' as const, label: 'LeetCode' },
           ]}
         />
         <InputNumber

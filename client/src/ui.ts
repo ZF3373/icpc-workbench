@@ -13,6 +13,7 @@ export const PLATFORM_COLOR: Record<PlatformId, string> = {
   luogu: '#45d5e5',
   nowcoder: '#69d7a5',
   daimayuan: '#f2965c',
+  leetcode: '#ffa116',
 }
 
 export function platformName(id: PlatformId): string {

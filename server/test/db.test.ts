@@ -1,6 +1,7 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDb, type Db } from '../src/db/index.ts';
+import { PLATFORMS } from '../../shared/src/index.ts';
 
 let db: Db;
 
@@ -36,11 +37,11 @@ test('schema creates all tables', () => {
   }
 });
 
-test('seeds platforms (5) and default user (me)', () => {
+test('seeds platforms and default user (me)', () => {
   const platformCount = db.prepare('SELECT COUNT(*) AS c FROM platforms').get() as {
     c: number;
   };
-  assert.equal(platformCount.c, 5);
+  assert.equal(platformCount.c, PLATFORMS.length);
   const user = db.prepare('SELECT id, username FROM users').get() as {
     id: number;
     username: string;

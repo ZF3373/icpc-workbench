@@ -1,7 +1,7 @@
 // 跨端共享类型与常量（server / client 通过相对路径 import）
 // 1.2 阶段会扩展 Submission / Problem / Plan 等数据结构。
 
-export type PlatformId = 'codeforces' | 'atcoder' | 'luogu' | 'nowcoder' | 'daimayuan';
+export type PlatformId = 'codeforces' | 'atcoder' | 'luogu' | 'nowcoder' | 'daimayuan' | 'leetcode';
 
 export type PlatformSync = 'auto' | 'cookie' | 'manual';
 
@@ -22,6 +22,9 @@ export const PLATFORMS: PlatformMeta[] = [
   { id: 'nowcoder', name: '牛客', nameEn: 'Nowcoder', hasOfficialApi: false, homepage: 'https://ac.nowcoder.com', sync: 'auto' },
   // 代码源（Hydro 系）：评测记录页需登录（会话 Cookie sid），题库公开
   { id: 'daimayuan', name: '代码源', nameEn: 'Daimayuan', hasOfficialApi: false, homepage: 'https://bs.daimayuan.top', sync: 'cookie' },
+  // 力扣（leetcode.cn）：GraphQL 接口无官方公开 API；提交记录需登录 Cookie，题库匿名可访问。
+  // 仅接入了力扣中国（leetcode.cn）——国际版 leetcode.com 的 GraphQL schema 不同，未接入。
+  { id: 'leetcode', name: 'LeetCode', nameEn: 'LeetCode', hasOfficialApi: false, homepage: 'https://leetcode.cn', sync: 'cookie' },
 ];
 
 export function platformMeta(id: PlatformId): PlatformMeta {
@@ -245,6 +248,20 @@ export const TAG_ALIAS_TO_CANONICAL: Record<string, string> = {
   'meet-in-the-middle': '折半搜索',
   'dfs and similar': 'DFS',
   'graph matchings': '二分图',
+  // LeetCode topic tags（适配器统一转小写后入库；与 CF 同一套英文标签归并规则）
+  'dynamic programming': '动态规划',
+  'hash table': '哈希',
+  'depth-first search': 'DFS',
+  graph: '图论',
+  tree: '树上算法',
+  string: '字符串',
+  'bit manipulation': '位运算',
+  bitmask: '位运算',
+  'union find': '并查集',
+  'shortest path': '最短路',
+  'probability and statistics': '概率期望',
+  'game theory': '博弈论',
+  matrix: '矩阵',
 };
 
 /** 标签的规范名：有别名映射则归并到中文知识点，否则原样返回 */

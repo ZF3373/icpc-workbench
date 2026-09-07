@@ -68,6 +68,21 @@ const server: Server = app.listen(port, () => {
   console.log(`[server] listening on http://localhost:${port}`);
   console.log(`[server] widget page: http://localhost:${port}/widget`);
 });
+server.on('error', (e: NodeJS.ErrnoException) => {
+  // Windows 上 3000-3xxx 段可能被 Hyper-V/winnat 动态保留（重启后区间变化），
+  // 绑定报 EACCES——给出可操作的解法，而不是一句 "listen EACCES" 让人无从下手。
+  if (e.code === 'EACCES') {
+    console.error(
+      `[server] 端口 ${port} 被系统保留，无法监听（Windows Hyper-V/winnat 动态保留区间，重启后可能变化）。\n` +
+        `[server] 解法（任选其一）：\n` +
+        `[server]   1. 管理员 PowerShell 执行: net stop winnat; net start winnat  （释放动态保留）\n` +
+        `[server]   2. 换端口启动: PORT=4100 npm run dev  （前端代理需同步改 client/vite.config.ts）`,
+    );
+  } else {
+    console.error(`[server] 监听端口 ${port} 失败: ${e.message}`);
+  }
+  process.exit(1);
+});
 
 // Graceful shutdown：收到信号时关闭 HTTP 连接与数据库，避免 WAL 写入中途被强制终止
 let shuttingDown = false;

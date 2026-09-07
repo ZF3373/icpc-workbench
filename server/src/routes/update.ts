@@ -201,6 +201,9 @@ async function fetchRelease(
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (res.status === 404) return { status: 404, rel: null };
+  if (res.status === 403) {
+    throw new Error('GitHub API 访问受限（403，多为匿名请求达到限流上限），请稍后再试');
+  }
   if (!res.ok) throw new Error(`GitHub API 返回 ${res.status}`);
   return { status: 200, rel: (await res.json()) as GithubRelease };
 }
@@ -297,6 +300,11 @@ function canSelfUpdate(): boolean {
   return process.platform === 'win32' && APP_VERSION !== 'dev' && BUILD_COMMIT !== 'dev';
 }
 
+/** /check 的成功结果短 TTL 缓存：/download 直接复用，避免重复请求 GitHub API
+ *  （消耗匿名限流配额）并消除两次请求间的竞态（下载瞬间限流会导致误报"无产物"）。 */
+let lastCheck: { info: UpdateInfo; at: number } | null = null;
+const CHECK_CACHE_TTL_MS = 10 * 60_000;
+
 /** GET /check、GET /progress、POST /download、POST /apply（永 200，失败信息在 body） */
 export function updateRoutes(config: AppConfig): Router {
   const r = Router();
@@ -304,6 +312,7 @@ export function updateRoutes(config: AppConfig): Router {
   if (canSelfUpdate()) cleanupOldFiles(); // 清理上次更新遗留的 *.exe.old
   r.get('/check', asyncHandler(async (_req, res) => {
     const info = await checkForUpdate(APP_VERSION, GITHUB_REPO, fetch, BUILD_COMMIT);
+    if (info.ok) lastCheck = { info, at: Date.now() };
     res.json({ ...info, canSelfUpdate: canSelfUpdate() && info.download !== null });
   }));
   r.get('/progress', (_req, res) => {
@@ -314,12 +323,20 @@ export function updateRoutes(config: AppConfig): Router {
       res.json({ ok: false, message: '当前环境不支持一键更新（开发模式或非 Windows），请手动下载替换' });
       return;
     }
-    const info = await checkForUpdate(APP_VERSION, GITHUB_REPO, fetch, BUILD_COMMIT);
+    const info =
+      lastCheck && lastCheck.info.ok && Date.now() - lastCheck.at < CHECK_CACHE_TTL_MS
+        ? lastCheck.info
+        : await checkForUpdate(APP_VERSION, GITHUB_REPO, fetch, BUILD_COMMIT);
     if (!info.ok || !info.download) {
       res.json({ ok: false, message: info.message ?? '未获取到可下载的更新产物' });
       return;
     }
-    res.json(startDownload(info.download, stagingDir));
+    try {
+      res.json(startDownload(info.download, stagingDir));
+    } catch (e) {
+      // staging 目录创建失败（安装目录无写权限）等同步异常：给明确提示而非 HTTP 500
+      res.json({ ok: false, message: `无法开始下载：${e instanceof Error ? e.message : String(e)}` });
+    }
   }));
   r.post('/apply', (_req, res) => {
     if (!canSelfUpdate()) {

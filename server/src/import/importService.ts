@@ -12,6 +12,8 @@ export interface InsertResult {
  * - submissions 按 (user_id, platform, external_id) INSERT OR IGNORE 去重
  * - opts.clearPlatform：先删除该平台旧提交再插入（换账号场景，保证原子性）
  * 供平台同步与手动导入共用。
+ * 标签与 bankService 同语义：新值为空数组时保留库内已有标签——同步适配器
+ * （nowcoder / leetcode 等）拿不到标签，若直接覆盖会把题库补全的标签清掉。
  */
 export function insertNormalized(
   db: Db,
@@ -26,7 +28,7 @@ export function insertNormalized(
        title = excluded.title,
        difficulty = COALESCE(excluded.difficulty, problems.difficulty),
        url = COALESCE(excluded.url, problems.url),
-       tags = excluded.tags`,
+       tags = CASE WHEN excluded.tags != '[]' THEN excluded.tags ELSE problems.tags END`,
   );
   const insertSub = db.prepare(
     `INSERT OR IGNORE INTO submissions

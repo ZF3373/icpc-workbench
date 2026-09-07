@@ -1,5 +1,6 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
 import { fetchWithChallenge, luoguDifficultyToRating } from './luogu.ts';
+import { leetcodeDifficultyToRating } from './leetcode.ts';
 
 /** 题库题目（无提交记录，仅供扩充待选池） */
 export interface BankProblem {
@@ -275,4 +276,89 @@ export async function fetchCodeforcesBank(
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, Math.floor(n)));
+}
+
+// ---------- 力扣（leetcode.cn） ----------
+
+interface LcBankQuestion {
+  frontendQuestionId?: string;
+  title?: string;
+  titleCn?: string;
+  titleSlug?: string;
+  difficulty?: string;
+  paidOnly?: boolean;
+  topicTags?: Array<{ name?: string }>;
+}
+
+const LEETCODE_GRAPHQL = 'https://leetcode.cn/graphql';
+const LEETCODE_BANK_PAGE = 100;
+
+const LEETCODE_BANK_QUERY = `query problemsetQuestionList($limit: Int, $skip: Int) {
+  problemsetQuestionList(limit: $limit, skip: $skip) {
+    total
+    questions { frontendQuestionId title titleCn titleSlug difficulty paidOnly topicTags { name } }
+  }
+}`;
+
+/**
+ * 力扣公开题库（匿名可访问）：POST /graphql problemsetQuestionList 分页翻取
+ * （约 3300+ 题，每页 100）。题目标识用 slug（与提交同步的 problemKey 一致），
+ * 中文标题优先，三级难度映射为 CF rating 标尺，算法标签英文转小写
+ * （TAG_ALIAS_TO_CANONICAL 负责归并到中文知识点）。付费题（paidOnly）跳过。
+ */
+export async function fetchLeetcodeBank(
+  fetchFn: typeof fetch,
+  opts: BankFetchOptions = {},
+): Promise<BankFetchResult> {
+  const max = opts.max ?? 2000;
+  const problems: BankProblem[] = [];
+  let total: number | null = null;
+
+  for (let skip = 0; skip < 10000; skip += LEETCODE_BANK_PAGE) {
+    const res = await fetchFn(LEETCODE_GRAPHQL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Referer: 'https://leetcode.cn/problemset/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      },
+      body: JSON.stringify({
+        query: LEETCODE_BANK_QUERY,
+        variables: { limit: LEETCODE_BANK_PAGE, skip },
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) {
+      throw new Error(`力扣题库接口 HTTP ${res.status}，请稍后重试`);
+    }
+    const body = (await res.json()) as {
+      data?: { problemsetQuestionList?: { total?: number; questions?: LcBankQuestion[] } };
+      errors?: Array<{ message?: string }>;
+    };
+    const list = body.data?.problemsetQuestionList;
+    if (body.errors?.length || !Array.isArray(list?.questions)) {
+      throw new Error(`力扣题库接口响应异常${body.errors?.[0]?.message ? `：${body.errors[0].message}` : ''}，请稍后重试`);
+    }
+    if (typeof list?.total === 'number') total = list.total;
+    if (list.questions.length === 0) break;
+
+    for (const q of list.questions) {
+      if (!q.titleSlug || q.paidOnly) continue;
+      problems.push({
+        platform: 'leetcode',
+        problemKey: q.titleSlug.toLowerCase(),
+        title: q.titleCn || q.title || q.titleSlug,
+        difficulty: leetcodeDifficultyToRating(q.difficulty),
+        url: `https://leetcode.cn/problems/${q.titleSlug.toLowerCase()}/`,
+        tags: (q.topicTags ?? [])
+          .map((t) => (t.name ?? '').trim().toLowerCase())
+          .filter(Boolean),
+      });
+    }
+    opts.onProgress?.({ platform: 'leetcode', count: problems.length, total });
+    if (problems.length >= max) break;
+    if (list.questions.length < LEETCODE_BANK_PAGE) break;
+    await sleep(400); // 页间限速
+  }
+  return { platform: 'leetcode', problems: problems.slice(0, max), total };
 }

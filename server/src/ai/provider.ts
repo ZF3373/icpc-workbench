@@ -47,7 +47,7 @@ export class AiProvider {
         temperature: opts.temperature ?? 0.2,
         max_tokens: opts.maxTokens ?? 4000,
       }),
-      signal: AbortSignal.timeout(60000),
+      signal: AbortSignal.timeout(120000),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');

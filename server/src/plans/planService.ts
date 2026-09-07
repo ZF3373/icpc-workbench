@@ -677,6 +677,11 @@ export function renderPlanContext(db: Db, planId: number, userId: number = DEFAU
 
 /** AI 回复中 plan-modify 围栏块 + JSON 提取（与 parsePlanJson 相同的容错思路） */
 function extractJsonText(raw: string): string {
+  // 优先提取 plan-modify 围栏块正文（与前端 extractModifyBlock 同源），
+  // 避免 AI 回复正文中的花括号干扰 first-{/last-} 提取导致 JSON 损坏。
+  const fence = raw.match(/```[a-zA-Z-]*plan-modify[\s\S]*?\n([\s\S]*?)```/);
+  if (fence) return fence[1].trim();
+
   let text = raw.trim();
   if (text.includes('```')) {
     text = text.replace(/```[a-zA-Z-]*\s*/g, '').trim();
