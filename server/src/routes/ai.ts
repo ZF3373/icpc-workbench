@@ -9,7 +9,7 @@ import { asyncHandler } from '../asyncHandler.ts';
 import { AiProvider, type ChatMessage } from '../ai/provider.ts';
 import { computeWeakness } from '../analysis/weakness.ts';
 import { buildPracticeSummary, renderSummaryForPrompt } from '../analysis/summary.ts';
-import { effectiveAbility, setAbilityOverride } from '../today/ability.ts';
+import { effectiveAbility, renderAbilityEvidence, setAbilityOverride } from '../today/ability.ts';
 import { renderPlanContext, renderTemplate } from '../plans/planService.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -88,7 +88,8 @@ export function aiRoutes(
       return res.status(400).json({ error: 'AI 未配置：请到「设置 → AI 配置」填写 OpenAI 兼容接口后使用', needConfig: true });
     }
 
-    const summaryPrompt = renderSummaryForPrompt(buildPracticeSummary(db, DEFAULT_USER_ID));
+    const summary = buildPracticeSummary(db, DEFAULT_USER_ID);
+    const summaryPrompt = renderSummaryForPrompt(summary);
     const weakness = computeWeakness(db, DEFAULT_USER_ID, { minAttempts: 5, topN: 8 });
     const ability = effectiveAbility(db, DEFAULT_USER_ID);
     const overrideNote = ability.override
@@ -110,6 +111,7 @@ export function aiRoutes(
       computedLevel: String(ability.computed),
       effectiveLevel: String(ability.effective),
       abilityOverrideNote: overrideNote,
+      abilityEvidence: renderAbilityEvidence(db, DEFAULT_USER_ID, summary),
       planSection,
     });
     try {
