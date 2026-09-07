@@ -12,6 +12,8 @@ export interface AiConfig {
   baseURL: string;
   apiKey: string;
   model: string;
+  /** AI 对话超时（毫秒），用户可在设置页调整；缺省 120000（2 分钟） */
+  timeoutMs?: number;
 }
 
 export interface AppConfig {
@@ -32,6 +34,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     baseURL: 'https://api.deepseek.com/v1',
     apiKey: '',
     model: 'deepseek-chat',
+    timeoutMs: 120000,
   },
 };
 
@@ -89,11 +92,14 @@ export function aiConfigFromDb(db: Db, cfg: AppConfig): AiConfig {
   };
 
   const enabledRaw = get('ai.enabled');
+  const timeoutRaw = get('ai.timeoutMs');
+  const timeoutMs = timeoutRaw !== undefined ? Number(timeoutRaw) : cfg.ai.timeoutMs;
   return {
     enabled: enabledRaw !== undefined ? enabledRaw === 'true' : cfg.ai.enabled,
     baseURL: get('ai.baseURL') ?? cfg.ai.baseURL,
     model: get('ai.model') ?? cfg.ai.model,
     apiKey: process.env.AI_API_KEY ?? get('ai.apiKey') ?? cfg.ai.apiKey,
+    ...(Number.isFinite(timeoutMs) && timeoutMs! > 0 ? { timeoutMs: timeoutMs! } : {}),
   };
 }
 
@@ -107,6 +113,7 @@ export function saveAiConfig(db: Db, cfg: AppConfig, patch: Partial<AiConfig>): 
     ['ai.baseURL', patch.baseURL],
     ['ai.apiKey', patch.apiKey],
     ['ai.model', patch.model],
+    ['ai.timeoutMs', patch.timeoutMs === undefined ? undefined : String(patch.timeoutMs)],
   ];
   for (const [k, v] of entries) {
     if (v !== undefined) upsert.run(k, v);

@@ -27,6 +27,7 @@ import dayjs from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
 import { PLATFORMS } from '../../../shared/src/index.ts'
 import PageHeader from '../components/PageHeader'
+import { saveUrlAsFile } from '../download'
 import PlatformTag from '../components/PlatformTag'
 import { get, post } from '../api'
 import { assembleCookie as assembleCookieHeader, extractCookieValue, type CookieFieldDef } from '../cookies'
@@ -35,7 +36,7 @@ import { useSoftwareUpdate } from '../useSoftwareUpdate'
 import type { ContestReminderConfig, ReminderConfig } from '../types'
 
 interface SettingsData {
-  ai: { enabled: boolean; baseURL: string; apiKey: string; model: string }
+  ai: { enabled: boolean; baseURL: string; apiKey: string; model: string; timeoutMs?: number }
   accounts: Array<{ platform: PlatformId; handle: string; last_sync_at: string | null; enabled: number }>
   adapterEnabled: Record<string, boolean>
   platforms: typeof PLATFORMS
@@ -91,7 +92,7 @@ export default function Settings() {
     get<SettingsData>('/api/settings')
       .then((d) => {
         setData(d)
-        aiForm.setFieldsValue(d.ai)
+        aiForm.setFieldsValue({ ...d.ai, timeoutMs: d.ai.timeoutMs ? d.ai.timeoutMs / 1000 : 120 })
         const handles: Record<string, string> = {}
         const cookies: Record<string, Record<string, string>> = {}
         for (const a of d.accounts) handles[a.platform] = a.handle
@@ -127,7 +128,9 @@ export default function Settings() {
     const v = await aiForm.validateFields().catch(() => null)
     if (!v) return
     try {
-      await post('/api/settings/ai', v)
+      // 表单以秒为单位，后端存储毫秒
+      const { timeoutMs, ...rest } = v
+      await post('/api/settings/ai', { ...rest, timeoutMs: Math.round(timeoutMs * 1000) })
       message.success('AI 配置已保存')
       load()
     } catch (e) {
@@ -265,19 +268,8 @@ export default function Settings() {
     }
   }
 
-  const downloadPrompt = async (url: string, filename: string) => {
-    try {
-      const res = await fetch(url)
-      const text = await res.text()
-      const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
-      const a = document.createElement('a')
-      a.href = URL.createObjectURL(blob)
-      a.download = filename
-      a.click()
-      URL.revokeObjectURL(a.href)
-    } catch (e) {
-      message.error((e as Error).message)
-    }
+  const downloadPrompt = async (url: string, filename: string, successText?: string) => {
+    void saveUrlAsFile({ url, filename, successText })
   }
 
   return (
@@ -301,6 +293,9 @@ export default function Settings() {
                 options={modelOptions}
                 placeholder="deepseek-chat / gpt-4o-mini / qwen-plus"
               />
+            </Form.Item>
+            <Form.Item name="timeoutMs" label="对话超时（秒）" tooltip="AI 助手对话的最长等待时间。响应慢的模型可适当调大，默认 120 秒">
+              <InputNumber min={30} max={600} step={30} addonAfter="秒" style={{ width: '100%' }} />
             </Form.Item>
             <Space wrap>
               <Button type="primary" onClick={saveAi}>
@@ -488,10 +483,10 @@ export default function Settings() {
         <Card title={<span className="settings-section-title"><FileMarkdownOutlined />导出（手动喂给任意 AI）</span>} size="small">
           <Space wrap>
             <InputNumber min={1} max={90} value={exportDays} onChange={(v) => setExportDays(v ?? 14)} style={{ width: 80 }} />
-            <Button onClick={() => void downloadPrompt(`/api/export/plan-prompt.md?days=${exportDays}`, 'plan-prompt.md')}>
+            <Button onClick={() => void downloadPrompt(`/api/export/plan-prompt.md?days=${exportDays}`, 'plan-prompt.md', '提示词已导出')}>
               下载提示词 .md
             </Button>
-            <Button onClick={() => void downloadPrompt('/api/export/summary.md', 'practice-summary.md')}>
+            <Button onClick={() => void downloadPrompt('/api/export/summary.md', 'practice-summary.md', '练习数据已导出')}>
               下载练习数据汇总 .md
             </Button>
             <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>

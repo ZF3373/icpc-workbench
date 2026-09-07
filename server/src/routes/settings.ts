@@ -185,7 +185,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     res.json(result);
   }));
 
-  // POST /api/settings/ai  body: { enabled?, baseURL?, apiKey?, model? }
+  // POST /api/settings/ai  body: { enabled?, baseURL?, apiKey?, model?, timeoutMs? }
   r.post('/ai', (req, res) => {
     const b = req.body ?? {};
     saveAiConfig(db, config, {
@@ -193,6 +193,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       baseURL: typeof b.baseURL === 'string' ? b.baseURL : undefined,
       apiKey: typeof b.apiKey === 'string' ? b.apiKey : undefined,
       model: typeof b.model === 'string' ? b.model : undefined,
+      ...(typeof b.timeoutMs === 'number' && b.timeoutMs > 0 ? { timeoutMs: b.timeoutMs } : {}),
     });
     res.json(aiConfigFromDb(db, config));
   });
