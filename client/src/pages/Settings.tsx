@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   Alert,
+  AutoComplete,
   Button,
   Card,
   DatePicker,
@@ -20,7 +21,7 @@ import {
   TimePicker,
   Upload,
 } from 'antd'
-import { ImportOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, AppstoreOutlined } from '@ant-design/icons'
+import { ApiOutlined, ImportOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, AppstoreOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
@@ -103,6 +104,10 @@ export default function Settings() {
   const [importOpen, setImportOpen] = useState(false)
   const [exportDays, setExportDays] = useState(14)
   const [appVersion, setAppVersion] = useState('')
+  const [aiTesting, setAiTesting] = useState(false)
+  const [aiTestResult, setAiTestResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelOptions, setModelOptions] = useState<{ value: string }[]>([])
 
   const load = () => {
     get<SettingsData>('/api/settings')
@@ -149,6 +154,44 @@ export default function Settings() {
       load()
     } catch (e) {
       message.error((e as Error).message)
+    }
+  }
+
+  // 连接测试用当前表单值（未保存也可测）；输入框留空的字段由后端回退已保存配置
+  const testAi = async () => {
+    const v = aiForm.getFieldsValue()
+    setAiTesting(true)
+    setAiTestResult(null)
+    try {
+      const r = await post<{ ok: boolean; message: string; models?: string[] }>('/api/settings/ai/test', {
+        baseURL: v.baseURL,
+        apiKey: v.apiKey,
+        model: v.model,
+      })
+      setAiTestResult(r)
+      if (r.models?.length) setModelOptions(r.models.map((m) => ({ value: m })))
+    } catch (e) {
+      setAiTestResult({ ok: false, message: (e as Error).message })
+    } finally {
+      setAiTesting(false)
+    }
+  }
+
+  const fetchModels = async () => {
+    const v = aiForm.getFieldsValue()
+    setModelsLoading(true)
+    try {
+      const r = await post<{ models: string[] }>('/api/settings/ai/models', { baseURL: v.baseURL, apiKey: v.apiKey })
+      if (r.models.length === 0) {
+        message.warning('服务未返回任何模型')
+        return
+      }
+      setModelOptions(r.models.map((m) => ({ value: m })))
+      message.success(`获取到 ${r.models.length} 个可用模型，点击模型输入框从下拉选择`)
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setModelsLoading(false)
     }
   }
 
@@ -276,11 +319,31 @@ export default function Settings() {
               <Input.Password placeholder="留空则不填（可用环境变量 AI_API_KEY）" />
             </Form.Item>
             <Form.Item name="model" label="模型">
-              <Input placeholder="deepseek-chat / gpt-4o-mini / qwen-plus" />
+              <AutoComplete
+                options={modelOptions}
+                placeholder="deepseek-chat / gpt-4o-mini / qwen-plus"
+              />
             </Form.Item>
-            <Button type="primary" onClick={saveAi}>
-              保存 AI 配置
-            </Button>
+            <Space wrap>
+              <Button type="primary" onClick={saveAi}>
+                保存 AI 配置
+              </Button>
+              <Button icon={<ApiOutlined />} loading={aiTesting} onClick={testAi}>
+                测试连接
+              </Button>
+              <Button loading={modelsLoading} onClick={fetchModels}>
+                获取可用模型
+              </Button>
+            </Space>
+            {aiTestResult && (
+              <Alert
+                style={{ marginTop: 12, maxWidth: 520 }}
+                type={aiTestResult.ok ? 'success' : 'error'}
+                showIcon
+                closable
+                message={aiTestResult.message}
+              />
+            )}
           </Form>
         </Card>
       </Col>

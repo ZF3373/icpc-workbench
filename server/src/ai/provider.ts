@@ -10,7 +10,8 @@ export interface ChatOptions {
   maxTokens?: number;
 }
 
-function chatUrl(base: string): string {
+/** baseURL → chat/completions 端点：容忍用户直接粘贴完整端点地址 */
+export function chatUrl(base: string): string {
   const trimmed = base.replace(/\/+$/, '');
   if (trimmed.endsWith('/chat/completions')) return trimmed;
   return `${trimmed}/chat/completions`;

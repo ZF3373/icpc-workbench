@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import type { PlatformId } from '../../../shared/src/index.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
-import { aiConfigFromDb, saveAiConfig, type AppConfig } from '../config.ts';
+import { aiConfigFromDb, saveAiConfig, type AiConfig, type AppConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { getAdapter } from '../adapters/registry.ts';
+import { chatUrl } from '../ai/provider.ts';
 
 const DEFAULT_REMINDER_TIME = '20:00';
 
@@ -196,6 +197,58 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     res.json(aiConfigFromDb(db, config));
   });
 
+  // POST /api/settings/ai/test  body: { baseURL?, apiKey?, model? }
+  // 连接测试：body 值优先（支持先测后存），缺省回退已保存配置。首选免费快速的 GET /models；
+  // 部分兼容网关不实现该端点 → 退化用 1 token 的 chat/completions 真实验证。
+  r.post('/ai/test', asyncHandler(async (req, res) => {
+    const cfg = effectiveAiConfig(db, config, req.body ?? {});
+    if (!/^https?:\/\//.test(cfg.baseURL)) {
+      return res.json({ ok: false, message: `Base URL 需为 http(s) 地址，当前：${cfg.baseURL || '（空）'}` });
+    }
+    const started = Date.now();
+    let models: string[] = [];
+    try {
+      models = await fetchModelIds(cfg.baseURL, cfg.apiKey);
+    } catch (modelsErr) {
+      try {
+        await probeChat(cfg);
+        const ms = Date.now() - started;
+        return res.json({
+          ok: true,
+          message: `连接成功（${ms}ms，经 chat/completions 验证；该服务未提供 /models 列表）`,
+          models: [],
+        });
+      } catch (chatErr) {
+        return res.json({ ok: false, message: `连接失败：${(chatErr as Error).message}` });
+      }
+    }
+    const ms = Date.now() - started;
+    const modelNote = cfg.model
+      ? models.includes(cfg.model)
+        ? `；模型 ${cfg.model} 在可用列表中 ✓`
+        : `；⚠ 模型 ${cfg.model} 不在列表中（部分网关列表不全，以实际调用为准）`
+      : '';
+    return res.json({
+      ok: true,
+      message: `连接成功（${ms}ms，/models 返回 ${models.length} 个模型）${modelNote}`,
+      models,
+    });
+  }));
+
+  // POST /api/settings/ai/models  body: { baseURL?, apiKey? }
+  // 一键获取可用模型列表（OpenAI GET /models，兼容 data[].id / models[].name 等变体）
+  r.post('/ai/models', asyncHandler(async (req, res) => {
+    const cfg = effectiveAiConfig(db, config, req.body ?? {});
+    if (!/^https?:\/\//.test(cfg.baseURL)) {
+      return res.status(400).json({ error: `Base URL 需为 http(s) 地址，当前：${cfg.baseURL || '（空）'}` });
+    }
+    try {
+      res.json({ models: await fetchModelIds(cfg.baseURL, cfg.apiKey) });
+    } catch (e) {
+      res.status(502).json({ error: `获取模型列表失败：${(e as Error).message}` });
+    }
+  }));
+
   // POST /api/settings/accounts  body: { platform, handle }
   r.post('/accounts', (req, res) => {
     const { platform, handle } = req.body ?? {};
@@ -238,4 +291,84 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
 
 function isPlatform(p: unknown): p is PlatformId {
   return typeof p === 'string' && PLATFORMS.some((x) => x.id === p);
+}
+
+// ---------- AI 连接测试 / 模型列表 ----------
+
+/** 组装待测配置：body 值优先（先测后存），缺省回退已保存配置（apiKey 与实际请求一致，含环境变量覆盖） */
+function effectiveAiConfig(
+  db: Db,
+  config: AppConfig,
+  b: { baseURL?: unknown; apiKey?: unknown; model?: unknown },
+): AiConfig {
+  const saved = aiConfigFromDb(db, config);
+  const pick = (v: unknown, fallback: string): string =>
+    typeof v === 'string' && v.trim() !== '' ? v.trim() : fallback;
+  return {
+    enabled: saved.enabled,
+    baseURL: pick(b.baseURL, saved.baseURL),
+    apiKey: pick(b.apiKey, saved.apiKey),
+    model: pick(b.model, saved.model),
+  };
+}
+
+/** baseURL → /models 地址：容忍用户把完整 chat/completions 端点粘进 baseURL（同 provider.chatUrl 惯例） */
+function modelsUrl(base: string): string {
+  const trimmed = base.replace(/\/+$/, '');
+  const root = trimmed.endsWith('/chat/completions')
+    ? trimmed.slice(0, -'/chat/completions'.length)
+    : trimmed;
+  return `${root}/models`;
+}
+
+/** 拉取并解析模型列表：OpenAI { data: [{ id }] }，兼容 { models: [{ name|id }] } 与纯数组，去重排序 */
+async function fetchModelIds(baseURL: string, apiKey: string): Promise<string[]> {
+  const res = await fetch(modelsUrl(baseURL), {
+    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ''}`);
+  }
+  const payload: unknown = await res.json().catch(() => {
+    throw new Error('响应不是合法 JSON');
+  });
+  const list = Array.isArray(payload)
+    ? payload
+    : Array.isArray((payload as { data?: unknown })?.data)
+      ? ((payload as { data: unknown[] }).data)
+      : Array.isArray((payload as { models?: unknown })?.models)
+        ? ((payload as { models: unknown[] }).models)
+        : [];
+  const ids = list
+    .map((m) =>
+      typeof m === 'string'
+        ? m
+        : ((m as { id?: unknown })?.id ?? (m as { name?: unknown })?.name),
+    )
+    .filter((id): id is string => typeof id === 'string' && id.trim() !== '')
+    .map((id) => id.trim());
+  return [...new Set(ids)].sort((a, b) => a.localeCompare(b));
+}
+
+/** 兜底连通性探测：1 token 的 chat/completions（/models 不可用但对话可用的网关，如部分 one-api 部署） */
+async function probeChat(cfg: AiConfig): Promise<void> {
+  const res = await fetch(chatUrl(cfg.baseURL), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}),
+    },
+    body: JSON.stringify({
+      ...(cfg.model ? { model: cfg.model } : {}),
+      messages: [{ role: 'user', content: 'ping' }],
+      max_tokens: 1,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ''}`);
+  }
 }
