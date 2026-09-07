@@ -121,7 +121,7 @@ jobs:
           - macOS（Apple Silicon M 系列）：*.dmg 安装镜像，未签名——首次打开请右键 →「打开」，或终端执行 xattr -cr /Applications/icpc-workbench.app；暂不支持 Intel Mac 与应用内一键更新，更新请手动下载覆盖"
           ASSETS="server/release/icpc-workbench.exe server/release/icpc-core.exe server/release/*-setup.exe server/release/*.dmg server/release/icpc-core-*"
           if gh release view nightly >/dev/null 2>&1; then
-            gh release edit nightly --prerelease --title "$TITLE" --notes "$NOTES"
+            gh release edit nightly --prerelease --target "$SHA" --title "$TITLE" --notes "$NOTES"
             # exe 先行、checksums 最后上传：应用内更新先取校验文件再下载产物，
             # 尽量缩短「新产物 + 旧校验文件」短暂不一致的窗口（校验不过会自动重试）
             gh release upload nightly --clobber $ASSETS
