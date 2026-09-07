@@ -1,10 +1,10 @@
 # ICPC Workbench · ICPC 备赛工作台
 
-基于刷题记录（Codeforces / AtCoder / 洛谷 / 牛客 / 代码源）分析弱项、由 AI 生成个性化训练计划，并提供日历打卡的**本地 Web 应用**。
+基于刷题记录（Codeforces / AtCoder / 洛谷 / 牛客 / 代码源 / LeetCode）分析弱项、由 AI 生成个性化训练计划，并提供日历打卡的**本地 Web 应用**。
 
 ## 功能
 
-- **多平台刷题导入**：Codeforces / AtCoder 自动同步（官方/社区公开 API，增量去重）；洛谷 / 代码源配置 Cookie 后自动同步；全平台支持手动导入（JSON / CSV / 表单）
+- **多平台刷题导入**：Codeforces / AtCoder 自动同步（官方/社区公开 API，增量去重）；洛谷 / 代码源 / LeetCode 配置 Cookie 后自动同步；全平台支持手动导入（JSON / CSV / 表单）
 - **内置题库**：软件自带约 1.3 万题离线题库（Codeforces 全量 + 洛谷普及/提高- 及以上，含难度与算法标签），首次启动自动入库、开箱即可供训练计划/题单选题；需要更多时在「题目管理 → 拉取题库」按平台扩充（CF 单次调用秒级，洛谷/牛客按页拉取）
 - **弱项分析**：按标签 / 难度区间 / 平台统计 AC 率，输出相对自身平均的弱项画像；近 12 周趋势
 - **掌握度地图**：按知识点五档评估掌握度（未开始→接触→入门→掌握→熟练），串联刷题数据、弱项画像与模板课程；每个知识点可直达对应练习题目（含题库未做题，按难度从低到高）与课程；CF 等平台的英文标签与课程中文知识点自动归并（binary search ↔ 二分），同一知识点不分裂；掌握/熟练带 ⭐/🏆 徽章、升档进度条与新达成 🎉 标记
@@ -15,22 +15,24 @@
   - 导出通道：无 Key 也可下载数据包 + 提示词 `.md`，手动喂给任意 AI，返回的 JSON 通过设置页「导入 AI 计划」粘贴/上传即可入库（自动清洗围栏与解释文字）
   - 提示词已内置完整练习数据汇总：AI 能看到掌握薄弱知识点、课程盲区、近期在练的题、卡壳题、复习库到期与打卡节奏，据此编排重做/补模板/复习任务
   - 任务全部附带可点击的题目链接：练习任务直接跳题目页；回顾/模拟赛任务跳 CF 提交记录/题集入口；AI 输出缺链接时自动按题库回退补链
-- **AI 助手（全局）**：左侧菜单「AI 助手」独立的 AI 交流窗口（训练计划页「AI 助手」按钮直达，唯一计划时自动关联）——回答算法问题、粘贴代码调试（markdown 代码块渲染）、解读练习数据与问题分布统计（自动注入练习数据汇总 + 弱项画像）；可关联训练计划让 AI 直接修改计划（plan-modify 块 → 前端确认后原位应用，「日期+标题」相同的任务保留打卡记录）；AI 评估后可一键更新估算能力值（ability-update 块，今日训练三档随之按新值分档，可随时恢复计算值）
-- **题单整理**：粘贴平台题单（洛谷 / Codeforces / AtCoder / 代码源 / 牛客的题号或链接，每行一题）自动识别建单；按知识点分类（已同步题库 tags 规则分类 + AI 分类 + 手动调整），联查题库标注难度与已 AC 状态；AI 读取题单内容结合弱项画像给出练习建议
+- **AI 助手（全局）**：左侧菜单「AI 助手」独立的 AI 交流窗口——回答算法问题、粘贴代码调试（markdown 代码块渲染）、解读练习数据与问题分布统计（自动注入练习数据汇总 + 弱项画像 + 近期赛事日历）；可关联训练计划让 AI 直接修改计划（plan-modify 块 → 前端确认后原位应用，「日期+标题」相同的任务保留打卡记录）；AI 评估后可一键更新估算能力值（ability-update 块，今日训练三档随之按新值分档，可随时恢复计算值）；AI 讨论中可把思路沉淀为模板写入模板库（template-add 块，用户确认后落库）；模拟赛安排会自动对齐近 14 天真实赛事时间
+  - 多会话管理：侧边栏会话记录，支持新建 / 切换 / 删除 / 置顶 / 双击重命名，会话记录保存在浏览器本地
+  - 切换模块再回来不丢会话；生成中切走，回来后回复自动出现
+- **题单整理**：粘贴平台题单（洛谷 / Codeforces / AtCoder / 代码源 / 牛客 / LeetCode 的题号或链接，每行一题）自动识别建单；按知识点分类（已同步题库 tags 规则分类 + AI 分类 + 手动调整），联查题库标注难度与已 AC 状态；AI 读取题单内容结合弱项画像给出练习建议
 - **复习库**：题目复评与遗忘曲线调度（到期数量提醒、正/负反馈调节复习间隔）
 - **模板库**：114 节内置算法模板课程（分 10 大类），学习状态/笔记/进度追踪；自建模板支持 Tab 缩进的代码编辑框（Tab 缩进、Shift+Tab 反缩进、回车自动缩进，保留撤销栈）
 - **赛事中心**：Codeforces / AtCoder / 洛谷 / 牛客 四平台场次聚合（即将开始 / 已结束，单源失败自动降级），赛前选场、赛后补题
 - **日历打卡**：月历查看每天训练任务、跳转做题链接、逐任务打卡；打卡数据与计划页联动；连续打卡统计
 - **打卡提醒**：设置页配置每日提醒时间，应用打开期间到点若当天仍有未打卡任务，弹浏览器系统通知 + 页面内通知，点击直达日历；赛前提醒可配置开赛前 N 分钟通知（每场一次，点击直达赛事中心）
 - **软件更新**：双通道检测（正式版 + GitHub 最新提交构建）+ 应用内一键自更新（详见下文）
-- **Web 挂件**：`http://localhost:3001/widget` 零依赖单页（Express 直接服务），常驻小窗展示当天任务、连续打卡徽标，可直接打卡/跳转做题；透明置顶桌面挂件已按 Tauri 落地（widget.exe，见文末桌面挂件章节）
+- **Web 挂件**：`http://localhost:3001/widget` 零依赖单页（Express 直接服务），常驻小窗展示当天任务、连续打卡徽标，可直接打卡/跳转做题
 
 ## 技术架构
 
 ```
 icpc-workbench/
 ├── server/          # Node.js + Express + node:sqlite（内置 SQLite，零原生依赖）
-│   ├── adapters/    # 平台适配器（CF/AtCoder 自动；洛谷/牛客/代码源受限）+ 增量同步
+│   ├── adapters/    # 平台适配器（CF/AtCoder 自动；洛谷/牛客/代码源/LeetCode 受限）+ 增量同步
 │   ├── analysis/    # 聚合统计 / 弱项画像 / 周趋势
 │   ├── ai/          # OpenAI 兼容 provider + plan-prompt.md / assistant-prompt.md 提示词模板
 │   ├── contests/    # 四平台赛事聚合（CF/AtCoder/洛谷/牛客，单源失败降级）
@@ -38,8 +40,8 @@ icpc-workbench/
 │   ├── import/      # 手动导入（JSON/CSV/表单）+ 事务入库
 │   ├── updater.ts   # 一键自更新（下载/SHA256 校验/原位替换）
 │   └── routes/      # REST API（stats/problems/plans/ai/lists/reviews/today/templates/contests/checkins/settings/export/sync/import/update）
-├── client/          # React + Vite + Ant Design（数据概览/今日训练/模板库/训练计划/复习库/题目管理/日历打卡/赛事中心/设置）
-├── desktop/         # Tauri 桌面壳（app：主程序原生窗口 + Node 服务 sidecar；src-tauri：桌面挂件）
+├── client/          # React + Vite + Ant Design（数据概览/今日训练/AI助手/模板库/题单整理/训练计划/复习库/题目管理/掌握度地图/日历打卡/赛事中心/设置）
+├── desktop/         # Tauri 桌面壳（app：主程序原生窗口 + Node 服务 sidecar）
 └── shared/          # 跨端共享类型与平台元信息
 ```
 
@@ -136,6 +138,8 @@ node server/scripts/build-exe.mjs
    - Ollama 本地：`http://localhost:11434/v1` + 已拉取的模型名
 3. 「训练计划」→ 生成新计划（AI 失败或未配置时自动降级为模板计划）
 
+> AI 助手使用用户自行配置的 OpenAI 兼容接口，响应速度和 token 费用由所选模型和接口决定。如果某个模型响应较慢或频繁超时，可在「设置 → AI 配置」切换为响应更快的模型。
+
 ## 无 AI Key 用法（导出通道）
 
 1. 「设置」→ 下载提示词 `.md`（或 `GET /api/export/plan-package` 取完整数据包）
@@ -151,16 +155,18 @@ node server/scripts/build-exe.mjs
 | 洛谷 | ✅（需 Cookie） | `record/list` 非官方 API | 设置页填写 `_uid` / `__client_id` 两项 Cookie 后自动同步；难度分级（0-8）自动映射为 CF rating；标签经 `x-lentille-request` 头 + `/_lfe/tags` 字典获取 |
 | 牛客 | ✅ | 公开 HTML `acm/contest/profile/{uid}/practice-coding` | 无需登录/Cookie（牛客已下线 JSON API）；解析提交表格，支持增量与分页；题目无难度/标签字段（数据源限制） |
 | 代码源 | ✅（需 Cookie） | Hydro HTML `/record?uidOrName=` | 设置页填写 `sid` 一项会话 Cookie 后自动同步（每页 100 条，增量提前终止）；状态文本按 Hydro STATUS_TEXTS 映射（满分 Accepted=AC）；仅含非比赛提交（与站点「评测记录」页范围一致，Hydro 过滤 `{contest: null}`）；暂无难度/标签（Hydro 无统一标尺）；题库页 `/p/{id}` 公开 |
+| LeetCode | ✅（需 Cookie） | leetcode.cn GraphQL `submissionList` | 设置页填写 Cookie 后自动同步（每页 40 条，最多 250 页）；仅接入力扣中国（leetcode.cn），国际版接口结构不同暂未接入；题库匿名可访问 |
 
 > 洛谷基于社区维护的非官方 API，接口结构可能随平台变更；若同步失败请更新 Cookie 重试。Cookie 仅保存在本机数据库，请勿外泄。
 
-## Cookie 配置方法（洛谷 / 代码源需要）
+## Cookie 配置方法（洛谷 / 代码源 / LeetCode 需要）
 
 1. 浏览器登录洛谷后，F12 → Application（应用）→ Cookies → `https://www.luogu.com.cn`
-2. 复制 `_uid` 与 `__client_id` 两项的值，分别填入「设置 → 洛谷」的两个输入框后保存（请求用 Cookie 头由应用拼装，C3VK 等其余 Cookie 自动续期，无需填写）
+2. 复制 `_uid` 与 `__client_id` 两项的值，分别填入「设置 → 洛谷」的两个输入框后保存（请求用 Cookie 头由应用拼装，C3LK 等其余 Cookie 自动续期，无需填写）
 3. 代码源同理：浏览器登录 bs.daimayuan.top 后，F12 → Application → Cookies 复制 `sid` 一项（登录会话），填入「设置 → 代码源」后保存（支持直接整段粘贴 Cookie 头，自动提取字段；过期后重新复制一次即可）
-4. 到「题目管理」→ 平台同步 → 输入用户名/uid → 同步
-5. 换绑账号时，新同步会自动清空该平台旧账号的提交数据
+4. LeetCode：浏览器登录 leetcode.cn 后，F12 → Application → Cookies 复制 `LEETCODE_SESSION` 与 `csrftoken` 两项，填入「设置 → LeetCode」后保存
+5. 到「题目管理」→ 平台同步 → 输入用户名/uid → 同步
+6. 换绑账号时，新同步会自动清空该平台旧账号的提交数据
 
 ## API 一览
 
@@ -192,7 +198,7 @@ GET  /api/plans | POST /api/plans/generate | POST /api/plans/import | GET /api/p
 PATCH /api/plans/tasks/:taskId    # 编辑单条任务（taskDate/title/kind/url/note，仅更新提交字段）
 DELETE /api/plans/tasks/:taskId   # 删除单条任务（打卡记录级联删除）
 POST /api/plans/:id/apply         # 应用 AI 计划修改（body: { raw }；按「日期+标题」匹配保留打卡）
-POST /api/ai/chat                # 全局 AI 助手对话（body: { messages, planId? }；注入练习汇总/弱项画像/能力值，planId 给定可改计划）
+POST /api/ai/chat                # 全局 AI 助手对话（body: { messages, planId? }；注入练习汇总/弱项画像/能力值/赛事日历，planId 给定可改计划）
 GET  /api/ai/ability             # 估算能力值（computed/override/effective）
 POST /api/ai/ability             # 应用 AI 能力值调整（body: { level, reason } 或 { reset: true }）
 GET  /api/lists                  # 题单列表 | POST /api/lists 导入（body: { title, raw, sourceUrl? }）
@@ -201,7 +207,7 @@ POST /api/lists/:id/classify     # 按题库 tags 规则分类 | POST /:id/ai-cl
 POST /api/lists/:id/ai-suggest   # AI 读取题单内容给练习建议（返回 markdown）
 PATCH /api/lists/items/:itemId   # 手动改分类（body: { category }）| DELETE 同路径移除条目
 GET  /api/checkins?month=YYYY-MM  # 月打卡视图
-GET  /api/checkins/date/:date     # 当天任务（桌面挂件复用）
+GET  /api/checkins/date/:date     # 当天任务（Web 挂件复用）
 GET  /api/checkins/streak         # 连续打卡统计（current/longest/totalDays）
 POST /api/checkins { taskId }     # 打卡 | DELETE /api/checkins/:taskId 取消
 GET  /api/settings                # 设置（AI/账号/适配器开关/打卡提醒）
@@ -213,12 +219,8 @@ GET  /api/export/summary.md       # 完整个人练习数据汇总 .md 下载（
 GET  /api/update/check            # 更新检查（稳定版 + nightly 提交构建双通道）
 GET  /api/update/progress         # 一键更新下载进度（phase/received/total）
 POST /api/update/download         # 开始下载并 SHA256 校验 | POST /api/update/apply 原位替换
-GET  /widget                      # Web 挂件单页（当天任务 + 打卡，桌面挂件同款 API）
+GET  /widget                      # Web 挂件单页（当天任务 + 打卡）
 ```
-
-## 桌面挂件扩展路线
-
-桌面挂件已按 Tauri 方案落地（见文末「桌面挂件」章节）：打卡与任务 API 均按日期维度设计（`GET /api/checkins/date/:date`、`POST /api/checkins`），数据模型含 `plan_tasks.url` 跳转链接，加壳零改后端。
 
 ## 测试
 
@@ -228,32 +230,6 @@ npm run typecheck   # 双端类型检查
 ```
 
 测试覆盖：数据库 schema 与约束、配置校验、CF/AtCoder/牛客赛事适配器归一化（mock + 真实网络验证）、CSV 解析、导入去重、增量同步、统计/弱项/趋势与手工计算一致性、AI 生成三路径（成功/失败/未配置）、更新双通道判定与 SHA256 校验解析。
-
-## 桌面挂件（widget.exe）
-
-透明无边框置顶小窗，常驻桌面展示当天任务，可拖动、点击穿透、托盘管理。独立于主程序分发。
-
-### 构建
-
-```bash
-cd desktop/src-tauri && cargo tauri build   # 产物 widget.exe（约 3-8MB）
-```
-
-### 使用
-
-- 与 `icpc-workbench.exe` 放同一文件夹：双击主 exe 时自动拉起挂件（可在 `config.json` 设 `"launchWidget": false` 关闭）。
-- 单独运行 widget.exe：自动扫描 3001–3020 找主服务；找不到显示 offline 提示，可一键拉起主程序。
-
-### 验收清单
-
-- [ ] 透明小窗显示当天任务，可拖动，重启后位置保持
-- [ ] 托盘「显示/隐藏」「切换点击穿透」「开机自启」「退出」
-- [ ] 穿透开启后鼠标穿过挂件；60s 自动恢复交互
-- [ ] 关窗隐藏到托盘，进程不退出
-- [ ] 主服务关闭 → 约 20s 切 offline；重启服务 → 约 10s 自动恢复
-- [ ] offline 页「启动主程序」按钮可拉起主 exe
-- [ ] 主 exe 同目录有 widget.exe 时自动拉起；反复重启主程序只有一份挂件
-- [ ] `launchWidget: false` 时不自动拉起；主 exe 单独存在时正常使用
 
 ## 许可证
 
