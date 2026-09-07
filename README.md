@@ -15,8 +15,7 @@
   - 导出通道：无 Key 也可下载数据包 + 提示词 `.md`，手动喂给任意 AI，返回的 JSON 通过设置页「导入 AI 计划」粘贴/上传即可入库（自动清洗围栏与解释文字）
   - 提示词已内置完整练习数据汇总：AI 能看到掌握薄弱知识点、课程盲区、近期在练的题、卡壳题、复习库到期与打卡节奏，据此编排重做/补模板/复习任务
   - 任务全部附带可点击的题目链接：练习任务直接跳题目页；回顾/模拟赛任务跳 CF 提交记录/题集入口；AI 输出缺链接时自动按题库回退补链
-  - **计划 AI 助手**：训练计划页「AI 助手」打开对话抽屉（左侧计划概览、右侧聊天），AI 自动携带当前计划 + 弱项画像上下文；要求修改计划时 AI 输出完整新任务列表，前端确认后一键原位应用——「日期+标题」相同的任务保留原任务与打卡记录，其余增删
-- **AI 助手（全局）**：左侧菜单「AI 助手」独立的 AI 交流窗口——回答算法问题、粘贴代码调试（markdown 代码块渲染）、解读练习数据与问题分布统计（自动注入练习数据汇总 + 弱项画像）；可关联训练计划让 AI 直接修改计划；AI 评估后可一键更新估算能力值（ability-update 块，今日训练三档随之按新值分档，可随时恢复计算值）
+- **AI 助手（全局）**：左侧菜单「AI 助手」独立的 AI 交流窗口（训练计划页「AI 助手」按钮直达，唯一计划时自动关联）——回答算法问题、粘贴代码调试（markdown 代码块渲染）、解读练习数据与问题分布统计（自动注入练习数据汇总 + 弱项画像）；可关联训练计划让 AI 直接修改计划（plan-modify 块 → 前端确认后原位应用，「日期+标题」相同的任务保留打卡记录）；AI 评估后可一键更新估算能力值（ability-update 块，今日训练三档随之按新值分档，可随时恢复计算值）
 - **题单整理**：粘贴平台题单（洛谷 / Codeforces / AtCoder / 代码源 / 牛客的题号或链接，每行一题）自动识别建单；按知识点分类（已同步题库 tags 规则分类 + AI 分类 + 手动调整），联查题库标注难度与已 AC 状态；AI 读取题单内容结合弱项画像给出练习建议
 - **复习库**：题目复评与遗忘曲线调度（到期数量提醒、正/负反馈调节复习间隔）
 - **模板库**：114 节内置算法模板课程（分 10 大类），学习状态/笔记/进度追踪；自建模板支持 Tab 缩进的代码编辑框（Tab 缩进、Shift+Tab 反缩进、回车自动缩进，保留撤销栈）
@@ -33,7 +32,7 @@ icpc-workbench/
 ├── server/          # Node.js + Express + node:sqlite（内置 SQLite，零原生依赖）
 │   ├── adapters/    # 平台适配器（CF/AtCoder 自动；洛谷/牛客/代码源受限）+ 增量同步
 │   ├── analysis/    # 聚合统计 / 弱项画像 / 周趋势
-│   ├── ai/          # OpenAI 兼容 provider + plan-prompt.md / plan-chat-prompt.md 提示词模板
+│   ├── ai/          # OpenAI 兼容 provider + plan-prompt.md / assistant-prompt.md 提示词模板
 │   ├── contests/    # 四平台赛事聚合（CF/AtCoder/洛谷/牛客，单源失败降级）
 │   ├── plans/       # 计划生成（AI 优先，失败/未配置降级模板）+ 入库
 │   ├── import/      # 手动导入（JSON/CSV/表单）+ 事务入库
@@ -192,9 +191,8 @@ GET  /api/plans | POST /api/plans/generate | POST /api/plans/import | GET /api/p
                                    # import body: { raw, startDate?, days? } ← 任意 AI 返回的计划 JSON 文本
 PATCH /api/plans/tasks/:taskId    # 编辑单条任务（taskDate/title/kind/url/note，仅更新提交字段）
 DELETE /api/plans/tasks/:taskId   # 删除单条任务（打卡记录级联删除）
-POST /api/plans/:id/chat          # 计划 AI 助手对话（body: { messages }；AI 未配置返回 needConfig）
 POST /api/plans/:id/apply         # 应用 AI 计划修改（body: { raw }；按「日期+标题」匹配保留打卡）
-POST /api/ai/chat                # 全局 AI 助手对话（body: { messages, planId? }；注入练习汇总/弱项画像/能力值）
+POST /api/ai/chat                # 全局 AI 助手对话（body: { messages, planId? }；注入练习汇总/弱项画像/能力值，planId 给定可改计划）
 GET  /api/ai/ability             # 估算能力值（computed/override/effective）
 POST /api/ai/ability             # 应用 AI 能力值调整（body: { level, reason } 或 { reset: true }）
 GET  /api/lists                  # 题单列表 | POST /api/lists 导入（body: { title, raw, sourceUrl? }）

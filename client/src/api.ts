@@ -40,15 +40,12 @@ export const put = <T>(path: string, body?: unknown): Promise<T> =>
 
 export const del = <T>(path: string): Promise<T> => api<T>(path, { method: 'DELETE' });
 
-// ---------- 计划 AI 助手 ----------
+// ---------- AI 助手（全局，含训练计划讨论/修改） ----------
 
 export interface PlanChatTurn {
   role: 'user' | 'assistant'
   content: string
 }
-
-export const chatWithPlan = <T>(planId: number, messages: PlanChatTurn[]): Promise<T> =>
-  post<T>(`/api/plans/${planId}/chat`, { messages })
 
 export interface PlanApplyResult {
   ok: boolean
@@ -60,8 +57,6 @@ export interface PlanApplyResult {
 
 export const applyPlanModification = <T>(planId: number, raw: string): Promise<T> =>
   post<T>(`/api/plans/${planId}/apply`, { raw })
-
-// ---------- AI 助手（全局） ----------
 
 export const chatWithAssistant = <T>(body: { messages: PlanChatTurn[]; planId?: number }): Promise<T> =>
   post<T>('/api/ai/chat', body)

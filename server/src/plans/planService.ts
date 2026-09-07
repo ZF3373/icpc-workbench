@@ -30,22 +30,6 @@ export function PROMPT_TEMPLATE(): string {
   return promptFromDisk;
 }
 
-/** 计划 AI 助手聊天提示词模板：懒加载（SEA bundle 注入值优先，同 PROMPT_TEMPLATE 惯例） */
-let chatPromptOverride: string | null = null;
-let chatPromptFromDisk: string | null = null;
-
-export function setChatPromptTemplate(tpl: string): void {
-  chatPromptOverride = tpl;
-}
-
-export function CHAT_PROMPT_TEMPLATE(): string {
-  if (chatPromptOverride !== null) return chatPromptOverride;
-  if (chatPromptFromDisk === null) {
-    chatPromptFromDisk = fs.readFileSync(path.join(__dirname, '..', 'ai', 'plan-chat-prompt.md'), 'utf8');
-  }
-  return chatPromptFromDisk;
-}
-
 export const TASK_KINDS = ['practice', 'review', 'topic', 'contest'] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
 
@@ -689,18 +673,6 @@ export function renderPlanContext(db: Db, planId: number, userId: number = DEFAU
         `| ${t.task_date} | ${t.title} | ${t.kind} | ${t.checked ? '✓' : ''} | ${t.url ?? ''} | ${t.note ?? ''} |`,
     ),
   ].join('\n');
-}
-
-/** 构建计划 AI 助手的 system prompt：注入计划详情（任务+打卡进度）、弱项画像、练习数据汇总。 */
-export function buildChatSystemPrompt(db: Db, planId: number, userId: number = DEFAULT_USER_ID): string {
-  const planMd = renderPlanContext(db, planId, userId);
-  const profile = computeWeakness(db, userId, { minAttempts: 5, topN: 8 });
-  const summaryPrompt = renderSummaryForPrompt(buildPracticeSummary(db, userId));
-  return renderTemplate(CHAT_PROMPT_TEMPLATE(), {
-    plan: planMd,
-    weakness: JSON.stringify(profile.items),
-    summary: summaryPrompt,
-  });
 }
 
 /** AI 回复中 plan-modify 围栏块 + JSON 提取（与 parsePlanJson 相同的容错思路） */

@@ -38,7 +38,7 @@ import { updateRoutes, APP_VERSION } from './routes/update.ts';
 import { widgetRoutes, setWidgetPublicDir } from './routes/widget.ts';
 import { setSchemaSql } from './db/index.ts';
 import { setBuiltinBankJson, seedBuiltinBank } from './db/builtinBank.ts';
-import { setChatPromptTemplate, setPromptTemplate } from './plans/planService.ts';
+import { setPromptTemplate } from './plans/planService.ts';
 import { setAssistantPromptTemplate } from './routes/ai.ts';
 import { PLATFORMS } from '../../shared/src/index.ts';
 
@@ -51,7 +51,6 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
   // SEA 资源注入：schema 与提示词模板从 exe 内读取
   setSchemaSql(readTextAsset('src/db/schema.sql'));
   setPromptTemplate(readTextAsset('src/ai/plan-prompt.md'));
-  setChatPromptTemplate(readTextAsset('src/ai/plan-chat-prompt.md'));
   setAssistantPromptTemplate(readTextAsset('src/ai/assistant-prompt.md'));
   setBuiltinBankJson(readTextAsset('src/data/bank-builtin.json'));
 

@@ -15,37 +15,19 @@ interface TestServer {
   base: string
 }
 
-async function withServer(
-  fn: (s: TestServer, providerCalls: { system: string; messages: unknown[] }[]) => Promise<void>,
-): Promise<void> {
+async function withServer(fn: (s: TestServer) => Promise<void>): Promise<void> {
   const db = createDb(':memory:');
-  const providerCalls: { system: string; messages: unknown[] }[] = [];
   const app = express();
   app.use(express.json());
   app.use(
     '/api/plans',
-    plansRoutes(
-      db,
-      () => ({ enabled: false, baseURL: 'https://x/v1', apiKey: '', model: 'm' }),
-      {
-        createProvider: () => ({
-          enabled: true,
-          chat: async (messages) => {
-            providerCalls.push({
-              system: messages[0]?.content ?? '',
-              messages: messages.slice(1),
-            });
-            return '好的，我已调整计划。```plan-modify\n{"title":"修改后计划","tasks":[]}\n```';
-          },
-        }),
-      },
-    ),
+    plansRoutes(db, () => ({ enabled: false, baseURL: 'https://x/v1', apiKey: '', model: 'm' })),
   );
   const srv = app.listen(0);
   await new Promise<void>((resolve) => srv.once('listening', resolve));
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/plans`;
   try {
-    await fn({ db, base }, providerCalls);
+    await fn({ db, base });
   } finally {
     srv.close();
     db.close();
@@ -67,74 +49,7 @@ function seedPlan(db: Db): { planId: number; task1Id: number } {
   return { planId, task1Id };
 }
 
-// ---------- POST /:id/chat ----------
-
-test('chat: injects plan context as system prompt and returns reply', async () => {
-  await withServer(async ({ db, base }, providerCalls) => {
-    const { planId } = seedPlan(db);
-    const res = await fetch(`${base}/${planId}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: [{ role: 'user', content: '第2周怎么安排？' }] }),
-    });
-    assert.equal(res.status, 200);
-    const body = (await res.json()) as { reply: string };
-    assert.match(body.reply, /plan-modify/);
-    assert.equal(providerCalls.length, 1);
-    assert.match(providerCalls[0].system, /原计划/); // 计划标题注入
-    assert.match(providerCalls[0].system, /t1/); // 任务清单注入
-    assert.match(providerCalls[0].system, /2026-09-01/);
-    assert.deepEqual(providerCalls[0].messages, [{ role: 'user', content: '第2周怎么安排？' }]);
-  });
-});
-
-test('chat: rejects invalid messages and missing plan', async () => {
-  await withServer(async ({ db, base }) => {
-    const { planId } = seedPlan(db);
-    const empty = await fetch(`${base}/${planId}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: [] }),
-    });
-    assert.equal(empty.status, 400);
-    const missing = await fetch(`${base}/999/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
-    });
-    assert.equal(missing.status, 404);
-  });
-});
-
-test('chat: returns needConfig guidance when AI disabled', async () => {
-  const db = createDb(':memory:');
-  const app = express();
-  app.use(express.json());
-  app.use(
-    '/api/plans',
-    plansRoutes(db, () => ({ enabled: false, baseURL: 'https://x/v1', apiKey: '', model: 'm' })),
-  );
-  const srv = app.listen(0);
-  const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/plans`;
-  try {
-    seedPlan(db);
-    const planId = (db.prepare('SELECT id FROM plans').get() as { id: number }).id;
-    const res = await fetch(`${base}/${planId}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
-    });
-    assert.equal(res.status, 400);
-    const body = (await res.json()) as { error: string; needConfig: boolean };
-    assert.equal(body.needConfig, true);
-    assert.match(body.error, /设置/);
-  } finally {
-    srv.close();
-    db.close();
-  }
-});
-
-// ---------- POST /:id/apply ----------
+// ---------- POST /:id/apply（全局 AI 助手 plan-modify 的应用端点） ----------
 
 test('apply: keeps matching tasks with checkins, adds and removes others', async () => {
   await withServer(async ({ db, base }) => {

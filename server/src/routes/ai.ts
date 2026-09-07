@@ -96,7 +96,7 @@ export function aiRoutes(
       ? `（AI 曾调整为 ${ability.override.level}，理由：${ability.override.reason ?? '未记录'}）`
       : '（无 AI 调整记录）';
 
-    let planSection = '（未关联训练计划：plan-modify 能力不可用；用户提到改计划时请引导到「训练计划 → AI 助手」或先关联计划）';
+    let planSection = '（未关联训练计划：plan-modify 能力不可用；用户提到改计划时请引导其先在本页右上角下拉关联训练计划）';
     if (Number.isInteger(planId)) {
       try {
         planSection = `## 关联的训练计划\n${renderPlanContext(db, Number(planId), DEFAULT_USER_ID)}`;

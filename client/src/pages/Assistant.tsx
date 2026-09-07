@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Button, Card, Input, message, Modal, Select, Space, Spin, Tag } from 'antd'
 import { ClearOutlined, RobotOutlined, SendOutlined } from '@ant-design/icons'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   applyAbility,
   applyPlanModification,
@@ -35,8 +35,13 @@ interface ChatMsg extends PlanChatTurn {
 
 export default function Assistant() {
   const nav = useNavigate()
+  // ?plan=<id>：从「训练计划 → AI 助手」跳入时自动关联该计划
+  const [searchParams, setSearchParams] = useSearchParams()
   const [plans, setPlans] = useState<PlanListItem[]>([])
-  const [planId, setPlanId] = useState<number | undefined>(undefined)
+  const [planId, setPlanId] = useState<number | undefined>(() => {
+    const v = Number(searchParams.get('plan'))
+    return Number.isInteger(v) && v > 0 ? v : undefined
+  })
   const [ability, setAbility] = useState<AbilityInfo | null>(null)
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
@@ -48,8 +53,14 @@ export default function Assistant() {
 
   useEffect(() => {
     get<PlanListItem[]>('/api/plans')
-      .then(setPlans)
+      .then((list) => {
+        setPlans(list)
+        // ?plan= 指向的计划已不存在时清除关联；URL 参数消费后即清（仅看首帧 URL，故依赖为空）
+        setPlanId((cur) => (cur !== undefined && !list.some((p) => p.id === cur) ? undefined : cur))
+        if (searchParams.has('plan')) setSearchParams({}, { replace: true })
+      })
       .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const loadAbility = useCallback(() => {

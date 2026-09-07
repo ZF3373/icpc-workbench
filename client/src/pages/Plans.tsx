@@ -20,9 +20,9 @@ import {
 } from 'antd'
 import { CheckOutlined, DeleteOutlined, EditOutlined, PlusOutlined, RobotOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
+import { useNavigate } from 'react-router-dom'
 import type { ColumnsType } from 'antd/es/table'
 import PageHeader from '../components/PageHeader'
-import PlanChatDrawer from '../components/PlanChatDrawer'
 import { del, get, patch, post } from '../api'
 import type { GenerateResult, PlanDetail, PlanListItem, PlanTask } from '../types'
 
@@ -46,10 +46,10 @@ const KIND_OPTIONS = [
 ]
 
 export default function Plans() {
+  const nav = useNavigate()
   const [plans, setPlans] = useState<PlanListItem[]>([])
   const [loading, setLoading] = useState(false)
   const [genOpen, setGenOpen] = useState(false)
-  const [chatOpen, setChatOpen] = useState(false)
   const [detail, setDetail] = useState<PlanDetail | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [editing, setEditing] = useState<PlanTask | null>(null)
@@ -200,8 +200,8 @@ export default function Plans() {
             <Button
               icon={<RobotOutlined />}
               disabled={plans.length === 0}
-              title={plans.length === 0 ? '先创建一个计划后可与 AI 讨论' : undefined}
-              onClick={() => setChatOpen(true)}
+              title={plans.length === 0 ? '先创建一个计划后可与 AI 讨论' : '到全局「AI 助手」讨论/修改计划（自动携带练习数据与弱项画像）'}
+              onClick={() => nav(plans.length === 1 ? `/assistant?plan=${plans[0].id}` : '/assistant')}
             >
               AI 助手
             </Button>
@@ -329,13 +329,6 @@ export default function Plans() {
           </Form.Item>
         </Form>
       </Modal>
-
-      <PlanChatDrawer
-        open={chatOpen}
-        onClose={() => setChatOpen(false)}
-        plans={plans}
-        onPlanMutated={load}
-      />
 
       <GenerateModal
         open={genOpen}
