@@ -43,6 +43,7 @@ export default function Assistant() {
     return Number.isInteger(v) && v > 0 ? v : undefined
   })
   const [ability, setAbility] = useState<AbilityInfo | null>(null)
+  const [abilityError, setAbilityError] = useState(false)
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -64,9 +65,10 @@ export default function Assistant() {
   }, [])
 
   const loadAbility = useCallback(() => {
+    setAbilityError(false)
     get<AbilityInfo>('/api/ai/ability')
       .then(setAbility)
-      .catch(() => {})
+      .catch(() => setAbilityError(true)) // 失败要可见，不能静默吞掉后永远转圈
   }, [])
 
   useEffect(loadAbility, [loadAbility])
@@ -206,6 +208,10 @@ export default function Assistant() {
                   </div>
                 )}
               </>
+            ) : abilityError ? (
+              <span style={{ fontSize: 12, color: '#f2c46d' }}>
+                加载失败，<a onClick={loadAbility}>重试</a>
+              </span>
             ) : (
               <Spin size="small" />
             )}

@@ -26,6 +26,7 @@ import { checkinsRoutes } from './routes/checkins.ts';
 import { contestsRoutes } from './routes/contests.ts';
 import { exportRoutes } from './routes/export.ts';
 import { importRoutes } from './routes/import.ts';
+import { listsRoutes } from './routes/lists.ts';
 import { plansRoutes } from './routes/plans.ts';
 import { problemsRoutes } from './routes/problems.ts';
 import { reviewsRoutes } from './routes/reviews.ts';
@@ -39,7 +40,7 @@ import { widgetRoutes, setWidgetPublicDir } from './routes/widget.ts';
 import { setSchemaSql } from './db/index.ts';
 import { setBuiltinBankJson, seedBuiltinBank } from './db/builtinBank.ts';
 import { setPromptTemplate } from './plans/planService.ts';
-import { setAssistantPromptTemplate } from './routes/ai.ts';
+import { aiRoutes, setAssistantPromptTemplate } from './routes/ai.ts';
 import { PLATFORMS } from '../../shared/src/index.ts';
 
 const CLIENT_DIST_PREFIX = 'client-dist/';
@@ -66,6 +67,8 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
   app.use('/api/sync', syncRoutes(db));
   app.use('/api/stats', statsRoutes(db));
   app.use('/api/plans', plansRoutes(db, () => aiConfigFromDb(db, config)));
+  app.use('/api/ai', aiRoutes(db, () => aiConfigFromDb(db, config)));
+  app.use('/api/lists', listsRoutes(db, () => aiConfigFromDb(db, config)));
   app.use('/api/export', exportRoutes(db));
   app.use('/api/problems', problemsRoutes(db));
   app.use('/api/reviews', reviewsRoutes(db));
