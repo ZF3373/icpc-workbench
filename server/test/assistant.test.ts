@@ -242,3 +242,22 @@ test('assistant: chat rejects invalid messages and nonexistent plan falls back t
     { enabled: true, reply: 'ok' },
   );
 });
+
+test('assistant: prompt includes template-add capability with curriculum categories', async () => {
+  await withServer(
+    async ({ aiBase, providerChats }) => {
+      const res = await fetch(`${aiBase}/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: '把这段思路记到模板库' }] }),
+      });
+      assert.equal(res.status, 200);
+      const system = providerChats[0]!.system;
+      assert.match(system, /template-add/); // 模板库写入块说明
+      assert.match(system, /categoryKey 必须从这些分类中选/); // 分类约束段
+      assert.match(system, /dp（动态规划）/); // 分类清单已注入（与内置课程大纲同步）
+      assert.doesNotMatch(system, /\{templateCategories\}/); // 占位符均已替换
+    },
+    { enabled: true, reply: 'ok' },
+  );
+});

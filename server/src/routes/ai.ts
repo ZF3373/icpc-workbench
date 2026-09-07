@@ -11,6 +11,7 @@ import { computeWeakness } from '../analysis/weakness.ts';
 import { buildPracticeSummary, renderSummaryForPrompt } from '../analysis/summary.ts';
 import { effectiveAbility, renderAbilityEvidence, setAbilityOverride } from '../today/ability.ts';
 import { renderPlanContext, renderTemplate } from '../plans/planService.ts';
+import { CURRICULUM } from '../templates/curriculum.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -113,6 +114,8 @@ export function aiRoutes(
       abilityOverrideNote: overrideNote,
       abilityEvidence: renderAbilityEvidence(db, DEFAULT_USER_ID, summary),
       planSection,
+      // 模板库写入（template-add 块）可选的课程分类清单，跟内置课程大纲保持同步
+      templateCategories: CURRICULUM.map((c) => `${c.key}（${c.name}）`).join('、'),
     });
     try {
       const reply = await provider.chat([{ role: 'system', content: system }, ...messages], { maxTokens: 8000 });

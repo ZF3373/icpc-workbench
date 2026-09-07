@@ -114,3 +114,57 @@ describe('api.ts', () => {
     )
   })
 })
+
+// ---------- aiBlocks.ts：template-add 块（AI 模板库写入建议） ----------
+
+describe('aiBlocks.ts template-add', () => {
+  const block = [
+    '讲解正文',
+    '```template-add',
+    JSON.stringify({
+      categoryKey: 'dp',
+      name: '斜率优化 DP',
+      difficulty: 4,
+      tags: ['DP', '优化'],
+      code: 'for (int j = 1; j <= n; j++) { ... }',
+      idea: '决策单调性 + 凸壳',
+      complexity: 'O(n)',
+      url: 'https://www.luogu.com.cn/problem/P3195',
+    }),
+    '```',
+  ].join('\n')
+
+  it('extracts full draft from a template-add block', async () => {
+    const { extractTemplateAdd } = await import('../src/aiBlocks.ts')
+    const d = extractTemplateAdd(block)
+    assert.ok(d)
+    assert.equal(d.categoryKey, 'dp')
+    assert.equal(d.name, '斜率优化 DP')
+    assert.equal(d.difficulty, 4)
+    assert.deepEqual(d.tags, ['DP', '优化'])
+    assert.equal(d.idea, '决策单调性 + 凸壳')
+    assert.equal(d.url, 'https://www.luogu.com.cn/problem/P3195')
+  })
+
+  it('fills defaults for optional fields and rejects missing name', async () => {
+    const { extractTemplateAdd } = await import('../src/aiBlocks.ts')
+    const minimal = extractTemplateAdd('```template-add\n{"name":"A*","categoryKey":"search"}\n```')
+    assert.ok(minimal)
+    assert.equal(minimal.difficulty, 3) // 缺省难度兜底 3
+    assert.deepEqual(minimal.tags, [])
+    assert.equal(minimal.code, '')
+
+    assert.equal(extractTemplateAdd('```template-add\n{"code":"x"}\n```'), null) // 缺 name
+    assert.equal(extractTemplateAdd('```template-add\n{not json}\n```'), null) // 非法 JSON
+    assert.equal(extractTemplateAdd('没有块的回复'), null)
+  })
+
+  it('strips the block from visible text and tolerates json-fenced variant', async () => {
+    const { extractTemplateAdd, stripTemplateAdd } = await import('../src/aiBlocks.ts')
+    assert.equal(stripTemplateAdd(block), '讲解正文')
+
+    const variant = '前文\n```json template-add\n{"name":"T","categoryKey":"ds"}\n```\n后文'
+    assert.ok(extractTemplateAdd(variant))
+    assert.equal(stripTemplateAdd(variant), '前文\n\n后文') // 块剥离后两端换行保留，Markdown 渲染时折叠
+  })
+})

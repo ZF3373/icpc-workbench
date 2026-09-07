@@ -7,6 +7,7 @@ import {
   applyPlanModification,
   chatWithAssistant,
   get,
+  post,
   type AbilityInfo,
   type PlanApplyResult,
   type PlanChatTurn,
@@ -17,8 +18,11 @@ import PageHeader from '../components/PageHeader'
 import {
   extractAbilityUpdate,
   extractModifyBlock,
+  extractTemplateAdd,
   stripAbilityUpdate,
   stripModifyBlock,
+  stripTemplateAdd,
+  type TemplateAddDraft,
 } from '../aiBlocks'
 
 /**
@@ -50,6 +54,7 @@ export default function Assistant() {
   const [needConfig, setNeedConfig] = useState(false)
   const [applyTarget, setApplyTarget] = useState<{ planId: number; raw: string } | null>(null)
   const [applying, setApplying] = useState(false)
+  const [tplWriting, setTplWriting] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -136,6 +141,29 @@ export default function Assistant() {
       message.success('已恢复为计算值')
     } catch (e) {
       message.error((e as Error).message)
+    }
+  }
+
+  // 把 AI 建议的模板写入模板库：复用自建模板接口（后端校验分类/难度/长度），应用前已由用户点击确认
+  const confirmTemplate = async (draft: TemplateAddDraft, raw: string) => {
+    setTplWriting(raw)
+    try {
+      await post('/api/templates/custom', {
+        categoryKey: draft.categoryKey,
+        name: draft.name,
+        difficulty: draft.difficulty,
+        tags: draft.tags,
+        code: draft.code,
+        idea: draft.idea,
+        complexity: draft.complexity,
+        url: draft.url,
+      })
+      setMessages((s) => s.map((m) => (m.content === raw ? { ...m, applied: true } : m)))
+      message.success(`「${draft.name}」已写入模板库，到「模板库」页可继续完善`)
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setTplWriting(null)
     }
   }
 
@@ -233,7 +261,8 @@ export default function Assistant() {
                 试试这样问：<br />
                 「我哪个知识点最弱？该怎么补？」<br />
                 「这段代码为什么 TLE：粘贴你的代码」<br />
-                「把我的估算能力值调整到 1900」{planId !== undefined ? '「把计划里下周改成图论专题」' : ''}
+                「把我的估算能力值调整到 1900」<br />
+                「把这段思路沉淀成模板记到模板库」{planId !== undefined ? '「把计划里下周改成图论专题」' : ''}
               </div>
             )}
             {messages.map((m, i) => {
@@ -246,12 +275,14 @@ export default function Assistant() {
               }
               const modify = extractModifyBlock(m.content)
               const abilityUpd = extractAbilityUpdate(m.content)
+              const tplAdd = extractTemplateAdd(m.content)
               let text = stripModifyBlock(m.content)
               if (abilityUpd) text = stripAbilityUpdate(text)
+              if (tplAdd) text = stripTemplateAdd(text)
               return (
                 <div key={i} className="plan-chat-msg plan-chat-msg-assistant">
                   <Markdown text={text} />
-                  {(modify || abilityUpd) && (
+                  {(modify || abilityUpd || tplAdd) && (
                     <Space style={{ marginTop: 8 }} wrap>
                       {modify && (
                         <Button size="small" type="primary" disabled={m.applied} onClick={() => void openPlanApply(m.content)}>
@@ -267,6 +298,18 @@ export default function Assistant() {
                           onClick={() => void confirmAbility(abilityUpd, m.content)}
                         >
                           更新能力值为 {abilityUpd.level}
+                        </Button>
+                      )}
+                      {tplAdd && (
+                        <Button
+                          size="small"
+                          type="primary"
+                          ghost
+                          disabled={m.applied}
+                          loading={tplWriting === m.content}
+                          onClick={() => void confirmTemplate(tplAdd, m.content)}
+                        >
+                          {m.applied ? '已写入模板库' : `写入模板库：「${tplAdd.name}」`}
                         </Button>
                       )}
                     </Space>

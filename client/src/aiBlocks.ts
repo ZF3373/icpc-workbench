@@ -32,3 +32,44 @@ export function extractAbilityUpdate(reply: string): { level: number; reason?: s
 export function stripAbilityUpdate(reply: string): string {
   return reply.replace(/```[a-zA-Z-]*ability-update[\s\S]*?```/g, '').trim()
 }
+
+/** template-add 块草稿（AI 建议写入模板库的模板内容，确认后走 POST /api/templates/custom） */
+export interface TemplateAddDraft {
+  categoryKey: string
+  name: string
+  difficulty: number
+  tags: string[]
+  code: string
+  idea?: string
+  complexity?: string
+  url?: string
+}
+
+/** 解析 template-add 块（AI 模板库写入建议）：缺 name 视为无效返回 null */
+export function extractTemplateAdd(reply: string): TemplateAddDraft | null {
+  const m = reply.match(/```[a-zA-Z ]*template-add[\s\S]*?\n([\s\S]*?)```/)
+  if (!m) return null
+  try {
+    const v = JSON.parse(m[1].trim()) as Record<string, unknown>
+    const name = typeof v.name === 'string' ? v.name.trim() : ''
+    if (!name) return null
+    const difficulty = Number(v.difficulty)
+    return {
+      categoryKey: typeof v.categoryKey === 'string' ? v.categoryKey.trim() : '',
+      name,
+      difficulty: Number.isInteger(difficulty) ? difficulty : 3,
+      tags: Array.isArray(v.tags) ? v.tags.map(String).filter(Boolean).slice(0, 12) : [],
+      code: typeof v.code === 'string' ? v.code : '',
+      ...(typeof v.idea === 'string' && v.idea.trim() !== '' ? { idea: v.idea } : {}),
+      ...(typeof v.complexity === 'string' && v.complexity.trim() !== '' ? { complexity: v.complexity } : {}),
+      ...(typeof v.url === 'string' && v.url.trim() !== '' ? { url: v.url.trim() } : {}),
+    }
+  } catch {
+    return null
+  }
+}
+
+/** 剥离 template-add 块后的可见文本 */
+export function stripTemplateAdd(reply: string): string {
+  return reply.replace(/```[a-zA-Z ]*template-add[\s\S]*?```/g, '').trim()
+}
