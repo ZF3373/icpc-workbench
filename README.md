@@ -15,13 +15,17 @@
   - 导出通道：无 Key 也可下载数据包 + 提示词 `.md`，手动喂给任意 AI，返回的 JSON 通过设置页「导入 AI 计划」粘贴/上传即可入库（自动清洗围栏与解释文字）
   - 提示词已内置完整练习数据汇总：AI 能看到掌握薄弱知识点、课程盲区、近期在练的题、卡壳题、复习库到期与打卡节奏，据此编排重做/补模板/复习任务
   - 任务全部附带可点击的题目链接：练习任务直接跳题目页；回顾/模拟赛任务跳 CF 提交记录/题集入口；AI 输出缺链接时自动按题库回退补链
-- **AI 助手（全局）**：左侧菜单「AI 助手」独立的 AI 交流窗口——回答算法问题、粘贴代码调试（markdown 代码块渲染）、解读练习数据与问题分布统计（自动注入练习数据汇总 + 弱项画像 + 近期赛事日历）；可关联训练计划让 AI 直接修改计划（plan-modify 块 → 前端确认后原位应用，「日期+标题」相同的任务保留打卡记录）；AI 评估后可一键更新估算能力值（ability-update 块，今日训练三档随之按新值分档，可随时恢复计算值）；AI 讨论中可把思路沉淀为模板写入模板库（template-add 块，用户确认后落库）；模拟赛安排会自动对齐近 14 天真实赛事时间
-  - 多会话管理：侧边栏会话记录，支持新建 / 切换 / 删除 / 置顶 / 双击重命名，会话记录保存在浏览器本地
+- **AI 助手（全局）**：左侧菜单「AI 助手」独立的 AI 交流窗口——回答算法问题、粘贴代码调试（markdown 代码块 + 数学公式渲染）、解读练习数据与问题分布统计（自动注入练习数据汇总 + 弱项画像 + 近期赛事日历）；可关联训练计划让 AI 直接修改计划（plan-modify 块 → 前端确认后原位应用，「日期+标题」相同的任务保留打卡记录）；AI 评估后可一键更新估算能力值（ability-update 块，今日训练三档随之按新值分档，可随时恢复计算值）；AI 讨论中可把思路沉淀为模板写入模板库（template-add 块，用户确认后落库）；模拟赛安排会自动对齐近 14 天真实赛事时间
+  - **联网搜索**：到「设置 → AI 配置」配置搜索引擎（Tavily / Brave，均有免费额度）+ API Key 后，AI 需要时会自动搜索互联网获取最新信息（近期赛事、最新文档等），回复末尾附搜索来源链接；留空则不启用
+  - **工具调用（function calling）**：AI 可抓取给定网址内容（fetch-url）与解析 PDF 文件（pdf-parse），支持「帮我把这个题单链接的题目导入题单整理」等场景；需模型支持 function calling（DeepSeek / GPT / 智谱等均支持）
+  - **多会话并行**：每个会话独立标记生成状态，会话 A 回复中切到会话 B 照常输入发送，两个会话并行流式输出互不阻塞；生成中发送按钮变红色「停止」可中止（已收到部分保留并标注「已停止生成」）
+  - 多会话管理：侧边栏会话记录，支持新建 / 切换 / 删除 / 置顶 / 双击重命名 / 拖拽排序，会话记录保存在浏览器本地
   - 切换模块再回来不丢会话；生成中切走，回来后回复自动出现
+  - **可配输出上限**：「设置 → AI 配置」可调最大输出 token（长输出场景调大）与模型上下文长度（超限自动裁剪最早消息并提示）；回复因达到上限被截断时末尾会出现提示
   - 图片附件：消息可附上题面 / 评测截图（JPEG/PNG/GIF/WebP，≤64MiB），经 OpenAI 兼容 Files API 上传后以 file 内容块随消息引用
 - **题单整理**：粘贴平台题单（洛谷 / Codeforces / AtCoder / 代码源 / 牛客 / LeetCode 的题号或链接，每行一题）自动识别建单；按知识点分类（已同步题库 tags 规则分类 + AI 分类 + 手动调整），联查题库标注难度与已 AC 状态；AI 读取题单内容结合弱项画像给出练习建议
 - **复习库**：题目复评与遗忘曲线调度（到期数量提醒、正/负反馈调节复习间隔）
-- **模板库**：114 节内置算法模板课程（分 10 大类），学习状态/笔记/进度追踪；自建模板支持 Tab 缩进的代码编辑框（Tab 缩进、Shift+Tab 反缩进、回车自动缩进，保留撤销栈）
+- **模板库**：114 节内置算法模板课程（分 10 大类），学习状态/笔记/进度追踪；自建模板支持 Tab 缩进的代码编辑框（Tab 缩进、Shift+Tab 反缩进、回车自动缩进，保留撤销栈）；思路备注支持完整 Markdown 渲染（GFM 表格/删除线/代码块 + 数学公式，行内 `$...$` 与块级 `$$...$$`，兼容 Obsidian 语法）；页头可切换缩进空格数（2/4，本地持久化）
 - **赛事中心**：Codeforces / AtCoder / 洛谷 / 牛客 四平台场次聚合（即将开始 / 已结束，单源失败自动降级），赛前选场、赛后补题
 - **日历打卡**：月历查看每天训练任务、跳转做题链接、逐任务打卡；打卡数据与计划页联动；连续打卡统计
 - **打卡提醒**：设置页配置每日提醒时间，应用打开期间到点若当天仍有未打卡任务，弹浏览器系统通知 + 页面内通知，点击直达日历；赛前提醒可配置开赛前 N 分钟通知（每场一次，点击直达赛事中心）
@@ -35,7 +39,7 @@ icpc-workbench/
 ├── server/          # Node.js + Express + node:sqlite（内置 SQLite，零原生依赖）
 │   ├── adapters/    # 平台适配器（CF/AtCoder 自动；洛谷/牛客/代码源/LeetCode 受限）+ 增量同步
 │   ├── analysis/    # 聚合统计 / 弱项画像 / 周趋势
-│   ├── ai/          # OpenAI 兼容 provider + plan-prompt.md / assistant-prompt.md 提示词模板
+│   ├── ai/          # OpenAI 兼容 provider + plan-prompt.md / assistant-prompt.md 提示词模板 + function calling 工具注册（fetch-url / pdf-parse / 联网搜索）
 │   ├── contests/    # 四平台赛事聚合（CF/AtCoder/洛谷/牛客，单源失败降级）
 │   ├── plans/       # 计划生成（AI 优先，失败/未配置降级模板）+ 入库
 │   ├── import/      # 手动导入（JSON/CSV/表单）+ 事务入库
@@ -139,6 +143,13 @@ node server/scripts/build-exe.mjs
    - Ollama 本地：`http://localhost:11434/v1` + 已拉取的模型名
 3. 「训练计划」→ 生成新计划（AI 失败或未配置时自动降级为模板计划）
 
+进阶配置（均在「设置 → AI 配置」页）：
+
+- **对话超时**：AI 助手对话的最长等待时间，响应慢的模型可调大（默认 120 秒）
+- **最大输出 token**：单次回复的 token 上限，批量整理模板等长输出场景可调大；回复因达到上限被截断时末尾会提示
+- **模型上下文长度**：对话历史超过此长度时自动裁剪最早消息并提示，避免触发 API 超限
+- **联网搜索**：选择搜索引擎（Tavily / Brave，均有免费额度）并填入 API Key 即可启用，AI 需要时自动调用搜索并附来源链接；需模型支持 function calling
+
 > AI 助手使用用户自行配置的 OpenAI 兼容接口，响应速度和 token 费用由所选模型和接口决定。如果某个模型响应较慢或频繁超时，可在「设置 → AI 配置」切换为响应更快的模型。
 
 ## 无 AI Key 用法（导出通道）
@@ -199,7 +210,7 @@ GET  /api/plans | POST /api/plans/generate | POST /api/plans/import | GET /api/p
 PATCH /api/plans/tasks/:taskId    # 编辑单条任务（taskDate/title/kind/url/note，仅更新提交字段）
 DELETE /api/plans/tasks/:taskId   # 删除单条任务（打卡记录级联删除）
 POST /api/plans/:id/apply         # 应用 AI 计划修改（body: { raw }；按「日期+标题」匹配保留打卡）
-POST /api/ai/chat                # 全局 AI 助手对话（body: { messages, planId? }；注入练习汇总/弱项画像/能力值/赛事日历，planId 给定可改计划；user 消息可带 attachments: [{ fileId, filename? }]，≤8 个）
+POST /api/ai/chat                # 全局 AI 助手对话（body: { messages, planId? }；注入练习汇总/弱项画像/能力值/赛事日历，planId 给定可改计划；user 消息可带 attachments: [{ fileId, filename? }]，≤8 个；支持 function calling 工具：联网搜索 / fetch-url 抓取网页 / pdf-parse 解析 PDF）
 POST /api/ai/files               # 上传文件到 AI Files API（原始字节流直传，header: x-file-name / x-expires-seconds?；服务端转 multipart 转发上游，purpose=user_data，≤64MiB）
 GET  /api/ai/files               # 列出文件（?after=&limit=1-1000&order=asc|desc，游标分页）
 GET  /api/ai/files/:fileId       # 查询文件元信息
