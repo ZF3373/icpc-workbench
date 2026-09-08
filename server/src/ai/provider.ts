@@ -8,6 +8,8 @@ export interface ChatMessage {
 export interface ChatOptions {
   temperature?: number;
   maxTokens?: number;
+  /** 流结束时回调，传入 OpenAI 兼容的 finish_reason（"stop"|"length"|null），用于检测因 token 上限被截断 */
+  onFinish?: (reason: string | null) => void;
 }
 
 /** baseURL → chat/completions 端点：容忍用户直接粘贴完整端点地址 */
@@ -55,7 +57,7 @@ export class AiProvider {
         model: this.cfg.model,
         messages,
         temperature: opts.temperature ?? 0.2,
-        max_tokens: opts.maxTokens ?? 4000,
+        max_tokens: opts.maxTokens ?? 8192,
       }),
       signal: AbortSignal.timeout(this.cfg.timeoutMs ?? 120000),
     });
@@ -92,7 +94,7 @@ export class AiProvider {
         model: this.cfg.model,
         messages,
         temperature: opts.temperature ?? 0.2,
-        max_tokens: opts.maxTokens ?? 4000,
+        max_tokens: opts.maxTokens ?? 8192,
         stream: true,
       }),
       signal: AbortSignal.timeout(this.cfg.timeoutMs ?? 120000),
@@ -106,6 +108,7 @@ export class AiProvider {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let finishReason: string | null = null;
 
     try {
       for (;;) {
@@ -121,13 +124,19 @@ export class AiProvider {
           const line = frame.trim();
           if (!line.startsWith('data:')) continue;
           const payload = line.slice(5).trim();
-          if (payload === '[DONE]') return;
+          if (payload === '[DONE]') {
+            opts.onFinish?.(finishReason);
+            return;
+          }
           try {
             const obj = JSON.parse(payload) as {
-              choices?: Array<{ delta?: { content?: string } }>;
+              choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>;
             };
-            const delta = obj.choices?.[0]?.delta?.content;
+            const choice = obj.choices?.[0];
+            const delta = choice?.delta?.content;
             if (delta) yield delta;
+            // 捕获 finish_reason（"stop"=正常结束，"length"=因 max_tokens 被截断）
+            if (choice?.finish_reason) finishReason = choice.finish_reason;
           } catch {
             // 单帧解析失败跳过（部分实现会发心跳注释行）
           }
@@ -136,5 +145,6 @@ export class AiProvider {
     } finally {
       reader.releaseLock();
     }
+    opts.onFinish?.(finishReason);
   }
 }

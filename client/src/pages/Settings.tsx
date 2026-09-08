@@ -36,7 +36,7 @@ import { useSoftwareUpdate } from '../useSoftwareUpdate'
 import type { ContestReminderConfig, ReminderConfig } from '../types'
 
 interface SettingsData {
-  ai: { enabled: boolean; baseURL: string; apiKey: string; model: string; timeoutMs?: number }
+  ai: { enabled: boolean; baseURL: string; apiKey: string; model: string; timeoutMs?: number; maxTokens?: number; contextWindow?: number }
   accounts: Array<{ platform: PlatformId; handle: string; last_sync_at: string | null; enabled: number }>
   adapterEnabled: Record<string, boolean>
   platforms: typeof PLATFORMS
@@ -93,7 +93,7 @@ export default function Settings() {
     get<SettingsData>('/api/settings')
       .then((d) => {
         setData(d)
-        aiForm.setFieldsValue({ ...d.ai, timeoutMs: d.ai.timeoutMs ? d.ai.timeoutMs / 1000 : 120 })
+        aiForm.setFieldsValue({ ...d.ai, timeoutMs: d.ai.timeoutMs ? d.ai.timeoutMs / 1000 : 120, maxTokens: d.ai.maxTokens ?? 8192, contextWindow: d.ai.contextWindow ?? 131072 })
         const handles: Record<string, string> = {}
         const cookies: Record<string, Record<string, string>> = {}
         for (const a of d.accounts) handles[a.platform] = a.handle
@@ -130,8 +130,8 @@ export default function Settings() {
     if (!v) return
     try {
       // 表单以秒为单位，后端存储毫秒
-      const { timeoutMs, ...rest } = v
-      await post('/api/settings/ai', { ...rest, timeoutMs: Math.round(timeoutMs * 1000) })
+      const { timeoutMs, maxTokens, contextWindow, ...rest } = v
+      await post('/api/settings/ai', { ...rest, timeoutMs: Math.round(timeoutMs * 1000), maxTokens, contextWindow })
       message.success('AI 配置已保存')
       load()
     } catch (e) {
@@ -297,6 +297,12 @@ export default function Settings() {
             </Form.Item>
             <Form.Item name="timeoutMs" label="对话超时（秒）" tooltip="AI 助手对话的最长等待时间。响应慢的模型可适当调大，默认 120 秒">
               <InputNumber min={30} max={600} step={30} addonAfter="秒" style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item name="maxTokens" label="最大输出 token" tooltip="AI 单次回复的最大 token 数。批量整理模板等长输出场景可调大，但不得超过所使用模型的上限。默认 8192">
+              <InputNumber min={512} max={393216} step={1000} addonAfter="tokens" style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item name="contextWindow" label="模型上下文长度" tooltip="模型支持的最大上下文 token 数（含输入+输出）。对话历史超过此长度时自动裁剪最早的消息。当前主流模型多为百万级上下文，请按你实际使用的模型参数填写，设置过小会频繁裁剪丢失上下文，过大会触发 API 超限报错。默认 131072（128K）">
+              <InputNumber min={2048} max={2097152} step={4096} addonAfter="tokens" style={{ width: '100%' }} />
             </Form.Item>
             <Space wrap>
               <Button type="primary" onClick={saveAi}>

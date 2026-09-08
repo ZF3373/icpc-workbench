@@ -7,6 +7,7 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { AiProvider, type ChatMessage } from '../ai/provider.ts';
+import { estimateTokens, trimContext } from '../ai/context.ts';
 import { computeWeakness } from '../analysis/weakness.ts';
 import { buildPracticeSummary, renderSummaryForPrompt } from '../analysis/summary.ts';
 import { effectiveAbility, renderAbilityEvidence, setAbilityOverride } from '../today/ability.ts';
@@ -149,10 +150,34 @@ export function aiRoutes(
     res.setHeader('X-Accel-Buffering', 'no'); // 防止 Nginx 等代理缓冲 SSE
     res.flushHeaders();
 
+    // 按模型上下文窗口裁剪对话历史：budget = contextWindow - maxTokens - systemTokens
+    // 超出时从最早消息开始丢弃，避免 API 因上下文超限报错
+    const aiCfg = getAiConfig();
+    const maxTokens = aiCfg.maxTokens ?? 8192;
+    const contextWindow = aiCfg.contextWindow ?? 131072;
+    const { messages: trimmedMsgs, trimmed: trimmedCount } = trimContext(
+      estimateTokens(system),
+      messages as ChatMessage[],
+      contextWindow,
+      maxTokens,
+    );
+
     try {
-      const stream = provider.chatStream([{ role: 'system', content: system }, ...messages], { maxTokens: 8000 });
+      // 裁剪发生时先发一个提示事件（在 delta 之前，前端可即时感知）
+      if (trimmedCount > 0) {
+        res.write(`data: ${JSON.stringify({ contextTrimmed: trimmedCount })}\n\n`);
+      }
+      let finishReason: string | null = null;
+      const stream = provider.chatStream(
+        [{ role: 'system', content: system }, ...trimmedMsgs],
+        { maxTokens, onFinish: (r) => { finishReason = r; } },
+      );
       for await (const delta of stream) {
         res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+      }
+      // finish_reason === 'length' 表示因 max_tokens 上限被截断，通知前端给出可操作提示
+      if (finishReason === 'length') {
+        res.write(`data: ${JSON.stringify({ truncated: true })}\n\n`);
       }
       res.write('data: [DONE]\n\n');
       res.end();

@@ -73,7 +73,7 @@ export const chatWithAssistant = <T>(body: { messages: PlanChatTurn[]; planId?: 
 export async function chatWithAssistantStream(
   body: { messages: PlanChatTurn[]; planId?: number },
   onDelta: (chunk: string) => void,
-): Promise<void> {
+): Promise<{ truncated: boolean; contextTrimmed: number }> {
   const res = await fetch('/api/ai/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -96,6 +96,8 @@ export async function chatWithAssistantStream(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let truncated = false;
+  let contextTrimmed = 0;
 
   try {
     for (;;) {
@@ -110,11 +112,13 @@ export async function chatWithAssistantStream(
         const line = frame.trim();
         if (!line.startsWith('data:')) continue;
         const payload = line.slice(5).trim();
-        if (payload === '[DONE]') return;
+        if (payload === '[DONE]') return { truncated, contextTrimmed };
         try {
-          const obj = JSON.parse(payload) as { delta?: string; error?: string };
+          const obj = JSON.parse(payload) as { delta?: string; error?: string; truncated?: boolean; contextTrimmed?: number };
           if (obj.delta) onDelta(obj.delta);
           if (obj.error) throw new Error(obj.error);
+          if (obj.truncated) truncated = true;
+          if (typeof obj.contextTrimmed === 'number') contextTrimmed = obj.contextTrimmed;
         } catch (e) {
           if (e instanceof SyntaxError) continue;
           throw e;
@@ -124,6 +128,7 @@ export async function chatWithAssistantStream(
   } finally {
     reader.releaseLock();
   }
+  return { truncated, contextTrimmed };
 }
 
 export type AbilityInfo = {

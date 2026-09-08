@@ -14,6 +14,10 @@ export interface AiConfig {
   model: string;
   /** AI 对话超时（毫秒），用户可在设置页调整；缺省 120000（2 分钟） */
   timeoutMs?: number;
+  /** AI 单次回复最大 token 数，用户可在设置页调整；缺省 8192。值越大越不易截断，但受模型上限约束 */
+  maxTokens?: number;
+  /** 模型上下文窗口大小（token 数），含输入+输出；对话历史超限时自动裁剪最早消息。缺省 131072（128K） */
+  contextWindow?: number;
 }
 
 export interface AppConfig {
@@ -35,6 +39,8 @@ export const DEFAULT_CONFIG: AppConfig = {
     apiKey: '',
     model: 'deepseek-chat',
     timeoutMs: 120000,
+    maxTokens: 8192,
+    contextWindow: 131072,
   },
 };
 
@@ -94,12 +100,18 @@ export function aiConfigFromDb(db: Db, cfg: AppConfig): AiConfig {
   const enabledRaw = get('ai.enabled');
   const timeoutRaw = get('ai.timeoutMs');
   const timeoutMs = timeoutRaw !== undefined ? Number(timeoutRaw) : cfg.ai.timeoutMs;
+  const maxTokensRaw = get('ai.maxTokens');
+  const maxTokens = maxTokensRaw !== undefined ? Number(maxTokensRaw) : cfg.ai.maxTokens;
+  const ctxWindowRaw = get('ai.contextWindow');
+  const contextWindow = ctxWindowRaw !== undefined ? Number(ctxWindowRaw) : cfg.ai.contextWindow;
   return {
     enabled: enabledRaw !== undefined ? enabledRaw === 'true' : cfg.ai.enabled,
     baseURL: get('ai.baseURL') ?? cfg.ai.baseURL,
     model: get('ai.model') ?? cfg.ai.model,
     apiKey: process.env.AI_API_KEY ?? get('ai.apiKey') ?? cfg.ai.apiKey,
     ...(Number.isFinite(timeoutMs) && timeoutMs! > 0 ? { timeoutMs: timeoutMs! } : {}),
+    ...(Number.isFinite(maxTokens) && maxTokens! > 0 ? { maxTokens: maxTokens! } : {}),
+    ...(Number.isFinite(contextWindow) && contextWindow! > 0 ? { contextWindow: contextWindow! } : {}),
   };
 }
 
@@ -114,6 +126,8 @@ export function saveAiConfig(db: Db, cfg: AppConfig, patch: Partial<AiConfig>): 
     ['ai.apiKey', patch.apiKey],
     ['ai.model', patch.model],
     ['ai.timeoutMs', patch.timeoutMs === undefined ? undefined : String(patch.timeoutMs)],
+    ['ai.maxTokens', patch.maxTokens === undefined ? undefined : String(patch.maxTokens)],
+    ['ai.contextWindow', patch.contextWindow === undefined ? undefined : String(patch.contextWindow)],
   ];
   for (const [k, v] of entries) {
     if (v !== undefined) upsert.run(k, v);
