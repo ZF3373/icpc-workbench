@@ -4,6 +4,7 @@ import {
   DeleteOutlined,
   HolderOutlined,
   LoadingOutlined,
+  PaperClipOutlined,
   PlusOutlined,
   PushpinFilled,
   PushpinOutlined,
@@ -15,11 +16,16 @@ import {
   applyAbility,
   applyPlanModification,
   chatWithAssistantStream,
+  generateSessionTitle,
   get,
   post,
+  uploadAiFile,
+  extractDocumentText,
   type AbilityInfo,
+  type ChatFileAttachment,
   type PlanApplyResult,
   type PlanChatTurn,
+  type TokenUsage,
 } from '../api'
 import type { PlanListItem } from '../types'
 import Markdown from '../components/Markdown'
@@ -32,6 +38,9 @@ import {
   stripModifyBlock,
   stripTemplateAdd,
   type TemplateAddDraft,
+  extractListCreate,
+  stripListCreate,
+  type ListCreateDraft,
 } from '../aiBlocks'
 
 /**
@@ -51,8 +60,13 @@ interface ChatMsg extends PlanChatTurn {
   applied?: boolean
   /** 该消息中已写入模板库的 template-add 草稿下标（按消息内顺序，持久化防重载重复写入） */
   appliedTpl?: number[]
+  /** 该消息的 list-create 块是否已导入题单 */
+  appliedList?: boolean
+  /** AI 的思维链内容（reasoning_content，如 DeepSeek-R1 / o1 模型） */
+  reasoning?: string
+  /** 本次回复的 token 用量（服务端 usage 事件） */
+  usage?: TokenUsage
 }
-
 interface ChatSession {
   id: string
   title: string
@@ -245,6 +259,13 @@ function relTime(ts: number): string {
   return `${d.getMonth() + 1}/${d.getDate()}`
 }
 
+function fmtBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '-'
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
 // ---------- 组件 ----------
 
 export default function Assistant() {
@@ -265,12 +286,216 @@ export default function Assistant() {
   const [applyTarget, setApplyTarget] = useState<{ planId: number; raw: string } | null>(null)
   const [applying, setApplying] = useState(false)
   const [tplWriting, setTplWriting] = useState<Set<string>>(new Set())
+  const [listCreating, setListCreating] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dragOverId, setDragOverId] = useState<string | null>(null)
   /** 拖拽源 id（ref 即时读写，不依赖 state 异步更新） */
   const dragIdRef = useRef<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // ---------- 图片附件（Files API） ----------
+  /** 本条消息待发送的附件（上传成功后的 file_id 引用） */
+  const [pendingAtts, setPendingAtts] = useState<ChatFileAttachment[]>([])
+  const [uploadingAtts, setUploadingAtts] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // 切换会话时清空未发送的附件，避免串会话
+  useEffect(() => {
+    setPendingAtts([])
+  }, [activeId])
+
+  // ---------- 文件上传 ----------
+  /** 图片 MIME 类型：走 Files API 上传，以 file 内容块引用 */
+  const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+  /** 文本类扩展名：直接读取内容以代码块注入消息文本，不依赖 Files API */
+  const TEXT_EXTENSIONS = [
+    '.txt', '.md', '.markdown', '.py', '.cpp', '.c', '.cc', '.cxx', '.h', '.hpp',
+    '.java', '.kt', '.rs', '.go', '.js', '.ts', '.jsx', '.tsx', '.rb', '.php',
+    '.sh', '.bash', '.zsh', '.sql', '.json', '.xml', '.yaml', '.yml', '.toml',
+    '.csv', '.tsv', '.html', '.css', '.scss', '.less', '.vue', '.svelte',
+    '.swift', '.m', '.scala', '.clj', '.ex', '.exs', '.erl', '.hs', '.lua',
+    '.pl', '.r', '.dart', '.groovy', '.gradle', '.cmake', '.makefile',
+    '.gitignore', '.dockerfile', '.env', '.ini', '.cfg', '.conf', '.properties',
+  ]
+  /** 文本文件大小上限：1 MiB（避免注入过多文本撑爆上下文窗口） */
+  const MAX_TEXT_FILE_BYTES = 1024 * 1024
+  /** PDF 文件大小上限：10 MiB（服务端用 unpdf 提取文本，上限与服务端一致） */
+  const MAX_PDF_FILE_BYTES = 10 * 1024 * 1024
+
+  const isImageFile = (f: File): boolean =>
+    IMAGE_TYPES.includes(f.type) || /\.(jpe?g|png|gif|webp)$/i.test(f.name)
+
+  const isTextFile = (f: File): boolean => {
+    if (isImageFile(f)) return false
+    if (f.type.startsWith('text/')) return true
+    const lower = f.name.toLowerCase()
+    return TEXT_EXTENSIONS.some((ext) => lower.endsWith(ext))
+  }
+
+  const isPdfFile = (f: File): boolean =>
+    f.type === 'application/pdf' || /\.pdf$/i.test(f.name)
+
+  const handlePickFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const all = Array.from(files)
+    // 分流：图片走 Files API，文本直接读取内容，PDF 走服务端提取
+    const images = all.filter(isImageFile)
+    const pdfs = all.filter(isPdfFile)
+    const texts = all.filter((f) => !isImageFile(f) && !isPdfFile(f) && isTextFile(f))
+    const unsupported = all.filter((f) => !isImageFile(f) && !isPdfFile(f) && !isTextFile(f))
+
+    if (unsupported.length > 0) {
+      message.warning(`不支持的文件：${unsupported.map((f) => f.name).join('、')}（仅支持图片、文本/代码或 PDF 文件）`)
+    }
+
+    // 文本文件：读取内容作为附件（与图片统一管理，显示为可删除标签）
+    if (texts.length > 0) {
+      const textAtts: ChatFileAttachment[] = []
+      for (const f of texts) {
+        if (f.size > MAX_TEXT_FILE_BYTES) {
+          message.warning(`「${f.name}」超过 1 MiB，已跳过（文本文件上限 1 MiB）`)
+          continue
+        }
+        try {
+          const text = await f.text()
+          textAtts.push({
+            fileId: `text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            filename: f.name,
+            bytes: f.size,
+            textContent: text,
+          })
+        } catch {
+          message.error(`读取「${f.name}」失败`)
+        }
+      }
+      if (textAtts.length > 0) {
+        const room = 8 - pendingAtts.length
+        const picked = textAtts.slice(0, room)
+        if (picked.length < textAtts.length) message.warning('每条消息最多附带 8 个文件')
+        if (picked.length > 0) {
+          setPendingAtts((prev) => [...prev, ...picked])
+          message.success(`已添加 ${picked.length} 个文本文件`)
+        }
+      }
+    }
+
+    // PDF 文件：走服务端提取文本，作为文本附件注入
+    if (pdfs.length > 0) {
+      setUploadingAtts(true)
+      try {
+        const pdfAtts: ChatFileAttachment[] = []
+        for (const f of pdfs) {
+          if (f.size > MAX_PDF_FILE_BYTES) {
+            message.warning(`「${f.name}」超过 10 MiB，已跳过（PDF 文件上限 10 MiB）`)
+            continue
+          }
+          try {
+            const { text, warning } = await extractDocumentText(f)
+            if (warning) message.warning(`「${f.name}」：${warning}`)
+            if (!text) continue
+            pdfAtts.push({
+              fileId: `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              filename: f.name,
+              bytes: f.size,
+              textContent: text,
+            })
+          } catch (e) {
+            message.error(`提取「${f.name}」文本失败：${(e as Error).message}`)
+          }
+        }
+        if (pdfAtts.length > 0) {
+          const room = 8 - pendingAtts.length
+          const picked = pdfAtts.slice(0, room)
+          if (picked.length < pdfAtts.length) message.warning('每条消息最多附带 8 个文件')
+          if (picked.length > 0) {
+            setPendingAtts((prev) => [...prev, ...picked])
+            message.success(`已提取 ${picked.length} 个 PDF 文件`)
+          }
+        }
+      } finally {
+        setUploadingAtts(false)
+      }
+    }
+
+    // 图片文件：走 Files API 上传
+    if (images.length === 0) {
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      return
+    }
+    const room = 8 - pendingAtts.length
+    const picked = images.slice(0, room)
+    if (picked.length < images.length) message.warning('每条消息最多附带 8 个文件')
+    if (picked.length === 0) {
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      return
+    }
+    setUploadingAtts(true)
+    try {
+      const uploaded: ChatFileAttachment[] = []
+      for (const f of picked) {
+        try {
+          const obj = await uploadAiFile(f)
+          uploaded.push({ fileId: obj.id, filename: obj.filename || f.name, bytes: obj.bytes })
+        } catch (e) {
+          message.error(`上传「${f.name}」失败：${(e as Error).message}`)
+        }
+      }
+      if (uploaded.length > 0) {
+        setPendingAtts((prev) => [...prev, ...uploaded])
+        message.success(`已上传 ${uploaded.length} 个图片`)
+      }
+    } finally {
+      setUploadingAtts(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  // ---------- 拖拽上传 ----------
+  /** 拖拽文件进入聊天区域时显示遮罩 */
+  const [dragOver, setDragOver] = useState(false)
+  /** 防止 dragleave 误触发（子元素进出）：用计数器而非布尔 */
+  const dragCounter = useRef(0)
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    // 仅处理文件拖入（非内部元素拖拽）
+    if (!e.dataTransfer?.types?.includes('Files')) return
+    dragCounter.current++
+    setDragOver(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounter.current--
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0
+      setDragOver(false)
+    }
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    // dragover 必须 preventDefault 否则浏览器默认行为会阻止 drop
+    e.preventDefault()
+    e.stopPropagation()
+  }, [])
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounter.current = 0
+    setDragOver(false)
+    if (!e.dataTransfer?.files || e.dataTransfer.files.length === 0) return
+    // 过滤：仅接受图片或文本文件（handlePickFiles 内部会二次校验并提示不支持的文件）
+    const files = Array.from(e.dataTransfer.files).filter((f) => isImageFile(f) || isTextFile(f))
+    if (files.length === 0) {
+      message.warning('仅支持图片（JPEG/PNG/GIF/WebP）或文本/代码文件')
+      return
+    }
+    void handlePickFiles(files as unknown as FileList)
+  }, [message])
 
   // 拖拽中松手在列表外时清除状态（mouse 事件方案，兼容 WebView2/WKWebView）
   useEffect(() => {
@@ -327,12 +552,21 @@ export default function Assistant() {
 
   const send = async () => {
     const text = input.trim()
-    if (!text || sendingIds.has(activeId)) return
+    const atts = pendingAtts
+    if ((!text && atts.length === 0) || sendingIds.has(activeId)) return
     const sessionId = activeId
     const session = sessions.find((s) => s.id === sessionId)
     if (!session) return
 
-    const nextMessages: ChatMsg[] = [...session.messages, { role: 'user', content: text }]
+    // 发送给服务端的附件（含 textContent），存入会话历史的附件（剥离 textContent 避免 localStorage 爆满）
+    const attsForSend = atts
+    const attsForStore = atts.map(({ textContent: _tc, ...rest }) => rest)
+    const userMsg: ChatMsg = {
+      role: 'user',
+      content: text,
+      ...(attsForStore.length > 0 ? { attachments: attsForStore } : {}),
+    }
+    const nextMessages: ChatMsg[] = [...session.messages, userMsg]
     const sendPlanId = session.planId
 
     // 写入用户消息 + 进入 sending 态（标题取首条消息前 30 字）
@@ -345,12 +579,13 @@ export default function Assistant() {
           ? {
               ...s,
               messages: nextMessages,
-              title: s.messages.length === 0 ? text.slice(0, 30) : s.title,
+              title: s.messages.length === 0 ? (text || userMsg.attachments?.[0]?.filename || '新会话').slice(0, 30) : s.title,
               updatedAt: Date.now(),
             }
           : s,
       ),
     }))
+    setPendingAtts([])
     setNeedConfig(false)
 
     // 每次发送创建独立的 AbortController，支持用户主动停止生成
@@ -366,7 +601,14 @@ export default function Assistant() {
 
       const result = await chatWithAssistantStream(
         {
-          messages: nextMessages.map(({ role, content }) => ({ role, content })),
+          messages: nextMessages.map(({ role, content, attachments }, idx) => ({
+            role,
+            content,
+            // 最后一条 user 消息使用含 textContent 的完整附件；历史消息的 textContent 已剥离
+            ...(attachments && attachments.length > 0
+              ? { attachments: idx === nextMessages.length - 1 ? attsForSend : attachments }
+              : {}),
+          })),
           ...(sendPlanId !== undefined ? { planId: sendPlanId } : {}),
         },
         (delta) => {
@@ -380,7 +622,27 @@ export default function Assistant() {
           })
         },
         ac.signal,
+        (reasoningChunk) => {
+          // 推理内容（思维链）追加到最后一条 assistant 消息的 reasoning 字段
+          patchActiveSessionMessages(sessionId, (msgs) => {
+            const last = msgs[msgs.length - 1]
+            if (last && last.role === 'assistant') {
+              return [...msgs.slice(0, -1), { ...last, reasoning: (last.reasoning ?? '') + reasoningChunk }]
+            }
+            return msgs
+          })
+        },
       )
+      // token 用量：写入最后一条 assistant 消息（前端展示消耗）
+      if (result.usage) {
+        patchActiveSessionMessages(sessionId, (msgs) => {
+          const last = msgs[msgs.length - 1]
+          if (last && last.role === 'assistant') {
+            return [...msgs.slice(0, -1), { ...last, usage: result.usage! }]
+          }
+          return msgs
+        })
+      }
       // AI 因 max_tokens 上限被截断：在回复末尾追加提示，引导用户调大上限或分批请求
       if (result.truncated) {
         patchActiveSessionMessages(sessionId, (msgs) => {
@@ -394,8 +656,20 @@ export default function Assistant() {
           return msgs
         })
       }
-      // 对话历史被裁剪：提示用户上下文窗口偏小，最早的消息已丢弃
-      if (result.contextTrimmed > 0) {
+      // 对话历史被摘要：提示用户早期对话已压缩为摘要
+      if (result.summarized) {
+        patchActiveSessionMessages(sessionId, (msgs) => {
+          const last = msgs[msgs.length - 1]
+          if (last && last.role === 'assistant') {
+            return [
+              ...msgs.slice(0, -1),
+              { ...last, content: `${last.content}\n\n> 📝 **对话历史较长，已自动摘要 ${result.droppedCount} 条早期对话以适配上下文窗口，关键信息已保留。**` },
+            ]
+          }
+          return msgs
+        })
+      } else if (result.contextTrimmed > 0) {
+        // 对话历史被裁剪：提示用户上下文窗口偏小，最早的消息已丢弃
         patchActiveSessionMessages(sessionId, (msgs) => {
           const last = msgs[msgs.length - 1]
           if (last && last.role === 'assistant') {
@@ -422,6 +696,20 @@ export default function Assistant() {
           }
           return msgs
         })
+      }
+
+      // 会话标题自动生成：首条消息发送后（原标题为默认/截断）异步生成更好的标题
+      if (session.messages.length === 0) {
+        const titleMsgs = [{ role: 'user' as const, content: text || '图片提问' }]
+        generateSessionTitle(titleMsgs)
+          .then((title) => {
+            if (title && title !== '新会话') {
+              renameSession(sessionId, title)
+            }
+          })
+          .catch(() => {
+            // 标题生成失败：静默回退到首条消息截断（已在上方设置），不阻断对话
+          })
       }
     } catch (e) {
       // 用户主动停止生成：保留已收到内容，不报错
@@ -563,6 +851,28 @@ export default function Assistant() {
     }
     if (ok > 0) {
       message.success(`已写入 ${ok} 个模板到模板库${fail > 0 ? `，${fail} 个失败` : ''}`)
+    }
+  }
+
+  const confirmListCreate = async (draft: ListCreateDraft, msgIndex: number) => {
+    setListCreating(true)
+    try {
+      const result = await post<{ ok: boolean; id: number; imported: number; unrecognized: number }>(
+        '/api/lists',
+        { title: draft.title, raw: draft.raw, sourceUrl: draft.sourceUrl },
+      )
+      if (result.unrecognized > 0) {
+        message.warning(`题单「${draft.title}」已创建，导入 ${result.imported} 题，${result.unrecognized} 题未识别`)
+      } else {
+        message.success(`题单「${draft.title}」已创建，导入 ${result.imported} 题，到「题单整理」页可查看`)
+      }
+      patchActiveSessionMessages(activeId, (msgs) =>
+        msgs.map((m, i) => (i === msgIndex ? { ...m, appliedList: true } : m)),
+      )
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setListCreating(false)
     }
   }
 
@@ -802,7 +1112,24 @@ export default function Assistant() {
         </div>
 
         {/* 聊天主区 */}
-        <div className="assistant-main">
+        <div
+          className="assistant-main"
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+        >
+          {dragOver && (
+            <div className="chat-dropzone">
+              <div className="chat-dropzone-inner">
+                <PaperClipOutlined style={{ fontSize: 40, marginBottom: 12 }} />
+                <div style={{ fontSize: 15, fontWeight: 500 }}>松开以添加文件</div>
+                <div style={{ fontSize: 12, marginTop: 4, opacity: 0.7 }}>
+                  图片（JPEG/PNG/GIF/WebP ≤64MiB）或文本/代码文件（≤1MiB）
+                </div>
+              </div>
+            </div>
+          )}
           <div className="plan-chat-msgs">
             {messages.length === 0 && !sending && (
               <div style={{ color: '#8993a2', fontSize: 13, padding: '32px 16px', textAlign: 'center' }}>
@@ -818,7 +1145,18 @@ export default function Assistant() {
               if (m.role === 'user') {
                 return (
                   <div key={i} className="plan-chat-msg plan-chat-msg-user">
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>
+                    {m.attachments && m.attachments.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: m.content ? 6 : 0 }}>
+                        {m.attachments.map((a, j) => (
+                          <Tag key={`${a.fileId}-${j}`} style={{ marginInlineEnd: 0 }}>
+                            <PaperClipOutlined /> {a.filename || a.fileId}
+                            {a.bytes !== undefined ? `（${fmtBytes(a.bytes)}）` : ''}
+                            {a.textContent !== undefined ? ' · 文本' : ''}
+                          </Tag>
+                        ))}
+                      </div>
+                    )}
+                    {m.content && <Markdown text={m.content} />}
                   </div>
                 )
               }
@@ -826,9 +1164,11 @@ export default function Assistant() {
               const abilityUpd = extractAbilityUpdate(m.content)
               const tplAdds = extractTemplateAdd(m.content)
               const hasTpl = tplAdds.length > 0
+              const listDraft = extractListCreate(m.content)
               let text = stripModifyBlock(m.content)
               if (abilityUpd) text = stripAbilityUpdate(text)
               if (hasTpl) text = stripTemplateAdd(text)
+              if (listDraft) text = stripListCreate(text)
               // 旧消息用 m.applied 表示模板已写入（向后兼容：无 appliedTpl 时视为该消息模板均已应用）
               const appliedTpl =
                 m.applied === true && !m.appliedTpl ? tplAdds.map((_, j) => j) : (m.appliedTpl ?? [])
@@ -836,8 +1176,28 @@ export default function Assistant() {
               const pendingTplCount = tplAdds.length - appliedTpl.length
               return (
                 <div key={i} className="plan-chat-msg plan-chat-msg-assistant">
+                  {m.reasoning && (
+                    <details
+                      className="ai-reasoning"
+                      style={{
+                        marginBottom: 8,
+                        padding: '6px 12px',
+                        background: 'var(--fill-2, rgba(0,0,0,0.04))',
+                        borderRadius: 6,
+                        fontSize: 13,
+                        color: 'var(--text-2, #5b6573)',
+                      }}
+                    >
+                      <summary style={{ cursor: 'pointer', userSelect: 'none', fontWeight: 500 }}>
+                        💭 思考过程
+                      </summary>
+                      <div style={{ marginTop: 6, whiteSpace: 'pre-wrap', opacity: 0.85 }}>
+                        {m.reasoning}
+                      </div>
+                    </details>
+                  )}
                   <Markdown text={text} />
-                  {(modify || abilityUpd || hasTpl) && (
+                  {(modify || abilityUpd || hasTpl || listDraft) && (
                     <Space style={{ marginTop: 8 }} wrap>
                       {modify && (
                         <Button
@@ -894,7 +1254,30 @@ export default function Assistant() {
                           全部写入（{pendingTplCount}）
                         </Button>
                       )}
+                      {listDraft && (
+                        <Button
+                          size="small"
+                          type="primary"
+                          disabled={m.appliedList}
+                          loading={listCreating}
+                          onClick={() => void confirmListCreate(listDraft, i)}
+                        >
+                          {m.appliedList ? `✓ 已导入题单：${listDraft.title}` : `导入题单：「${listDraft.title}」`}
+                        </Button>
+                      )}
                     </Space>
+                  )}
+                  {m.usage && (
+                    <div
+                      style={{
+                        marginTop: 4,
+                        fontSize: 12,
+                        color: 'var(--text-3, #8993a2)',
+                        textAlign: 'right',
+                      }}
+                    >
+                      📝 输入 {m.usage.prompt_tokens} / 输出 {m.usage.completion_tokens} token
+                    </div>
                   )}
                 </div>
               )
@@ -909,10 +1292,25 @@ export default function Assistant() {
             <div ref={bottomRef} />
           </div>
           <div className="plan-chat-input">
+            {pendingAtts.length > 0 && (
+              <div style={{ flexBasis: '100%', display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {pendingAtts.map((a, i) => (
+                  <Tag
+                    key={`${a.fileId}-${i}`}
+                    closable
+                    onClose={() => setPendingAtts((prev) => prev.filter((_, j) => j !== i))}
+                  >
+                    <PaperClipOutlined /> {a.filename || a.fileId}
+                    {a.bytes !== undefined ? `（${fmtBytes(a.bytes)}）` : ''}
+                    {a.textContent !== undefined ? ' · 文本' : ''}
+                  </Tag>
+                ))}
+              </div>
+            )}
             <Input.TextArea
               value={input}
               onChange={(e) => setChatState((prev) => ({ ...prev, input: e.target.value }))}
-              placeholder="向 AI 教练提问…（可粘贴代码）Enter 发送，Shift+Enter 换行"
+              placeholder="向 AI 教练提问…（可粘贴代码，拖入或附加图片/代码文件）Enter 发送，Shift+Enter 换行"
               autoSize={{ minRows: 1, maxRows: 6 }}
               onPressEnter={(e) => {
                 if (!e.shiftKey) {
@@ -920,6 +1318,20 @@ export default function Assistant() {
                   void send()
                 }
               }}
+            />
+            <Button
+              icon={uploadingAtts ? <LoadingOutlined /> : <PaperClipOutlined />}
+              title="附加图片或代码文件（图片走 Files API 上传，文本/代码文件读取内容到输入框）"
+              disabled={uploadingAtts || sending}
+              onClick={() => fileInputRef.current?.click()}
+            />
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.txt,.md,.py,.cpp,.c,.cc,.cxx,.h,.hpp,.java,.kt,.rs,.go,.js,.ts,.jsx,.tsx,.rb,.php,.sh,.bash,.zsh,.sql,.json,.xml,.yaml,.yml,.toml,.csv,.tsv,.html,.css,.scss,.less,.vue,.svelte,.swift,.m,.scala,.clj,.ex,.exs,.erl,.hs,.lua,.pl,.r,.dart,.groovy,.gradle,.cmake,.ini,.cfg,.conf,.properties"
+              hidden
+              onChange={(e) => void handlePickFiles(e.target.files)}
             />
             {sending ? (
               <Button
@@ -932,7 +1344,7 @@ export default function Assistant() {
               <Button
                 type="primary"
                 icon={<SendOutlined />}
-                disabled={!input.trim()}
+                disabled={(!input.trim() && pendingAtts.length === 0) || uploadingAtts}
                 onClick={() => void send()}
               />
             )}
@@ -955,6 +1367,7 @@ export default function Assistant() {
           message="将以 AI 给出的任务列表整体替换该计划的任务。日期与标题都相同的任务会保留原 id 与打卡记录；其余任务新增/删除（被删除任务的打卡将一并清除）。"
         />
       </Modal>
+
     </div>
   )
 }

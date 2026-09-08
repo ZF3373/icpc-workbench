@@ -3,6 +3,8 @@ import { Button, Calendar, Card, Col, Empty, Row, Space, Spin, Tag, App as AntdA
 import { CheckOutlined, FieldTimeOutlined, FireOutlined, TrophyOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
+import 'dayjs/locale/zh-cn'
+import zhCN from 'antd/locale/zh_CN'
 import PageHeader from '../components/PageHeader'
 import StatStrip from '../components/StatStrip'
 import { get, post, del } from '../api'
@@ -160,6 +162,7 @@ export default function CalendarPage() {
         <Col xs={24} xl={16}>
           <Card title="训练日历 —— 点击日期查看当天计划并打卡" size="small">
             <Calendar
+              locale={zhCN as never}
               onSelect={(d: Dayjs) => setSelected(d.format('YYYY-MM-DD'))}
               onPanelChange={(d: Dayjs) => setMonth(d.format('YYYY-MM'))}
               dateFullCellRender={renderCell}

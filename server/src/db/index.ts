@@ -48,6 +48,10 @@ function migrate(db: Db): void {
   for (const col of ['code', 'idea', 'complexity', 'url']) {
     if (!progressCols.has(col)) db.exec(`ALTER TABLE template_progress ADD COLUMN ${col} TEXT`);
   }
+  // v0.5: problem_lists 增加 AI 建议缓存列（避免每次点击都重新调 AI）
+  const listCols = columnsOf('problem_lists');
+  if (!listCols.has('ai_suggestion')) db.exec('ALTER TABLE problem_lists ADD COLUMN ai_suggestion TEXT');
+  if (!listCols.has('ai_suggestion_at')) db.exec('ALTER TABLE problem_lists ADD COLUMN ai_suggestion_at TEXT');
   mergeSlashedCfKeys(db);
   // v0.4.5 数据修复：洛谷秒级时间戳曾被按毫秒解析（见 fixLuoguTimestamps）
   fixLuoguTimestamps(db);

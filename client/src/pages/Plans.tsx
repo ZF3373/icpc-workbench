@@ -18,9 +18,8 @@ import {
   Table,
   Tag,
 } from 'antd'
-import { CheckOutlined, DeleteOutlined, EditOutlined, PlusOutlined, RobotOutlined } from '@ant-design/icons'
+import { CheckOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
-import { useNavigate } from 'react-router-dom'
 import type { ColumnsType } from 'antd/es/table'
 import PageHeader from '../components/PageHeader'
 import { del, get, patch, post } from '../api'
@@ -46,7 +45,6 @@ const KIND_OPTIONS = [
 ]
 
 export default function Plans() {
-  const nav = useNavigate()
   const [plans, setPlans] = useState<PlanListItem[]>([])
   const [loading, setLoading] = useState(false)
   const [genOpen, setGenOpen] = useState(false)
@@ -197,17 +195,9 @@ export default function Plans() {
         description="AI 生成（需在设置中配置 API Key）；未配置时自动生成模板计划。也可到「设置 → 导出提示词」手动喂给任意 AI。"
         extra={
           <Space>
-            <Button
-              icon={<RobotOutlined />}
-              disabled={plans.length === 0}
-              title={plans.length === 0 ? '先创建一个计划后可与 AI 讨论' : '到全局「AI 助手」讨论/修改计划（自动携带练习数据与弱项画像）'}
-              onClick={() => nav(plans.length === 1 ? `/assistant?plan=${plans[0].id}` : '/assistant')}
-            >
-              AI 助手
-            </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setGenOpen(true)}>
-              生成新计划
-            </Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setGenOpen(true)}>
+            生成新计划
+          </Button>
           </Space>
         }
       />

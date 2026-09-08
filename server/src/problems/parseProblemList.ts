@@ -3,7 +3,7 @@ import type { PlatformId } from '../../../shared/src/index.ts';
 /**
  * 题单文本解析（issue #4 题单整理）：用户从平台题单页复制的题目列表粘贴进来，
  * 逐行识别平台与题号。识别规则：
- * 1. URL 优先：洛谷 / CF / AtCoder / 代码源(Hydro) / 牛客的题目链接
+ * 1. URL 优先：洛谷 / CF / CF Gym / AtCoder / 代码源(Hydro) / 牛客 / 力扣 / VJudge 转发链接
  * 2. 常见题号写法：P1001（洛谷）、CF1234A / 1234A（Codeforces）、abc300_a（AtCoder）、
  *    #7 / 纯数字（代码源 Hydro 题库为纯数字 id，行内无其他平台线索时归属代码源）
  * 3. 标题 = 行内去掉题号/URL 后的剩余文本
@@ -38,6 +38,12 @@ const URL_PATTERNS: UrlPattern[] = [
     platform: 'codeforces',
     key: (m) => `${m[1] ?? m[2]}${m[3]}`.toUpperCase(),
   },
+  {
+    // Codeforces Gym 题目链接：codeforces.com/gym/104821/problem/A → key 104821A
+    re: /codeforces\.com\/gym\/(\d+)\/problem\/([A-Za-z0-9]+)/,
+    platform: 'codeforces',
+    key: (m) => `${m[1]}${m[2]}`.toUpperCase(),
+  },
   { re: /atcoder\.jp\/contests\/[a-z0-9-]+\/tasks\/([a-z0-9_-]+)/, platform: 'atcoder', key: (m) => m[1].toLowerCase() },
   { re: /bs\.daimayuan\.top\/p\/(\d+)/, platform: 'daimayuan', key: (m) => m[1] },
   { re: /oj\.daimayuan\.top\/(?:problem|course\/\d+)\/(\d+)/, platform: 'daimayuan', key: (m) => m[1] },
@@ -46,6 +52,48 @@ const URL_PATTERNS: UrlPattern[] = [
   { re: /leetcode\.cn\/problems\/([a-z0-9_-]+)/i, platform: 'leetcode', key: (m) => m[1].toLowerCase() },
   { re: /leetcode\.com\/problems\/([a-z0-9_-]+)/i, platform: 'leetcode', key: (m) => m[1].toLowerCase() },
 ];
+
+/**
+ * VJudge 转发链接：vjudge.net/problem/{OJ}-{ID}
+ * 将 VJudge 的 OJ 标识映射回应用支持的平台：
+ * - Gym-104821A → codeforces / 104821A
+ * - CF-1234A → codeforces / 1234A
+ * - 洛谷-P1001 → luogu / P1001
+ * - AtCoder-abc300_a → atcoder / abc300_a
+ * 其他不支持的 OJ（如 QOJ、SPOJ 等）返回 null 跳过。
+ */
+function parseVJudgeUrl(line: string): { platform: PlatformId; problemKey: string; url?: string; rest: string } | null {
+  // OJ 标识可为英文（Gym/CF/AtCoder）或中文（洛谷）；ID 为字母数字下划线
+  const m = line.match(/vjudge\.net\/problem\/([A-Za-z\u4e00-\u9fff]+)-([A-Za-z0-9_]+)/);
+  if (!m) return null;
+  const oj = m[1].toLowerCase();
+  const id = m[2];
+  let platform: PlatformId | null = null;
+  let problemKey = '';
+  if (oj === 'gym') {
+    // Gym-104821A → codeforces 104821A
+    platform = 'codeforces';
+    problemKey = id.toUpperCase();
+  } else if (oj === 'cf') {
+    // CF-1234A → codeforces 1234A
+    platform = 'codeforces';
+    problemKey = id.toUpperCase();
+  } else if (oj === '洛谷' || oj === 'luogu') {
+    platform = 'luogu';
+    problemKey = /^AT_/i.test(id) ? id.toLowerCase() : id.toUpperCase();
+  } else if (oj === 'atcoder') {
+    platform = 'atcoder';
+    problemKey = id.toLowerCase();
+  } else if (oj === 'nowcoder') {
+    platform = 'nowcoder';
+    problemKey = id;
+  }
+  if (!platform) return null;
+  // 还原完整 URL
+  const urlsInLine = [...line.matchAll(/https?:\/\/[^\s，,；;]+/g)].map((x) => x[0]);
+  const url = urlsInLine.find((u) => u.includes(m![0])) ?? `https://${m[0]}`;
+  return { platform, problemKey, url, rest: line.replace(m[0], ' ') };
+}
 
 const CF_KEY_RE = /^(?:CF)?(\d{1,6}[A-Z][0-9]?)$/i;
 const LUOGU_KEY_RE = /^(?:P|B|CF|AT|SP|U)\d{1,7}[A-Za-z]?$/;
@@ -100,6 +148,11 @@ export function parseProblemListText(raw: string): ParsedProblemLine[] {
         hit = { platform: p.platform, problemKey: p.key(m), url, rest: line.replace(m[0], ' ') };
         break;
       }
+    }
+    // VJudge 转发链接：vjudge.net/problem/Gym-104821A 等，映射回原始平台
+    if (!hit) {
+      const vj = parseVJudgeUrl(line);
+      if (vj) hit = vj;
     }
     if (!hit) {
       // 逐 token 找题号（行首编号如 "1. P1001 两遍" 先剥掉序号）

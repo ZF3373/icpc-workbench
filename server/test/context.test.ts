@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { estimateTokens, trimContext } from '../src/ai/context.ts';
+import { estimateTokens, trimContext, summarizeContext, SUMMARIZE_THRESHOLD } from '../src/ai/context.ts';
 import type { ChatMessage } from '../src/ai/provider.ts';
 
 const msg = (role: 'user' | 'assistant', content: string): ChatMessage => ({ role, content });
@@ -78,5 +78,63 @@ describe('trimContext', () => {
     const result = trimContext(100, [], 65536, 8000);
     assert.equal(result.trimmed, 0);
     assert.equal(result.messages.length, 0);
+  });
+});
+
+describe('summarizeContext', () => {
+  it('SUMMARIZE_THRESHOLD is 6', () => {
+    assert.equal(SUMMARIZE_THRESHOLD, 6);
+  });
+
+  it('returns null for empty messages', async () => {
+    const provider = { enabled: true, chat: async () => 'summary' };
+    const result = await summarizeContext(provider, []);
+    assert.equal(result, null);
+  });
+
+  it('returns null when provider is disabled', async () => {
+    const provider = { enabled: false, chat: async () => 'summary' };
+    const msgs = [msg('user', 'hello'), msg('assistant', 'hi')];
+    const result = await summarizeContext(provider, msgs);
+    assert.equal(result, null);
+  });
+
+  it('calls provider.chat and returns trimmed summary', async () => {
+    const msgs = [
+      msg('user', '我的弱项是图论'),
+      msg('assistant', '建议多做最短路径练习'),
+      msg('user', '目标 1800 分'),
+    ];
+    const provider = {
+      enabled: true,
+      chat: async (messages: ChatMessage[]) => {
+        // 验证传入的消息结构
+        assert.equal(messages[0]?.role, 'system');
+        assert.equal(messages[1]?.role, 'user');
+        return '  用户弱项图论，目标1800分。  ';
+      },
+    };
+    const result = await summarizeContext(provider, msgs);
+    assert.equal(result, '用户弱项图论，目标1800分。');
+  });
+
+  it('returns null when provider.chat throws (degrade gracefully)', async () => {
+    const msgs = [msg('user', 'hello')];
+    const provider = {
+      enabled: true,
+      chat: async () => { throw new Error('API error'); },
+    };
+    const result = await summarizeContext(provider, msgs);
+    assert.equal(result, null);
+  });
+
+  it('returns null for empty summary string', async () => {
+    const msgs = [msg('user', 'hello')];
+    const provider = {
+      enabled: true,
+      chat: async () => '   ',
+    };
+    const result = await summarizeContext(provider, msgs);
+    assert.equal(result, null);
   });
 });

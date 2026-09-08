@@ -139,7 +139,9 @@ CREATE TABLE IF NOT EXISTS problem_lists (
   user_id    INTEGER NOT NULL REFERENCES users(id),
   title      TEXT NOT NULL,
   source_url TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  ai_suggestion  TEXT,
+  ai_suggestion_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS problem_list_items (

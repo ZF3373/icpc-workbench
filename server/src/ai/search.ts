@@ -1,4 +1,6 @@
+import type { AiConfig } from '../config.ts';
 import type { ToolDefinition } from './provider.ts';
+import { registerTool, type ToolResult, type ToolContext } from './tools/registry.ts';
 
 /** web_search 工具定义：AI 可在回复中调用以获取外部信息 */
 export const WEB_SEARCH_TOOL: ToolDefinition = {
@@ -104,3 +106,29 @@ export function formatSearchResults(query: string, results: SearchResult[]): str
   );
   return `搜索"${query}"返回 ${results.length} 条结果：\n\n${lines.join('\n\n')}`;
 }
+
+// ---------- 注册到工具注册表 ----------
+
+/**
+ * web_search 工具执行逻辑：
+ * - 从 args.query 提取搜索关键词
+ * - 调用 executeWebSearch 获取结果
+ * - content 格式化后注入对话（AI 看到搜索摘要）
+ * - metadata 携带来源链接（前端展示引用）
+ */
+registerTool({
+  definition: WEB_SEARCH_TOOL,
+  execute: async (args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> => {
+    const query = typeof args.query === 'string' ? args.query : '';
+    if (!query.trim()) {
+      return { content: '搜索关键词为空，请提供有效的搜索词。' };
+    }
+    const results = await executeWebSearch(query, ctx.cfg);
+    const content = formatSearchResults(query, results);
+    // metadata 携带来源链接给前端展示
+    const metadata = results.length > 0
+      ? results.map((r) => ({ title: r.title, url: r.url }))
+      : undefined;
+    return { content, metadata };
+  },
+});

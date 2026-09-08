@@ -27,6 +27,33 @@ test('parseProblemList: URLs of all supported platforms', () => {
   );
 });
 
+test('parseProblemList: VJudge 转发链接映射回原始平台', () => {
+  const raw = [
+    'https://vjudge.net/problem/Gym-104821A',
+    'https://vjudge.net/problem/CF-1234A',
+    'https://vjudge.net/problem/洛谷-P1001',
+    'https://vjudge.net/problem/AtCoder-abc300_a',
+    'https://vjudge.net/problem/QOJ-9242', // 不支持的 OJ → 跳过
+    'https://vjudge.net/problem/SPOJ-TEST', // 不支持的 OJ → 跳过
+  ].join('\n');
+  const rows = parseProblemListText(raw);
+  assert.equal(rows.length, 4); // QOJ 和 SPOJ 被跳过
+  assert.deepEqual(
+    rows.map((r) => `${r.platform}:${r.problemKey}`),
+    ['codeforces:104821A', 'codeforces:1234A', 'luogu:P1001', 'atcoder:abc300_a'],
+  );
+  // 验证 URL 被正确还原
+  assert.match(rows[0]!.url ?? '', /vjudge\.net\/problem\/Gym-104821A/);
+});
+
+test('parseProblemList: CF Gym 直接链接', () => {
+  const raw = 'https://codeforces.com/gym/104821/problem/A';
+  const rows = parseProblemListText(raw);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.platform, 'codeforces');
+  assert.equal(rows[0]!.problemKey, '104821A');
+});
+
 test('parseProblemList: tokens, serial prefix, dedup and title cleaning', () => {
   const raw = [
     '1. P1001 两遍',
@@ -71,7 +98,7 @@ async function withServer(fn: (s: TestServer) => Promise<void>): Promise<void> {
         chat: async (messages) => {
           providerChats.push(messages.map((m) => m.content).join('\n'));
           // ai-classify：把所有题归入「二分」；ai-suggest：返回建议文本
-          const prompt = messages[messages.length - 1]!.content;
+          const prompt = messages[messages.length - 1]!.content as string;
           if (prompt.includes('分类目录')) {
             const n = (prompt.match(/^\d+\. \[/gm) ?? []).length; // ai-classify 条目行形如 "0. [luogu/P1001]"
             return JSON.stringify(Array.from({ length: n }, (_, i) => ({ i, category: '二分' })));

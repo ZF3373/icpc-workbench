@@ -122,6 +122,10 @@ body {
 .app-sider {
   border-right: 1px solid var(--line) !important;
   background: #12151a !important;
+  position: sticky !important;
+  top: 0;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .app-sider .ant-layout-sider-children {
@@ -249,6 +253,13 @@ body {
   padding-inline: 0 !important;
   display: grid;
   place-items: center;
+}
+
+/* 折叠态：移除文字占位，避免长标题把图标挤偏（AntD 仅以 opacity:0 隐藏，仍占布局，
+   且其 :where() 规则特异性高达 0,6,0；用 !important 稳定覆盖）。AntD 折叠 Tooltip
+   由内部单独渲染，不依赖此元素可见，display:none 安全。 */
+.ant-layout-sider-collapsed .sider-menu .ant-menu-title-content {
+  display: none !important;
 }
 
 .ant-layout-sider-collapsed .sider-menu .ant-menu-item-selected::before {
@@ -1802,6 +1813,7 @@ body {
 
 .plan-chat-input {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: flex-end;
   margin-top: 10px;
@@ -1826,6 +1838,27 @@ body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  position: relative;
+}
+
+/* 拖拽上传遮罩 */
+.chat-dropzone {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  background: var(--accent-bg, rgba(88, 163, 255, 0.12));
+  border: 2px dashed var(--accent, #58a3ff);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.chat-dropzone-inner {
+  text-align: center;
+  color: var(--text-1, inherit);
+  opacity: 0.85;
 }
 
 .list-item-row {

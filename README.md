@@ -18,6 +18,7 @@
 - **AI 助手（全局）**：左侧菜单「AI 助手」独立的 AI 交流窗口——回答算法问题、粘贴代码调试（markdown 代码块渲染）、解读练习数据与问题分布统计（自动注入练习数据汇总 + 弱项画像 + 近期赛事日历）；可关联训练计划让 AI 直接修改计划（plan-modify 块 → 前端确认后原位应用，「日期+标题」相同的任务保留打卡记录）；AI 评估后可一键更新估算能力值（ability-update 块，今日训练三档随之按新值分档，可随时恢复计算值）；AI 讨论中可把思路沉淀为模板写入模板库（template-add 块，用户确认后落库）；模拟赛安排会自动对齐近 14 天真实赛事时间
   - 多会话管理：侧边栏会话记录，支持新建 / 切换 / 删除 / 置顶 / 双击重命名，会话记录保存在浏览器本地
   - 切换模块再回来不丢会话；生成中切走，回来后回复自动出现
+  - 图片附件：消息可附上题面 / 评测截图（JPEG/PNG/GIF/WebP，≤64MiB），经 OpenAI 兼容 Files API 上传后以 file 内容块随消息引用
 - **题单整理**：粘贴平台题单（洛谷 / Codeforces / AtCoder / 代码源 / 牛客 / LeetCode 的题号或链接，每行一题）自动识别建单；按知识点分类（已同步题库 tags 规则分类 + AI 分类 + 手动调整），联查题库标注难度与已 AC 状态；AI 读取题单内容结合弱项画像给出练习建议
 - **复习库**：题目复评与遗忘曲线调度（到期数量提醒、正/负反馈调节复习间隔）
 - **模板库**：114 节内置算法模板课程（分 10 大类），学习状态/笔记/进度追踪；自建模板支持 Tab 缩进的代码编辑框（Tab 缩进、Shift+Tab 反缩进、回车自动缩进，保留撤销栈）
@@ -198,7 +199,11 @@ GET  /api/plans | POST /api/plans/generate | POST /api/plans/import | GET /api/p
 PATCH /api/plans/tasks/:taskId    # 编辑单条任务（taskDate/title/kind/url/note，仅更新提交字段）
 DELETE /api/plans/tasks/:taskId   # 删除单条任务（打卡记录级联删除）
 POST /api/plans/:id/apply         # 应用 AI 计划修改（body: { raw }；按「日期+标题」匹配保留打卡）
-POST /api/ai/chat                # 全局 AI 助手对话（body: { messages, planId? }；注入练习汇总/弱项画像/能力值/赛事日历，planId 给定可改计划）
+POST /api/ai/chat                # 全局 AI 助手对话（body: { messages, planId? }；注入练习汇总/弱项画像/能力值/赛事日历，planId 给定可改计划；user 消息可带 attachments: [{ fileId, filename? }]，≤8 个）
+POST /api/ai/files               # 上传文件到 AI Files API（原始字节流直传，header: x-file-name / x-expires-seconds?；服务端转 multipart 转发上游，purpose=user_data，≤64MiB）
+GET  /api/ai/files               # 列出文件（?after=&limit=1-1000&order=asc|desc，游标分页）
+GET  /api/ai/files/:fileId       # 查询文件元信息
+DELETE /api/ai/files/:fileId     # 删除文件
 GET  /api/ai/ability             # 估算能力值（computed/override/effective）
 POST /api/ai/ability             # 应用 AI 能力值调整（body: { level, reason } 或 { reset: true }）
 GET  /api/lists                  # 题单列表 | POST /api/lists 导入（body: { title, raw, sourceUrl? }）

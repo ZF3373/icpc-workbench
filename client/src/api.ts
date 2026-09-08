@@ -49,6 +49,17 @@ export const del = <T>(path: string): Promise<T> => api<T>(path, { method: 'DELE
 export interface PlanChatTurn {
   role: 'user' | 'assistant'
   content: string
+  /** 已上传到 AI 服务 Files API 的文件引用（仅 user 消息；服务端转换为 file 内容块） */
+  attachments?: ChatFileAttachment[]
+}
+
+/** Files API 文件引用元数据（localStorage 持久化用，不含文件内容） */
+export interface ChatFileAttachment {
+  fileId: string
+  filename?: string
+  bytes?: number
+  /** 文本类附件的文件内容（图片附件无此字段；服务端将其以代码块拼接到消息文本） */
+  textContent?: string
 }
 
 export interface PlanApplyResult {
@@ -65,16 +76,35 @@ export const applyPlanModification = <T>(planId: number, raw: string): Promise<T
 export const chatWithAssistant = <T>(body: { messages: PlanChatTurn[]; planId?: number }): Promise<T> =>
   post<T>('/api/ai/chat', body)
 
+/** token 用量信息（服务端 SSE usage 事件） */
+export interface TokenUsage {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+}
+
 /**
  * 流式 AI 对话：逐 delta 回调，不缓冲全部内容。
  * 服务端以 SSE（text/event-stream）返回，每帧 data: {"delta": "..."} 或 data: [DONE]。
  * 非 200 响应（含 needConfig）走与 api() 一致的错误解析。
+ *
+ * @param onDelta 正文内容增量回调
+ * @param onReasoning 推理内容（思维链）增量回调，与正文分离渲染
+ * @param signal AbortSignal，用户停止生成时中断
  */
 export async function chatWithAssistantStream(
   body: { messages: PlanChatTurn[]; planId?: number },
   onDelta: (chunk: string) => void,
   signal?: AbortSignal,
-): Promise<{ truncated: boolean; contextTrimmed: number; sources: Array<{ title: string; url: string }> }> {
+  onReasoning?: (chunk: string) => void,
+): Promise<{
+  truncated: boolean;
+  contextTrimmed: number;
+  summarized: boolean;
+  droppedCount: number;
+  sources: Array<{ title: string; url: string }>;
+  usage: TokenUsage | null;
+}> {
   const res = await fetch('/api/ai/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -100,6 +130,9 @@ export async function chatWithAssistantStream(
   let buffer = '';
   let truncated = false;
   let contextTrimmed = 0;
+  let summarized = false;
+  let droppedCount = 0;
+  let usage: TokenUsage | null = null;
   const sources: Array<{ title: string; url: string }> = [];
 
   try {
@@ -115,22 +148,32 @@ export async function chatWithAssistantStream(
         const line = frame.trim();
         if (!line.startsWith('data:')) continue;
         const payload = line.slice(5).trim();
-        if (payload === '[DONE]') return { truncated, contextTrimmed, sources };
+        if (payload === '[DONE]') return { truncated, contextTrimmed, summarized, droppedCount, sources, usage };
         try {
           const obj = JSON.parse(payload) as {
             delta?: string;
+            reasoning?: string;
             error?: string;
+            debug?: string;
             truncated?: boolean;
             contextTrimmed?: number;
+            summarized?: boolean;
+            droppedCount?: number;
             searching?: boolean;
             query?: string;
             sources?: Array<{ title: string; url: string }>;
+            usage?: TokenUsage;
           };
           if (obj.delta) onDelta(obj.delta);
+          if (obj.reasoning && onReasoning) onReasoning(obj.reasoning);
           if (obj.error) throw new Error(obj.error);
+          if (obj.debug) console.warn('[AI debug]', obj.debug);
           if (obj.truncated) truncated = true;
           if (typeof obj.contextTrimmed === 'number') contextTrimmed = obj.contextTrimmed;
+          if (obj.summarized) summarized = true;
+          if (typeof obj.droppedCount === 'number') droppedCount = obj.droppedCount;
           if (Array.isArray(obj.sources)) sources.push(...obj.sources);
+          if (obj.usage) usage = obj.usage;
         } catch (e) {
           if (e instanceof SyntaxError) continue;
           throw e;
@@ -140,7 +183,15 @@ export async function chatWithAssistantStream(
   } finally {
     reader.releaseLock();
   }
-  return { truncated, contextTrimmed, sources };
+  return { truncated, contextTrimmed, summarized, droppedCount, sources, usage };
+}
+
+/** 生成会话标题：取对话前 1-2 轮调用轻量 LLM 生成 6-12 字标题 */
+export async function generateSessionTitle(
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+): Promise<string> {
+  const res = await post<{ title: string }>('/api/ai/title', { messages });
+  return res.title;
 }
 
 export type AbilityInfo = {
@@ -151,3 +202,78 @@ export type AbilityInfo = {
 
 export const applyAbility = <T>(body: { level: number; reason?: string } | { reset: true }): Promise<T> =>
   post<T>('/api/ai/ability', body)
+
+// ---------- AI Files API（OpenAI 兼容 /files：仅上传，供图片附件引用） ----------
+
+export interface AiFileObject {
+  id: string
+  object: 'file'
+  bytes: number
+  created_at: number
+  filename: string
+  purpose: string
+  /** 仅上传时设置了过期时间才出现（Unix 秒） */
+  expires_at?: number
+}
+
+/** Files API 单文件上限 64 MiB（仅图片：JPEG/PNG/GIF/WebP） */
+export const MAX_AI_FILE_BYTES = 64 * 1024 * 1024
+
+/**
+ * 上传文件到 AI 服务 Files API。
+ * 客户端读出原始字节后直传（Content-Type 为文件自身类型），服务端再组装
+ * multipart/form-data 转发上游，避免浏览器直接与上游跨域交互。
+ */
+export async function uploadAiFile(
+  file: File,
+  opts?: { expiresAfterSeconds?: number },
+  signal?: AbortSignal,
+): Promise<AiFileObject> {
+  if (file.size > MAX_AI_FILE_BYTES) throw new Error('文件超过 64 MiB 上限（DeepSeek Files API 限制）')
+  const buf = await file.arrayBuffer()
+  const headers: Record<string, string> = {
+    'Content-Type': file.type || 'application/octet-stream',
+    'x-file-name': encodeURIComponent(file.name),
+  }
+  if (opts?.expiresAfterSeconds !== undefined) headers['x-expires-seconds'] = String(opts.expiresAfterSeconds)
+  const res = await fetch('/api/ai/files', { method: 'POST', headers, body: buf, signal })
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    let needConfig = false
+    try {
+      const errBody = (await res.json()) as { error?: string; needConfig?: boolean }
+      if (errBody.error) msg = errBody.error
+      if (errBody.needConfig) needConfig = true
+    } catch { /* 非 JSON 响应，保留默认消息 */ }
+    const err = new Error(msg) as Error & { needConfig?: boolean }
+    if (needConfig) err.needConfig = true
+    throw err
+  }
+  return (await res.json()) as AiFileObject
+}
+
+/**
+ * 提取文档文本（当前支持 PDF）。
+ * 客户端读出原始字节后直传服务端 /api/ai/extract-text，服务端用 unpdf 提取文本返回。
+ * 用于上传 PDF 附件时将其内容注入对话（不依赖 Files API，兼容所有模型）。
+ */
+export async function extractDocumentText(
+  file: File,
+  signal?: AbortSignal,
+): Promise<{ text: string; pages: number; warning?: string }> {
+  const buf = await file.arrayBuffer()
+  const headers: Record<string, string> = {
+    'Content-Type': file.type || 'application/pdf',
+    'x-file-name': encodeURIComponent(file.name),
+  }
+  const res = await fetch('/api/ai/extract-text', { method: 'POST', headers, body: buf, signal })
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    try {
+      const errBody = (await res.json()) as { error?: string }
+      if (errBody.error) msg = errBody.error
+    } catch { /* 非 JSON 响应，保留默认消息 */ }
+    throw new Error(msg)
+  }
+  return (await res.json()) as { text: string; pages: number; warning?: string }
+}

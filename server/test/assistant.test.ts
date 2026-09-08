@@ -32,6 +32,24 @@ async function readSseReply(res: Response): Promise<string> {
   return reply;
 }
 
+/** 从 SSE 响应中提取全部事件（含 delta/reasoning/usage/summarized 等） */
+async function readSseEvents(res: Response): Promise<Array<Record<string, unknown>>> {
+  const text = await res.text();
+  const events: Array<Record<string, unknown>> = [];
+  for (const frame of text.split('\n\n')) {
+    const line = frame.trim();
+    if (!line.startsWith('data:')) continue;
+    const payload = line.slice(5).trim();
+    if (payload === '[DONE]') break;
+    try {
+      events.push(JSON.parse(payload) as Record<string, unknown>);
+    } catch {
+      // 跳过非 JSON 行
+    }
+  }
+  return events;
+}
+
 interface TestServer {
   db: Db
   aiBase: string
@@ -54,14 +72,14 @@ async function withServer(
       createProvider: provider
         ? () => ({
             enabled: provider.enabled,
-            chat: async (messages) => {
-              providerChats.push({ system: messages[0]?.content ?? '', messages: messages.slice(1) as Array<{ role: string; content: string }> });
-              const prompt = messages[messages.length - 1]?.content ?? '';
-              return typeof provider.reply === 'function' ? provider.reply(prompt) : provider.reply;
-            },
-            chatStream: async function* (messages) {
-              providerChats.push({ system: messages[0]?.content ?? '', messages: messages.slice(1) as Array<{ role: string; content: string }> });
-              const prompt = messages[messages.length - 1]?.content ?? '';
+        chat: async (messages) => {
+          providerChats.push({ system: (messages[0]?.content ?? '') as string, messages: messages.slice(1) as Array<{ role: string; content: string }> });
+          const prompt = (messages[messages.length - 1]?.content ?? '') as string;
+          return typeof provider.reply === 'function' ? provider.reply(prompt) : provider.reply;
+        },
+        chatStream: async function* (messages) {
+          providerChats.push({ system: (messages[0]?.content ?? '') as string, messages: messages.slice(1) as Array<{ role: string; content: string }> });
+          const prompt = (messages[messages.length - 1]?.content ?? '') as string;
               const reply = typeof provider.reply === 'function' ? provider.reply(prompt) : provider.reply;
               yield reply;
             },
@@ -288,4 +306,168 @@ test('assistant: prompt includes template-add capability with curriculum categor
     },
     { enabled: true, reply: 'ok' },
   );
+});
+
+// ---------- 标题生成 ----------
+
+test('title: generates title from conversation messages', async () => {
+  await withServer(
+    async ({ aiBase }) => {
+      const res = await fetch(`${aiBase}/title`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: '如何优化 Dijkstra 算法？' }] }),
+      });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { title: string };
+      assert.ok(body.title.length > 0);
+      assert.ok(body.title.length <= 20);
+    },
+    { enabled: true, reply: 'Dijkstra算法优化' },
+  );
+});
+
+test('title: strips quotes and punctuation from generated title', async () => {
+  await withServer(
+    async ({ aiBase }) => {
+      const res = await fetch(`${aiBase}/title`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: '动态规划练习' }] }),
+      });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { title: string };
+      // 回复带引号和标点，应被清理
+      assert.doesNotMatch(body.title, /["""''。，！？]/);
+    },
+    { enabled: true, reply: '"动态规划练习。"' },
+  );
+});
+
+test('title: rejects empty or invalid messages', async () => {
+  await withServer(async ({ aiBase }) => {
+    const empty = await fetch(`${aiBase}/title`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [] }),
+    });
+    assert.equal(empty.status, 400);
+
+    const bad = await fetch(`${aiBase}/title`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'system', content: 'hi' }] }),
+    });
+    assert.equal(bad.status, 400);
+  });
+});
+
+test('title: returns needConfig when AI disabled', async () => {
+  await withServer(async ({ aiBase }) => {
+    const res = await fetch(`${aiBase}/title`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { needConfig: boolean };
+    assert.equal(body.needConfig, true);
+  });
+});
+
+// ---------- reasoning_content SSE ----------
+
+// 注意：reasoning_content 的 SSE 事件测试在下方用自定义 mock provider 进行，
+// 因为 withServer 的 mock provider 不支持 onReasoning 回调。
+
+// ---------- usage SSE ----------
+
+test('chat: SSE includes usage event when provider reports token usage', async () => {
+  // 使用自定义 mock provider 支持 onUsage 回调
+  const db = createDb(':memory:');
+  const app = express();
+  app.use(express.json());
+  const cfg: AiConfig = { enabled: true, baseURL: 'https://x/v1', apiKey: 'k', model: 'm' };
+  app.use(
+    '/api/ai',
+    aiRoutes(db, () => cfg, {
+      createProvider: () => ({
+        enabled: true,
+        chat: async () => 'ok',
+        chatStream: async function* (messages, opts) {
+          yield 'ok';
+          // 模拟 provider 捕获到 usage 并回调
+          opts?.onUsage?.({ prompt_tokens: 50, completion_tokens: 10, total_tokens: 60 });
+        },
+      }),
+    }),
+  );
+  const srv = app.listen(0);
+  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/ai`;
+  try {
+    const res = await fetch(`${base}/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    assert.equal(res.status, 200);
+    const events = await readSseEvents(res);
+    const usageEvents = events.filter((e) => 'usage' in e);
+    assert.ok(usageEvents.length > 0, '应包含 usage 事件');
+    const usage = usageEvents[0]!.usage as { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+    assert.equal(usage.prompt_tokens, 50);
+    assert.equal(usage.completion_tokens, 10);
+    assert.equal(usage.total_tokens, 60);
+  } finally {
+    srv.close();
+    db.close();
+  }
+});
+
+// ---------- reasoning_content SSE (with mock provider) ----------
+
+test('chat: SSE includes reasoning event when provider reports reasoning', async () => {
+  const db = createDb(':memory:');
+  const app = express();
+  app.use(express.json());
+  const cfg: AiConfig = { enabled: true, baseURL: 'https://x/v1', apiKey: 'k', model: 'm' };
+  app.use(
+    '/api/ai',
+    aiRoutes(db, () => cfg, {
+      createProvider: () => ({
+        enabled: true,
+        chat: async () => 'ok',
+        chatStream: async function* (messages, opts) {
+          // 先发 reasoning，再发 content
+          opts?.onReasoning?.('让我思考...');
+          yield '答案是';
+          opts?.onReasoning?.('经过分析...');
+          yield '42';
+        },
+      }),
+    }),
+  );
+  const srv = app.listen(0);
+  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/ai`;
+  try {
+    const res = await fetch(`${base}/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    assert.equal(res.status, 200);
+    const events = await readSseEvents(res);
+    const reasoningEvents = events.filter((e) => 'reasoning' in e);
+    assert.equal(reasoningEvents.length, 2, '应有两个 reasoning 事件');
+    const reasoningText = reasoningEvents.map((e) => e.reasoning as string).join('');
+    assert.equal(reasoningText, '让我思考...经过分析...');
+    // delta 也应正常
+    const deltaText = events.filter((e) => 'delta' in e).map((e) => e.delta as string).join('');
+    assert.equal(deltaText, '答案是42');
+  } finally {
+    srv.close();
+    db.close();
+  }
 });

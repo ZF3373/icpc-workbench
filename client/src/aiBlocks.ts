@@ -75,3 +75,64 @@ export function extractTemplateAdd(reply: string): TemplateAddDraft[] {
 export function stripTemplateAdd(reply: string): string {
   return reply.replace(/```[a-zA-Z ]*template-add[\s\S]*?```/g, '').trim()
 }
+
+/** list-create 块草稿（AI 建议导入题单到「题单整理」，确认后走 POST /api/lists） */
+export interface ListCreateDraft {
+  title: string
+  raw: string
+  sourceUrl?: string
+}
+
+/**
+ * 容错 JSON 解析：AI 输出的 raw 字段常含未转义换行（多行题目列表），标准 JSON.parse 会失败。
+ * 先尝试标准解析，失败后用正则提取 title / raw / sourceUrl 字段值。
+ */
+function parseListCreateJson(text: string): { title?: string; raw?: string; sourceUrl?: string } | null {
+  // 标准解析（AI 正确转义了换行时直接成功）
+  try {
+    return JSON.parse(text.trim()) as { title?: string; raw?: string; sourceUrl?: string }
+  } catch {
+    // 降级：正则提取各字段（兼容 raw 含未转义换行的情况）
+  }
+  // title: "title": "..."（单行值，取到下一个引号）
+  const titleM = text.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+  // sourceUrl: 同理
+  const urlM = text.match(/"sourceUrl"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+  // raw: "raw": "..." — 值可能跨多行，取到与 sourceUrl/} 配对的结尾引号
+  // 策略：找 "raw": " 开始位置，从末尾向前找配对的 "
+  const rawStart = text.match(/"raw"\s*:\s*"/)
+  if (!rawStart || !titleM) return null
+  const valStart = rawStart.index! + rawStart[0].length
+  // raw 值的结束：找下一个在 sourceUrl 或 } 之前的 "
+  const rest = text.slice(valStart)
+  // 从 rest 中找 "\n  "sourceUrl" 或 "\n}" 的位置，往前取到最近的 "
+  const endM = rest.match(/"\s*,?\s*(?:"sourceUrl"|\n\s*\}|\})/)
+  if (!endM) return null
+  const rawVal = rest.slice(0, endM.index)
+  return {
+    title: titleM[1],
+    raw: rawVal,
+    ...(urlM ? { sourceUrl: urlM[1] } : {}),
+  }
+}
+
+/** 解析回复中的 list-create 块（AI 题单导入建议）：返回草稿，无块返回 null */
+export function extractListCreate(reply: string): ListCreateDraft | null {
+  const m = reply.match(/```[a-zA-Z-]*list-create[\s\S]*?\n([\s\S]*?)```/)
+  if (!m) return null
+  const v = parseListCreateJson(m[1])
+  if (!v) return null
+  const title = typeof v.title === 'string' ? v.title.trim() : ''
+  const raw = typeof v.raw === 'string' ? v.raw.trim() : ''
+  if (!title || !raw) return null
+  return {
+    title,
+    raw,
+    ...(typeof v.sourceUrl === 'string' && v.sourceUrl.trim() !== '' ? { sourceUrl: v.sourceUrl.trim() } : {}),
+  }
+}
+
+/** 剥离 list-create 块后的可见文本 */
+export function stripListCreate(reply: string): string {
+  return reply.replace(/```[a-zA-Z-]*list-create[\s\S]*?```/g, '').trim()
+}

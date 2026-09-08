@@ -119,11 +119,11 @@ export function listsRoutes(
     }
   });
 
-  // GET /api/lists/:id → 题单详情（含题目难度/标签/已 AC 状态）
+  // GET /api/lists/:id → 题单详情（含题目难度/标签/已 AC 状态 + AI 建议缓存）
   r.get('/:id', (req, res) => {
     const id = Number(req.params.id);
     const list = db
-      .prepare('SELECT id, title, source_url, created_at FROM problem_lists WHERE id = ? AND user_id = ?')
+      .prepare('SELECT id, title, source_url, created_at, ai_suggestion, ai_suggestion_at FROM problem_lists WHERE id = ? AND user_id = ?')
       .get(id, DEFAULT_USER_ID) as Record<string, unknown> | undefined;
     if (!list) return res.status(404).json({ error: '题单不存在' });
     const items = db
@@ -142,6 +142,8 @@ export function listsRoutes(
       .all(DEFAULT_USER_ID, id) as Array<Record<string, unknown> & { tags: string | null }>;
     res.json({
       ...list,
+      aiSuggestion: list.ai_suggestion ?? null,
+      aiSuggestionAt: list.ai_suggestion_at ?? null,
       items: items.map(({ tags, ...it }) => ({
         ...it,
         solved: Number(it.solved) === 1,
@@ -266,13 +268,21 @@ export function listsRoutes(
     res.json({ ok: true, updated, total: items.length });
   }));
 
-  // POST /api/lists/:id/ai-suggest → AI 读取题单内容给练习建议（返回 markdown，不落库）
+  // POST /api/lists/:id/ai-suggest → AI 读取题单内容给练习建议（结果缓存到 DB，避免重复调用）
+  // body: { force?: boolean } — force=true 时强制重新生成，忽略缓存
   r.post('/:id/ai-suggest', asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
+    const force = req.body?.force === true;
     const list = db
-      .prepare('SELECT id, title, source_url FROM problem_lists WHERE id = ? AND user_id = ?')
-      .get(id, DEFAULT_USER_ID) as { id: number; title: string; source_url: string | null } | undefined;
+      .prepare('SELECT id, title, source_url, ai_suggestion, ai_suggestion_at FROM problem_lists WHERE id = ? AND user_id = ?')
+      .get(id, DEFAULT_USER_ID) as { id: number; title: string; source_url: string | null; ai_suggestion: string | null; ai_suggestion_at: string | null } | undefined;
     if (!list) return res.status(404).json({ error: '题单不存在' });
+
+    // 有缓存且未强制刷新：直接返回
+    if (!force && list.ai_suggestion) {
+      return res.json({ reply: list.ai_suggestion, cached: true, cachedAt: list.ai_suggestion_at });
+    }
+
     const provider = opts.createProvider?.() ?? new AiProvider(getAiConfig());
     if (!provider.enabled) {
       return res.status(400).json({ error: 'AI 未配置：请先到「设置 → AI 配置」填写接口', needConfig: true });
@@ -310,7 +320,10 @@ export function listsRoutes(
     );
     try {
       const reply = await provider.chat([{ role: 'user', content: prompt }]);
-      res.json({ reply });
+      // 缓存到 DB
+      db.prepare('UPDATE problem_lists SET ai_suggestion = ?, ai_suggestion_at = datetime(\'now\') WHERE id = ?')
+        .run(reply, id);
+      res.json({ reply, cached: false });
     } catch (e) {
       res.status(502).json({ error: `AI 调用失败：${(e as Error).message}` });
     }

@@ -65,6 +65,8 @@ interface ListDetail {
   title: string
   source_url: string | null
   created_at: string
+  aiSuggestion: string | null
+  aiSuggestionAt: string | null
   items: ListItem[]
 }
 
@@ -94,7 +96,10 @@ export default function Lists() {
     setDetailLoading(true)
     setDetailOpen(true)
     try {
-      setDetail(await get<ListDetail>(`/api/lists/${id}`))
+      const d = await get<ListDetail>(`/api/lists/${id}`)
+      setDetail(d)
+      // 从 DB 缓存恢复 AI 建议（有缓存则直接显示，无需重新调 AI）
+      setSuggest(d.aiSuggestion)
     } catch (e) {
       message.error((e as Error).message)
       setDetailOpen(false)
@@ -147,16 +152,24 @@ export default function Lists() {
     }
   }
 
-  const runSuggest = async () => {
+  const runSuggest = async (force = false) => {
     if (!detail) return
+    // 有缓存且非强制刷新：直接打开 Modal 显示缓存内容，不重新请求
+    if (!force && suggest) {
+      setSuggestOpen(true)
+      return
+    }
     setBusy('ai-suggest')
     setSuggestOpen(true)
     setSuggest(null)
     try {
-      const r = await post<{ reply: string }>(`/api/lists/${detail.id}/ai-suggest`, {})
+      const r = await post<{ reply: string; cached?: boolean; cachedAt?: string }>(
+        `/api/lists/${detail.id}/ai-suggest`,
+        force ? { force: true } : {},
+      )
       setSuggest(r.reply)
     } catch (e) {
-      setSuggestOpen(false)
+      if (!force) setSuggestOpen(false)
       message.error((e as Error).message)
     } finally {
       setBusy(null)
@@ -384,13 +397,30 @@ export default function Lists() {
         title="AI 练习建议"
         open={suggestOpen}
         onCancel={() => setSuggestOpen(false)}
-        footer={null}
+        footer={
+          suggest ? (
+            <Button
+              size="small"
+              loading={busy === 'ai-suggest'}
+              onClick={() => void runSuggest(true)}
+            >
+              重新生成
+            </Button>
+          ) : null
+        }
         width={640}
       >
         {suggest === null ? (
           <Spin style={{ display: 'block', margin: '32px auto' }} tip="AI 正在结合你的练习数据分析题单…" />
         ) : (
-          <Markdown text={suggest} />
+          <>
+            <Markdown text={suggest} />
+            {detail?.aiSuggestionAt && (
+              <p style={{ color: '#8993a2', fontSize: 12, marginTop: 12, textAlign: 'right' }}>
+                生成于 {new Date(detail.aiSuggestionAt + 'Z').toLocaleString('zh-CN')}
+              </p>
+            )}
+          </>
         )}
       </Modal>
     </div>
