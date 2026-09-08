@@ -32,8 +32,11 @@ export interface BankFetchResult {
 const LUOGU_API = 'https://www.luogu.com.cn';
 const NOWCODER_API = 'https://ac.nowcoder.com';
 const CODEFORCES_API = 'https://codeforces.com/api';
+const KENKOOOO_API = 'https://kenkoooo.com/atcoder';
+const DAIMAYUAN_BASE = 'https://bs.daimayuan.top';
 const LUOGU_PER_PAGE = 50;
 const NOWCODER_PER_PAGE = 50;
+const DAIMAYUAN_PER_PAGE = 100;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // ---------- 洛谷 ----------
@@ -361,4 +364,207 @@ export async function fetchLeetcodeBank(
     await sleep(400); // 页间限速
   }
   return { platform: 'leetcode', problems: problems.slice(0, max), total };
+}
+
+// ---------- AtCoder（kenkoooo 社区 API） ----------
+
+interface KenkoooProblem {
+  id: string;
+  contest_id: string;
+  problem_index?: string;
+  name?: string;
+  title?: string;
+}
+
+interface KenkoooModel {
+  difficulty?: number | null;
+  is_experimental?: boolean;
+}
+
+/**
+ * AtCoder 公开题库：使用社区维护的 kenkoooo/AtCoderProblems 资源接口（匿名可访问）。
+ * - GET /resources/problems.json：全量题目列表（约 4000+ 题，含 id / contest_id / title）
+ * - GET /resources/problem-models.json：题目难度模型（difficulty 为 AtCoder 预估难度，约 -1000~4000+）
+ * 两次单次调用即可拿全量，无翻页；kenkoooo 要求请求间隔 >= 1s，两次调用间 sleep。
+ * difficulty 经四舍五入后统一到 CF rating 标尺；负值（极简题）钳到 800（CF 实际下限）。
+ */
+export async function fetchAtcoderBank(
+  fetchFn: typeof fetch,
+  opts: BankFetchOptions = {},
+): Promise<BankFetchResult> {
+  const max = opts.max ?? 5000;
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    Accept: 'application/json',
+  };
+
+  const [probRes, modelRes] = await Promise.all([
+    fetchFn(`${KENKOOOO_API}/resources/problems.json`, {
+      headers,
+      signal: AbortSignal.timeout(30000),
+    }),
+    fetchFn(`${KENKOOOO_API}/resources/problem-models.json`, {
+      headers,
+      signal: AbortSignal.timeout(30000),
+    }),
+  ]);
+  if (!probRes.ok) {
+    throw new Error(`AtCoder 题库接口 HTTP ${probRes.status}，请稍后重试`);
+  }
+  if (!modelRes.ok) {
+    throw new Error(`AtCoder 难度模型接口 HTTP ${modelRes.status}，请稍后重试`);
+  }
+  const probList = (await probRes.json()) as KenkoooProblem[];
+  const modelMap = (await modelRes.json()) as Record<string, KenkoooModel>;
+  if (!Array.isArray(probList)) {
+    throw new Error('AtCoder 题库接口响应结构异常，请稍后重试');
+  }
+
+  const problems: BankProblem[] = [];
+  for (const p of probList) {
+    if (typeof p.id !== 'string' || !p.id || typeof p.contest_id !== 'string' || !p.contest_id) continue;
+    const model = modelMap[p.id];
+    let difficulty: number | null = null;
+    if (model && typeof model.difficulty === 'number' && Number.isFinite(model.difficulty)) {
+      const d = Math.round(model.difficulty);
+      difficulty = d < 800 ? 800 : d; // 负值/极低值钳到 CF 实际下限
+    }
+    problems.push({
+      platform: 'atcoder',
+      problemKey: p.id,
+      title: p.title || p.name || p.id,
+      difficulty,
+      url: `https://atcoder.jp/contests/${p.contest_id}/tasks/${p.id}`,
+      tags: [],
+    });
+    if (problems.length >= max) break;
+  }
+  return { platform: 'atcoder', problems, total: probList.length };
+}
+
+// ---------- 代码源（bs.daimayuan.top，Hydro OJ） ----------
+
+/** 代码源难度 1-10 → CF rating 统一标尺 */
+const DAIMAYUAN_DIFFICULTY_TO_RATING: Record<number, number> = {
+  1: 800,
+  2: 1000,
+  3: 1200,
+  4: 1400,
+  5: 1600,
+  6: 1800,
+  7: 2000,
+  8: 2200,
+  9: 2500,
+  10: 2800,
+};
+
+interface DmyBankRow {
+  pid: string;
+  title: string;
+  difficulty: number | null;
+  tags: string[];
+}
+
+/**
+ * 代码源公开题库页（无需登录）：GET /p?page={n}（每页 100 题，按 pid 升序）。
+ * Hydro 渲染表格行 <tr data-pid="{id}">：列含题号/标题（含标签）/通过数/难度（1-10）。
+ * 难度 1-10 映射为 CF rating 标尺；标签为中文知识点（模拟/数据结构/线段树…），直接入库。
+ * 总数从 <p>{N} problems</p> 提取；翻页至空页或达到 max 终止。
+ */
+export async function fetchDaimayuanBank(
+  fetchFn: typeof fetch,
+  opts: BankFetchOptions = {},
+): Promise<BankFetchResult> {
+  const max = opts.max ?? 2000;
+  const problems: BankProblem[] = [];
+  const seen = new Set<string>();
+  let total: number | null = null;
+
+  for (let page = 1; page <= 50; page += 1) {
+    const url = `${DAIMAYUAN_BASE}/p?page=${page}`;
+    const res = await fetchFn(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        Referer: `${DAIMAYUAN_BASE}/p`,
+      },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) {
+      throw new Error(`代码源题库页 HTTP ${res.status}，请稍后重试`);
+    }
+    const html = await res.text();
+    if (total === null) {
+      const m = html.match(/(\d+)\s*problems/);
+      if (m) total = Number(m[1]);
+    }
+    const rows = parseDmyRows(html);
+    if (rows.length === 0) break;
+
+    for (const row of rows) {
+      if (seen.has(row.pid)) continue;
+      seen.add(row.pid);
+      problems.push({
+        platform: 'daimayuan',
+        problemKey: row.pid,
+        title: row.title || row.pid,
+        difficulty: row.difficulty,
+        url: `${DAIMAYUAN_BASE}/p/${row.pid}`,
+        tags: row.tags,
+      });
+    }
+    opts.onProgress?.({ platform: 'daimayuan', count: problems.length, total });
+    if (problems.length >= max) break;
+    if (rows.length < DAIMAYUAN_PER_PAGE) break;
+    await sleep(400); // 页间限速
+  }
+  return { platform: 'daimayuan', problems: problems.slice(0, max), total };
+}
+
+/**
+ * 解析代码源题库页表格行（Hydro problem_main 模板）。
+ * 行结构：<tr data-pid="{id}">，含：
+ *   - col--name 列：<a href="/p/{id}"><b>{id}</b>&nbsp;&nbsp;{标题}</a> + <ul class="problem__tags">标签列表</ul>
+ *   - col--difficulty 列：难度 1-10
+ */
+function parseDmyRows(html: string): DmyBankRow[] {
+  const rows: DmyBankRow[] = [];
+  const trRe = /<tr\s+data-pid="([^"]+)"[^>]*>([\s\S]*?)<\/tr>/g;
+  let m: RegExpExecArray | null;
+  while ((m = trRe.exec(html)) !== null) {
+    const pid = m[1];
+    const cell = m[2];
+
+    // 标题：<a href="/p/{pid}"><b>{pid}</b>&nbsp;&nbsp;{标题}</a>
+    const titleMatch = cell.match(/<a\s+href="\/p\/[^"]*"[^>]*>([\s\S]*?)<\/a>/);
+    let title = pid;
+    if (titleMatch) {
+      title = titleMatch[1]
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      // 去掉前导题号（如 "1 [R1A]最大奇数" → "[R1A]最大奇数"）
+      title = title.replace(new RegExp(`^${pid}\\s+`), '');
+    }
+
+    // 标签：<li class="problem__tag"><a class="problem__tag-link" href="...">{标签}</a></li>
+    const tags: string[] = [];
+    const tagRe = /class="problem__tag-link"[^>]*>([\s\S]*?)<\/a>/g;
+    let tm: RegExpExecArray | null;
+    while ((tm = tagRe.exec(cell)) !== null) {
+      const tag = tm[1].replace(/<[^>]+>/g, '').trim();
+      if (tag) tags.push(tag);
+    }
+
+    // 难度：<td class="col--difficulty">N</td>
+    const diffMatch = cell.match(/class="col--difficulty"[^>]*>\s*(\d+)\s*<\/td>/);
+    const diffNum = diffMatch ? Number(diffMatch[1]) : null;
+    const difficulty =
+      diffNum !== null && DAIMAYUAN_DIFFICULTY_TO_RATING[diffNum] !== undefined
+        ? DAIMAYUAN_DIFFICULTY_TO_RATING[diffNum]
+        : null;
+
+    rows.push({ pid, title, difficulty, tags });
+  }
+  return rows;
 }

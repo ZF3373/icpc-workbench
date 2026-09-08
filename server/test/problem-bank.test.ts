@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import { createDb, type Db } from '../src/db/index.ts';
-import { fetchLuoguBank, fetchNowcoderBank } from '../src/adapters/problemBank.ts';
+import { fetchLuoguBank, fetchNowcoderBank, fetchAtcoderBank, fetchDaimayuanBank } from '../src/adapters/problemBank.ts';
 import { upsertBankProblems } from '../src/import/bankService.ts';
 import { problemsRoutes } from '../src/routes/problems.ts';
 import { practicePool } from '../src/plans/planService.ts';
@@ -190,6 +190,159 @@ test('nowcoder bank: HTTP failure throws', async () => {
   await assert.rejects(() => fetchNowcoderBank(fetchFn, {}), /HTTP 403/);
 });
 
+// ---------- AtCoder 题库拉取 ----------
+
+function kenkoooProblems(): unknown {
+  return [
+    { id: 'abc138_a', contest_id: 'abc138', problem_index: 'A', name: 'Red or Not', title: 'A - Red or Not' },
+    { id: 'abc138_b', contest_id: 'abc138', problem_index: 'B', name: 'Resistors in Parallel', title: 'B - Resistors in Parallel' },
+    { id: 'abc138_c', contest_id: 'abc138', problem_index: 'C', name: 'Alchemist', title: 'C - Alchemist' },
+  ];
+}
+
+function kenkoooModels(): unknown {
+  return {
+    abc138_a: { difficulty: -848, is_experimental: false },
+    abc138_b: { difficulty: -364, is_experimental: false },
+    abc138_c: { difficulty: 1200, is_experimental: false },
+    abc138_d: { difficulty: 631 },
+  };
+}
+
+test('atcoder bank: parses problems + models, maps difficulty, clamps negatives', async () => {
+  const fetchFn = router({
+    'resources/problems.json': () => kenkoooProblems(),
+    'resources/problem-models.json': () => kenkoooModels(),
+  });
+  const r = await fetchAtcoderBank(fetchFn, { max: 100 });
+  assert.equal(r.platform, 'atcoder');
+  assert.equal(r.total, 3);
+  assert.equal(r.problems.length, 3);
+  const p0 = r.problems[0];
+  assert.equal(p0.problemKey, 'abc138_a');
+  assert.equal(p0.title, 'A - Red or Not');
+  assert.equal(p0.difficulty, 800); // 负值 -848 钳到 800
+  assert.equal(p0.url, 'https://atcoder.jp/contests/abc138/tasks/abc138_a');
+  assert.deepEqual(p0.tags, []);
+  // 正常值（>= 800）四舍五入后原样保留
+  assert.equal(r.problems[1].difficulty, 800); // -364 也钳到 800
+  assert.equal(r.problems[2].difficulty, 1200); // 1200 原样
+});
+
+test('atcoder bank: missing difficulty model → null', async () => {
+  const fetchFn = router({
+    'resources/problems.json': () => [
+      { id: 'xyz_a', contest_id: 'xyz', name: 'X', title: 'A - X' },
+    ],
+    'resources/problem-models.json': () => ({}),
+  });
+  const r = await fetchAtcoderBank(fetchFn, { max: 10 });
+  assert.equal(r.problems.length, 1);
+  assert.equal(r.problems[0].difficulty, null);
+});
+
+test('atcoder bank: max option truncates result', async () => {
+  const fetchFn = router({
+    'resources/problems.json': () => kenkoooProblems(),
+    'resources/problem-models.json': () => kenkoooModels(),
+  });
+  const r = await fetchAtcoderBank(fetchFn, { max: 2 });
+  assert.equal(r.problems.length, 2);
+  assert.equal(r.total, 3); // total 仍为服务端报告的题库总数
+});
+
+test('atcoder bank: HTTP failure throws', async () => {
+  const fetchFn = router({
+    'resources/problems.json': () => ({ status: 500, body: '' }),
+    'resources/problem-models.json': () => kenkoooModels(),
+  });
+  await assert.rejects(() => fetchAtcoderBank(fetchFn, {}), /HTTP 500/);
+});
+
+// ---------- 代码源题库拉取 ----------
+
+function dmyBankPage(rows: Array<[pid: string, title: string, diff: string, tags: string[]]>, total?: number): string {
+  const trs = rows
+    .map(([pid, title, diff, tags]) => {
+      const tagLis = tags
+        .map((t) => `<li class="problem__tag"><a class="problem__tag-link" href="/p?q=category%3A${encodeURIComponent(t)}">${t}</a></li>`)
+        .join('');
+      return `<tr data-pid="${pid}">` +
+        `<td class="col--checkbox"><input type="checkbox"></td>` +
+        `<td class="col--pid">${pid}</td>` +
+        `<td class="col--name col--problem-name" data-star-action="/p/${pid}">` +
+        `<a href="/p/${pid}"><b>${pid}</b>&nbsp;&nbsp;${title}</a>` +
+        `<ul class="problem__tags">${tagLis}</ul>` +
+        `</td>` +
+        `<td class="col--ac-tried">100 / 200</td>` +
+        `<td class="col--difficulty">${diff}</td>` +
+        `</tr>`;
+    })
+    .join('');
+  const totalP = total === undefined ? '' : `<p>${total} problems</p>`;
+  return `<html><body><table><tbody>${trs}</tbody></table>${totalP}</body></html>`;
+}
+
+test('daimayuan bank: parses rows, maps difficulty 1-10 to CF rating, extracts tags', async () => {
+  const fetchFn = router({
+    '/p?page': (url) => {
+      const page = new URL(url).searchParams.get('page');
+      if (page === '1') {
+        return dmyBankPage(
+          [
+            ['1', '[R1A]最大奇数', '4', ['模拟']],
+            ['2', '[R1B]砖块覆盖', '2', ['其他', '数学']],
+          ],
+          459,
+        );
+      }
+      return dmyBankPage([]); // 第 2 页空 → 终止
+    },
+  });
+  const r = await fetchDaimayuanBank(fetchFn, { max: 100 });
+  assert.equal(r.platform, 'daimayuan');
+  assert.equal(r.total, 459);
+  assert.equal(r.problems.length, 2);
+  const p0 = r.problems[0];
+  assert.equal(p0.problemKey, '1');
+  assert.equal(p0.title, '[R1A]最大奇数');
+  assert.equal(p0.difficulty, 1400); // 难度 4 → CF 1400
+  assert.equal(p0.url, 'https://bs.daimayuan.top/p/1');
+  assert.deepEqual(p0.tags, ['模拟']);
+  const p1 = r.problems[1];
+  assert.equal(p1.difficulty, 1000); // 难度 2 → CF 1000
+  assert.deepEqual(p1.tags, ['其他', '数学']);
+});
+
+test('daimayuan bank: empty first page returns empty without error', async () => {
+  const fetchFn = router({
+    '/p?page': () => dmyBankPage([]),
+  });
+  const r = await fetchDaimayuanBank(fetchFn, {});
+  assert.equal(r.problems.length, 0);
+  assert.equal(r.total, null);
+});
+
+test('daimayuan bank: max option truncates result', async () => {
+  const fetchFn = router({
+    '/p?page': () => dmyBankPage([
+      ['1', '题 A', '3', []],
+      ['2', '题 B', '5', ['dp']],
+      ['3', '题 C', '7', []],
+    ], 459),
+  });
+  const r = await fetchDaimayuanBank(fetchFn, { max: 2 });
+  assert.equal(r.problems.length, 2);
+  assert.equal(r.problems[1].difficulty, 1600); // 难度 5 → CF 1600
+});
+
+test('daimayuan bank: HTTP failure throws', async () => {
+  const fetchFn = router({
+    '/p?page': () => ({ status: 503, body: '' }),
+  });
+  await assert.rejects(() => fetchDaimayuanBank(fetchFn, {}), /HTTP 503/);
+});
+
 // ---------- 入库服务 ----------
 
 test('upsertBankProblems: inserts new, updates existing, keeps manual difficulty', () => {
@@ -345,6 +498,35 @@ test('POST /api/problems/bank: rejects invalid platform', async () => {
     const body = (await res.json()) as { error: string };
     assert.match(body.error, /luogu \/ nowcoder \/ codeforces/);
   });
+});
+
+test('POST /api/problems/bank: fetches atcoder bank and persists problems', async () => {
+  const fetchFn = router({
+    'resources/problems.json': () => [
+      { id: 'abc138_a', contest_id: 'abc138', name: 'Red or Not', title: 'A - Red or Not' },
+    ],
+    'resources/problem-models.json': () => ({ abc138_a: { difficulty: 800 } }),
+  });
+  await withServer(async (base) => {
+    const res = await fetch(`${base}/bank`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: 'atcoder', max: 50 }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { ok: boolean; fetched: number; inserted: number; total: number };
+    assert.equal(body.ok, true);
+    assert.equal(body.fetched, 1);
+    assert.equal(body.inserted, 1);
+    assert.equal(body.total, 1);
+    const list = (await (await fetch(`${base}?bank=1&platform=atcoder`)).json()) as Array<{
+      problem_key: string;
+      status: string;
+    }>;
+    assert.equal(list.length, 1);
+    assert.equal(list[0].problem_key, 'abc138_a');
+    assert.equal(list[0].status, 'none');
+  }, fetchFn);
 });
 
 test('POST /api/problems/bank: fetches nowcoder bank and persists problems', async () => {
