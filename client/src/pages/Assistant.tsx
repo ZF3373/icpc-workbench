@@ -268,6 +268,10 @@ export default function Assistant() {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dragOverId, setDragOverId] = useState<string | null>(null)
+  /** 拖拽事件间即时传递 dragId（React state 异步更新，onDragOver 读到的是旧值导致拖拽失效） */
+  const dragIdRef = useRef<string | null>(null)
+  /** 标记本次是否真的发生了拖拽，防止 dragEnd 后误触发 onClick 切换会话 */
+  const didDragRef = useRef(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // ?plan=<id> 消费 + 计划列表加载 + 清理已删除的计划关联
@@ -607,26 +611,39 @@ export default function Assistant() {
                     key={s.id}
                     draggable={renamingId !== s.id}
                     onDragStart={(e) => {
+                      dragIdRef.current = s.id
+                      didDragRef.current = true
                       setDragId(s.id)
                       e.dataTransfer.effectAllowed = 'move'
+                      // Firefox 需要 setData 才能启动拖拽
+                      e.dataTransfer.setData('text/plain', s.id)
                     }}
                     onDragOver={(e) => {
-                      if (dragId === null || dragId === s.id) return
+                      if (dragIdRef.current === null || dragIdRef.current === s.id) return
                       e.preventDefault()
                       e.dataTransfer.dropEffect = 'move'
                       setDragOverId(s.id)
                     }}
                     onDrop={(e) => {
                       e.preventDefault()
-                      if (dragId !== null && dragId !== s.id) reorderSessions(dragId, s.id)
+                      if (dragIdRef.current !== null && dragIdRef.current !== s.id) {
+                        reorderSessions(dragIdRef.current, s.id)
+                      }
+                      dragIdRef.current = null
                       setDragId(null)
                       setDragOverId(null)
                     }}
                     onDragEnd={() => {
+                      dragIdRef.current = null
                       setDragId(null)
                       setDragOverId(null)
+                      // 延迟清除标记，让 onClick 能检测到刚发生过拖拽
+                      setTimeout(() => { didDragRef.current = false }, 0)
                     }}
-                    onClick={() => switchToSession(s.id)}
+                    onClick={() => {
+                      if (didDragRef.current) return
+                      switchToSession(s.id)
+                    }}
                     style={{
                       display: 'flex',
                       alignItems: 'center',

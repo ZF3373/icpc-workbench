@@ -9,6 +9,7 @@ import { asyncHandler } from '../asyncHandler.ts';
 import { AiProvider, type ChatMessage, type ToolCall } from '../ai/provider.ts';
 import { estimateTokens, trimContext } from '../ai/context.ts';
 import { WEB_SEARCH_TOOL, executeWebSearch, formatSearchResults } from '../ai/search.ts';
+import { buildTemplateLibrarySummary } from '../ai/templateContext.ts';
 import { computeWeakness } from '../analysis/weakness.ts';
 import { buildPracticeSummary, renderSummaryForPrompt } from '../analysis/summary.ts';
 import { effectiveAbility, renderAbilityEvidence, setAbilityOverride } from '../today/ability.ts';
@@ -143,6 +144,8 @@ export function aiRoutes(
       upcomingContests,
       // 模板库写入（template-add 块）可选的课程分类清单，跟内置课程大纲保持同步
       templateCategories: CURRICULUM.map((c) => `${c.key}（${c.name}）`).join('、'),
+      // 模板库现有内容摘要：让 AI 知道用户已有哪些模板，避免建议重复、可针对性建议补充
+      templateLibrary: buildTemplateLibrarySummary(db),
     });
     // SSE 流式响应：逐 delta 写给前端，AI 正在生成时用户即可看到内容
     res.setHeader('Content-Type', 'text/event-stream');
