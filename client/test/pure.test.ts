@@ -138,25 +138,65 @@ describe('aiBlocks.ts template-add', () => {
     const { extractTemplateAdd } = await import('../src/aiBlocks.ts')
     const d = extractTemplateAdd(block)
     assert.ok(d)
-    assert.equal(d.categoryKey, 'dp')
-    assert.equal(d.name, '斜率优化 DP')
-    assert.equal(d.difficulty, 4)
-    assert.deepEqual(d.tags, ['DP', '优化'])
-    assert.equal(d.idea, '决策单调性 + 凸壳')
-    assert.equal(d.url, 'https://www.luogu.com.cn/problem/P3195')
+    assert.equal(d.length, 1)
+    assert.equal(d[0]!.categoryKey, 'dp')
+    assert.equal(d[0]!.name, '斜率优化 DP')
+    assert.equal(d[0]!.difficulty, 4)
+    assert.deepEqual(d[0]!.tags, ['DP', '优化'])
+    assert.equal(d[0]!.idea, '决策单调性 + 凸壳')
+    assert.equal(d[0]!.url, 'https://www.luogu.com.cn/problem/P3195')
   })
 
   it('fills defaults for optional fields and rejects missing name', async () => {
     const { extractTemplateAdd } = await import('../src/aiBlocks.ts')
     const minimal = extractTemplateAdd('```template-add\n{"name":"A*","categoryKey":"search"}\n```')
     assert.ok(minimal)
-    assert.equal(minimal.difficulty, 3) // 缺省难度兜底 3
-    assert.deepEqual(minimal.tags, [])
-    assert.equal(minimal.code, '')
+    assert.equal(minimal[0]!.difficulty, 3) // 缺省难度兜底 3
+    assert.deepEqual(minimal[0]!.tags, [])
+    assert.equal(minimal[0]!.code, '')
 
-    assert.equal(extractTemplateAdd('```template-add\n{"code":"x"}\n```'), null) // 缺 name
-    assert.equal(extractTemplateAdd('```template-add\n{not json}\n```'), null) // 非法 JSON
-    assert.equal(extractTemplateAdd('没有块的回复'), null)
+    assert.deepEqual(extractTemplateAdd('```template-add\n{"code":"x"}\n```'), []) // 缺 name
+    assert.deepEqual(extractTemplateAdd('```template-add\n{not json}\n```'), []) // 非法 JSON
+    assert.deepEqual(extractTemplateAdd('没有块的回复'), [])
+  })
+
+  it('extracts multiple template-add blocks in one reply', async () => {
+    const { extractTemplateAdd, stripTemplateAdd } = await import('../src/aiBlocks.ts')
+    const multi = [
+      '按分类整理一批模板：',
+      '```template-add',
+      JSON.stringify({ categoryKey: 'graph', name: 'Dijkstra', difficulty: 2, code: 'dij()' }),
+      '```',
+      '```template-add',
+      JSON.stringify({ categoryKey: 'ds', name: '并查集', difficulty: 1, code: 'uf()' }),
+      '```',
+      '```template-add',
+      JSON.stringify({ categoryKey: 'dp', name: '背包 DP', difficulty: 3, code: 'knapsack()' }),
+      '```',
+      '讲解结束',
+    ].join('\n')
+    const drafts = extractTemplateAdd(multi)
+    assert.equal(drafts.length, 3)
+    assert.equal(drafts[0]!.name, 'Dijkstra')
+    assert.equal(drafts[1]!.name, '并查集')
+    assert.equal(drafts[2]!.name, '背包 DP')
+    // 全部块都被剥离
+    assert.equal(stripTemplateAdd(multi), '按分类整理一批模板：\n\n\n\n讲解结束')
+  })
+
+  it('skips invalid blocks but keeps valid ones when mixed', async () => {
+    const { extractTemplateAdd } = await import('../src/aiBlocks.ts')
+    const mixed = [
+      '```template-add',
+      '{not json}',
+      '```',
+      '```template-add',
+      JSON.stringify({ name: '有效模板', categoryKey: 'search' }),
+      '```',
+    ].join('\n')
+    const drafts = extractTemplateAdd(mixed)
+    assert.equal(drafts.length, 1)
+    assert.equal(drafts[0]!.name, '有效模板')
   })
 
   it('strips the block from visible text and tolerates json-fenced variant', async () => {
@@ -164,7 +204,7 @@ describe('aiBlocks.ts template-add', () => {
     assert.equal(stripTemplateAdd(block), '讲解正文')
 
     const variant = '前文\n```json template-add\n{"name":"T","categoryKey":"ds"}\n```\n后文'
-    assert.ok(extractTemplateAdd(variant))
+    assert.equal(extractTemplateAdd(variant).length, 1)
     assert.equal(stripTemplateAdd(variant), '前文\n\n后文') // 块剥离后两端换行保留，Markdown 渲染时折叠
   })
 })

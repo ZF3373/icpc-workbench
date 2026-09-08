@@ -45,28 +45,30 @@ export interface TemplateAddDraft {
   url?: string
 }
 
-/** 解析 template-add 块（AI 模板库写入建议）：缺 name 视为无效返回 null */
-export function extractTemplateAdd(reply: string): TemplateAddDraft | null {
-  const m = reply.match(/```[a-zA-Z ]*template-add[\s\S]*?\n([\s\S]*?)```/)
-  if (!m) return null
-  try {
-    const v = JSON.parse(m[1].trim()) as Record<string, unknown>
-    const name = typeof v.name === 'string' ? v.name.trim() : ''
-    if (!name) return null
-    const difficulty = Number(v.difficulty)
-    return {
-      categoryKey: typeof v.categoryKey === 'string' ? v.categoryKey.trim() : '',
-      name,
-      difficulty: Number.isInteger(difficulty) ? difficulty : 3,
-      tags: Array.isArray(v.tags) ? v.tags.map(String).filter(Boolean).slice(0, 12) : [],
-      code: typeof v.code === 'string' ? v.code : '',
-      ...(typeof v.idea === 'string' && v.idea.trim() !== '' ? { idea: v.idea } : {}),
-      ...(typeof v.complexity === 'string' && v.complexity.trim() !== '' ? { complexity: v.complexity } : {}),
-      ...(typeof v.url === 'string' && v.url.trim() !== '' ? { url: v.url.trim() } : {}),
+/** 解析回复中全部 template-add 块（AI 模板库写入建议）：返回草稿数组，缺 name 的块跳过，无块返回空数组 */
+export function extractTemplateAdd(reply: string): TemplateAddDraft[] {
+  const drafts: TemplateAddDraft[] = []
+  for (const m of reply.matchAll(/```[a-zA-Z ]*template-add[\s\S]*?\n([\s\S]*?)```/g)) {
+    try {
+      const v = JSON.parse(m[1].trim()) as Record<string, unknown>
+      const name = typeof v.name === 'string' ? v.name.trim() : ''
+      if (!name) continue
+      const difficulty = Number(v.difficulty)
+      drafts.push({
+        categoryKey: typeof v.categoryKey === 'string' ? v.categoryKey.trim() : '',
+        name,
+        difficulty: Number.isInteger(difficulty) ? difficulty : 3,
+        tags: Array.isArray(v.tags) ? v.tags.map(String).filter(Boolean).slice(0, 12) : [],
+        code: typeof v.code === 'string' ? v.code : '',
+        ...(typeof v.idea === 'string' && v.idea.trim() !== '' ? { idea: v.idea } : {}),
+        ...(typeof v.complexity === 'string' && v.complexity.trim() !== '' ? { complexity: v.complexity } : {}),
+        ...(typeof v.url === 'string' && v.url.trim() !== '' ? { url: v.url.trim() } : {}),
+      })
+    } catch {
+      // 单块 JSON 非法跳过，不影响其余块解析
     }
-  } catch {
-    return null
   }
+  return drafts
 }
 
 /** 剥离 template-add 块后的可见文本 */

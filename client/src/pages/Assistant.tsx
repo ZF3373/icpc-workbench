@@ -47,6 +47,8 @@ import {
 
 interface ChatMsg extends PlanChatTurn {
   applied?: boolean
+  /** 该消息中已写入模板库的 template-add 草稿下标（按消息内顺序，持久化防重载重复写入） */
+  appliedTpl?: number[]
 }
 
 interface ChatSession {
@@ -245,7 +247,7 @@ export default function Assistant() {
   const [needConfig, setNeedConfig] = useState(false)
   const [applyTarget, setApplyTarget] = useState<{ planId: number; raw: string } | null>(null)
   const [applying, setApplying] = useState(false)
-  const [tplWriting, setTplWriting] = useState<string | null>(null)
+  const [tplWriting, setTplWriting] = useState<Set<string>>(new Set())
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -325,7 +327,7 @@ export default function Assistant() {
         { role: 'assistant', content: '' },
       ])
 
-      await chatWithAssistantStream(
+      const result = await chatWithAssistantStream(
         {
           messages: nextMessages.map(({ role, content }) => ({ role, content })),
           ...(sendPlanId !== undefined ? { planId: sendPlanId } : {}),
@@ -341,6 +343,32 @@ export default function Assistant() {
           })
         },
       )
+      // AI 因 max_tokens 上限被截断：在回复末尾追加提示，引导用户调大上限或分批请求
+      if (result.truncated) {
+        patchActiveSessionMessages(sessionId, (msgs) => {
+          const last = msgs[msgs.length - 1]
+          if (last && last.role === 'assistant') {
+            return [
+              ...msgs.slice(0, -1),
+              { ...last, content: `${last.content}\n\n> ⚠️ **回复因达到最大 token 上限被截断。** 可到「设置 → AI 配置」调大「最大输出 token」（注意不得超过模型上限），或让 AI 分批输出。` },
+            ]
+          }
+          return msgs
+        })
+      }
+      // 对话历史被裁剪：提示用户上下文窗口偏小，最早的消息已丢弃
+      if (result.contextTrimmed > 0) {
+        patchActiveSessionMessages(sessionId, (msgs) => {
+          const last = msgs[msgs.length - 1]
+          if (last && last.role === 'assistant') {
+            return [
+              ...msgs.slice(0, -1),
+              { ...last, content: `${last.content}\n\n> ℹ️ **对话历史较长，已自动裁剪最早的 ${result.contextTrimmed} 条消息以适配模型上下文窗口。** 如需保留更多上下文，可到「设置 → AI 配置」调大「模型上下文长度」。` },
+            ]
+          }
+          return msgs
+        })
+      }
     } catch (e) {
       const err = e as Error & { needConfig?: boolean }
       if (err.needConfig) setNeedConfig(true)
@@ -399,8 +427,16 @@ export default function Assistant() {
     }
   }
 
-  const confirmTemplate = async (draft: TemplateAddDraft, raw: string) => {
-    setTplWriting(raw)
+  const tplKey = (msgIndex: number, draftIndex: number) => `${msgIndex}:${draftIndex}`
+
+  /** 写入单个模板草稿（不弹 toast，供单条/批量复用），返回是否成功 */
+  const writeOneTemplate = async (
+    draft: TemplateAddDraft,
+    msgIndex: number,
+    draftIndex: number,
+  ): Promise<boolean> => {
+    const key = tplKey(msgIndex, draftIndex)
+    setTplWriting((prev) => new Set(prev).add(key))
     try {
       await post('/api/templates/custom', {
         categoryKey: draft.categoryKey,
@@ -413,13 +449,41 @@ export default function Assistant() {
         url: draft.url,
       })
       patchActiveSessionMessages(activeId, (msgs) =>
-        msgs.map((m) => (m.content === raw ? { ...m, applied: true } : m)),
+        msgs.map((m, i) =>
+          i === msgIndex ? { ...m, appliedTpl: [...(m.appliedTpl ?? []), draftIndex] } : m,
+        ),
       )
-      message.success(`「${draft.name}」已写入模板库，到「模板库」页可继续完善`)
+      return true
     } catch (e) {
       message.error((e as Error).message)
+      return false
     } finally {
-      setTplWriting(null)
+      setTplWriting((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
+    }
+  }
+
+  const confirmTemplate = async (draft: TemplateAddDraft, msgIndex: number, draftIndex: number) => {
+    if (await writeOneTemplate(draft, msgIndex, draftIndex)) {
+      message.success(`「${draft.name}」已写入模板库，到「模板库」页可继续完善`)
+    }
+  }
+
+  const confirmAllTemplates = async (drafts: TemplateAddDraft[], msgIndex: number) => {
+    const appliedSet = new Set(messages[msgIndex]?.appliedTpl ?? [])
+    const pending = drafts.map((_, j) => j).filter((j) => !appliedSet.has(j))
+    if (pending.length === 0) return
+    let ok = 0
+    let fail = 0
+    for (const j of pending) {
+      if (await writeOneTemplate(drafts[j]!, msgIndex, j)) ok++
+      else fail++
+    }
+    if (ok > 0) {
+      message.success(`已写入 ${ok} 个模板到模板库${fail > 0 ? `，${fail} 个失败` : ''}`)
     }
   }
 
@@ -647,14 +711,20 @@ export default function Assistant() {
               }
               const modify = extractModifyBlock(m.content)
               const abilityUpd = extractAbilityUpdate(m.content)
-              const tplAdd = extractTemplateAdd(m.content)
+              const tplAdds = extractTemplateAdd(m.content)
+              const hasTpl = tplAdds.length > 0
               let text = stripModifyBlock(m.content)
               if (abilityUpd) text = stripAbilityUpdate(text)
-              if (tplAdd) text = stripTemplateAdd(text)
+              if (hasTpl) text = stripTemplateAdd(text)
+              // 旧消息用 m.applied 表示模板已写入（向后兼容：无 appliedTpl 时视为该消息模板均已应用）
+              const appliedTpl =
+                m.applied === true && !m.appliedTpl ? tplAdds.map((_, j) => j) : (m.appliedTpl ?? [])
+              const appliedTplSet = new Set(appliedTpl)
+              const pendingTplCount = tplAdds.length - appliedTpl.length
               return (
                 <div key={i} className="plan-chat-msg plan-chat-msg-assistant">
                   <Markdown text={text} />
-                  {(modify || abilityUpd || tplAdd) && (
+                  {(modify || abilityUpd || hasTpl) && (
                     <Space style={{ marginTop: 8 }} wrap>
                       {modify && (
                         <Button
@@ -682,16 +752,33 @@ export default function Assistant() {
                             更新能力值为 {abilityUpd.level}
                           </Button>
                         ))}
-                      {tplAdd && (
+                      {hasTpl &&
+                        tplAdds.map((draft, j) => {
+                          const applied = appliedTplSet.has(j)
+                          return (
+                            <Button
+                              key={j}
+                              size="small"
+                              type="primary"
+                              ghost
+                              disabled={applied}
+                              loading={tplWriting.has(tplKey(i, j))}
+                              onClick={() => void confirmTemplate(draft, i, j)}
+                            >
+                              {applied ? `✓ 已写入：${draft.name}` : `写入模板库：「${draft.name}」`}
+                            </Button>
+                          )
+                        })}
+                      {hasTpl && pendingTplCount > 1 && (
                         <Button
                           size="small"
                           type="primary"
-                          ghost
-                          disabled={m.applied}
-                          loading={tplWriting === m.content}
-                          onClick={() => void confirmTemplate(tplAdd, m.content)}
+                          loading={tplAdds.some(
+                            (_, j) => !appliedTplSet.has(j) && tplWriting.has(tplKey(i, j)),
+                          )}
+                          onClick={() => void confirmAllTemplates(tplAdds, i)}
                         >
-                          {m.applied ? '已写入模板库' : `写入模板库：「${tplAdd.name}」`}
+                          全部写入（{pendingTplCount}）
                         </Button>
                       )}
                     </Space>

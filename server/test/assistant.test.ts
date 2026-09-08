@@ -283,6 +283,7 @@ test('assistant: prompt includes template-add capability with curriculum categor
       assert.match(system, /template-add/); // 模板库写入块说明
       assert.match(system, /categoryKey 必须从这些分类中选/); // 分类约束段
       assert.match(system, /dp（动态规划）/); // 分类清单已注入（与内置课程大纲同步）
+      assert.match(system, /可输出多个 template-add 块/); // 允许一次回复写入多个模板
       assert.doesNotMatch(system, /\{templateCategories\}/); // 占位符均已替换
     },
     { enabled: true, reply: 'ok' },
