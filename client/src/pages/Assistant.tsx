@@ -12,7 +12,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   applyAbility,
   applyPlanModification,
-  chatWithAssistant,
+  chatWithAssistantStream,
   get,
   post,
   type AbilityInfo,
@@ -319,27 +319,39 @@ export default function Assistant() {
     setNeedConfig(false)
 
     try {
-      const r =
-        sendPlanId !== undefined
-          ? await chatWithAssistant<{ reply: string }>({
-              messages: nextMessages.map(({ role, content }) => ({ role, content })),
-              planId: sendPlanId,
-            })
-          : await chatWithAssistant<{ reply: string }>({
-              messages: nextMessages.map(({ role, content }) => ({ role, content })),
-            })
-      // 写入 AI 回复到同一会话（用户可能已切换到其他会话）
+      // 先种一条空 assistant 消息，流式 delta 逐字追加到它
       patchActiveSessionMessages(sessionId, (msgs) => [
         ...msgs,
-        { role: 'assistant', content: r.reply },
+        { role: 'assistant', content: '' },
       ])
+
+      await chatWithAssistantStream(
+        {
+          messages: nextMessages.map(({ role, content }) => ({ role, content })),
+          ...(sendPlanId !== undefined ? { planId: sendPlanId } : {}),
+        },
+        (delta) => {
+          // 追加到最后一条 assistant 消息（用户可能已切到其他会话，但写入仍指向原会话）
+          patchActiveSessionMessages(sessionId, (msgs) => {
+            const last = msgs[msgs.length - 1]
+            if (last && last.role === 'assistant') {
+              return [...msgs.slice(0, -1), { ...last, content: last.content + delta }]
+            }
+            return msgs
+          })
+        },
+      )
     } catch (e) {
       const err = e as Error & { needConfig?: boolean }
       if (err.needConfig) setNeedConfig(true)
-      patchActiveSessionMessages(sessionId, (msgs) => [
-        ...msgs,
-        { role: 'assistant', content: `⚠️ ${err.message}` },
-      ])
+      // 把错误追加到最后一条 assistant 消息（如果为空）或新加一条
+      patchActiveSessionMessages(sessionId, (msgs) => {
+        const last = msgs[msgs.length - 1]
+        if (last && last.role === 'assistant' && last.content === '') {
+          return [...msgs.slice(0, -1), { ...last, content: `⚠️ ${err.message}` }]
+        }
+        return [...msgs, { role: 'assistant', content: `⚠️ ${err.message}` }]
+      })
     } finally {
       setChatState((prev) => (prev.sendingId === sessionId ? { ...prev, sendingId: null } : prev))
     }
@@ -682,7 +694,9 @@ export default function Assistant() {
                 </div>
               )
             })}
-            {sending && (
+            {sending &&
+              (!messages.some((m) => m.role === 'assistant' && m.content !== '') ||
+                messages[messages.length - 1]?.role !== 'assistant') && (
               <div className="plan-chat-msg plan-chat-msg-assistant">
                 <Spin size="small" />
               </div>

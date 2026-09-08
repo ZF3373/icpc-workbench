@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Button, Card, Col, Empty, message, Progress, Row, Space, Spin, Tag, Tooltip } from 'antd'
+import { Button, Card, Col, Empty, Progress, Row, Space, Spin, Tag, Tooltip, App as AntdApp } from 'antd'
 import {
   BulbOutlined,
   CheckCircleOutlined,
@@ -23,6 +23,7 @@ const BAND_TONE: Record<TodayBandKey, string> = {
 }
 
 export default function Today() {
+  const { message } = AntdApp.useApp()
   const [plan, setPlan] = useState<TodayPlan | null>(null)
   const [loading, setLoading] = useState(true)
   const [rotate, setRotate] = useState(0)

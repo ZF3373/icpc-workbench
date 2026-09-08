@@ -1,16 +1,3 @@
-import { message } from 'antd'
-
-/**
- * 统一的「导出文件」入口：fetch 文本 → 弹原生保存对话框让用户选位置。
- *
- * 优先用 File System Access API（showSaveFilePicker）：Chromium / WebView2 支持，
- * 会弹出系统「另存为」对话框，可自由选择保存位置与文件名；
- * 不支持的浏览器（Firefox / Safari）降级为浏览器默认下载到下载目录。
- *
- * 桌面端（Tauri + WebView2）同样走 showSaveFilePicker —— 既有原生保存对话框，
- * 又免去安装 Tauri dialog 插件 + 远程页面 ACL 配置的复杂度。
- */
-
 // 局部类型，避免依赖 lib.dom 是否包含 File System Access API
 interface SaveFilePickerOptions {
   suggestedName?: string
@@ -24,6 +11,13 @@ interface FileHandle {
   createWritable: () => Promise<WritableStream>
 }
 type ShowSaveFilePicker = (opts: SaveFilePickerOptions) => Promise<FileHandle>
+
+/** antd message 实例的最小接口，由调用方（组件内 App.useApp().message）注入 */
+interface MessageLike {
+  info: (text: string) => void
+  success: (text: string) => void
+  error: (text: string) => void
+}
 
 function getPicker(): ShowSaveFilePicker | undefined {
   return (window as unknown as { showSaveFilePicker?: ShowSaveFilePicker }).showSaveFilePicker
@@ -63,6 +57,8 @@ export interface SaveUrlOptions {
   mime?: string
   /** 成功提示文案；传 false 则不提示 */
   successText?: string | false
+  /** antd message 实例（由组件内 App.useApp().message 注入）；不传则无提示 */
+  message?: MessageLike
 }
 
 /** 从 URL 取文本并以「可选位置」方式保存 */
@@ -71,6 +67,7 @@ export async function saveUrlAsFile({
   filename,
   mime = 'text/markdown;charset=utf-8',
   successText = '已导出',
+  message,
 }: SaveUrlOptions): Promise<void> {
   try {
     const res = await fetch(url)
@@ -82,13 +79,13 @@ export async function saveUrlAsFile({
     } catch (e) {
       // 用户在保存对话框点「取消」→ AbortError，静默提示并退出，不当作错误
       if ((e as Error)?.name === 'AbortError') {
-        message.info('已取消导出')
+        message?.info('已取消导出')
         return
       }
       throw e
     }
-    if (successText !== false) message.success(successText)
+    if (successText !== false) message?.success(successText)
   } catch (e) {
-    message.error((e as Error).message)
+    message?.error((e as Error).message)
   }
 }

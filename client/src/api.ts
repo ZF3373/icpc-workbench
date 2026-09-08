@@ -65,6 +65,67 @@ export const applyPlanModification = <T>(planId: number, raw: string): Promise<T
 export const chatWithAssistant = <T>(body: { messages: PlanChatTurn[]; planId?: number }): Promise<T> =>
   post<T>('/api/ai/chat', body)
 
+/**
+ * 流式 AI 对话：逐 delta 回调，不缓冲全部内容。
+ * 服务端以 SSE（text/event-stream）返回，每帧 data: {"delta": "..."} 或 data: [DONE]。
+ * 非 200 响应（含 needConfig）走与 api() 一致的错误解析。
+ */
+export async function chatWithAssistantStream(
+  body: { messages: PlanChatTurn[]; planId?: number },
+  onDelta: (chunk: string) => void,
+): Promise<void> {
+  const res = await fetch('/api/ai/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    let needConfig = false;
+    try {
+      const errBody = (await res.json()) as { error?: string; needConfig?: boolean };
+      if (errBody.error) msg = errBody.error;
+      if (errBody.needConfig) needConfig = true;
+    } catch { /* 非 JSON 响应，保留默认消息 */ }
+    const err = new Error(msg) as Error & { needConfig?: boolean };
+    if (needConfig) err.needConfig = true;
+    throw err;
+  }
+  if (!res.body) throw new Error('服务端未返回流式响应体');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let idx: number;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        const line = frame.trim();
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') return;
+        try {
+          const obj = JSON.parse(payload) as { delta?: string; error?: string };
+          if (obj.delta) onDelta(obj.delta);
+          if (obj.error) throw new Error(obj.error);
+        } catch (e) {
+          if (e instanceof SyntaxError) continue;
+          throw e;
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export type AbilityInfo = {
   computed: number
   override: { level: number; reason?: string; updatedAt: string } | null

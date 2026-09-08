@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Button, Calendar, Card, Col, Empty, message, Row, Space, Spin, Tag } from 'antd'
+import { Button, Calendar, Card, Col, Empty, Row, Space, Spin, Tag, App as AntdApp } from 'antd'
 import { CheckOutlined, FieldTimeOutlined, FireOutlined, TrophyOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
@@ -22,6 +22,7 @@ const KIND_COLOR: Record<DayTask['kind'], string> = {
 }
 
 export default function CalendarPage() {
+  const { message } = AntdApp.useApp()
   const [month, setMonth] = useState(dayjs().format('YYYY-MM'))
   const [monthData, setMonthData] = useState<Record<string, DayPlanInfo>>({})
   const [selected, setSelected] = useState(dayjs().format('YYYY-MM-DD'))

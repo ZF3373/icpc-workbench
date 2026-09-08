@@ -8,7 +8,6 @@ import {
   Form,
   Input,
   InputNumber,
-  message,
   Modal,
   Popconfirm,
   Progress,
@@ -20,6 +19,7 @@ import {
   Tag,
   TimePicker,
   Upload,
+  App as AntdApp,
 } from 'antd'
 import { ApiOutlined, ImportOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, AppstoreOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
@@ -72,6 +72,7 @@ const COOKIE_FORM: Partial<Record<PlatformId, CookieFieldDef[]>> = {
 }
 
 export default function Settings() {
+  const { message } = AntdApp.useApp()
   const [data, setData] = useState<SettingsData | null>(null)
   const [aiForm] = Form.useForm()
   const [handleInputs, setHandleInputs] = useState<Record<string, string>>({})
@@ -269,7 +270,7 @@ export default function Settings() {
   }
 
   const downloadPrompt = async (url: string, filename: string, successText?: string) => {
-    void saveUrlAsFile({ url, filename, successText })
+    void saveUrlAsFile({ url, filename, successText, message })
   }
 
   return (
@@ -589,6 +590,7 @@ export default function Settings() {
 
 /** 「导出提示词 → 手动喂给任意 AI → 导入」闭环的导入弹窗：粘贴/上传 AI 返回的 JSON 文本。 */
 function ImportPlanModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { message } = AntdApp.useApp()
   const [form] = Form.useForm()
   const [busy, setBusy] = useState(false)
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Button, Card, Col, Empty, message, Row, Spin, Table } from 'antd'
+import { Button, Card, Col, Empty, Row, Spin, Table, App as AntdApp } from 'antd'
 import {
   CheckCircleOutlined,
   RadarChartOutlined,
@@ -64,6 +64,7 @@ function gapColorHex(gap: number): string {
 }
 
 export default function Dashboard() {
+  const { message } = AntdApp.useApp()
   const [stats, setStats] = useState<OverallStats | null>(null)
   const [weak, setWeak] = useState<WeaknessProfile | null>(null)
   const [trend, setTrend] = useState<TrendPoint[] | null>(null)

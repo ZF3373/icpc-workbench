@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { message } from 'antd'
+import { App as AntdApp } from 'antd'
 import { get, post } from './api'
 import type { UpdateInfo, UpdateProgress } from './types'
 
@@ -8,6 +8,7 @@ import type { UpdateInfo, UpdateProgress } from './types'
  * 检查 →（有更新且支持自更新）下载并轮询进度 → 校验通过后原地替换 → 提示重启。
  */
 export function useSoftwareUpdate() {
+  const { message } = AntdApp.useApp()
   const [info, setInfo] = useState<UpdateInfo | null>(null)
   const [checking, setChecking] = useState(false)
   const [phase, setPhase] = useState<UpdateProgress['phase']>('idle')
@@ -36,7 +37,7 @@ export function useSoftwareUpdate() {
     } finally {
       setChecking(false)
     }
-  }, [])
+  }, [message])
 
   const pollUntilStaged = useCallback(
     () =>
@@ -92,7 +93,7 @@ export function useSoftwareUpdate() {
       setResult({ ok: false, text: (e as Error).message })
       message.error((e as Error).message)
     }
-  }, [phase, pollUntilStaged])
+  }, [phase, pollUntilStaged, message])
 
   const busy = phase === 'downloading' || phase === 'verifying'
   const hasUpdate = !!(info?.ok && (info.hasUpdate || info.hasCommitUpdate))

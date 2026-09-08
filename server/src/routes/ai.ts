@@ -35,7 +35,7 @@ export function ASSISTANT_PROMPT_TEMPLATE(): string {
 export function aiRoutes(
   db: Db,
   getAiConfig: () => AiConfig,
-  opts: { createProvider?: () => Pick<AiProvider, 'chat' | 'enabled'> } = {},
+  opts: { createProvider?: () => Pick<AiProvider, 'chat' | 'chatStream' | 'enabled'> } = {},
 ): Router {
   const r = Router();
 
@@ -142,11 +142,24 @@ export function aiRoutes(
       // 模板库写入（template-add 块）可选的课程分类清单，跟内置课程大纲保持同步
       templateCategories: CURRICULUM.map((c) => `${c.key}（${c.name}）`).join('、'),
     });
+    // SSE 流式响应：逐 delta 写给前端，AI 正在生成时用户即可看到内容
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // 防止 Nginx 等代理缓冲 SSE
+    res.flushHeaders();
+
     try {
-      const reply = await provider.chat([{ role: 'system', content: system }, ...messages], { maxTokens: 8000 });
-      res.json({ reply });
+      const stream = provider.chatStream([{ role: 'system', content: system }, ...messages], { maxTokens: 8000 });
+      for await (const delta of stream) {
+        res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+      }
+      res.write('data: [DONE]\n\n');
+      res.end();
     } catch (e) {
-      res.status(502).json({ error: `AI 调用失败：${(e as Error).message}` });
+      // 流开始后出错：写一个错误事件让前端感知（headers 已发，不能再 JSON 502）
+      res.write(`data: ${JSON.stringify({ error: `AI 调用失败：${(e as Error).message}` })}\n\n`);
+      res.end();
     }
   }));
 

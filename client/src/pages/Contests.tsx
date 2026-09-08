@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Alert, Button, Card, Col, Empty, message, Row, Select, Space, Spin, Tag } from 'antd'
+import { Alert, Button, Card, Col, Empty, Row, Select, Space, Spin, Tag, App as AntdApp } from 'antd'
 import { ClockCircleOutlined, RedoOutlined } from '@ant-design/icons'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
@@ -60,6 +60,7 @@ interface ContestsResponse {
 }
 
 export default function Contests() {
+  const { message } = AntdApp.useApp()
   const [data, setData] = useState<ContestsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<ContestType>('upcoming')

@@ -11,6 +11,27 @@ import type { AiConfig } from '../src/config.ts';
 
 const AI_DISABLED: AiConfig = { enabled: false, baseURL: 'https://x/v1', apiKey: '', model: 'm' };
 
+/** 从 SSE 响应中读取全部 delta 并拼成完整回复 */
+async function readSseReply(res: Response): Promise<string> {
+  const text = await res.text();
+  let reply = '';
+  for (const frame of text.split('\n\n')) {
+    const line = frame.trim();
+    if (!line.startsWith('data:')) continue;
+    const payload = line.slice(5).trim();
+    if (payload === '[DONE]') break;
+    try {
+      const obj = JSON.parse(payload) as { delta?: string; error?: string };
+      if (obj.delta) reply += obj.delta;
+      if (obj.error) throw new Error(obj.error);
+    } catch (e) {
+      if (e instanceof SyntaxError) continue; // 跳过非 JSON 行
+      throw e;
+    }
+  }
+  return reply;
+}
+
 interface TestServer {
   db: Db
   aiBase: string
@@ -37,6 +58,12 @@ async function withServer(
               providerChats.push({ system: messages[0]?.content ?? '', messages: messages.slice(1) as Array<{ role: string; content: string }> });
               const prompt = messages[messages.length - 1]?.content ?? '';
               return typeof provider.reply === 'function' ? provider.reply(prompt) : provider.reply;
+            },
+            chatStream: async function* (messages) {
+              providerChats.push({ system: messages[0]?.content ?? '', messages: messages.slice(1) as Array<{ role: string; content: string }> });
+              const prompt = messages[messages.length - 1]?.content ?? '';
+              const reply = typeof provider.reply === 'function' ? provider.reply(prompt) : provider.reply;
+              yield reply;
             },
           })
         : undefined,
@@ -206,8 +233,8 @@ test('assistant: chat injects summary/weakness/ability and optional plan context
         body: JSON.stringify({ messages: [{ role: 'user', content: '我该练什么？' }], planId }),
       });
       assert.equal(res.status, 200);
-      const body = (await res.json()) as { reply: string };
-      assert.equal(body.reply, 'ok');
+      const reply = await readSseReply(res);
+      assert.equal(reply, 'ok');
 
       assert.equal(providerChats.length, 1);
       const system = providerChats[0]!.system;

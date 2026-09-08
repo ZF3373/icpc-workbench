@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Button, Card, Empty, Input, message, Modal, Popconfirm, Space, Spin, Tag, Tooltip } from 'antd'
+import { Button, Card, Empty, Input, Modal, Popconfirm, Space, Spin, Tag, Tooltip, App as AntdApp } from 'antd'
 import { DeleteOutlined, EditOutlined, ReadOutlined } from '@ant-design/icons'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
@@ -21,6 +21,7 @@ function dueText(item: ReviewItem): { text: string; overdue: boolean } {
 }
 
 export default function Reviews() {
+  const { message } = AntdApp.useApp()
   const [items, setItems] = useState<ReviewItem[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'due' | 'all'>('due')
