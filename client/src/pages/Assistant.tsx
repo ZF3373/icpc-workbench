@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { Alert, App as AntdApp, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag } from 'antd'
 import {
   DeleteOutlined,
+  HolderOutlined,
+  LoadingOutlined,
   PlusOutlined,
   PushpinFilled,
   PushpinOutlined,
@@ -65,7 +67,8 @@ interface ChatState {
   sessions: ChatSession[]
   activeId: string
   input: string
-  sendingId: string | null
+  /** 正在流式生成的会话 id 集合（支持多会话并行输入输出） */
+  sendingIds: Set<string>
 }
 
 // ---------- localStorage 持久化 ----------
@@ -126,26 +129,22 @@ function createSession(planId?: number): ChatSession {
   }
 }
 
-function sortSessions(sessions: ChatSession[]): ChatSession[] {
-  return [...sessions].sort((a, b) => {
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
-    return b.updatedAt - a.updatedAt
-  })
-}
-
 function initChatState(): ChatState {
-  const saved = sortSessions(loadFromStorage())
+  const saved = loadFromStorage()
   const sessions = saved.length > 0 ? saved : [createSession()]
-  return { sessions, activeId: sessions[0].id, input: '', sendingId: null }
+  return { sessions, activeId: sessions[0].id, input: '', sendingIds: new Set() }
 }
 
 let chatState: ChatState = initChatState()
 const chatListeners = new Set<() => void>()
 
+/** 进行中的会话 → AbortController，用于停止生成（非 React 状态，不触发渲染） */
+const sessionAbortControllers = new Map<string, AbortController>()
+
 function setChatState(updater: (prev: ChatState) => ChatState): void {
   const prev = chatState
   chatState = updater(chatState)
-  // 仅在 sessions 引用变化时写 localStorage（input/sendingId 变化不触发写入）
+  // 仅在 sessions 引用变化时写 localStorage（input/sendingIds 变化不触发写入）
   if (chatState.sessions !== prev.sessions) saveToStorage(chatState.sessions)
   chatListeners.forEach((l) => l())
 }
@@ -172,12 +171,30 @@ function switchToSession(id: string): void {
   setChatState((prev) => (prev.activeId === id ? prev : { ...prev, activeId: id, input: '' }))
 }
 
+/** 拖拽排序：将 fromId 对应的会话移动到 toId 对应会话的位置 */
+function reorderSessions(fromId: string, toId: string): void {
+  setChatState((prev) => {
+    const fromIdx = prev.sessions.findIndex((s) => s.id === fromId)
+    const toIdx = prev.sessions.findIndex((s) => s.id === toId)
+    if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return prev
+    const next = [...prev.sessions]
+    const [moved] = next.splice(fromIdx, 1)
+    next.splice(toIdx, 0, moved!)
+    return { ...prev, sessions: next }
+  })
+}
+
 function deleteSessionById(id: string): void {
+  // 若该会话正在生成，中止其流式请求
+  sessionAbortControllers.get(id)?.abort()
+  sessionAbortControllers.delete(id)
   setChatState((prev) => {
     const remaining = prev.sessions.filter((s) => s.id !== id)
     const sessions = remaining.length > 0 ? remaining : [createSession()]
     const activeId = prev.activeId === id ? sessions[0].id : prev.activeId
-    return { ...prev, sessions, activeId, input: '' }
+    const nextSending = new Set(prev.sendingIds)
+    nextSending.delete(id)
+    return { ...prev, sessions, activeId, input: '', sendingIds: nextSending }
   })
 }
 
@@ -235,11 +252,11 @@ export default function Assistant() {
   const nav = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const chat = useSyncExternalStore(subscribeChat, getChatSnapshot)
-  const { sessions, activeId, input, sendingId } = chat
+  const { sessions, activeId, input, sendingIds } = chat
   const activeSession = sessions.find((s) => s.id === activeId)
   const messages = activeSession?.messages ?? []
   const planId = activeSession?.planId
-  const sending = sendingId !== null && sendingId === activeId
+  const sending = sendingIds.has(activeId)
 
   const [plans, setPlans] = useState<PlanListItem[]>([])
   const [ability, setAbility] = useState<AbilityInfo | null>(null)
@@ -249,6 +266,8 @@ export default function Assistant() {
   const [applying, setApplying] = useState(false)
   const [tplWriting, setTplWriting] = useState<Set<string>>(new Set())
   const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dragOverId, setDragOverId] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // ?plan=<id> 消费 + 计划列表加载 + 清理已删除的计划关联
@@ -294,7 +313,7 @@ export default function Assistant() {
 
   const send = async () => {
     const text = input.trim()
-    if (!text || sendingId !== null) return
+    if (!text || sendingIds.has(activeId)) return
     const sessionId = activeId
     const session = sessions.find((s) => s.id === sessionId)
     if (!session) return
@@ -306,7 +325,7 @@ export default function Assistant() {
     setChatState((prev) => ({
       ...prev,
       input: '',
-      sendingId: sessionId,
+      sendingIds: new Set(prev.sendingIds).add(sessionId),
       sessions: prev.sessions.map((s) =>
         s.id === sessionId
           ? {
@@ -319,6 +338,10 @@ export default function Assistant() {
       ),
     }))
     setNeedConfig(false)
+
+    // 每次发送创建独立的 AbortController，支持用户主动停止生成
+    const ac = new AbortController()
+    sessionAbortControllers.set(sessionId, ac)
 
     try {
       // 先种一条空 assistant 消息，流式 delta 逐字追加到它
@@ -342,6 +365,7 @@ export default function Assistant() {
             return msgs
           })
         },
+        ac.signal,
       )
       // AI 因 max_tokens 上限被截断：在回复末尾追加提示，引导用户调大上限或分批请求
       if (result.truncated) {
@@ -369,20 +393,61 @@ export default function Assistant() {
           return msgs
         })
       }
+      // 联网搜索返回了来源：在回复末尾追加参考链接
+      if (result.sources.length > 0) {
+        const sourceLinks = result.sources
+          .map((s, i) => `[${i + 1}] [${s.title}](${s.url})`)
+          .join('\n')
+        patchActiveSessionMessages(sessionId, (msgs) => {
+          const last = msgs[msgs.length - 1]
+          if (last && last.role === 'assistant') {
+            return [
+              ...msgs.slice(0, -1),
+              { ...last, content: `${last.content}\n\n---\n**🔍 搜索来源：**\n${sourceLinks}` },
+            ]
+          }
+          return msgs
+        })
+      }
     } catch (e) {
-      const err = e as Error & { needConfig?: boolean }
-      if (err.needConfig) setNeedConfig(true)
-      // 把错误追加到最后一条 assistant 消息（如果为空）或新加一条
-      patchActiveSessionMessages(sessionId, (msgs) => {
-        const last = msgs[msgs.length - 1]
-        if (last && last.role === 'assistant' && last.content === '') {
-          return [...msgs.slice(0, -1), { ...last, content: `⚠️ ${err.message}` }]
-        }
-        return [...msgs, { role: 'assistant', content: `⚠️ ${err.message}` }]
-      })
+      // 用户主动停止生成：保留已收到内容，不报错
+      if (ac.signal.aborted) {
+        patchActiveSessionMessages(sessionId, (msgs) => {
+          const last = msgs[msgs.length - 1]
+          if (last && last.role === 'assistant' && last.content === '') {
+            return [...msgs.slice(0, -1), { ...last, content: '（已停止生成）' }]
+          }
+          if (last && last.role === 'assistant' && last.content !== '') {
+            return [...msgs.slice(0, -1), { ...last, content: `${last.content}\n\n> ⏹️ **已停止生成。**` }]
+          }
+          return msgs
+        })
+      } else {
+        const err = e as Error & { needConfig?: boolean }
+        if (err.needConfig) setNeedConfig(true)
+        // 把错误追加到最后一条 assistant 消息（如果为空）或新加一条
+        patchActiveSessionMessages(sessionId, (msgs) => {
+          const last = msgs[msgs.length - 1]
+          if (last && last.role === 'assistant' && last.content === '') {
+            return [...msgs.slice(0, -1), { ...last, content: `⚠️ ${err.message}` }]
+          }
+          return [...msgs, { role: 'assistant', content: `⚠️ ${err.message}` }]
+        })
+      }
     } finally {
-      setChatState((prev) => (prev.sendingId === sessionId ? { ...prev, sendingId: null } : prev))
+      sessionAbortControllers.delete(sessionId)
+      setChatState((prev) => {
+        if (!prev.sendingIds.has(sessionId)) return prev
+        const next = new Set(prev.sendingIds)
+        next.delete(sessionId)
+        return { ...prev, sendingIds: next }
+      })
     }
+  }
+
+  /** 中止指定会话的流式生成（保留已收到的部分回复） */
+  const stopSending = (sessionId: string) => {
+    sessionAbortControllers.get(sessionId)?.abort()
   }
 
   const confirmApply = async () => {
@@ -495,8 +560,6 @@ export default function Assistant() {
     setApplyTarget({ planId, raw })
   }
 
-  const sortedSessions = sortSessions(sessions)
-
   return (
     <div>
       <PageHeader
@@ -535,30 +598,58 @@ export default function Assistant() {
             }
           >
             <div style={{ maxHeight: 280, overflowY: 'auto', margin: '0 -4px' }}>
-              {sortedSessions.map((s) => {
+              {sessions.map((s) => {
                 const isActive = s.id === activeId
+                const isDragging = dragId === s.id
+                const isDragOver = dragOverId === s.id && dragId !== null && dragId !== s.id
                 return (
                   <div
                     key={s.id}
+                    draggable={renamingId !== s.id}
+                    onDragStart={(e) => {
+                      setDragId(s.id)
+                      e.dataTransfer.effectAllowed = 'move'
+                    }}
+                    onDragOver={(e) => {
+                      if (dragId === null || dragId === s.id) return
+                      e.preventDefault()
+                      e.dataTransfer.dropEffect = 'move'
+                      setDragOverId(s.id)
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault()
+                      if (dragId !== null && dragId !== s.id) reorderSessions(dragId, s.id)
+                      setDragId(null)
+                      setDragOverId(null)
+                    }}
+                    onDragEnd={() => {
+                      setDragId(null)
+                      setDragOverId(null)
+                    }}
                     onClick={() => switchToSession(s.id)}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
-                      gap: 6,
+                      gap: 4,
                       padding: '6px 8px',
                       borderRadius: 8,
-                      cursor: 'pointer',
+                      cursor: 'grab',
                       marginBottom: 2,
                       background: isActive ? 'rgba(134, 168, 255, 0.13)' : 'transparent',
+                      opacity: isDragging ? 0.4 : 1,
+                      borderTop: isDragOver ? '2px solid #86a8ff' : '2px solid transparent',
                       transition: 'background 0.15s',
                     }}
                     onMouseEnter={(e) => {
-                      if (!isActive) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
+                      if (!isActive && !isDragging) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
                     }}
                     onMouseLeave={(e) => {
                       if (!isActive) e.currentTarget.style.background = 'transparent'
                     }}
                   >
+                    <HolderOutlined
+                      style={{ fontSize: 12, color: '#5a6472', flexShrink: 0, cursor: 'grab' }}
+                    />
                     <div style={{ flex: 1, minWidth: 0 }} onDoubleClick={() => setRenamingId(s.id)}>
                       {renamingId === s.id ? (
                         <Input
@@ -589,10 +680,16 @@ export default function Assistant() {
                               overflow: 'hidden',
                               textOverflow: 'ellipsis',
                               color: s.pinned ? '#f2c46d' : undefined,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 4,
                             }}
                             title="双击重命名"
                           >
-                            {s.title || '新会话'}
+                            {sendingIds.has(s.id) && (
+                              <LoadingOutlined style={{ fontSize: 11, color: '#86a8ff', flexShrink: 0 }} />
+                            )}
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title || '新会话'}</span>
                           </div>
                           <div style={{ fontSize: 11, color: '#8993a2' }}>{relTime(s.updatedAt)}</div>
                         </>
@@ -801,7 +898,6 @@ export default function Assistant() {
               onChange={(e) => setChatState((prev) => ({ ...prev, input: e.target.value }))}
               placeholder="向 AI 教练提问…（可粘贴代码）Enter 发送，Shift+Enter 换行"
               autoSize={{ minRows: 1, maxRows: 6 }}
-              disabled={sending}
               onPressEnter={(e) => {
                 if (!e.shiftKey) {
                   e.preventDefault()
@@ -809,13 +905,21 @@ export default function Assistant() {
                 }
               }}
             />
-            <Button
-              type="primary"
-              icon={<SendOutlined />}
-              loading={sending}
-              disabled={!input.trim() || sendingId !== null}
-              onClick={() => void send()}
-            />
+            {sending ? (
+              <Button
+                danger
+                onClick={() => stopSending(activeId)}
+              >
+                停止
+              </Button>
+            ) : (
+              <Button
+                type="primary"
+                icon={<SendOutlined />}
+                disabled={!input.trim()}
+                onClick={() => void send()}
+              />
+            )}
           </div>
         </div>
       </div>

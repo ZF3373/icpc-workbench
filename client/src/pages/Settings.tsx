@@ -13,6 +13,7 @@ import {
   Progress,
   Row,
   Col,
+  Select,
   Space,
   Spin,
   Switch,
@@ -36,7 +37,7 @@ import { useSoftwareUpdate } from '../useSoftwareUpdate'
 import type { ContestReminderConfig, ReminderConfig } from '../types'
 
 interface SettingsData {
-  ai: { enabled: boolean; baseURL: string; apiKey: string; model: string; timeoutMs?: number; maxTokens?: number; contextWindow?: number }
+  ai: { enabled: boolean; baseURL: string; apiKey: string; model: string; timeoutMs?: number; maxTokens?: number; contextWindow?: number; searchEngine?: 'tavily' | 'brave'; searchApiKey?: string }
   accounts: Array<{ platform: PlatformId; handle: string; last_sync_at: string | null; enabled: number }>
   adapterEnabled: Record<string, boolean>
   platforms: typeof PLATFORMS
@@ -93,7 +94,7 @@ export default function Settings() {
     get<SettingsData>('/api/settings')
       .then((d) => {
         setData(d)
-        aiForm.setFieldsValue({ ...d.ai, timeoutMs: d.ai.timeoutMs ? d.ai.timeoutMs / 1000 : 120, maxTokens: d.ai.maxTokens ?? 8192, contextWindow: d.ai.contextWindow ?? 131072 })
+        aiForm.setFieldsValue({ ...d.ai, timeoutMs: d.ai.timeoutMs ? d.ai.timeoutMs / 1000 : 120, maxTokens: d.ai.maxTokens ?? 8192, contextWindow: d.ai.contextWindow ?? 131072, searchEngine: d.ai.searchEngine ?? 'tavily', searchApiKey: d.ai.searchApiKey ?? '' })
         const handles: Record<string, string> = {}
         const cookies: Record<string, Record<string, string>> = {}
         for (const a of d.accounts) handles[a.platform] = a.handle
@@ -303,6 +304,30 @@ export default function Settings() {
             </Form.Item>
             <Form.Item name="contextWindow" label="模型上下文长度" tooltip="模型支持的最大上下文 token 数（含输入+输出）。对话历史超过此长度时自动裁剪最早的消息。当前主流模型多为百万级上下文，请按你实际使用的模型参数填写，设置过小会频繁裁剪丢失上下文，过大会触发 API 超限报错。默认 131072（128K）">
               <InputNumber min={2048} max={2097152} step={4096} addonAfter="tokens" style={{ width: '100%' }} />
+            </Form.Item>
+            <div style={{ borderTop: '1px solid var(--border-color, rgba(255,255,255,0.06))', margin: '12px 0', paddingTop: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: 'var(--text-1, #e8eaed)' }}>联网搜索（可选）</div>
+              <p style={{ fontSize: 12, color: '#8993a2', margin: '0 0 8px' }}>
+                配置后 AI 助手可主动搜索互联网获取最新信息（近期赛事、最新文档等）。留空则不启用联网。需模型支持 function calling（DeepSeek/GPT/智谱等均支持）。
+              </p>
+              <p style={{ fontSize: 12, color: '#8993a2', margin: '0 0 12px' }}>
+                还没有 API Key？前往{' '}
+                <a onClick={() => openExternal('https://tavily.com')}>Tavily 官网 ↗</a>
+                {' '}或{' '}
+                <a onClick={() => openExternal('https://brave.com/search/api/')}>Brave Search API ↗</a>
+                {' '}注册即可免费获取。
+              </p>
+            </div>
+            <Form.Item name="searchEngine" label="搜索引擎">
+              <Select
+                options={[
+                  { value: 'tavily', label: 'Tavily（AI 友好，免费 1000 次/月）' },
+                  { value: 'brave', label: 'Brave Search（免费 2000 次/月）' },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item name="searchApiKey" label="搜索 API Key" tooltip="Tavily：api.tavily.com 注册获取；Brave：api.search.brave.com 注册获取。留空则不启用联网搜索。">
+              <Input.Password placeholder="留空则不启用联网搜索" />
             </Form.Item>
             <Space wrap>
               <Button type="primary" onClick={saveAi}>

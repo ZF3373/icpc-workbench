@@ -1,15 +1,36 @@
 import type { AiConfig } from '../config.ts';
 
+export interface ToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
+export interface ToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /** assistant 消息携带的 tool_calls（AI 请求调用工具时填充） */
+  tool_calls?: ToolCall[];
+  /** tool 角色消息对应的 tool_call_id（工具执行结果回传时填充） */
+  tool_call_id?: string;
 }
 
 export interface ChatOptions {
   temperature?: number;
   maxTokens?: number;
-  /** 流结束时回调，传入 OpenAI 兼容的 finish_reason（"stop"|"length"|null），用于检测因 token 上限被截断 */
-  onFinish?: (reason: string | null) => void;
+  /** 可用工具定义，传入后 AI 可在回复中发起 tool_calls */
+  tools?: ToolDefinition[];
+  /** 流结束时回调，传入 OpenAI 兼容的 finish_reason（"stop"|"length"|"tool_calls"|null）与累积的 tool_calls */
+  onFinish?: (reason: string | null, toolCalls?: ToolCall[]) => void;
 }
 
 /** baseURL → chat/completions 端点：容忍用户直接粘贴完整端点地址 */
@@ -58,6 +79,7 @@ export class AiProvider {
         messages,
         temperature: opts.temperature ?? 0.2,
         max_tokens: opts.maxTokens ?? 8192,
+        ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools } : {}),
       }),
       signal: AbortSignal.timeout(this.cfg.timeoutMs ?? 120000),
     });
@@ -66,9 +88,16 @@ export class AiProvider {
       throw friendlyHttpError(res.status, text);
     }
     const data = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{ message?: { content?: string; tool_calls?: ToolCall[] }; finish_reason?: string | null }>;
     };
-    const content = data.choices?.[0]?.message?.content;
+    const choice = data.choices?.[0];
+    const content = choice?.message?.content;
+    const toolCalls = choice?.message?.tool_calls;
+    opts.onFinish?.(choice?.finish_reason ?? null, toolCalls);
+    if (toolCalls && toolCalls.length > 0) {
+      // 工具调用时 content 可能为空，返回占位符避免上层判空报错
+      return content ?? '';
+    }
     if (!content || content.trim() === '') {
       throw new Error('AI API 返回空内容');
     }
@@ -79,6 +108,7 @@ export class AiProvider {
    * 流式对话：逐 delta yield content 片段。
    * 使用 OpenAI 兼容的 SSE stream 协议（stream: true）。
    * 调用方通过 for-await-of 消费每个 delta 字符串。
+   * 若 AI 发起 tool_calls，content delta 不再 yield（工具参数在内部累积，通过 onFinish 回传）。
    */
   async *chatStream(messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<string, void, void> {
     if (!this.enabled) {
@@ -96,6 +126,7 @@ export class AiProvider {
         temperature: opts.temperature ?? 0.2,
         max_tokens: opts.maxTokens ?? 8192,
         stream: true,
+        ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools } : {}),
       }),
       signal: AbortSignal.timeout(this.cfg.timeoutMs ?? 120000),
     });
@@ -109,6 +140,8 @@ export class AiProvider {
     const decoder = new TextDecoder();
     let buffer = '';
     let finishReason: string | null = null;
+    /** 按 index 累积 tool_calls 片段（流式 delta 分片到达） */
+    const toolCallAccum = new Map<number, { id: string; name: string; args: string }>();
 
     try {
       for (;;) {
@@ -125,17 +158,36 @@ export class AiProvider {
           if (!line.startsWith('data:')) continue;
           const payload = line.slice(5).trim();
           if (payload === '[DONE]') {
-            opts.onFinish?.(finishReason);
+            opts.onFinish?.(finishReason, accumToToolCalls(toolCallAccum));
             return;
           }
           try {
             const obj = JSON.parse(payload) as {
-              choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>;
+              choices?: Array<{
+                delta?: { content?: string; tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> };
+                finish_reason?: string | null;
+              }>;
             };
             const choice = obj.choices?.[0];
-            const delta = choice?.delta?.content;
-            if (delta) yield delta;
-            // 捕获 finish_reason（"stop"=正常结束，"length"=因 max_tokens 被截断）
+            const delta = choice?.delta;
+            // content delta 正常 yield 给调用方
+            if (delta?.content) yield delta.content;
+            // tool_calls delta：按 index 累积 id/name/arguments 片段
+            if (delta?.tool_calls) {
+              for (const tc of delta.tool_calls) {
+                const existing = toolCallAccum.get(tc.index);
+                if (existing) {
+                  if (tc.function?.arguments) existing.args += tc.function.arguments;
+                } else {
+                  toolCallAccum.set(tc.index, {
+                    id: tc.id ?? '',
+                    name: tc.function?.name ?? '',
+                    args: tc.function?.arguments ?? '',
+                  });
+                }
+              }
+            }
+            // 捕获 finish_reason（"stop"=正常结束，"length"=截断，"tool_calls"=请求工具调用）
             if (choice?.finish_reason) finishReason = choice.finish_reason;
           } catch {
             // 单帧解析失败跳过（部分实现会发心跳注释行）
@@ -145,6 +197,22 @@ export class AiProvider {
     } finally {
       reader.releaseLock();
     }
-    opts.onFinish?.(finishReason);
+    opts.onFinish?.(finishReason, accumToToolCalls(toolCallAccum));
   }
+}
+
+/** 将按 index 累积的 tool_calls 片段组装为 ToolCall[] */
+function accumToToolCalls(accum: Map<number, { id: string; name: string; args: string }>): ToolCall[] {
+  if (accum.size === 0) return [];
+  const result: ToolCall[] = [];
+  for (const [, v] of accum) {
+    if (v.name) {
+      result.push({
+        id: v.id || `call_${Math.random().toString(36).slice(2, 10)}`,
+        type: 'function',
+        function: { name: v.name, arguments: v.args || '{}' },
+      });
+    }
+  }
+  return result;
 }

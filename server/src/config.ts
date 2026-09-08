@@ -18,6 +18,10 @@ export interface AiConfig {
   maxTokens?: number;
   /** 模型上下文窗口大小（token 数），含输入+输出；对话历史超限时自动裁剪最早消息。缺省 131072（128K） */
   contextWindow?: number;
+  /** 联网搜索引擎：tavily（默认，AI 友好）或 brave */
+  searchEngine?: 'tavily' | 'brave';
+  /** 搜索 API Key，留空则不启用联网搜索（AI 回复不含外部信息） */
+  searchApiKey?: string;
 }
 
 export interface AppConfig {
@@ -104,6 +108,11 @@ export function aiConfigFromDb(db: Db, cfg: AppConfig): AiConfig {
   const maxTokens = maxTokensRaw !== undefined ? Number(maxTokensRaw) : cfg.ai.maxTokens;
   const ctxWindowRaw = get('ai.contextWindow');
   const contextWindow = ctxWindowRaw !== undefined ? Number(ctxWindowRaw) : cfg.ai.contextWindow;
+  const searchEngineRaw = get('ai.searchEngine');
+  const searchEngine = searchEngineRaw === 'tavily' || searchEngineRaw === 'brave'
+    ? searchEngineRaw
+    : cfg.ai.searchEngine;
+  const searchApiKey = process.env.SEARCH_API_KEY ?? get('ai.searchApiKey') ?? cfg.ai.searchApiKey;
   return {
     enabled: enabledRaw !== undefined ? enabledRaw === 'true' : cfg.ai.enabled,
     baseURL: get('ai.baseURL') ?? cfg.ai.baseURL,
@@ -112,6 +121,8 @@ export function aiConfigFromDb(db: Db, cfg: AppConfig): AiConfig {
     ...(Number.isFinite(timeoutMs) && timeoutMs! > 0 ? { timeoutMs: timeoutMs! } : {}),
     ...(Number.isFinite(maxTokens) && maxTokens! > 0 ? { maxTokens: maxTokens! } : {}),
     ...(Number.isFinite(contextWindow) && contextWindow! > 0 ? { contextWindow: contextWindow! } : {}),
+    ...(searchEngine ? { searchEngine } : {}),
+    ...(searchApiKey ? { searchApiKey } : {}),
   };
 }
 
@@ -128,6 +139,8 @@ export function saveAiConfig(db: Db, cfg: AppConfig, patch: Partial<AiConfig>): 
     ['ai.timeoutMs', patch.timeoutMs === undefined ? undefined : String(patch.timeoutMs)],
     ['ai.maxTokens', patch.maxTokens === undefined ? undefined : String(patch.maxTokens)],
     ['ai.contextWindow', patch.contextWindow === undefined ? undefined : String(patch.contextWindow)],
+    ['ai.searchEngine', patch.searchEngine],
+    ['ai.searchApiKey', patch.searchApiKey],
   ];
   for (const [k, v] of entries) {
     if (v !== undefined) upsert.run(k, v);

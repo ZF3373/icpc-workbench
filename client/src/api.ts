@@ -73,11 +73,13 @@ export const chatWithAssistant = <T>(body: { messages: PlanChatTurn[]; planId?: 
 export async function chatWithAssistantStream(
   body: { messages: PlanChatTurn[]; planId?: number },
   onDelta: (chunk: string) => void,
-): Promise<{ truncated: boolean; contextTrimmed: number }> {
+  signal?: AbortSignal,
+): Promise<{ truncated: boolean; contextTrimmed: number; sources: Array<{ title: string; url: string }> }> {
   const res = await fetch('/api/ai/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
@@ -98,6 +100,7 @@ export async function chatWithAssistantStream(
   let buffer = '';
   let truncated = false;
   let contextTrimmed = 0;
+  const sources: Array<{ title: string; url: string }> = [];
 
   try {
     for (;;) {
@@ -112,13 +115,22 @@ export async function chatWithAssistantStream(
         const line = frame.trim();
         if (!line.startsWith('data:')) continue;
         const payload = line.slice(5).trim();
-        if (payload === '[DONE]') return { truncated, contextTrimmed };
+        if (payload === '[DONE]') return { truncated, contextTrimmed, sources };
         try {
-          const obj = JSON.parse(payload) as { delta?: string; error?: string; truncated?: boolean; contextTrimmed?: number };
+          const obj = JSON.parse(payload) as {
+            delta?: string;
+            error?: string;
+            truncated?: boolean;
+            contextTrimmed?: number;
+            searching?: boolean;
+            query?: string;
+            sources?: Array<{ title: string; url: string }>;
+          };
           if (obj.delta) onDelta(obj.delta);
           if (obj.error) throw new Error(obj.error);
           if (obj.truncated) truncated = true;
           if (typeof obj.contextTrimmed === 'number') contextTrimmed = obj.contextTrimmed;
+          if (Array.isArray(obj.sources)) sources.push(...obj.sources);
         } catch (e) {
           if (e instanceof SyntaxError) continue;
           throw e;
@@ -128,7 +140,7 @@ export async function chatWithAssistantStream(
   } finally {
     reader.releaseLock();
   }
-  return { truncated, contextTrimmed };
+  return { truncated, contextTrimmed, sources };
 }
 
 export type AbilityInfo = {

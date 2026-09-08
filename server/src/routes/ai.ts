@@ -6,8 +6,9 @@ import type { AiConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
-import { AiProvider, type ChatMessage } from '../ai/provider.ts';
+import { AiProvider, type ChatMessage, type ToolCall } from '../ai/provider.ts';
 import { estimateTokens, trimContext } from '../ai/context.ts';
+import { WEB_SEARCH_TOOL, executeWebSearch, formatSearchResults } from '../ai/search.ts';
 import { computeWeakness } from '../analysis/weakness.ts';
 import { buildPracticeSummary, renderSummaryForPrompt } from '../analysis/summary.ts';
 import { effectiveAbility, renderAbilityEvidence, setAbilityOverride } from '../today/ability.ts';
@@ -167,14 +168,73 @@ export function aiRoutes(
       if (trimmedCount > 0) {
         res.write(`data: ${JSON.stringify({ contextTrimmed: trimmedCount })}\n\n`);
       }
+
+      // 联网搜索：配置了 searchApiKey 时向 AI 暴露 web_search 工具
+      const searchEnabled = !!(aiCfg.searchApiKey?.trim());
+      const tools = searchEnabled ? [WEB_SEARCH_TOOL] : undefined;
+      const fullMsgs: ChatMessage[] = [{ role: 'system', content: system }, ...trimmedMsgs];
+
       let finishReason: string | null = null;
-      const stream = provider.chatStream(
-        [{ role: 'system', content: system }, ...trimmedMsgs],
-        { maxTokens, onFinish: (r) => { finishReason = r; } },
-      );
+      let pendingToolCalls: ToolCall[] | undefined;
+
+      // 第一轮流式（可能含 tool_calls）
+      const stream = provider.chatStream(fullMsgs, {
+        maxTokens,
+        tools,
+        onFinish: (r, tc) => { finishReason = r; pendingToolCalls = tc; },
+      });
       for await (const delta of stream) {
         res.write(`data: ${JSON.stringify({ delta })}\n\n`);
       }
+
+      // 检测 tool_calls：AI 请求搜索 → 执行搜索 → 二次请求带结果继续流式输出
+      if (finishReason === 'tool_calls' && pendingToolCalls && pendingToolCalls.length > 0) {
+        // 追加 assistant 的 tool_calls 消息 + 各工具的结果消息
+        const secondRoundMsgs: ChatMessage[] = [
+          ...fullMsgs,
+          { role: 'assistant', content: '', tool_calls: pendingToolCalls },
+        ];
+
+        for (const tc of pendingToolCalls) {
+          if (tc.function.name === 'web_search') {
+            let query = '';
+            try {
+              query = (JSON.parse(tc.function.arguments) as { query?: string }).query ?? '';
+            } catch { /* 参数解析失败 */ }
+
+            // 通知前端正在搜索
+            res.write(`data: ${JSON.stringify({ searching: true, query })}\n\n`);
+
+            const results = await executeWebSearch(query, aiCfg);
+            const formatted = formatSearchResults(query, results);
+
+            // 通知前端搜索来源（前端可展示引用链接）
+            if (results.length > 0) {
+              res.write(`data: ${JSON.stringify({ sources: results.map((r) => ({ title: r.title, url: r.url })) })}\n\n`);
+            }
+
+            secondRoundMsgs.push({ role: 'tool', content: formatted, tool_call_id: tc.id });
+          } else {
+            // 未知工具：返回错误提示让 AI 自行处理
+            secondRoundMsgs.push({
+              role: 'tool',
+              content: `工具 ${tc.function.name} 不可用`,
+              tool_call_id: tc.id,
+            });
+          }
+        }
+
+        // 二轮流式：带工具结果，不再传 tools（AI 直接给出最终答案）
+        finishReason = null;
+        const stream2 = provider.chatStream(secondRoundMsgs, {
+          maxTokens,
+          onFinish: (r) => { finishReason = r; },
+        });
+        for await (const delta of stream2) {
+          res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+        }
+      }
+
       // finish_reason === 'length' 表示因 max_tokens 上限被截断，通知前端给出可操作提示
       if (finishReason === 'length') {
         res.write(`data: ${JSON.stringify({ truncated: true })}\n\n`);
