@@ -95,8 +95,8 @@ export function aiRoutes(
     const weakness = computeWeakness(db, DEFAULT_USER_ID, { minAttempts: 5, topN: 8 });
     const ability = effectiveAbility(db, DEFAULT_USER_ID);
     const overrideNote = ability.override
-      ? `（AI 曾调整为 ${ability.override.level}，理由：${ability.override.reason ?? '未记录'}）`
-      : '（无 AI 调整记录）';
+      ? `（当前已应用 AI 调整 ${ability.override.level}，理由：${ability.override.reason ?? '未记录'}；再次评估请以此为基线，证据无实质变化则维持）`
+      : '（无 AI 调整记录，生效值即计算值）';
 
     let planSection = '（未关联训练计划：plan-modify 能力不可用；用户提到改计划时请引导其先在本页右上角下拉关联训练计划）';
     if (Number.isInteger(planId)) {

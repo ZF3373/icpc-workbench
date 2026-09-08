@@ -666,17 +666,22 @@ export default function Assistant() {
                           {m.applied ? '已应用' : '应用计划修改'}
                         </Button>
                       )}
-                      {abilityUpd && (
-                        <Button
-                          size="small"
-                          type="primary"
-                          ghost
-                          disabled={m.applied}
-                          onClick={() => void confirmAbility(abilityUpd, m.content)}
-                        >
-                          更新能力值为 {abilityUpd.level}
-                        </Button>
-                      )}
+                      {abilityUpd &&
+                        (abilityUpd.level === ability?.effective ? (
+                          <span style={{ fontSize: 12, color: 'var(--text-3, #8993a2)' }}>
+                            建议值 {abilityUpd.level} 与当前生效值相同，无需重复更新
+                          </span>
+                        ) : (
+                          <Button
+                            size="small"
+                            type="primary"
+                            ghost
+                            disabled={m.applied}
+                            onClick={() => void confirmAbility(abilityUpd, m.content)}
+                          >
+                            更新能力值为 {abilityUpd.level}
+                          </Button>
+                        ))}
                       {tplAdd && (
                         <Button
                           size="small"
