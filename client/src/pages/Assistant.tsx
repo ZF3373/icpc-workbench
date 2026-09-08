@@ -268,11 +268,21 @@ export default function Assistant() {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dragOverId, setDragOverId] = useState<string | null>(null)
-  /** 拖拽事件间即时传递 dragId（React state 异步更新，onDragOver 读到的是旧值导致拖拽失效） */
+  /** 拖拽源 id（ref 即时读写，不依赖 state 异步更新） */
   const dragIdRef = useRef<string | null>(null)
-  /** 标记本次是否真的发生了拖拽，防止 dragEnd 后误触发 onClick 切换会话 */
-  const didDragRef = useRef(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // 拖拽中松手在列表外时清除状态（mouse 事件方案，兼容 WebView2/WKWebView）
+  useEffect(() => {
+    if (dragId === null) return
+    const onGlobalMouseUp = () => {
+      dragIdRef.current = null
+      setDragId(null)
+      setDragOverId(null)
+    }
+    document.addEventListener('mouseup', onGlobalMouseUp)
+    return () => document.removeEventListener('mouseup', onGlobalMouseUp)
+  }, [dragId])
 
   // ?plan=<id> 消费 + 计划列表加载 + 清理已删除的计划关联
   useEffect(() => {
@@ -609,23 +619,35 @@ export default function Assistant() {
                 return (
                   <div
                     key={s.id}
-                    draggable={renamingId !== s.id}
-                    onDragStart={(e) => {
-                      dragIdRef.current = s.id
-                      didDragRef.current = true
-                      setDragId(s.id)
-                      e.dataTransfer.effectAllowed = 'move'
-                      // Firefox 需要 setData 才能启动拖拽
-                      e.dataTransfer.setData('text/plain', s.id)
+                    onClick={() => switchToSession(s.id)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 4,
+                      padding: '6px 8px',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                      marginBottom: 2,
+                      background: isActive ? 'rgba(134, 168, 255, 0.13)' : 'transparent',
+                      opacity: isDragging ? 0.4 : 1,
+                      borderTop: isDragOver ? '2px solid #86a8ff' : '2px solid transparent',
+                      transition: 'background 0.15s',
+                      userSelect: dragId !== null ? 'none' : undefined,
                     }}
-                    onDragOver={(e) => {
-                      if (dragIdRef.current === null || dragIdRef.current === s.id) return
-                      e.preventDefault()
-                      e.dataTransfer.dropEffect = 'move'
-                      setDragOverId(s.id)
+                    onMouseEnter={(e) => {
+                      // 拖拽中：标记当前行为放置目标；否则普通 hover
+                      if (dragIdRef.current !== null && dragIdRef.current !== s.id) {
+                        setDragOverId(s.id)
+                      } else if (!isActive && !isDragging) {
+                        e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
+                      }
                     }}
-                    onDrop={(e) => {
-                      e.preventDefault()
+                    onMouseLeave={(e) => {
+                      if (dragIdRef.current !== null) return
+                      if (!isActive) e.currentTarget.style.background = 'transparent'
+                    }}
+                    onMouseUp={() => {
+                      // 拖拽中松手在此行：执行排序
                       if (dragIdRef.current !== null && dragIdRef.current !== s.id) {
                         reorderSessions(dragIdRef.current, s.id)
                       }
@@ -633,39 +655,16 @@ export default function Assistant() {
                       setDragId(null)
                       setDragOverId(null)
                     }}
-                    onDragEnd={() => {
-                      dragIdRef.current = null
-                      setDragId(null)
-                      setDragOverId(null)
-                      // 延迟清除标记，让 onClick 能检测到刚发生过拖拽
-                      setTimeout(() => { didDragRef.current = false }, 0)
-                    }}
-                    onClick={() => {
-                      if (didDragRef.current) return
-                      switchToSession(s.id)
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 4,
-                      padding: '6px 8px',
-                      borderRadius: 8,
-                      cursor: 'grab',
-                      marginBottom: 2,
-                      background: isActive ? 'rgba(134, 168, 255, 0.13)' : 'transparent',
-                      opacity: isDragging ? 0.4 : 1,
-                      borderTop: isDragOver ? '2px solid #86a8ff' : '2px solid transparent',
-                      transition: 'background 0.15s',
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!isActive && !isDragging) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!isActive) e.currentTarget.style.background = 'transparent'
-                    }}
                   >
                     <HolderOutlined
                       style={{ fontSize: 12, color: '#5a6472', flexShrink: 0, cursor: 'grab' }}
+                      onMouseDown={(e) => {
+                        // 在手柄上按下鼠标：启动拖拽（阻止默认行为避免选中文本）
+                        e.stopPropagation()
+                        e.preventDefault()
+                        dragIdRef.current = s.id
+                        setDragId(s.id)
+                      }}
                     />
                     <div style={{ flex: 1, minWidth: 0 }} onDoubleClick={() => setRenamingId(s.id)}>
                       {renamingId === s.id ? (
