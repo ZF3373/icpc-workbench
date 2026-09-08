@@ -149,6 +149,180 @@ const safeTags = (raw: string): string[] => {
   }
 };
 
+/** 导出用：学习状态中文标签 */
+const EXPORT_STATUS_LABEL: Record<string, string> = {
+  todo: '未学',
+  learning: '学习中',
+  mastered: '已掌握',
+};
+
+const difficultyStars = (d: number): string => '★'.repeat(d) + '☆'.repeat(5 - d);
+
+/** 生成能容纳 code 中任意反引号串的代码围栏，避免用户代码里的 ``` 破坏 Markdown 结构 */
+const codeFence = (lang: string, code: string): string => {
+  const longest = Math.max(0, ...(code.match(/`+/g)?.map((s) => s.length) ?? [0]));
+  const ticks = '`'.repeat(Math.max(3, longest + 1));
+  return `${ticks}${lang}\n${code}\n${ticks}`;
+};
+
+export interface ExportBundle {
+  version: number;
+  exportedAt: string;
+  customCount: number;
+  builtinNoteCount: number;
+  customTemplates: Array<{
+    id: string;
+    category: string;
+    name: string;
+    difficulty: number;
+    tags: string[];
+    code: string;
+    idea: string;
+    complexity: string;
+    url: string | null;
+    status: string;
+    note: string | null;
+  }>;
+  builtinNotes: Array<{
+    id: string;
+    name: string;
+    category: string;
+    difficulty: number;
+    tags: string[];
+    outline: string;
+    status: string;
+    note: string | null;
+    code: string | null;
+    idea: string | null;
+    complexity: string | null;
+    url: string | null;
+  }>;
+}
+
+/**
+ * 汇总可导出的「自己写过的模板」：全部自建模板 + 内置课程条目中用户写入过内容的笔记。
+ * 数据结构与渲染解耦——Markdown 现已落地，后续 Word / PDF 生成器复用同一份 bundle。
+ */
+function buildExportBundle(db: Db): ExportBundle {
+  const progress = loadProgress(db);
+  const contentMap = loadContent(db);
+  const customRows = db
+    .prepare('SELECT * FROM custom_templates WHERE user_id = ? ORDER BY category_key, id')
+    .all(DEFAULT_USER_ID) as unknown as CustomRow[];
+  const categoryName = (key: string): string => CURRICULUM.find((c) => c.key === key)?.name ?? key;
+
+  const customTemplates = customRows.map((row) => {
+    const id = customId(row.id);
+    const p = progress.get(id);
+    return {
+      id,
+      category: categoryName(row.category_key),
+      name: row.name,
+      difficulty: Math.min(5, Math.max(1, row.difficulty)),
+      tags: safeTags(row.tags),
+      code: row.code,
+      idea: row.idea ?? '',
+      complexity: row.complexity ?? '',
+      url: row.url,
+      status: p?.status ?? 'todo',
+      note: p?.note ?? null,
+    };
+  });
+
+  const builtinNotes: ExportBundle['builtinNotes'] = [];
+  for (const cat of CURRICULUM) {
+    for (const t of cat.templates) {
+      const content = contentMap.get(t.id);
+      // 只导出用户真正写过内容的内置条目（代码或思路非空），避免把整本空课程大纲倒出来
+      if (!content?.code?.trim() && !content?.idea?.trim()) continue;
+      const p = progress.get(t.id);
+      builtinNotes.push({
+        id: t.id,
+        name: t.name,
+        category: cat.name,
+        difficulty: t.difficulty,
+        tags: t.tags,
+        outline: t.outline,
+        status: p?.status ?? 'todo',
+        note: p?.note ?? null,
+        code: content.code,
+        idea: content.idea,
+        complexity: content.complexity,
+        url: content.url,
+      });
+    }
+  }
+
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    customCount: customTemplates.length,
+    builtinNoteCount: builtinNotes.length,
+    customTemplates,
+    builtinNotes,
+  };
+}
+
+/** 把导出 bundle 渲染成人读 Markdown（分类分节、代码围栏、难度星标、状态/笔记） */
+function renderTemplatesMarkdown(db: Db): string {
+  const bundle = buildExportBundle(db);
+  const ts = new Date().toLocaleString('zh-CN', { hour12: false });
+  const out: string[] = [];
+  out.push('# ICPC 算法模板库 · 导出', '');
+  out.push(`> 导出时间：${ts}  `);
+  out.push(`> 自建模板：${bundle.customCount} 篇 · 内置模板笔记：${bundle.builtinNoteCount} 篇`, '');
+  out.push('---', '');
+
+  if (bundle.customCount === 0 && bundle.builtinNoteCount === 0) {
+    out.push('暂无可导出的模板 —— 你还没有自建模板，也没有在内置课程条目里写入模板内容。', '');
+    return out.join('\n');
+  }
+
+  let n = 0;
+  if (bundle.customCount > 0) {
+    out.push(`## 一、自建模板（${bundle.customCount} 篇）`, '');
+    for (const t of bundle.customTemplates) {
+      n++;
+      out.push(`### ${n}. ${t.name}`, '');
+      out.push(`- **分类：** ${t.category}`);
+      out.push(`- **难度：** ${difficultyStars(t.difficulty)}（${t.difficulty}/5）`);
+      if (t.tags.length) out.push(`- **标签：** ${t.tags.join('、')}`);
+      if (t.complexity) out.push(`- **复杂度：** ${t.complexity}`);
+      if (t.url) out.push(`- **出处：** ${t.url}`);
+      if (t.status !== 'todo') out.push(`- **状态：** ${EXPORT_STATUS_LABEL[t.status] ?? t.status}`);
+      if (t.note) out.push(`- **笔记：** ${t.note}`);
+      out.push('');
+      if (t.idea.trim()) out.push('**思路与备注**', '', t.idea.trim(), '');
+      if (t.code.trim()) out.push('**模板代码**', '', codeFence('cpp', t.code.trimEnd()), '');
+      out.push('---', '');
+    }
+  }
+
+  if (bundle.builtinNoteCount > 0) {
+    const titleNum = bundle.customCount > 0 ? '二' : '一';
+    out.push(`## ${titleNum}、内置模板笔记（${bundle.builtinNoteCount} 篇）`, '');
+    let m = 0;
+    for (const t of bundle.builtinNotes) {
+      m++;
+      out.push(`### ${m}. ${t.name}`, '');
+      out.push(`- **分类：** ${t.category}`);
+      out.push(`- **难度：** ${difficultyStars(t.difficulty)}（${t.difficulty}/5）`);
+      if (t.tags.length) out.push(`- **标签：** ${t.tags.join('、')}`);
+      if (t.complexity) out.push(`- **复杂度：** ${t.complexity}`);
+      if (t.url) out.push(`- **参考链接：** ${t.url}`);
+      if (t.status !== 'todo') out.push(`- **状态：** ${EXPORT_STATUS_LABEL[t.status] ?? t.status}`);
+      if (t.note) out.push(`- **笔记：** ${t.note}`);
+      out.push('');
+      out.push('**大纲要点**', '', t.outline, '');
+      if (t.idea && t.idea.trim()) out.push('**我的思路**', '', t.idea.trim(), '');
+      if (t.code && t.code.trim()) out.push('**我的模板**', '', codeFence('cpp', t.code.trimEnd()), '');
+      out.push('---', '');
+    }
+  }
+
+  return out.join('\n');
+}
+
 /** 内置模板课程 + 自建模板 + 个人学习进度 + 例题练习状态 */
 export function templatesRoutes(db: Db): Router {
   const r = Router();
@@ -449,6 +623,15 @@ export function templatesRoutes(db: Db): Router {
        DO UPDATE SET note = excluded.note, updated_at = datetime('now')`,
     ).run(id, DEFAULT_USER_ID, note.trim() === '' ? null : note);
     res.json({ ok: true });
+  });
+
+  // ---------- 导出 ----------
+  // GET /api/templates/export.md → 一键导出「自己写过的模板」（全部自建模板 + 内置条目中写过内容的笔记）为 Markdown。
+  // 先落地简单文件；后续 Word / PDF 在此基础上扩展（复用 buildExportBundle 的结构化数据）。
+  r.get('/export.md', (_req, res) => {
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="icpc-templates.md"');
+    res.send(renderTemplatesMarkdown(db));
   });
 
   // 未知子路径统一提示

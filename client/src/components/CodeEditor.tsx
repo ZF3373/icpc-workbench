@@ -2,10 +2,11 @@ import CodeMirror from '@uiw/react-codemirror'
 import { indentWithTab } from '@codemirror/commands'
 import { cpp } from '@codemirror/lang-cpp'
 import { markdown as markdownLang } from '@codemirror/lang-markdown'
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
+import { HighlightStyle, indentUnit, syntaxHighlighting } from '@codemirror/language'
 import { EditorView, keymap } from '@codemirror/view'
 import { tags as t } from '@lezer/highlight'
 import { useMemo } from 'react'
+import { useIndentSize } from '../editorSettings'
 
 export type CodeEditorLanguage = 'cpp' | 'markdown'
 
@@ -72,15 +73,18 @@ export default function CodeEditor({
   placeholder,
   maxLength,
 }: CodeEditorProps) {
+  const indentSize = useIndentSize()
   const extensions = useMemo(
     () => [
       language === 'cpp' ? cpp() : markdownLang(),
+      // 缩进偏好来自设置页（2/4 空格）；indentWithTab 与自动缩进均读取此 facet
+      indentUnit.of(' '.repeat(indentSize)),
       appTheme,
       syntaxHighlighting(highlight),
       keymap.of([indentWithTab]),
       EditorView.lineWrapping,
     ],
-    [language],
+    [language, indentSize],
   )
   return (
     <div className="code-editor">

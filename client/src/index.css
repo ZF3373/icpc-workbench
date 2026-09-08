@@ -1153,6 +1153,61 @@ body {
   background: transparent;
 }
 
+/* ---------- 缩进选择（模板库页头） ----------
+   暗色主题下选中态用品牌蓝实色填充 + 近黑文字，与未选的灰字拉开强对比，一眼可辨 */
+.indent-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.indent-switch-label {
+  color: var(--text-3);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.indent-switch-track {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.indent-switch-option {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 5px 11px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+.indent-switch-option:hover {
+  color: var(--text-2);
+  background: var(--surface-3);
+}
+.indent-switch-option.is-active {
+  background: var(--brand);
+  color: #0b0e13;
+  box-shadow: 0 1px 4px rgba(134, 168, 255, 0.4);
+}
+.indent-switch-option.is-active:hover {
+  color: #0b0e13;
+  background: var(--brand);
+}
+.indent-switch-option:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
 .template-examples {
   display: flex;
   flex-direction: column;

@@ -3,7 +3,7 @@
  * 用 node:test 运行（Node 22 内置，无需额外依赖）。
  * api.ts 的 fetch 逻辑用全局 stub 验证错误提取行为。
  */
-import { describe, it, afterEach } from 'node:test'
+import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { difficultyColor, rateColor, tagColor, platformName } from '../src/ui.ts'
 
@@ -166,5 +166,65 @@ describe('aiBlocks.ts template-add', () => {
     const variant = '前文\n```json template-add\n{"name":"T","categoryKey":"ds"}\n```\n后文'
     assert.ok(extractTemplateAdd(variant))
     assert.equal(stripTemplateAdd(variant), '前文\n\n后文') // 块剥离后两端换行保留，Markdown 渲染时折叠
+  })
+})
+
+// ---------- editorSettings.ts：缩进偏好（localStorage） ----------
+
+describe('editorSettings.ts', () => {
+  // Node 无全局 localStorage，测试内挂一个内存实现
+  const store = new Map<string, string>()
+  const stub = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+  }
+
+  beforeEach(() => {
+    store.clear()
+    ;(globalThis as { localStorage: unknown }).localStorage = stub
+  })
+  afterEach(() => {
+    delete (globalThis as { localStorage?: unknown }).localStorage
+  })
+
+  it('normalizeIndent only accepts 2 or 4, else 2', async () => {
+    const { normalizeIndent } = await import('../src/editorSettings.ts')
+    assert.equal(normalizeIndent(2), 2)
+    assert.equal(normalizeIndent(4), 4)
+    assert.equal(normalizeIndent(3), 2)
+    assert.equal(normalizeIndent(0), 2)
+    assert.equal(normalizeIndent(null), 2)
+    assert.equal(normalizeIndent(undefined), 2)
+    assert.equal(normalizeIndent('4'), 4)
+    assert.equal(normalizeIndent('2'), 2)
+    assert.equal(normalizeIndent('garbage'), 2)
+  })
+
+  it('getIndentSize defaults to 2 when unset or invalid', async () => {
+    const { getIndentSize, INDENT_KEY } = await import('../src/editorSettings.ts')
+    assert.equal(getIndentSize(), 2) // 未设置
+    store.set(INDENT_KEY, 'bogus')
+    assert.equal(getIndentSize(), 2) // 非法值回退
+    store.set(INDENT_KEY, '3')
+    assert.equal(getIndentSize(), 2) // 非 2/4 回退
+  })
+
+  it('getIndentSize reads stored 2 or 4', async () => {
+    const { getIndentSize, INDENT_KEY } = await import('../src/editorSettings.ts')
+    store.set(INDENT_KEY, '4')
+    assert.equal(getIndentSize(), 4)
+    store.set(INDENT_KEY, '2')
+    assert.equal(getIndentSize(), 2)
+  })
+
+  it('setIndentSize writes value and getIndentSize reflects it', async () => {
+    const { setIndentSize, getIndentSize, INDENT_KEY } = await import('../src/editorSettings.ts')
+    setIndentSize(4)
+    assert.equal(store.get(INDENT_KEY), '4')
+    assert.equal(getIndentSize(), 4)
+    setIndentSize(2)
+    assert.equal(store.get(INDENT_KEY), '2')
+    assert.equal(getIndentSize(), 2)
   })
 })

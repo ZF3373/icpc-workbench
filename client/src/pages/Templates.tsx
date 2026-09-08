@@ -21,6 +21,7 @@ import {
   CheckCircleOutlined,
   CodeOutlined,
   DeleteOutlined,
+  DownloadOutlined,
   EditOutlined,
   FieldTimeOutlined,
   ImportOutlined,
@@ -34,7 +35,9 @@ import PageHeader from '../components/PageHeader'
 import StatStrip from '../components/StatStrip'
 import Markdown from '../components/Markdown'
 import CodeEditor from '../components/CodeEditor'
+import IndentSwitch from '../components/IndentSwitch'
 import { tagColor } from '../ui'
+import { saveUrlAsFile } from '../download'
 import { del, get, patch, post, put } from '../api'
 import type { TemplateContentInfo, TemplateExampleInfo, TemplateItemInfo, TemplatesResponse, TemplateStatus } from '../types'
 
@@ -61,6 +64,16 @@ function contentOf(t: TemplateItemInfo): TemplateContentInfo {
     return { code: t.code || null, idea: t.idea || null, complexity: t.complexity || null, url: t.url || null }
   }
   return t.content ?? { code: null, idea: null, complexity: null, url: null }
+}
+
+/** 一键导出自己写过的模板为 Markdown 文件（自建模板 + 内置条目里写过内容的笔记） */
+const downloadTemplates = () => {
+  const stamp = new Date().toISOString().slice(0, 10)
+  void saveUrlAsFile({
+    url: '/api/templates/export.md',
+    filename: `icpc-templates-${stamp}.md`,
+    successText: '模板已导出',
+  })
 }
 
 export default function Templates() {
@@ -262,7 +275,8 @@ export default function Templates() {
         title="模板库"
         description="系统学习竞赛算法模板 —— 支持自建模板与例题实战追踪"
         extra={
-          <Space>
+          <Space wrap>
+            <IndentSwitch />
             {data.next && (
               <Tooltip title={`难度 ${data.next.difficulty}/5`}>
                 <Button type="primary" icon={<RightOutlined />} onClick={jumpNext}>
@@ -272,6 +286,9 @@ export default function Templates() {
             )}
             <Button icon={<PlusOutlined />} onClick={() => openCreate()}>
               新建模板
+            </Button>
+            <Button icon={<DownloadOutlined />} onClick={downloadTemplates}>
+              导出模板
             </Button>
           </Space>
         }
