@@ -19,6 +19,8 @@ interface CodeEditorProps {
   height?: number
   placeholder?: string
   maxLength?: number
+  /** 只读模式：隐藏光标、禁用编辑，用于代码展示 */
+  readOnly?: boolean
 }
 
 /** 与全局暗色工作台（index.css 设计系统）配套的编辑器外观 */
@@ -72,6 +74,7 @@ export default function CodeEditor({
   height = 200,
   placeholder,
   maxLength,
+  readOnly = false,
 }: CodeEditorProps) {
   const indentSize = useIndentSize()
   const extensions = useMemo(
@@ -81,10 +84,10 @@ export default function CodeEditor({
       indentUnit.of(' '.repeat(indentSize)),
       appTheme,
       syntaxHighlighting(highlight),
-      keymap.of([indentWithTab]),
+      ...(readOnly ? [EditorView.editable.of(false)] : [keymap.of([indentWithTab])]),
       EditorView.lineWrapping,
     ],
-    [language, indentSize],
+    [language, indentSize, readOnly],
   )
   return (
     <div className="code-editor">
@@ -95,6 +98,7 @@ export default function CodeEditor({
         extensions={extensions}
         basicSetup={{ foldGutter: false, searchKeymap: false, autocompletion: false }}
         placeholder={placeholder}
+        editable={!readOnly}
         onChange={(v) => onChange?.(maxLength ? v.slice(0, maxLength) : v)}
       />
     </div>

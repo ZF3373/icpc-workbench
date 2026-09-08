@@ -499,7 +499,12 @@ export default function Templates() {
                                       复制
                                     </Button>
                                   </div>
-                                  <pre className="template-code mono">{content.code}</pre>
+                                  <CodeEditor
+                                    language="cpp"
+                                    readOnly
+                                    height={Math.min(480, Math.max(120, content.code.split('\n').length * 20))}
+                                    value={content.code}
+                                  />
                                 </div>
                               )}
                             </>
