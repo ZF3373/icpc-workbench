@@ -1,10 +1,10 @@
 /**
  * 可拖拽排序的侧边栏导航。替换 antd Menu，保留分组结构，组内拖拽重排。
- * 使用原生 HTML5 DnD（与 Assistant 会话拖拽一致，无新依赖），
- * 顺序持久化到 localStorage（见 menuConfig.tsx）。
+ * 使用 mouse 事件方案（与 Assistant 会话拖拽一致，兼容 WebView2/WKWebView；
+ * HTML5 DnD 在 WebView2 中不工作），顺序持久化到 localStorage（见 menuConfig.tsx）。
  */
-import { useRef, useState } from 'react'
-import type { DragEvent, KeyboardEvent } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent, KeyboardEvent } from 'react'
 import {
   MENU_GROUPS,
   MENU_FIXED_BOTTOM,
@@ -33,49 +33,58 @@ export default function SiderMenu({ selected, collapsed, onNavigate }: SiderMenu
   const order = useMenuOrder()
   const [dragKey, setDragKey] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState<DragTarget | null>(null)
+  /** 拖拽源 key（ref 即时读写，不依赖 state 异步更新） */
+  const dragKeyRef = useRef<string | null>(null)
   /** 记录拖拽源所属组，落点只允许在同一组内 */
   const dragGroupRef = useRef<string | null>(null)
 
-  const handleDragStart = (e: DragEvent<HTMLButtonElement>, key: string, groupKey: string) => {
-    setDragKey(key)
-    dragGroupRef.current = groupKey
-    e.dataTransfer.effectAllowed = 'move'
-    // Firefox 需要 setData 才能触发拖拽
-    e.dataTransfer.setData('text/plain', key)
+  const clearDrag = () => {
+    dragKeyRef.current = null
+    dragGroupRef.current = null
+    setDragKey(null)
+    setDragOver(null)
   }
 
-  const handleDragOver = (e: DragEvent<HTMLButtonElement>, key: string, groupKey: string) => {
-    // 只允许同一组内拖放
-    if (dragGroupRef.current !== groupKey || dragKey === null) return
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
+  // 拖拽中松手在列表外时清除状态（mouse 事件方案，兼容 WebView2/WKWebView）
+  useEffect(() => {
+    if (dragKey === null) return
+    document.addEventListener('mouseup', clearDrag)
+    return () => document.removeEventListener('mouseup', clearDrag)
+  }, [dragKey])
+
+  const handleMouseDown = (e: ReactMouseEvent<HTMLButtonElement>, key: string, groupKey: string) => {
+    // 折叠状态不启动拖拽
+    if (collapsed) return
+    e.stopPropagation() // 阻止冒泡到 onClick（防止按下即导航）
+    e.preventDefault() // 阻止默认行为避免选中文本
+    dragKeyRef.current = key
+    dragGroupRef.current = groupKey
+    setDragKey(key)
+  }
+
+  const handleMouseEnter = (e: ReactMouseEvent<HTMLButtonElement>, key: string, groupKey: string) => {
+    // 只在拖拽中且同组内处理
+    if (dragKeyRef.current === null || dragGroupRef.current !== groupKey) return
+    if (dragKeyRef.current === key) return
     const rect = e.currentTarget.getBoundingClientRect()
-    const isAfter = e.clientY > rect.top + rect.height / 2
-    const pos = isAfter ? 'after' : 'before'
+    const pos: 'before' | 'after' = e.clientY > rect.top + rect.height / 2 ? 'after' : 'before'
     // 避免拖到自身原位产生闪烁
     if (dragOver?.key === key && dragOver?.pos === pos) return
     setDragOver({ key, pos })
   }
 
-  const handleDrop = (e: DragEvent<HTMLButtonElement>, groupKey: string) => {
-    e.preventDefault()
-    if (dragKey !== null && dragOver && dragGroupRef.current === groupKey) {
-      reorderInGroup(groupKey as keyof MenuOrder, dragKey, dragOver.key, dragOver.pos)
+  const handleMouseUp = (groupKey: string) => {
+    if (dragKeyRef.current !== null && dragOver && dragGroupRef.current === groupKey) {
+      reorderInGroup(groupKey as keyof MenuOrder, dragKeyRef.current, dragOver.key, dragOver.pos)
     }
     clearDrag()
-  }
-
-  const clearDrag = () => {
-    setDragKey(null)
-    setDragOver(null)
-    dragGroupRef.current = null
   }
 
   const renderNavItem = (key: string, groupKey: string | null) => {
     const isSelected = selected === key
     const isDragging = dragKey === key
     const dropTarget = dragOver?.key === key
-    const draggable = !collapsed && groupKey !== null
+    const canDrag = !collapsed && groupKey !== null
 
     const classNames = [
       'sider-nav-item',
@@ -93,14 +102,12 @@ export default function SiderMenu({ selected, collapsed, onNavigate }: SiderMenu
         type="button"
         role="menuitem"
         className={classNames}
-        draggable={draggable}
         title={collapsed ? menuLabel(key) : undefined}
         onClick={() => onNavigate(key)}
         onKeyDown={(e: KeyboardEvent<HTMLButtonElement>) => e.key === 'Enter' && onNavigate(key)}
-        onDragStart={draggable ? (e) => handleDragStart(e, key, groupKey!) : undefined}
-        onDragOver={draggable ? (e) => handleDragOver(e, key, groupKey!) : undefined}
-        onDrop={draggable ? (e) => handleDrop(e, groupKey!) : undefined}
-        onDragEnd={clearDrag}
+        onMouseDown={canDrag ? (e) => handleMouseDown(e, key, groupKey!) : undefined}
+        onMouseEnter={canDrag ? (e) => handleMouseEnter(e, key, groupKey!) : undefined}
+        onMouseUp={canDrag ? () => handleMouseUp(groupKey!) : undefined}
       >
         <span className="sider-nav-icon">{menuIcon(key)}</span>
         <span className="sider-nav-label">{menuLabel(key)}</span>
@@ -109,7 +116,7 @@ export default function SiderMenu({ selected, collapsed, onNavigate }: SiderMenu
   }
 
   return (
-    <nav className="sider-nav sider-menu" role="menu" aria-orientation="vertical">
+    <nav className="sider-nav sider-menu" role="menu" aria-orientation="vertical" style={{ userSelect: dragKey !== null ? 'none' : undefined }}>
       {/* 固定项：数据概览 */}
       {renderNavItem(MENU_FIXED_TOP, null)}
 

@@ -74,7 +74,7 @@ export interface MenuOrder {
 
 const DEFAULT_ORDER: MenuOrder = Object.fromEntries(
   MENU_GROUPS.map((g) => [g.key, [...g.items]]),
-) as MenuOrder
+) as unknown as MenuOrder
 
 /** 把 localStorage 里读到的顺序与默认顺序对齐：过滤已删除的 key、追加新增的 key */
 function reconcile(stored: string[], defaults: string[]): string[] {
