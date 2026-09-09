@@ -3,11 +3,15 @@ import type {
   PlatformId,
   Verdict,
 } from '../../../shared/src/index.ts';
-import type { PlatformAdapter } from './types.ts';
+import type { FetchOptions, PlatformAdapter } from './types.ts';
+import { pagedFetch } from './pagination.ts';
 
 const API = 'https://ac.nowcoder.com';
-const MAX_PAGES = 100; // 每页 10 条，最多 1000 条
 const PAGE_SIZE = 10;
+// 每次同步的保守页数上限：90 页 × 500ms = 45 秒（牛客反爬强，严格控制单次请求量）
+// 默认 maxSubmissions=500 时实际拉 50 页（25 秒）即触及条目上限停止
+const PER_SYNC_MAX_PAGES = 90;
+const PAGE_DELAY_MS = 500; // 牛客反爬较强：页间限速
 
 // 牛客提交结果（HTML 中文状态文本）→ 统一 Verdict；未知值落到 SKIPPED
 const RESULT_MAP: Record<string, Verdict> = {
@@ -34,8 +38,6 @@ interface NcRow {
   language?: string;
   timeText: string;
 }
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 const strip = (s: string): string =>
   s
@@ -80,8 +82,9 @@ function parseTime(t: string): number {
  * 牛客适配器（公开 HTML 表格解析，无需登录）：
  * - 提交列表：GET /acm/contest/profile/{uid}/practice-coding?pageSize=10&page={n}
  *   （牛客已下线 JSON API；该页面匿名可访问，含运行ID/题目/结果/语言/提交时间）
- * - 表格按提交时间倒序 → 增量同步可在遇到旧条目时提前停止
- * - 限速 500ms/页防反爬
+ * - 表格按提交时间倒序 → 增量同步可在遇到旧条目时提前停止（since 截断）
+ * - 分批防封号：单次同步受 maxSubmissions 新增上限与页数预算约束，触及即停（opts.truncated），
+ *   下次同步通过 backfill 游标续拉更早历史。限速 500ms/页防反爬。
  */
 export function createNowcoderAdapter(fetchFn: typeof fetch = fetch): PlatformAdapter {
   return {
@@ -89,44 +92,38 @@ export function createNowcoderAdapter(fetchFn: typeof fetch = fetch): PlatformAd
 
     async fetchUserSubmissions(
       handle: string,
-      opts?: { since?: string; cookie?: string; csrf?: string },
+      opts?: FetchOptions,
     ): Promise<NormalizedSubmission[]> {
       const sinceMs = opts?.since ? Date.parse(opts.since) : 0;
-      const out: NormalizedSubmission[] = [];
-      for (let page = 1; page <= MAX_PAGES; page += 1) {
-        const url = `${API}/acm/contest/profile/${encodeURIComponent(handle)}/practice-coding?pageSize=${PAGE_SIZE}&search=&statusTypeFilter=-1&languageCategoryFilter=-1&orderType=DESC&page=${page}`;
-        const res = await fetchFn(url, {
-          headers: {
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            Referer: `${API}/acm/home/${encodeURIComponent(handle)}`,
-          },
-          signal: AbortSignal.timeout(20000),
-        });
-        if (!res.ok) {
-          throw new Error(`牛客页面 HTTP ${res.status}（可能触发风控，请稍后重试）`);
-        }
-        const html = await res.text();
-        const rows = parseRows(html);
-        // 首页解析不到任何行：页面结构变化/验证码/登录墙 → 明确失败而非"同步成功 0 条"假成功
-        if (rows.length === 0) {
-          if (page === 1) {
-            throw new Error('牛客页面未解析到提交记录（可能页面结构变化或触发风控），请稍后重试或使用手动导入');
+      let firstPageEmpty = false; // 首页空 = 页面结构变化/风控，须抛错而非"同步成功 0 条"
+      return pagedFetch<NcRow>({
+        pageSize: PAGE_SIZE,
+        perSyncMax: PER_SYNC_MAX_PAGES,
+        fetchPage: async (page) => {
+          const url = `${API}/acm/contest/profile/${encodeURIComponent(handle)}/practice-coding?pageSize=${PAGE_SIZE}&search=&statusTypeFilter=-1&languageCategoryFilter=-1&orderType=DESC&page=${page}`;
+          const res = await fetchFn(url, {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              Referer: `${API}/acm/home/${encodeURIComponent(handle)}`,
+            },
+            signal: AbortSignal.timeout(20000),
+          });
+          if (!res.ok) {
+            throw new Error(`牛客页面 HTTP ${res.status}（可能触发风控，请稍后重试）`);
           }
-          break; // 后续页为空 = 正常翻页结束
-        }
-
-        // 表格按提交时间 DESC：首条已旧于增量起点 → 后续页更旧，提前停止
-        // （首条时间解析失败时保守处理：继续翻页而非误停）
-        const firstTime = parseTime(rows[0].timeText);
-        if (sinceMs > 0 && firstTime > 0 && firstTime <= sinceMs) break;
-
-        let added = 0;
-        for (const row of rows) {
+          const html = await res.text();
+          const rows = parseRows(html);
+          if (rows.length === 0 && page === 1) firstPageEmpty = true;
+          return rows;
+        },
+        externalIdOf: (row) => row.submissionId,
+        normalize: (row) => {
+          // since 截断：表格按时间 DESC，旧于增量起点的行不落库（不视为已知也不计新增）
           const timeMs = parseTime(row.timeText);
-          if (sinceMs > 0 && timeMs > 0 && timeMs <= sinceMs) continue;
+          if (sinceMs > 0 && timeMs > 0 && timeMs <= sinceMs) return null;
           const verdict = RESULT_MAP[row.result] ?? 'SKIPPED';
-          out.push({
+          return {
             problem: {
               platform: 'nowcoder' as PlatformId,
               problemKey: row.pid,
@@ -139,14 +136,20 @@ export function createNowcoderAdapter(fetchFn: typeof fetch = fetch): PlatformAd
             submittedAt:
               timeMs > 0 ? new Date(timeMs).toISOString() : new Date().toISOString(),
             externalId: row.submissionId,
-          });
-          added += 1;
+          };
+        },
+        knownExternalIds: opts?.knownExternalIds,
+        maxSubmissions: opts?.maxSubmissions,
+        backfill: opts?.backfill,
+        backfillFromPage: opts?.backfillFromPage,
+        opts,
+        pageDelayMs: opts?.pageDelayMs ?? PAGE_DELAY_MS,
+      }).then((out) => {
+        if (firstPageEmpty && out.length === 0) {
+          throw new Error('牛客页面未解析到提交记录（可能页面结构变化或触发风控），请稍后重试或使用手动导入');
         }
-        if (added === 0) break; // 本页全为旧条目
-        if (rows.length < PAGE_SIZE) break; // 最后一页
-        await sleep(500); // 牛客反爬较强：页间限速
-      }
-      return out;
+        return out;
+      });
     },
 
     problemUrl({ problemKey }) {

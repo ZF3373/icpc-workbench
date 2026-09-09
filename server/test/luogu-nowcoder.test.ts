@@ -219,6 +219,63 @@ test('luogu: 分页可超过 100 页（>2000 条提交的首次全量同步不�
   assert.equal(pageHits, PAGES + 1); // 拉到空页才停
 });
 
+test('luogu: 7000+ 提交分批拉取防封号（首刷截断 + 补全续拉 + 完成）', async () => {
+  // 模拟用户反馈场景：7000 条提交（350 页 × 20 条），单次上限 1000 → 需多次同步补全
+  const TOTAL_PAGES = 350;
+  const PAGE_SIZE = 20;
+  // 构造 350 页数据：每页 20 条 AC，id 全局唯一
+  const fetchFn = router({
+    'record/list': (url) => {
+      const page = Number(new URL(url).searchParams.get('page'));
+      if (page < 1 || page > TOTAL_PAGES) {
+        return { code: 200, currentData: { records: { result: [] } } }; // 越界 → 空页终止
+      }
+      const result = Array.from({ length: PAGE_SIZE }, (_, i) => ({
+        id: (page - 1) * PAGE_SIZE + i + 1,
+        status: 12,
+        submitTime: 1700000000 + (TOTAL_PAGES - page) * 100 + i,
+        language: 'C++17',
+        problem: { pid: 'P1001', title: 'A+B', difficulty: 2 },
+      }));
+      return { code: 200, currentData: { records: { result } } };
+    },
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+
+  // 模拟同步层的真实流程：每次同步注入已知 id（已入库的），补全模式跳过已知页续拉
+  // 第一次同步：无已知 id，maxSubmissions=1000 → 拉 50 页后截断
+  const known = new Set<string>();
+  const mkOpts = (extra: Record<string, unknown>) => ({
+    cookie: COOKIE,
+    csrf: 'tok',
+    maxSubmissions: 1000,
+    pageDelayMs: 0,
+    knownExternalIds: known,
+    ...extra,
+  }) as { truncated?: boolean; backfillReachedPage?: number; [k: string]: unknown };
+  const opts1 = mkOpts({});
+  const rows1 = await adapter.fetchUserSubmissions('123', opts1);
+  assert.equal(rows1.length, 1000);
+  assert.equal(opts1.truncated, true);
+  for (const r of rows1) known.add(r.externalId); // 入库后成为已知
+
+  // 第二次同步：补全模式从游标续拉，knownIds 跳过已入库页
+  const opts2 = mkOpts({ backfill: true, backfillFromPage: opts1.backfillReachedPage });
+  const rows2 = await adapter.fetchUserSubmissions('123', opts2);
+  assert.equal(opts2.truncated, true);
+  for (const r of rows2) known.add(r.externalId);
+
+  // 第三次补全：继续续拉
+  const opts3 = mkOpts({ backfill: true, backfillFromPage: opts2.backfillReachedPage });
+  const rows3 = await adapter.fetchUserSubmissions('123', opts3);
+  for (const r of rows3) known.add(r.externalId);
+
+  // 验证三次拉取的 id 不重叠（knownIds 跳过已知页，分批正确无重复）
+  const allIds = [...rows1, ...rows2, ...rows3].map((r) => r.externalId);
+  assert.equal(new Set(allIds).size, allIds.length); // 无重复
+  assert.equal(allIds.length, 3000); // 三批各 1000 条
+});
+
 test('luogu: non-success code throws (cookie invalid/risk control)', async () => {
   const fetchFn = router({
     'record/list': () => ({ code: 401, message: 'invalid token' }),

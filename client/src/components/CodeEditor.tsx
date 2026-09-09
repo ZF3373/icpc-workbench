@@ -84,7 +84,19 @@ export default function CodeEditor({
       indentUnit.of(' '.repeat(indentSize)),
       appTheme,
       syntaxHighlighting(highlight),
-      ...(readOnly ? [EditorView.editable.of(false)] : [keymap.of([indentWithTab])]),
+      ...(readOnly
+        ? [
+            EditorView.editable.of(false),
+            // 只读展示：彻底隐藏光标、活动行高亮、活动行号高亮，
+            // 让代码块像静态展示而非可交互编辑器
+            EditorView.theme({
+              '&': { caretColor: 'transparent' },
+              '.cm-cursor': { display: 'none' },
+              '.cm-activeLine': { backgroundColor: 'transparent' },
+              '.cm-activeLineGutter': { backgroundColor: 'transparent' },
+            }),
+          ]
+        : [keymap.of([indentWithTab])]),
       EditorView.lineWrapping,
     ],
     [language, indentSize, readOnly],
@@ -96,9 +108,16 @@ export default function CodeEditor({
         height={`${height}px`}
         theme={appTheme}
         extensions={extensions}
-        basicSetup={{ foldGutter: false, searchKeymap: false, autocompletion: false }}
+        basicSetup={{
+          foldGutter: false,
+          searchKeymap: false,
+          autocompletion: false,
+          highlightActiveLine: !readOnly,
+          highlightActiveLineGutter: !readOnly,
+        }}
         placeholder={placeholder}
         editable={!readOnly}
+        readOnly={readOnly}
         onChange={(v) => onChange?.(maxLength ? v.slice(0, maxLength) : v)}
       />
     </div>

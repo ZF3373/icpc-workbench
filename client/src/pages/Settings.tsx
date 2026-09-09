@@ -44,6 +44,7 @@ interface SettingsData {
   cookies: Record<string, { cookie?: string; csrf?: string }>
   reminder: ReminderConfig
   contestReminder: ContestReminderConfig
+  sync: { maxSubmissions: number }
 }
 
 const SYNC_NOTE_COLOR: Record<string, string> = {
@@ -89,6 +90,7 @@ export default function Settings() {
   const [aiTestResult, setAiTestResult] = useState<{ ok: boolean; message: string } | null>(null)
   const [modelsLoading, setModelsLoading] = useState(false)
   const [modelOptions, setModelOptions] = useState<{ value: string }[]>([])
+  const [syncMax, setSyncMax] = useState(500)
 
   const load = () => {
     get<SettingsData>('/api/settings')
@@ -110,6 +112,7 @@ export default function Settings() {
         setReminderEnabled(d.reminder.enabled)
         setReminderTime(dayjs(d.reminder.time, 'HH:mm'))
         setContestReminder(d.contestReminder)
+        setSyncMax(d.sync?.maxSubmissions ?? 500)
       })
       .catch((e: Error) => message.error(e.message))
   }
@@ -197,6 +200,16 @@ export default function Settings() {
     try {
       await post('/api/settings/adapters', { platform, enabled })
       load()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  const saveSyncMax = async (v: number | null) => {
+    const n = v ?? 500
+    try {
+      const r = await post<{ maxSubmissions: number }>('/api/settings/sync', { maxSubmissions: n })
+      setSyncMax(r.maxSubmissions)
     } catch (e) {
       message.error((e as Error).message)
     }
@@ -445,6 +458,21 @@ export default function Settings() {
           <p className="muted-note">
             说明：Codeforces / AtCoder / 牛客自动同步；洛谷、代码源、LeetCode 填写 Cookie 后自动同步（未配置时请在「题目管理」手动导入）。代码源基于 Hydro 搭建，只需复制 sid 一项会话 Cookie；LeetCode 为力扣中国（leetcode.cn），需复制 LEETCODE_SESSION 与 csrftoken 两项 Cookie。
           </p>
+          <div style={{ marginTop: 4 }}>
+            <Space>
+              <span>单次同步上限</span>
+              <InputNumber
+                min={100}
+                max={1500}
+                step={100}
+                value={syncMax}
+                onChange={(v) => saveSyncMax(v)}
+                addonAfter="条"
+                style={{ width: 140 }}
+              />
+              <span className="muted-note">提交记录过多时分批拉取，防触发平台风控封号（默认 500，保守为主）</span>
+            </Space>
+          </div>
         </Card>
       </Col>
       <Col span={24}>

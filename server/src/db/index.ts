@@ -52,6 +52,10 @@ function migrate(db: Db): void {
   const listCols = columnsOf('problem_lists');
   if (!listCols.has('ai_suggestion')) db.exec('ALTER TABLE problem_lists ADD COLUMN ai_suggestion TEXT');
   if (!listCols.has('ai_suggestion_at')) db.exec('ALTER TABLE problem_lists ADD COLUMN ai_suggestion_at TEXT');
+  // v0.6: platform_accounts 增加分批同步标记（提交过多时分批拉取防封号；1=仍有更早历史待补全）
+  const accountCols = columnsOf('platform_accounts');
+  if (!accountCols.has('sync_truncated')) db.exec('ALTER TABLE platform_accounts ADD COLUMN sync_truncated INTEGER NOT NULL DEFAULT 0');
+  if (!accountCols.has('backfill_page')) db.exec('ALTER TABLE platform_accounts ADD COLUMN backfill_page INTEGER');
   mergeSlashedCfKeys(db);
   // v0.4.5 数据修复：洛谷秒级时间戳曾被按毫秒解析（见 fixLuoguTimestamps）
   fixLuoguTimestamps(db);

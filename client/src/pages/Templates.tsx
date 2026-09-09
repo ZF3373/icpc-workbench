@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { DragEvent } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Button,
@@ -47,6 +48,24 @@ const STATUS_META: Array<{ key: TemplateStatus; label: string; icon: typeof Chec
   { key: 'mastered', label: '已掌握', icon: CheckCircleOutlined },
 ]
 
+/** 分类拖拽顺序持久化（localStorage，与侧边栏菜单同模式） */
+const CAT_ORDER_KEY = 'icpc-cat-order-v1'
+function getCatOrder(): string[] | null {
+  try {
+    const raw = localStorage.getItem(CAT_ORDER_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+function saveCatOrder(keys: string[]): void {
+  try {
+    localStorage.setItem(CAT_ORDER_KEY, JSON.stringify(keys))
+  } catch {
+    // 忽略隐私模式
+  }
+}
+
 interface CustomFormValues {
   categoryKey: string
   name: string
@@ -89,6 +108,21 @@ export default function Templates() {
   const [contentEditing, setContentEditing] = useState<TemplateItemInfo | null>(null)
   const [contentDraft, setContentDraft] = useState<TemplateContentInfo>({ code: '', idea: '', complexity: '', url: '' })
   const [syncingId, setSyncingId] = useState<string>()
+  const [dragCat, setDragCat] = useState<string | null>(null)
+  const [dragOverCat, setDragOverCat] = useState<{ key: string; pos: 'before' | 'after' } | null>(null)
+
+  /** 按 localStorage 持久化顺序重排分类，新增的分类追加到末尾 */
+  const sortedCategories = useMemo(() => {
+    if (!data?.categories) return []
+    const saved = getCatOrder()
+    if (!saved) return data.categories
+    const map = new Map(data.categories.map((c) => [c.key, c]))
+    const ordered = saved.map((k) => map.get(k)).filter(Boolean) as typeof data.categories
+    for (const c of data.categories) {
+      if (!ordered.includes(c)) ordered.push(c)
+    }
+    return ordered
+  }, [data])
 
   const load = useCallback(() => {
     setLoading(true)
@@ -240,6 +274,44 @@ export default function Templates() {
     }
   }
 
+  // ---------- 分类拖拽排序 ----------
+
+  const handleCatDragStart = (e: DragEvent<HTMLButtonElement>, key: string) => {
+    setDragCat(key)
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', key)
+  }
+
+  const handleCatDragOver = (e: DragEvent<HTMLButtonElement>, key: string) => {
+    if (dragCat === null || dragCat === key) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    const rect = e.currentTarget.getBoundingClientRect()
+    const pos: 'before' | 'after' = e.clientY > rect.top + rect.height / 2 ? 'after' : 'before'
+    if (dragOverCat?.key === key && dragOverCat?.pos === pos) return
+    setDragOverCat({ key, pos })
+  }
+
+  const handleCatDrop = (e: DragEvent<HTMLButtonElement>) => {
+    e.preventDefault()
+    if (dragCat !== null && dragOverCat) {
+      const keys = sortedCategories.map((c) => c.key)
+      const fromIdx = keys.indexOf(dragCat)
+      const toIdx = keys.indexOf(dragOverCat.key)
+      if (fromIdx !== -1 && toIdx !== -1 && fromIdx !== toIdx) {
+        keys.splice(fromIdx, 1)
+        let insertAt = keys.indexOf(dragOverCat.key)
+        if (dragOverCat.pos === 'after') insertAt += 1
+        keys.splice(insertAt, 0, dragCat)
+        saveCatOrder(keys)
+        // 触发 sortedCategories 重算（data 引用不变，需要手动触发）
+        setData((d) => (d ? { ...d } : d))
+      }
+    }
+    setDragCat(null)
+    setDragOverCat(null)
+  }
+
   // ---------- 内置条目：写入自己的模板内容 ----------
 
   const openContentEditor = (t: TemplateItemInfo) => {
@@ -338,17 +410,24 @@ export default function Templates() {
         <aside className="taxonomy-panel">
           <div className="section-label">课程分类</div>
           <div className="taxonomy-list">
-            {data.categories.map((c) => {
+            {sortedCategories.map((c) => {
               const mastered = c.templates.filter((t) => t.status === 'mastered').length
+              const isDragging = dragCat === c.key
+              const dropTarget = dragOverCat?.key === c.key
               return (
                 <button
                   key={c.key}
                   type="button"
-                  className={`taxonomy-item${activeCat === c.key ? ' is-active' : ''}`}
+                  draggable
+                  className={`taxonomy-item${activeCat === c.key ? ' is-active' : ''}${isDragging ? ' is-dragging' : ''}${dropTarget && dragOverCat?.pos === 'before' ? ' is-drag-over-before' : ''}${dropTarget && dragOverCat?.pos === 'after' ? ' is-drag-over-after' : ''}`}
                   onClick={() => {
                     setActiveCat(c.key)
                     setExpanded(undefined)
                   }}
+                  onDragStart={(e) => handleCatDragStart(e, c.key)}
+                  onDragOver={(e) => handleCatDragOver(e, c.key)}
+                  onDrop={handleCatDrop}
+                  onDragEnd={() => { setDragCat(null); setDragOverCat(null) }}
                 >
                   <span className="taxonomy-item__marker" style={{ background: tagColor(c.key) }} />
                   <span className="taxonomy-item__name">{c.name}</span>

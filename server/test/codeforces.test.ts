@@ -132,3 +132,33 @@ test('known ids: mixed page keeps new ones and continues until a fully-known pag
   assert.equal(requested.length, 3); // 第三页整页已知后终止
   assert.deepEqual(rows.map((r) => r.externalId), ['30', '29', '28']);
 });
+
+test('maxSubmissions: stops at cap and sets opts.truncated (分批防封号)', async () => {
+  // CF 每页 PAGE_SIZE=1000：凑满页，maxSubmissions=1500 → 第 2 页拉到 500 条达上限
+  const fullPage = (base: number) =>
+    Array.from({ length: 1000 }, (_, i) => ({ id: base + i }));
+  const pages = [fullPage(1), fullPage(1001), fullPage(2001)]; // 第 3 页不应被请求
+  let callCount = 0;
+  const adapter = createCodeforcesAdapter(async () => {
+    const idx = callCount;
+    callCount += 1;
+    return cfRes({ status: 'OK', result: pages[idx].map((s) => submission(s)) });
+  });
+  const opts: { maxSubmissions?: number; truncated?: boolean } = { maxSubmissions: 1500 };
+  const rows = await adapter.fetchUserSubmissions('u', opts);
+  assert.equal(rows.length, 1500); // 恰好到上限
+  assert.equal(opts.truncated, true); // 回写截断信号
+  assert.equal(callCount, 2); // 第 3 页不应被请求
+});
+
+test('maxSubmissions: short page before cap does NOT truncate (natural end)', async () => {
+  // 不足一页（< PAGE_SIZE）= 最后一页 → 自然结束，不截断
+  const adapter = createCodeforcesAdapter(async () =>
+    cfRes({ status: 'OK', result: [submission({ id: 1 }), submission({ id: 2 })] }),
+  );
+  const opts: { maxSubmissions?: number; truncated?: boolean } = { maxSubmissions: 5 };
+  const rows = await adapter.fetchUserSubmissions('u', opts);
+  assert.equal(rows.length, 2);
+  assert.equal(opts.truncated, undefined); // 自然结束不截断
+});
+

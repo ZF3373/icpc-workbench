@@ -176,6 +176,179 @@ test('unregistered platform returns error', async () => {
   assert.equal(result.imported, 0);
 });
 
+// ---------- 分批同步（防封号）：截断 + 补全模式 ----------
+
+/** 模拟触及上限后截断的适配器：回写 opts.truncated + opts.backfillReachedPage，返回给定行 */
+function makeTruncatingFake(allRows: NormalizedSubmission[], cap: number) {
+  let callCount = 0;
+  const fake: PlatformAdapter = {
+    platform: 'codeforces',
+    knownIdsFilter: true,
+    async fetchUserSubmissions(handle, opts) {
+      callCount += 1;
+      fakeCalls.push({ handle, since: opts?.since });
+      // 模拟新增上限：返回前 cap 条，并回写截断信号
+      const slice = allRows.slice(0, cap);
+      if (opts) {
+        opts.truncated = true;
+        opts.backfillReachedPage = 10;
+      }
+      return slice;
+    },
+    problemUrl() {
+      return 'https://codeforces.com/';
+    },
+  };
+  register(fake);
+  return { getCallCount: () => callCount };
+}
+
+test('truncated sync marks result.truncated + note, sets sync_truncated=1, keeps last_sync_at', async () => {
+  const rows = Array.from({ length: 3 }, (_, i) =>
+    sub(`1919${String.fromCharCode(65 + i)}`, `e${i + 1}`),
+  );
+  const { getCallCount } = makeTruncatingFake(rows, 3);
+  const result = await syncPlatform(db, 'codeforces', 'tourist');
+  assert.equal(result.imported, 3);
+  assert.equal(result.truncated, true);
+  assert.match(result.note ?? '', /分批同步/);
+  assert.equal(getCallCount(), 1);
+  const acc = db.prepare(
+    "SELECT sync_truncated, backfill_page FROM platform_accounts WHERE platform='codeforces'",
+  ).get() as { sync_truncated: number; backfill_page: number | null };
+  assert.equal(acc.sync_truncated, 1);
+  assert.equal(acc.backfill_page, 10);
+});
+
+test('backfill mode: truncated state injects backfill=true + backfillFromPage, clears on completion', async () => {
+  // 第一次同步：截断，留下 sync_truncated=1 + backfill_page=10
+  const rows1 = Array.from({ length: 3 }, (_, i) =>
+    sub(`1919${String.fromCharCode(65 + i)}`, `e${i + 1}`),
+  );
+  makeTruncatingFake(rows1, 3);
+  await syncPlatform(db, 'codeforces', 'tourist');
+
+  // 第二次同步：模拟补全 —— 不再截断，返回剩余新行
+  let seenBackfill: boolean | undefined;
+  let seenFromPage: number | undefined;
+  const rows2 = [sub('2048A', 'e4')];
+  const fake: PlatformAdapter = {
+    platform: 'codeforces',
+    knownIdsFilter: true,
+    async fetchUserSubmissions(handle, opts) {
+      seenBackfill = opts?.backfill;
+      seenFromPage = opts?.backfillFromPage;
+      fakeCalls.push({ handle, since: opts?.since });
+      return rows2; // 不置 truncated = 补全完成
+    },
+    problemUrl() {
+      return 'https://codeforces.com/';
+    },
+  };
+  register(fake);
+  const result = await syncPlatform(db, 'codeforces', 'tourist');
+  assert.equal(seenBackfill, true);
+  assert.equal(seenFromPage, 10); // 从上次截断游标续拉
+  assert.equal(result.imported, 1);
+  assert.equal(result.truncated, undefined); // 补全完成，未截断
+  const acc = db.prepare(
+    "SELECT sync_truncated, backfill_page FROM platform_accounts WHERE platform='codeforces'",
+  ).get() as { sync_truncated: number; backfill_page: number | null };
+  assert.equal(acc.sync_truncated, 0); // 补全完成清零
+  assert.equal(acc.backfill_page, null); // 游标清空
+});
+
+test('sync.maxSubmissions setting overrides default cap (100–1500)', async () => {
+  // 设为 100（下限）：注入适配器的 maxSubmissions 应为 100
+  let seenMax: number | undefined;
+  const fake: PlatformAdapter = {
+    platform: 'codeforces',
+    async fetchUserSubmissions(handle, opts) {
+      seenMax = opts?.maxSubmissions;
+      fakeCalls.push({ handle });
+      return [sub('1919A', 'e1')];
+    },
+    problemUrl() {
+      return 'https://codeforces.com/';
+    },
+  };
+  register(fake);
+  db.prepare("INSERT INTO settings (key, value) VALUES ('sync.maxSubmissions', '100')").run();
+  await syncPlatform(db, 'codeforces', 'u');
+  assert.equal(seenMax, 100);
+});
+
+test('sync.maxSubmissions out-of-range falls back to default 500', async () => {
+  let seenMax: number | undefined;
+  const fake: PlatformAdapter = {
+    platform: 'codeforces',
+    async fetchUserSubmissions(handle, opts) {
+      seenMax = opts?.maxSubmissions;
+      fakeCalls.push({ handle });
+      return [];
+    },
+    problemUrl() {
+      return 'https://codeforces.com/';
+    },
+  };
+  register(fake);
+  // 50 低于下限 100 → 回退默认 500
+  db.prepare("INSERT INTO settings (key, value) VALUES ('sync.maxSubmissions', '50')").run();
+  await syncPlatform(db, 'codeforces', 'u');
+  assert.equal(seenMax, 500);
+});
+
+test('sync.maxSubmissions above upper bound 1500 falls back to default 500', async () => {
+  let seenMax: number | undefined;
+  const fake: PlatformAdapter = {
+    platform: 'codeforces',
+    async fetchUserSubmissions(handle, opts) {
+      seenMax = opts?.maxSubmissions;
+      fakeCalls.push({ handle });
+      return [];
+    },
+    problemUrl() {
+      return 'https://codeforces.com/';
+    },
+  };
+  register(fake);
+  // 5000 超过上限 1500 → 回退默认 500
+  db.prepare("INSERT INTO settings (key, value) VALUES ('sync.maxSubmissions', '5000')").run();
+  await syncPlatform(db, 'codeforces', 'u');
+  assert.equal(seenMax, 500);
+});
+
+test('switching handle resets backfill state (full sync, no backfill)', async () => {
+  // 先建立一个截断状态
+  makeTruncatingFake([sub('1919A', 'e1')], 1);
+  await syncPlatform(db, 'codeforces', 'alice');
+  const acc1 = db.prepare(
+    "SELECT sync_truncated FROM platform_accounts WHERE platform='codeforces'",
+  ).get() as { sync_truncated: number };
+  assert.equal(acc1.sync_truncated, 1);
+
+  // 换账号：应全量重拉，不注入 backfill
+  let seenBackfill: boolean | undefined;
+  const fake: PlatformAdapter = {
+    platform: 'codeforces',
+    async fetchUserSubmissions(handle, opts) {
+      seenBackfill = opts?.backfill;
+      fakeCalls.push({ handle, since: opts?.since });
+      return [sub('2048A', 'x1')];
+    },
+    problemUrl() {
+      return 'https://codeforces.com/';
+    },
+  };
+  register(fake);
+  await syncPlatform(db, 'codeforces', 'bob');
+  assert.equal(seenBackfill, undefined); // 换账号不补全
+  const acc2 = db.prepare(
+    "SELECT sync_truncated FROM platform_accounts WHERE platform='codeforces'",
+  ).get() as { sync_truncated: number };
+  assert.equal(acc2.sync_truncated, 0); // 新账号全量完成，无截断
+});
+
 test('knownIdsFilter adapter receives known external ids and marks incremental', async () => {
   let seenIds: Set<string> | undefined;
   const fake: PlatformAdapter = {

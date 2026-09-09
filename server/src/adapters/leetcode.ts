@@ -4,7 +4,8 @@ import type {
   Verdict,
 } from '../../../shared/src/index.ts';
 import { ManualImportRequiredError } from './types.ts';
-import type { PlatformAdapter } from './types.ts';
+import type { FetchOptions, PlatformAdapter } from './types.ts';
+import { pagedFetch } from './pagination.ts';
 
 /**
  * 力扣（leetcode.cn）适配器（GraphQL，无官方公开 API）。
@@ -25,7 +26,9 @@ import type { PlatformAdapter } from './types.ts';
 
 const BASE = 'https://leetcode.cn';
 const PAGE_SIZE = 40; // 官网提交列表的分页大小
-const MAX_PAGES = 250; // 最多拉 1 万条提交
+// 每次同步的保守页数上限：150 页 × 300ms = 45 秒
+// 默认 maxSubmissions=500 时实际拉 13 页（4 秒）即触及条目上限停止
+const PER_SYNC_MAX_PAGES = 150;
 const PAGE_DELAY_MS = 300; // 页间限速，降低风控压力
 
 /** statusDisplay → 统一 Verdict；评测中 / TLE 之外的黑盒状态落 null 跳过 */
@@ -151,38 +154,46 @@ export function createLeetcodeAdapter(fetchFn: typeof fetch = fetch): PlatformAd
           '力扣提交记录需登录后访问：请在设置页填写 LEETCODE_SESSION 与 csrftoken 两项 Cookie（浏览器登录 leetcode.cn 后 F12 → Application → Cookies 复制，支持整段粘贴）',
         );
       }
-      const out: NormalizedSubmission[] = [];
-      for (let offset = 0; offset < MAX_PAGES * PAGE_SIZE; offset += PAGE_SIZE) {
-        const data = await gql(fetchFn, SUBMISSION_LIST_QUERY, {
-          offset,
-          limit: PAGE_SIZE,
-          lastKey: null,
-          questionSlug: null,
-        }, { cookie });
-        const list = data.submissionList as
-          | { submissions?: LcSubmission[]; hasNext?: boolean }
-          | undefined;
-        const rows = list?.submissions ?? [];
-        if (rows.length === 0) break; // 空页 = 翻页结束（首页空 = 该账号暂无提交记录）
-
-        // 已知 externalId 全命中 → 更旧的都在库中，提前终止增量
-        const known = opts?.knownExternalIds;
-        if (known && rows.every((r) => r.id !== undefined && known.has(String(r.id)))) break;
-
-        let slugged = 0;
-        for (const row of rows) {
-          if (row.id === undefined) continue;
+      const known = opts?.knownExternalIds;
+      // 首页结构异常信号：fetchPage 记录首页行数与可提取 slug 数，全完成后判定
+      // （首页有行但无 slug = 接口结构变化，明确失败而非"同步成功 0 条"）
+      let firstPageRows = -1;
+      let firstPageSlugged = -1;
+      const out = await pagedFetch<LcSubmission>({
+        pageSize: PAGE_SIZE,
+        perSyncMax: PER_SYNC_MAX_PAGES,
+        fetchPage: async (page) => {
+          const offset = (page - 1) * PAGE_SIZE;
+          const data = await gql(fetchFn, SUBMISSION_LIST_QUERY, {
+            offset,
+            limit: PAGE_SIZE,
+            lastKey: null,
+            questionSlug: null,
+          }, { cookie });
+          const list = data.submissionList as
+            | { submissions?: LcSubmission[]; hasNext?: boolean }
+            | undefined;
+          const rows = list?.submissions ?? [];
+          if (page === 1) {
+            firstPageRows = rows.length;
+            firstPageSlugged = rows.filter((r) => !!extractSlugFromUrl(r.url)).length;
+          }
+          // hasNext===false：最后一页，返回数据但 pagedFetch 会因下一页空自然终止
+          return rows;
+        },
+        externalIdOf: (row) => String(row.id ?? ''),
+        normalize: (row) => {
+          if (row.id === undefined) return null;
           const slug = extractSlugFromUrl(row.url);
-          if (!slug) continue; // 无 slug 的行无法定位题目（如专属题/结构异常），跳过
-          slugged += 1;
+          if (!slug) return null; // 无 slug 的行无法定位题目（如专属题/结构异常），跳过
           const verdict = row.statusDisplay ? STATUS_MAP[row.statusDisplay] ?? null : null;
-          if (verdict === null) continue; // 评测中 / 未知状态不落库
+          if (verdict === null) return null; // 评测中 / 未知状态不落库
           // cn 返回秒级时间戳（历史踩坑：<1e12 视为秒，防毫秒/秒混用）
           const ts = Number(row.timestamp ?? 0);
-          if (!Number.isFinite(ts) || ts <= 0) continue;
+          if (!Number.isFinite(ts) || ts <= 0) return null;
           const submittedAtIso = ts < 1e12 ? new Date(ts * 1000).toISOString() : new Date(ts).toISOString();
           const url = row.url?.startsWith('http') ? row.url : `${BASE}${row.url ?? ''}`;
-          out.push({
+          return {
             problem: {
               platform: 'leetcode' as PlatformId,
               problemKey: slug,
@@ -194,14 +205,19 @@ export function createLeetcodeAdapter(fetchFn: typeof fetch = fetch): PlatformAd
             ...(row.lang ? { language: row.lang } : {}),
             submittedAt: submittedAtIso,
             externalId: String(row.id),
-          });
-        }
-        // 首页有记录但一条 slug 都提取不到：接口结构变化，明确失败而非"同步成功 0 条"
-        if (offset === 0 && rows.length > 0 && slugged === 0) {
-          throw new Error('力扣提交列表未解析到题目标识（可能接口结构变化），请反馈或使用手动导入');
-        }
-        if (rows.length < PAGE_SIZE || list?.hasNext === false) break;
-        await sleep(opts?.pageDelayMs ?? PAGE_DELAY_MS);
+          };
+        },
+        // 力扣用整页已知早停（knownIdsFilter）；补全模式由 backfill 跳页处理
+        knownExternalIds: opts?.backfill ? undefined : known,
+        maxSubmissions: opts?.maxSubmissions,
+        backfill: opts?.backfill,
+        backfillFromPage: opts?.backfillFromPage,
+        opts,
+        pageDelayMs: opts?.pageDelayMs ?? PAGE_DELAY_MS,
+      });
+      // 首页有记录但一条 slug 都提取不到：接口结构变化，明确失败而非"同步成功 0 条"
+      if (firstPageRows > 0 && firstPageSlugged === 0) {
+        throw new Error('力扣提交列表未解析到题目标识（可能接口结构变化），请反馈或使用手动导入');
       }
       return out;
     },
@@ -232,8 +248,4 @@ export function createLeetcodeAdapter(fetchFn: typeof fetch = fetch): PlatformAd
       }
     },
   };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
 }

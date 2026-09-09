@@ -531,9 +531,10 @@ function SyncTab({ onDone }: { onDone: () => void }) {
     if (!handle.trim()) return
     setBusy(true)
     try {
-      const r = await post<{ imported: number; skipped: number; errors: string[] }>(`/api/sync/${platform}`, { handle: handle.trim() })
+      const r = await post<{ imported: number; skipped: number; errors: string[]; truncated?: boolean; note?: string }>(`/api/sync/${platform}`, { handle: handle.trim() })
       const parts = [`导入 ${r.imported} 条`, `去重 ${r.skipped} 条`]
       if (r.errors.length) parts.push(`提示：${r.errors.join('；')}`)
+      if (r.truncated && r.note) parts.push(r.note)
       setResult(parts.join('，'))
       if (r.imported > 0) onDone()
     } catch (e) {

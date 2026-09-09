@@ -15,12 +15,16 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS platform_accounts (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id      INTEGER NOT NULL REFERENCES users(id),
-  platform     TEXT NOT NULL REFERENCES platforms(id),
-  handle       TEXT NOT NULL,                  -- CF handle / AtCoder 用户名 / 洛谷 uid / 牛客 uid
-  last_sync_at TEXT,
-  enabled      INTEGER NOT NULL DEFAULT 1,
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id         INTEGER NOT NULL REFERENCES users(id),
+  platform        TEXT NOT NULL REFERENCES platforms(id),
+  handle          TEXT NOT NULL,                  -- CF handle / AtCoder 用户名 / 洛谷 uid / 牛客 uid
+  last_sync_at    TEXT,
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  -- 上次同步因触及单次上限而提前停止（分批拉取防封号）；1=仍有更早历史待补全，下次同步进入补全模式
+  sync_truncated  INTEGER NOT NULL DEFAULT 0,
+  -- 补全模式续拉游标（页码型平台用）：记录已拉到的最深页，下次从此处续拉更早历史，避免从头重扫已知页
+  backfill_page   INTEGER,
   UNIQUE (user_id, platform)
 );
 

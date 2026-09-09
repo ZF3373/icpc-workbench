@@ -6,6 +6,10 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { getAdapter } from '../adapters/registry.ts';
+import {
+  MIN_SYNC_MAX_SUBMISSIONS,
+  MAX_SYNC_MAX_SUBMISSIONS,
+} from '../adapters/sync.ts';
 import { chatUrl } from '../ai/provider.ts';
 
 const DEFAULT_REMINDER_TIME = '20:00';
@@ -34,6 +38,22 @@ export function readContestReminder(db: Db): { enabled: boolean; minutesBefore: 
       Number.isInteger(minutes) && minutes >= 5 && minutes <= 120
         ? minutes
         : DEFAULT_CONTEST_REMINDER_MINUTES,
+  };
+}
+
+const DEFAULT_SYNC_MAX_SUBMISSIONS = 500;
+
+/** 读取分批同步设置：单次同步新增上限（防封号），越界回退默认值 */
+export function readSyncSettings(db: Db): { maxSubmissions: number } {
+  const row = db
+    .prepare('SELECT value FROM settings WHERE key = ?')
+    .get('sync.maxSubmissions') as { value: string } | undefined;
+  const n = Number(row?.value);
+  return {
+    maxSubmissions:
+      Number.isInteger(n) && n >= MIN_SYNC_MAX_SUBMISSIONS && n <= MAX_SYNC_MAX_SUBMISSIONS
+        ? n
+        : DEFAULT_SYNC_MAX_SUBMISSIONS,
   };
 }
 
@@ -76,6 +96,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       cookies,
       reminder: readReminder(db),
       contestReminder: readContestReminder(db),
+      sync: readSyncSettings(db),
     });
   });
 
@@ -289,6 +310,21 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     ).run(`adapter.${platform}.enabled`, String(Boolean(enabled)));
     res.json({ ok: true });
+  });
+
+  // POST /api/settings/sync  body: { maxSubmissions }（100–10000，单次同步新增上限，防封号）
+  r.post('/sync', (req, res) => {
+    const { maxSubmissions } = req.body ?? {};
+    const n = Number(maxSubmissions);
+    if (!Number.isInteger(n) || n < MIN_SYNC_MAX_SUBMISSIONS || n > MAX_SYNC_MAX_SUBMISSIONS) {
+      return res
+        .status(400)
+        .json({ error: `maxSubmissions 需为 ${MIN_SYNC_MAX_SUBMISSIONS}–${MAX_SYNC_MAX_SUBMISSIONS} 的整数` });
+    }
+    db.prepare(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    ).run('sync.maxSubmissions', String(n));
+    res.json(readSyncSettings(db));
   });
 
   return r;

@@ -4,7 +4,8 @@ import type {
   Verdict,
 } from '../../../shared/src/index.ts';
 import { ManualImportRequiredError } from './types.ts';
-import type { PlatformAdapter } from './types.ts';
+import type { FetchOptions, PlatformAdapter } from './types.ts';
+import { pagedFetch } from './pagination.ts';
 
 /**
  * 代码源（bs.daimayuan.top，基于 Hydro OJ 搭建）适配器。
@@ -21,7 +22,10 @@ import type { PlatformAdapter } from './types.ts';
 
 const BASE = 'https://bs.daimayuan.top';
 const PAGE_SIZE = 100; // Hydro pagination.record 默认值
-const MAX_PAGES = 100;
+// 每次同步的保守页数上限：120 页 × 400ms = 48 秒
+// 默认 maxSubmissions=500 时实际拉 5 页（2 秒）即触及条目上限停止
+const PER_SYNC_MAX_PAGES = 120;
+const PAGE_DELAY_MS = 400; // 页间限速，降低对站点的压力
 
 /** Hydro STATUS_TEXTS → 统一 Verdict；Waiting/Running 等评测中状态与 Hack/Cancelled 落到 null 跳过 */
 const STATUS_MAP: Record<string, Verdict> = {
@@ -34,8 +38,6 @@ const STATUS_MAP: Record<string, Verdict> = {
   'Compile Error': 'CE',
   'Format Error': 'WA',
 };
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 const strip = (s: string): string =>
   s
@@ -108,46 +110,44 @@ export function createDaimayuanAdapter(fetchFn: typeof fetch = fetch): PlatformA
           '代码源评测记录页需登录后访问：请在设置页填写 sid 会话 Cookie（浏览器登录 bs.daimayuan.top 后 F12 → Application → Cookies 复制 sid 一项）',
         );
       }
-      const out: NormalizedSubmission[] = [];
-      for (let page = 1; page <= MAX_PAGES; page += 1) {
-        const url = `${BASE}/record?uidOrName=${encodeURIComponent(handle)}&page=${page}`;
-        const res = await fetchFn(url, {
-          headers: {
-            Cookie: cookie,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          },
-          redirect: 'manual', // 登录失效时 Hydro 302 → /login，避免跟随重定向拿到登录页当成功
-          signal: AbortSignal.timeout(20000),
-        });
-        const html = await res.text();
-        if (res.status === 302 || res.status === 403 || /href="\/login"/.test(html)) {
-          throw new ManualImportRequiredError(
-            'daimayuan',
-            '登录态已失效（评测记录页跳转登录），请重新登录 bs.daimayuan.top 并更新 sid Cookie',
-          );
-        }
-        if (!res.ok) {
-          throw new Error(`代码源页面 HTTP ${res.status}，请稍后重试`);
-        }
-        const rows = parseDaimayuanRows(html);
-        if (rows.length === 0) {
-          // Hydro 空列表不渲染表格，仅保留过滤表单：以 name="uidOrName" 标记确认仍在记录页
-          if (page === 1 && !/name="uidOrName"/.test(html)) {
-            throw new Error('代码源页面未解析到提交记录（可能页面结构变化），请反馈或使用手动导入');
+      // 首页空页时需区分「无提交」与「页面结构变化/登录墙」：记录首页 html 与解析行数
+      let firstPageHtml = '';
+      let firstPageRowsCount = -1;
+      const out = await pagedFetch<HydroRow>({
+        pageSize: PAGE_SIZE,
+        perSyncMax: PER_SYNC_MAX_PAGES,
+        fetchPage: async (page) => {
+          const url = `${BASE}/record?uidOrName=${encodeURIComponent(handle)}&page=${page}`;
+          const res = await fetchFn(url, {
+            headers: {
+              Cookie: cookie,
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            },
+            redirect: 'manual', // 登录失效时 Hydro 302 → /login，避免跟随重定向拿到登录页当成功
+            signal: AbortSignal.timeout(20000),
+          });
+          const html = await res.text();
+          if (res.status === 302 || res.status === 403 || /href="\/login"/.test(html)) {
+            throw new ManualImportRequiredError(
+              'daimayuan',
+              '登录态已失效（评测记录页跳转登录），请重新登录 bs.daimayuan.top 并更新 sid Cookie',
+            );
           }
-          break; // 空页 = 翻页结束（首页空 = 该账号暂无非比赛提交）
-        }
-
-        // 已知 externalId 全命中 → 更旧的都在库中，提前终止增量
-        const known = opts?.knownExternalIds;
-        if (known && rows.every((r) => known.has(r.recordId))) break;
-
-        let added = 0;
-        for (const row of rows) {
-          if (known?.has(row.recordId)) continue;
+          if (!res.ok) {
+            throw new Error(`代码源页面 HTTP ${res.status}，请稍后重试`);
+          }
+          const rows = parseDaimayuanRows(html);
+          if (page === 1) {
+            firstPageHtml = html;
+            firstPageRowsCount = rows.length;
+          }
+          return rows;
+        },
+        externalIdOf: (row) => row.recordId,
+        normalize: (row) => {
           const verdict = toVerdict(row.statusText);
-          if (verdict === null) continue; // 评测中/Hack/取消等不落库
-          out.push({
+          if (verdict === null) return null; // 评测中/Hack/取消等不落库
+          return {
             problem: {
               platform: 'daimayuan' as PlatformId,
               problemKey: row.pid,
@@ -159,12 +159,18 @@ export function createDaimayuanAdapter(fetchFn: typeof fetch = fetch): PlatformA
             ...(row.language ? { language: row.language } : {}),
             submittedAt: new Date(row.timeSec * 1000).toISOString(),
             externalId: row.recordId,
-          });
-          added += 1;
-        }
-        if (rows.length < PAGE_SIZE) break; // 最后一页
-        if (added === 0 && known) break; // 增量模式下整页无新增（含已知的评测中记录）→ 更旧多半已入库
-        await sleep(opts?.pageDelayMs ?? 400); // 页间限速，降低对站点的压力
+          };
+        },
+        knownExternalIds: opts?.knownExternalIds,
+        maxSubmissions: opts?.maxSubmissions,
+        backfill: opts?.backfill,
+        backfillFromPage: opts?.backfillFromPage,
+        opts,
+        pageDelayMs: opts?.pageDelayMs ?? PAGE_DELAY_MS,
+      });
+      // 首页解析不到任何行（非因整页已知早停）且无提交表格标记：页面结构变化（而非该账号暂无提交）
+      if (firstPageRowsCount === 0 && !/name="uidOrName"/.test(firstPageHtml)) {
+        throw new Error('代码源页面未解析到提交记录（可能页面结构变化），请反馈或使用手动导入');
       }
       return out;
     },

@@ -7,10 +7,14 @@ import type { FetchOptions, PlatformAdapter } from './types.ts';
 import { ManualImportRequiredError } from './types.ts';
 
 const API = 'https://www.luogu.com.cn';
-// 每页约 20 条：500 页 ≈ 1 万条提交，保证重度用户（>2000 条）首次全量同步可拉完
-const MAX_PAGES = 500;
+// 每页约 20 条。每次同步的保守页数上限：150 页 × 300ms = 45 秒
+// 默认 maxSubmissions=500 时实际只拉 25 页（7.5 秒）即触及条目上限停止
+const PER_SYNC_MAX_PAGES = 150;
 const PAGE_DELAY_MS = 300;
-const PROBLEM_FETCH_CONCURRENCY = 6;
+const PROBLEM_FETCH_CONCURRENCY = 3; // 题目信息抓取并发：保守取 3（原 6 过激进，易触发风控）
+const PROBLEM_FETCH_BATCH_DELAY_MS = 200; // 题目信息批次间限速：降低短时间请求密度
+// 每次同步题目信息抓取总数上限：与提交列表分页独立，防止短时间大量逐题请求触发风控
+const PROBLEM_FETCH_MAX_PER_SYNC = 100;
 
 // 洛谷提交状态数字枚举 → 统一 Verdict（官方 /_lfe/config 现行枚举，2026 验证）
 // 12=AC，13/14=Unaccepted（未通过/部分正确），2=CE，3=OLE，4=MLE，5=TLE，6=WA，7=RE，11=UKE
@@ -123,6 +127,7 @@ export async function fetchWithChallenge(
 ): Promise<Response> {
   let current = cookie;
   for (let attempt = 0; attempt <= 2; attempt += 1) {
+    if (attempt > 0) await sleep(300); // C3VK 重试间限速，避免毫秒级连发请求触发风控
     const res = await fetchFn(url, {
       headers: { ...requestHeaders(current, csrf), ...extraHeaders },
       redirect: 'manual', // 不跟随：302 循环会耗尽 Node fetch 默认重定向次数（抛 fetch failed）
@@ -233,6 +238,14 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
     ): Promise<NormalizedSubmission[]> {
       const cookie = opts?.cookie;
       const known = opts?.knownExternalIds;
+      const maxSubmissions = opts?.maxSubmissions;
+      const backfill = opts?.backfill;
+      // 页数预算：新增上限推算的新页 ×2（兼顾补全续拉起点的重叠页），上限 PER_SYNC_MAX_PAGES
+      const budget =
+        maxSubmissions && maxSubmissions > 0
+          ? Math.min(Math.ceil(maxSubmissions / 20) * 2, PER_SYNC_MAX_PAGES)
+          : PER_SYNC_MAX_PAGES;
+      const startPage = backfill && opts?.backfillFromPage ? opts.backfillFromPage : 1;
       if (!cookie) {
         throw new ManualImportRequiredError(
           'luogu',
@@ -240,9 +253,14 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
         );
       }
       const raws: LuoguRecord[] = [];
-      for (let page = 1; page <= MAX_PAGES; page += 1) {
+      let reachedPage = startPage;
+      let naturalEnd = false; // 空页
+      let caughtUp = false; // 增量模式整页已知早停
+      let rowCapped = false; // 触及新增上限
+      for (let page = startPage, n = 0; n < budget; page += 1, n += 1) {
+        reachedPage = page;
         const url = `${API}/record/list?user=${encodeURIComponent(handle)}&page=${page}&_contentOnly=1`;
-        const res = await fetchWithChallenge(fetchFn, url, cookie, opts.csrf);
+        const res = await fetchWithChallenge(fetchFn, url, cookie, opts?.csrf);
         // 302 且无新 C3VK = 未登录 / Cookie 无效（洛谷重定向到登录页）
         if ([301, 302, 303].includes(res.status)) {
           throw new Error('洛谷返回登录跳转：Cookie 无效或已过期，请在设置中重新填写（需登录洛谷后复制最新 Cookie）');
@@ -265,8 +283,11 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
           throw new Error('洛谷 API 响应异常（Cookie 可能已过期或触发风控）');
         }
         const records = data.currentData.records.result;
-        if (!Array.isArray(records) || records.length === 0) break;
-        // 已知记录直接跳过（省去后续逐题抓难度/标签）；整页已知 → 更旧的都在库，提前终止
+        if (!Array.isArray(records) || records.length === 0) {
+          naturalEnd = true;
+          break;
+        }
+        // 已知记录直接跳过（省去后续逐题抓难度/标签）；统计整页已知用于早停/补全跳页
         let knownInPage = 0;
         for (const rec of records) {
           if (known?.has(String(rec.id))) {
@@ -276,23 +297,48 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
           // 过滤等待/评测中/隐藏的非最终状态
           if (rec.status === 0 || rec.status === 1 || rec.status === -1) continue;
           raws.push(rec);
+          if (maxSubmissions && raws.length >= maxSubmissions) {
+            rowCapped = true;
+            break;
+          }
         }
-        if (known && knownInPage === records.length) break;
+        if (rowCapped) break;
+        // 整页已知：补全跳过该页继续向更旧，增量模式则终止（更旧都在库）
+        if (known && knownInPage > 0 && knownInPage === records.length) {
+          if (backfill) {
+            await sleep(opts?.pageDelayMs ?? PAGE_DELAY_MS);
+            continue;
+          }
+          caughtUp = true;
+          break;
+        }
         await sleep(opts?.pageDelayMs ?? PAGE_DELAY_MS);
       }
 
-      // 按需补充题目难度/标签（并发受限，失败静默降级）；仅对合法 pid 查询
+      // 截断：触及上限，或页数预算耗尽（未自然结束/未增量早停）且有新增 → 仍有更早历史待补全
+      const truncated = rowCapped || (!naturalEnd && !caughtUp && raws.length > 0);
+      if (truncated && opts) {
+        opts.truncated = true;
+        opts.backfillReachedPage = reachedPage;
+      }
+
+      // 按需补充题目难度/标签（并发受限 + 批次间限速 + 总数上限，防触发风控）；
+      // 仅对合法 pid 查询，已缓存的跳过。超出上限的题目留待下次同步补全（降级为无难度/标签）
       const pids = [
         ...new Set(
           raws
             .map((r) => r.problem?.pid)
             .filter((p): p is string => typeof p === 'string' && /^[A-Za-z0-9]+$/.test(p)),
         ),
-      ];
-      for (let i = 0; i < pids.length; i += PROBLEM_FETCH_CONCURRENCY) {
+      ].filter((pid) => !problemCache.has(pid)); // 跳过已缓存，减少请求量
+      const pidsToFetch = pids.slice(0, PROBLEM_FETCH_MAX_PER_SYNC);
+      for (let i = 0; i < pidsToFetch.length; i += PROBLEM_FETCH_CONCURRENCY) {
         await Promise.allSettled(
-          pids.slice(i, i + PROBLEM_FETCH_CONCURRENCY).map((pid) => fetchProblemInfo(pid, cookie, opts.csrf)),
+          pidsToFetch.slice(i, i + PROBLEM_FETCH_CONCURRENCY).map((pid) => fetchProblemInfo(pid, cookie, opts?.csrf)),
         );
+        if (i + PROBLEM_FETCH_CONCURRENCY < pidsToFetch.length) {
+          await sleep(PROBLEM_FETCH_BATCH_DELAY_MS); // 批次间限速
+        }
       }
 
       return raws.map((rec) => {

@@ -127,3 +127,30 @@ test('problemUrl uses /tasks/ shortcut', () => {
     'https://atcoder.jp/tasks/abc321_a',
   );
 });
+
+test('maxSubmissions: stops at cap and sets opts.truncated (分批防封号)', async () => {
+  // 第 1 页满 500 条，第 2 页再给若干；maxSubmissions=600 → 第 2 页拉到 100 条达上限
+  let callCount = 0;
+  const adapter = makeAdapter(() => {
+    callCount += 1;
+    if (callCount === 1) {
+      return Array.from({ length: 500 }, (_, i) => submission({ id: i + 1, epoch_second: 1700000000 + i }));
+    }
+    // 第 2 页：从 maxSecond+1 续拉，给 200 条（拉到 100 即达 600 上限）
+    return Array.from({ length: 200 }, (_, i) => submission({ id: 501 + i, epoch_second: 1700000500 + i }));
+  });
+  const opts: { maxSubmissions?: number; truncated?: boolean } = { maxSubmissions: 600 };
+  const rows = await adapter.fetchUserSubmissions('u', opts);
+  assert.equal(rows.length, 600); // 恰好到上限
+  assert.equal(opts.truncated, true);
+  assert.equal(callCount, 2); // 第 3 页不应被请求
+});
+
+test('maxSubmissions: empty result before cap does NOT truncate (natural end)', async () => {
+  const adapter = makeAdapter(() => [submission({ id: 1 })]);
+  const opts: { maxSubmissions?: number; truncated?: boolean } = { maxSubmissions: 500 };
+  const rows = await adapter.fetchUserSubmissions('u', opts);
+  assert.equal(rows.length, 1);
+  assert.equal(opts.truncated, undefined); // 第 2 页空 → 自然结束不截断
+});
+

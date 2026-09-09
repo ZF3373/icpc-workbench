@@ -188,17 +188,16 @@ body {
   display: none;
 }
 
-.sider-menu.ant-menu {
+.sider-nav.sider-menu {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 4px 0 10px;
   background: transparent;
-  border-inline-end: none !important;
 }
 
 /* 分组标题（折叠态隐藏，只留条目） */
-.sider-menu .ant-menu-item-group-title {
+.sider-nav-group-title {
   padding: 14px 20px 4px;
   color: #6d7684;
   font-size: 10.5px;
@@ -207,36 +206,54 @@ body {
   text-transform: uppercase;
 }
 
-.ant-layout-sider-collapsed .sider-menu .ant-menu-item-group-title {
+.ant-layout-sider-collapsed .sider-nav-group-title {
   display: none;
 }
 
-.sider-menu .ant-menu-item {
+.sider-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   height: 40px;
-  line-height: 40px;
   margin: 2px 10px;
-  padding-inline: 14px !important;
+  padding: 0 14px;
+  border: none;
   border-radius: 10px;
+  background: transparent;
   color: #8b94a3;
-  width: auto;
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+  width: calc(100% - 20px);
+  text-align: left;
+  transition: color 140ms ease, background 140ms ease, opacity 140ms ease;
 }
 
-.sider-menu .ant-menu-item .anticon {
+.sider-nav-item .sider-nav-icon {
+  display: inline-flex;
+  flex-shrink: 0;
   font-size: 17px;
 }
 
-.sider-menu .ant-menu-item:hover {
-  color: #e0e5ed !important;
+.sider-nav-item .sider-nav-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sider-nav-item:hover {
+  color: #e0e5ed;
+  background: #20242c;
 }
 
 /* 选中态：雾蓝软底 + 左侧发光竖条 */
-.sider-menu .ant-menu-item-selected {
+.sider-nav-item.is-selected {
   position: relative;
   color: var(--brand) !important;
   background: var(--brand-soft) !important;
 }
 
-.sider-menu .ant-menu-item-selected::before {
+.sider-nav-item.is-selected::before {
   content: '';
   position: absolute;
   left: -10px;
@@ -247,23 +264,33 @@ body {
 }
 
 /* 折叠态：图标轨（居中 40px 方块） */
-.ant-layout-sider-collapsed .sider-menu .ant-menu-item {
+.ant-layout-sider-collapsed .sider-nav-item {
   width: 40px;
   margin: 2px auto;
-  padding-inline: 0 !important;
+  padding: 0;
   display: grid;
   place-items: center;
 }
 
-/* 折叠态：移除文字占位，避免长标题把图标挤偏（AntD 仅以 opacity:0 隐藏，仍占布局，
-   且其 :where() 规则特异性高达 0,6,0；用 !important 稳定覆盖）。AntD 折叠 Tooltip
-   由内部单独渲染，不依赖此元素可见，display:none 安全。 */
-.ant-layout-sider-collapsed .sider-menu .ant-menu-title-content {
-  display: none !important;
+.ant-layout-sider-collapsed .sider-nav-item .sider-nav-label {
+  display: none;
 }
 
-.ant-layout-sider-collapsed .sider-menu .ant-menu-item-selected::before {
+.ant-layout-sider-collapsed .sider-nav-item.is-selected::before {
   left: -14px;
+}
+
+/* 拖拽视觉反馈 */
+.sider-nav-item.is-dragging {
+  opacity: 0.35;
+}
+
+.sider-nav-item.is-drag-over-before {
+  box-shadow: inset 0 2px 0 var(--brand);
+}
+
+.sider-nav-item.is-drag-over-after {
+  box-shadow: inset 0 -2px 0 var(--brand);
 }
 
 .sider-footer {
@@ -669,6 +696,19 @@ body {
 
 .taxonomy-item.is-active .taxonomy-item__count {
   color: #b9c8ff;
+}
+
+/* 分类拖拽视觉反馈 */
+.taxonomy-item.is-dragging {
+  opacity: 0.35;
+}
+
+.taxonomy-item.is-drag-over-before {
+  box-shadow: inset 0 2px 0 var(--brand);
+}
+
+.taxonomy-item.is-drag-over-after {
+  box-shadow: inset 0 -2px 0 var(--brand);
 }
 
 .taxonomy-footer {

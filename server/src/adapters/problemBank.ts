@@ -398,16 +398,16 @@ export async function fetchAtcoderBank(
     Accept: 'application/json',
   };
 
-  const [probRes, modelRes] = await Promise.all([
-    fetchFn(`${KENKOOOO_API}/resources/problems.json`, {
-      headers,
-      signal: AbortSignal.timeout(30000),
-    }),
-    fetchFn(`${KENKOOOO_API}/resources/problem-models.json`, {
-      headers,
-      signal: AbortSignal.timeout(30000),
-    }),
-  ]);
+  // kenkoooo 要求请求间隔 >= 1s：顺序请求 + sleep，不并发（原 Promise.all 违反间隔要求）
+  const probRes = await fetchFn(`${KENKOOOO_API}/resources/problems.json`, {
+    headers,
+    signal: AbortSignal.timeout(30000),
+  });
+  await sleep(1000);
+  const modelRes = await fetchFn(`${KENKOOOO_API}/resources/problem-models.json`, {
+    headers,
+    signal: AbortSignal.timeout(30000),
+  });
   if (!probRes.ok) {
     throw new Error(`AtCoder 题库接口 HTTP ${probRes.status}，请稍后重试`);
   }

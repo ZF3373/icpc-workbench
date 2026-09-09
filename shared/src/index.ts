@@ -73,6 +73,14 @@ export interface SyncResult {
   errors: string[];
   /** 本次为增量同步（沿用上次同步起点 / 已知提交号提前终止）；仅 true 时出现 */
   incremental?: boolean;
+  /**
+   * 本次因触及「单次同步上限」而提前停止（提交记录过多，分批拉取以防触发平台风控封号）。
+   * 为 true 时 last_sync_at 不会推进到「现在」（AtCoder 按已拉最新时间续拉），
+   * 且 platform_accounts.sync_truncated 置 1，下次同步自动进入补全模式继续拉取更早的历史。
+   */
+  truncated?: boolean;
+  /** 截断等情况下给用户的可读提示（前端直接展示） */
+  note?: string;
 }
 
 /** 手动导入单行输入（JSON 表单或 CSV 解析后）。 */

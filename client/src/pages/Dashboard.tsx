@@ -115,6 +115,14 @@ export default function Dashboard() {
       for (const x of r.results) {
         if (x.errors.length > 0) message.warning(`${platformName(x.platform)}：${x.errors[0]}`, 6)
       }
+      // 截断提示：提交记录过多已分批同步，提示用户再次同步可继续补全历史
+      const truncated = r.results.filter((x) => x.truncated)
+      if (truncated.length > 0) {
+        message.warning(
+          `${truncated.map((x) => platformName(x.platform)).join('、')}：提交记录较多，已分批同步以防触发平台风控；再次点击「同步数据」可继续补全更早的历史记录`,
+          8,
+        )
+      }
       load()
     } catch (e) {
       message.error((e as Error).message)
@@ -165,11 +173,19 @@ export default function Dashboard() {
     { title: '已解', dataIndex: 'solved', align: 'right' },
   ]
 
-  const diffData = stats.byDifficulty.map((d: DifficultyStat) => ({
-    bucket: d.bucket,
-    AC: d.ac,
-    未通过: d.attempts - d.ac,
-  }))
+  const diffData = stats.byDifficulty
+    .slice()
+    .sort((a, b) => {
+      // "未知" 排到最后
+      if (a.bucket === '未知' && b.bucket !== '未知') return 1
+      if (a.bucket !== '未知' && b.bucket === '未知') return -1
+      return 0
+    })
+    .map((d: DifficultyStat) => ({
+      bucket: d.bucket,
+      AC: d.ac,
+      未通过: d.attempts - d.ac,
+    }))
 
   const weakData = weak
     ? weak.items.slice(0, 10).map((i) => ({ tag: i.tag, gap: i.gap, acRate: i.acRate }))
@@ -230,7 +246,7 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={diffData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_STROKE} />
-                <XAxis dataKey="bucket" tick={AXIS_TICK} axisLine={false} tickLine={false} />
+                <XAxis dataKey="bucket" tick={AXIS_TICK} interval={0} axisLine={false} tickLine={false} />
                 <YAxis allowDecimals={false} tick={AXIS_TICK} axisLine={false} tickLine={false} />
                 <Tooltip {...TOOLTIP_STYLE} cursor={{ fill: 'rgba(134, 168, 255, 0.05)' }} />
                 <Legend {...LEGEND_STYLE} />

@@ -206,3 +206,40 @@ test('cookies/check passes bound account handle to adapter checkAuth', async () 
     }
   });
 });
+
+test('GET / returns sync.maxSubmissions default; POST /sync saves and validates', async () => {
+  await withServer(async (db, base) => {
+    // 默认值 500（保守）
+    const get1 = (await (await fetch(`${base}/`)).json()) as { sync: { maxSubmissions: number } };
+    assert.equal(get1.sync.maxSubmissions, 500);
+
+    // 保存合法值
+    const res = await fetch(`${base}/sync`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ maxSubmissions: 300 }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { maxSubmissions: 300 });
+    // 持久化到 settings 表
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'sync.maxSubmissions'").get() as { value: string };
+    assert.equal(row.value, '300');
+    // GET 回读已保存值
+    const get2 = (await (await fetch(`${base}/`)).json()) as { sync: { maxSubmissions: number } };
+    assert.equal(get2.sync.maxSubmissions, 300);
+
+    // 越界值拒绝（< 100 下限 / > 1500 上限）
+    const badLow = await fetch(`${base}/sync`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ maxSubmissions: 50 }),
+    });
+    assert.equal(badLow.status, 400);
+    const badHigh = await fetch(`${base}/sync`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ maxSubmissions: 2000 }),
+    });
+    assert.equal(badHigh.status, 400);
+  });
+});

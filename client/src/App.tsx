@@ -1,23 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { ReactNode } from 'react'
-import { Layout, Menu, Tooltip } from 'antd'
-import {
-  CalendarOutlined,
-  CodeOutlined,
-  DashboardOutlined,
-  FileTextOutlined,
-  FlagOutlined,
-  HeatMapOutlined,
-  MenuFoldOutlined,
-  MenuUnfoldOutlined,
-  ReadOutlined,
-  RobotOutlined,
-  ScheduleOutlined,
-  SettingOutlined,
-  ThunderboltOutlined,
-  TagsOutlined,
-} from '@ant-design/icons'
-import type { ItemType } from 'antd/es/menu/interface'
+import { Layout, Tooltip } from 'antd'
+import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
 import Problems from './pages/Problems'
@@ -35,54 +18,10 @@ import Reminder from './Reminder'
 import ContestReminder from './ContestReminder'
 import UpdateChecker from './UpdateChecker'
 import { get } from './api'
+import SiderMenu from './components/SiderMenu'
+import { MENU } from './menuConfig'
 
 const { Sider, Content } = Layout
-
-const MENU: Array<{ key: string; icon: ReactNode; label: string }> = [
-  { key: '/', icon: <DashboardOutlined />, label: '数据概览' },
-  { key: '/today', icon: <ThunderboltOutlined />, label: '今日训练' },
-  { key: '/ai', icon: <RobotOutlined />, label: 'AI 助手' },
-  { key: '/templates', icon: <CodeOutlined />, label: '模板库' },
-  { key: '/lists', icon: <TagsOutlined />, label: '题单整理' },
-  { key: '/problems', icon: <FileTextOutlined />, label: '题目管理' },
-  { key: '/mastery', icon: <HeatMapOutlined />, label: '掌握度地图' },
-  { key: '/plans', icon: <ScheduleOutlined />, label: '训练计划' },
-  { key: '/calendar', icon: <CalendarOutlined />, label: '日历打卡' },
-  { key: '/reviews', icon: <ReadOutlined />, label: '复习库' },
-  { key: '/contests', icon: <FlagOutlined />, label: '赛事中心' },
-  { key: '/settings', icon: <SettingOutlined />, label: '设置' },
-]
-
-const menuIcon = (key: string) => MENU.find((m) => m.key === key)?.icon
-const menuLabel = (key: string) => MENU.find((m) => m.key === key)?.label ?? key
-
-/** 分组导航：训练动作 / 记录与检索 / 系统。折叠态由 AntD 自动隐藏组标题。 */
-const MENU_ITEMS: ItemType[] = [
-  { key: '/', icon: menuIcon('/'), label: menuLabel('/') },
-  {
-    type: 'group',
-    label: '训练',
-    children: [
-      { key: '/today', icon: menuIcon('/today'), label: menuLabel('/today') },
-      { key: '/ai', icon: menuIcon('/ai'), label: menuLabel('/ai') },
-      { key: '/templates', icon: menuIcon('/templates'), label: menuLabel('/templates') },
-      { key: '/lists', icon: menuIcon('/lists'), label: menuLabel('/lists') },
-      { key: '/plans', icon: menuIcon('/plans'), label: menuLabel('/plans') },
-      { key: '/reviews', icon: menuIcon('/reviews'), label: menuLabel('/reviews') },
-    ],
-  },
-  {
-    type: 'group',
-    label: '题库与记录',
-    children: [
-      { key: '/problems', icon: menuIcon('/problems'), label: menuLabel('/problems') },
-      { key: '/mastery', icon: menuIcon('/mastery'), label: menuLabel('/mastery') },
-      { key: '/calendar', icon: menuIcon('/calendar'), label: menuLabel('/calendar') },
-      { key: '/contests', icon: menuIcon('/contests'), label: menuLabel('/contests') },
-    ],
-  },
-  { key: '/settings', icon: menuIcon('/settings'), label: menuLabel('/settings') },
-]
 
 export default function App() {
   const nav = useNavigate()
@@ -125,14 +64,7 @@ export default function App() {
             <span className="sider-logo-sub">备赛工作台</span>
           </span>
         </div>
-        <Menu
-          className="sider-menu"
-          theme="dark"
-          mode="inline"
-          selectedKeys={[selected]}
-          items={MENU_ITEMS}
-          onClick={({ key }) => nav(key)}
-        />
+        <SiderMenu selected={selected} collapsed={collapsed} onNavigate={nav} />
         <div className="sider-footer">
           <button
             type="button"
