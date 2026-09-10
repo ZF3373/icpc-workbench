@@ -7,7 +7,7 @@
  * 3. renderSummaryForPrompt → 精简版（注入 AI 训练计划提示词的 {summary} 段）
  */
 import type { PlatformId } from '../../../shared/src/index.ts';
-import { PLATFORMS, platformMeta } from '../../../shared/src/index.ts';
+import { PLATFORMS, platformMeta, canonicalTag } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { bucketForDifficulty, fetchRows, rate, safeTags } from './stats.ts';
 import { filterNoiseTags } from './tags.ts';
@@ -152,7 +152,7 @@ export function buildPracticeSummary(db: Db, userId: number): PracticeSummary {
     d.attempts += 1;
     if (isAc) d.ac += 1;
     byDifficulty.set(bucket, d);
-    for (const tag of filterNoiseTags(safeTags(r.tags))) {
+    for (const tag of filterNoiseTags(safeTags(r.tags)).map((t) => canonicalTag(t))) {
       const t = byTag.get(tag) ?? { solved: new Set<string>(), attempts: 0, ac: 0 };
       t.attempts += 1;
       if (isAc) {
@@ -274,7 +274,7 @@ function loadRecentAc(db: Db, userId: number): RecentAcProblem[] {
     title: r.title,
     difficulty: r.difficulty,
     url: r.url,
-    tags: filterNoiseTags(safeTags(r.tags)),
+    tags: filterNoiseTags(safeTags(r.tags)).map((t) => canonicalTag(t)),
     solvedAt: r.solved_at,
   }));
 }

@@ -51,6 +51,8 @@ export function luoguDifficultyToRating(d: number): number | null {
 
 interface LuoguProblem {
   pid?: string;
+  /** 洛谷新版 Lentille 接口的标题字段为 name（旧结构为 title） */
+  name?: string;
   title?: string;
   difficulty?: number;
   /** 新版 Lentille 接口返回 tag id 数组；旧结构为对象数组 */
@@ -217,7 +219,12 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
       const tags = resolveTags(p?.tags, tagDict);
       const info = {
         ...(typeof p?.difficulty === 'number' ? { difficulty: p.difficulty } : {}),
-        ...(typeof p?.title === 'string' ? { title: p.title } : {}),
+        // 洛谷新版接口标题字段为 name，旧结构为 title（回填路径 difficultyBackfill 同款兼容）
+        ...(typeof p?.name === 'string'
+          ? { title: p.name }
+          : typeof p?.title === 'string'
+            ? { title: p.title }
+            : {}),
         tags,
       };
       problemCache.set(pid, info);

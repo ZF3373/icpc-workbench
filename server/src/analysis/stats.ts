@@ -1,6 +1,7 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
-import { PLATFORMS } from '../../../shared/src/index.ts';
+import { PLATFORMS, canonicalTag } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
+import { filterNoiseTags } from './tags.ts';
 
 export function bucketForDifficulty(difficulty: number | null | undefined): string {
   if (difficulty === null || difficulty === undefined || !Number.isFinite(difficulty)) {
@@ -104,7 +105,7 @@ export function computeOverall(
     const isAc = r.verdict === 'AC';
     bump(byPlatform, r.platform, isAc);
     bump(byDifficulty, bucketForDifficulty(r.difficulty), isAc);
-    for (const tag of safeTags(r.tags)) {
+    for (const tag of filterNoiseTags(safeTags(r.tags)).map((t) => canonicalTag(t))) {
       bump(byTag, tag, isAc);
       if (isAc) {
         if (!solvedByTag.has(tag)) solvedByTag.set(tag, new Set());

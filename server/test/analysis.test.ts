@@ -80,10 +80,11 @@ test('computeOverall aggregates attempts/ac/rate/solved', () => {
   const atcoder = s.byPlatform.find((p) => p.platform === 'atcoder')!;
   assert.deepEqual(atcoder, { platform: 'atcoder', attempts: 0, ac: 0, acRate: 0, solved: 0 });
 
-  const dp = s.byTag.find((t) => t.tag === 'dp')!;
-  assert.deepEqual(dp, { tag: 'dp', attempts: 5, ac: 3, acRate: 60, solved: 2 });
-  const greedy = s.byTag.find((t) => t.tag === 'greedy')!;
-  assert.deepEqual(greedy, { tag: 'greedy', attempts: 3, ac: 1, acRate: 33.3, solved: 1 });
+  // dp 经 canonicalTag 归并为「动态规划」，greedy 归并为「贪心」
+  const dp = s.byTag.find((t) => t.tag === '动态规划')!;
+  assert.deepEqual(dp, { tag: '动态规划', attempts: 5, ac: 3, acRate: 60, solved: 2 });
+  const greedy = s.byTag.find((t) => t.tag === '贪心')!;
+  assert.deepEqual(greedy, { tag: '贪心', attempts: 3, ac: 1, acRate: 33.3, solved: 1 });
 
   const b1400 = s.byDifficulty.find((d) => d.bucket === '1400-1599')!;
   assert.deepEqual(b1400, { bucket: '1400-1599', attempts: 3, ac: 1, acRate: 33.3 });
@@ -101,12 +102,12 @@ test('computeOverall respects time window filter', () => {
 test('computeWeakness ranks tags by gap below average', () => {
   seed();
   const w = computeWeakness(db, 1, { minAttempts: 2, topN: 5 });
-  // 总体 AC 率 66.7；greedy 33.3 → gap 33.4 最大
-  assert.equal(w.items.length, 3); // dp / greedy / graphs
-  assert.equal(w.items[0].tag, 'greedy');
+  // 总体 AC 率 66.7；贪心 33.3 → gap 33.4 最大（greedy 经 canonicalTag 归并为贪心）
+  assert.equal(w.items.length, 3); // 动态规划 / 贪心 / 图论
+  assert.equal(w.items[0].tag, '贪心');
   assert.ok(Math.abs(w.items[0].gap - (66.7 - 33.3)) < 0.2);
-  // dp 与 graphs AC 率 60 → gap 6.7
-  const dp = w.items.find((i) => i.tag === 'dp')!;
+  // 动态规划与图论 AC 率 60 → gap 6.7
+  const dp = w.items.find((i) => i.tag === '动态规划')!;
   assert.ok(Math.abs(dp.gap - 6.7) < 0.2);
   // 难度桶弱项：1400-1599 33.3 最低
   assert.equal(w.byDifficulty[0].bucket, '1400-1599');
@@ -128,6 +129,39 @@ test('computeWeakness excludes noise tags (year/contest/source)', () => {
   assert.ok(!tags.includes('NOIP 普及组') && !tags.includes('洛谷原创') && !tags.includes('*special'));
   // 真实算法标签（贪心 0/3 AC）仍在且排最弱
   assert.equal(w.items[0].tag, '贪心');
+});
+
+test('computeOverall excludes noise tags from byTag (year/contest/source)', () => {
+  // 回归：stats.ts 曾漏调 filterNoiseTags，噪声标签混入 byTag 淹没算法标签
+  insertNormalized(db, 1, [
+    sub('luogu', 'N1', 'WA', '2026-01-01T00:00:00.000Z', ['2026', '蓝桥杯省赛', '贪心']),
+    sub('luogu', 'N2', 'AC', '2026-01-02T00:00:00.000Z', ['洛谷原创', '贪心']),
+    sub('codeforces', 'N3', 'AC', '2026-01-03T00:00:00.000Z', ['*special', 'dp']),
+  ]);
+  const s = computeOverall(db, 1);
+  const tags = s.byTag.map((t) => t.tag);
+  assert.ok(!tags.includes('2026'), `年份标签不应入 byTag: ${tags}`);
+  assert.ok(!tags.includes('蓝桥杯省赛'), `赛事标签不应入 byTag: ${tags}`);
+  assert.ok(!tags.includes('洛谷原创'), `来源标签不应入 byTag: ${tags}`);
+  assert.ok(!tags.includes('*special'), `CF 特殊标记不应入 byTag: ${tags}`);
+  // 算法标签仍在
+  assert.ok(tags.includes('贪心'));
+  assert.ok(tags.includes('动态规划')); // dp 经 canonicalTag 归并
+});
+
+test('computeOverall merges CF English tags to Chinese canonical (dp → 动态规划)', () => {
+  // 回归：同一知识点的中英文别名应归并为单个条目，而非拆成两个
+  insertNormalized(db, 1, [
+    sub('codeforces', 'A', 'AC', '2026-01-01T00:00:00.000Z', ['dp'], 1500),
+    sub('luogu', 'P1', 'AC', '2026-01-02T00:00:00.000Z', ['动态规划'], 1500),
+  ]);
+  const s = computeOverall(db, 1);
+  // dp 和 动态规划 应合并为单个「动态规划」条目（attempts=2, ac=2）
+  assert.equal(s.byTag.find((t) => t.tag === 'dp'), undefined, 'dp 应归并到动态规划');
+  const dp = s.byTag.find((t) => t.tag === '动态规划')!;
+  assert.ok(dp, '应存在归并后的动态规划条目');
+  assert.equal(dp.attempts, 2);
+  assert.equal(dp.ac, 2);
 });
 
 test('computeTrend aggregates by ISO week', () => {

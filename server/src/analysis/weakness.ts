@@ -3,6 +3,7 @@ import type {
   WeaknessItem,
   WeaknessProfile,
 } from '../../../shared/src/index.ts';
+import { canonicalTag } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import {
   bump,
@@ -42,8 +43,9 @@ export function computeWeakness(
   const solvedByTag = new Map<string, Set<string>>();
   for (const r of rows) {
     const isAc = r.verdict === 'AC';
-    // 只统计算法能力维度标签：来源/赛事/年份等噪声标签不参与弱项画像
-    for (const tag of filterNoiseTags(safeTags(r.tags))) {
+    // 只统计算法能力维度标签：来源/赛事/年份等噪声标签不参与弱项画像；
+    // 英文别名归并到中文规范名（dp → 动态规划），避免同一知识点拆成两个弱项条目
+    for (const tag of filterNoiseTags(safeTags(r.tags)).map((t) => canonicalTag(t))) {
       bump(tagMap, tag, isAc);
       if (isAc) {
         if (!solvedByTag.has(tag)) solvedByTag.set(tag, new Set());

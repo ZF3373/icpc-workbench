@@ -777,6 +777,98 @@ body {
   border-bottom: 1px solid var(--line-soft);
 }
 
+/* ---------- 过滤问题面板（难度区间 + 标签多选，「应用」生效） ---------- */
+
+.filter-panel {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.filter-panel__toggle {
+  width: 100%;
+  padding: 9px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: #a4adbb;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: color 130ms ease;
+}
+
+.filter-panel__toggle:hover {
+  color: #e8ecf3;
+}
+
+.filter-panel__arrow {
+  display: inline-block;
+  color: #7f91c7;
+  transition: transform 130ms ease;
+}
+
+.filter-panel.is-open .filter-panel__arrow {
+  transform: rotate(90deg);
+}
+
+.filter-panel__badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--brand-soft);
+  color: #b9c8ff;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.filter-panel__body {
+  padding: 2px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.filter-panel__field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-panel__label {
+  color: #a4adbb;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.filter-panel__dash {
+  color: #7f8998;
+}
+
+.filter-panel__note {
+  color: #7f8998;
+  font-size: 11px;
+}
+
+.filter-panel__actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.status-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+}
+
 .status-row {
   padding: 0 14px;
   min-height: 44px;

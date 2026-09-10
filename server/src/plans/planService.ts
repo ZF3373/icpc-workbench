@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { PlatformId } from '../../../shared/src/index.ts';
+import { canonicalTag } from '../../../shared/src/index.ts';
 import type { AiConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
@@ -384,9 +385,9 @@ export function recommendProblems(
         problemKey: p.problem_key,
         title: p.title,
         difficulty: p.difficulty,
-        tags: filterNoiseTags(tags),
+        tags: filterNoiseTags(tags).map((t) => canonicalTag(t)),
         url: p.url,
-        score: tags.filter((t) => weakTags.has(t)).length,
+        score: tags.filter((t) => weakTags.has(canonicalTag(t))).length,
       };
     })
     .sort((a, b) => b.score - a.score || (a.difficulty ?? 9999) - (b.difficulty ?? 9999))
@@ -461,7 +462,7 @@ export function recommendProblemsByWeakTag(
       problemKey: p.problem_key,
       title: p.title,
       difficulty: p.difficulty,
-      tags: filterNoiseTags(tags),
+      tags: filterNoiseTags(tags).map((t) => canonicalTag(t)),
       url: p.url,
       ...(p.aced ? { role: 'review' as const } : { role: 'weak' as const }),
       lastAcAt: p.last_ac_at,
@@ -991,9 +992,9 @@ export function practicePool(db: Db, weakTags: string[]): RecommendProblem[] {
         problemKey: p.problem_key,
         title: p.title,
         difficulty: p.difficulty,
-        tags: filterNoiseTags(tags),
+        tags: filterNoiseTags(tags).map((t) => canonicalTag(t)),
         url: p.url,
-        score: tags.filter((t) => weak.has(t)).length,
+        score: tags.filter((t) => weak.has(canonicalTag(t))).length,
       };
     })
     .sort((a, b) => b.score - a.score || (a.difficulty ?? 0) - (b.difficulty ?? 0));

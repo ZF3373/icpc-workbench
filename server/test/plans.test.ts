@@ -146,17 +146,17 @@ test('parsePlanJson drops tasks outside the plan window', () => {
 });
 
 test('templatePlan covers each day with periodic review/contest', () => {
-  const p = templatePlan(db, { items: [{ tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 14);
+  const p = templatePlan(db, { items: [{ tag: '动态规划', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 14);
   assert.equal(p.days, 14);
   assert.equal(p.tasks.length >= 14, true);
   assert.ok(p.tasks.some((t) => t.kind === 'review'));
   assert.ok(p.tasks.some((t) => t.kind === 'contest'));
-  assert.match(p.tasks[0].title, /dp/);
+  assert.match(p.tasks[0].title, /动态规划/);
 });
 
 test('templatePlan picks concrete problems with clickable links', () => {
   seed();
-  const p = templatePlan(db, { items: [{ tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 7);
+  const p = templatePlan(db, { items: [{ tag: '动态规划', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 7);
   const practice = p.tasks.filter((t) => t.kind === 'practice');
   assert.ok(practice.length > 0);
   // 每日练习任务优先关联具体题目与可点击链接（仅未 AC 的题可入选：D）；
@@ -173,8 +173,8 @@ test('templatePlan does not repeat the same problem across weak tags', () => {
   ]);
   const profile = {
     items: [
-      { tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 },
-      { tag: 'graphs', attempts: 4, ac: 1, acRate: 25, avgAcRate: 60, gap: 35, solved: 1 },
+      { tag: '动态规划', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 },
+      { tag: '图论', attempts: 4, ac: 1, acRate: 25, avgAcRate: 60, gap: 35, solved: 1 },
     ],
     byDifficulty: [],
     generatedAt: '',
@@ -201,7 +201,7 @@ test('savePlan falls back to problem url when task lacks url', () => {
 
 test('templatePlan attaches clickable urls to every task kind (practice/contest/review)', () => {
   seed();
-  const p = templatePlan(db, { items: [{ tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 14);
+  const p = templatePlan(db, { items: [{ tag: '动态规划', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 14);
   // contest（第 7/14 天）与 review（第 4/8/12 天）任务都应有链接；practice 落到具体题
   const contest = p.tasks.filter((t) => t.kind === 'contest');
   const review = p.tasks.filter((t) => t.kind === 'review');
@@ -221,7 +221,7 @@ test('templatePlan keeps picking concrete problems after per-tag pool drains', (
   insertNormalized(db, 1, [
     sub('codeforces', 'F', 'WA', ['math'], 1550, '2026-07-28T16:00:00.000Z', 'https://codeforces.com/contest/F'),
   ]);
-  const p = templatePlan(db, { items: [{ tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 7);
+  const p = templatePlan(db, { items: [{ tag: '动态规划', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 7);
   const practice = p.tasks.filter((t) => t.kind === 'practice');
   const withProblem = practice.filter((t) => t.problemKey && t.url);
   // D（dp 队列）+ F（dp 用尽后的全库兜底）都被选中且带链接
@@ -323,7 +323,7 @@ test('templatePlan honors dailyTasks density (concrete problems, no duplicate sa
       return sub('codeforces', key, 'WA', ['dp'], 1500, `2026-07-28T1${i % 10}:00:00.000Z`, `https://codeforces.com/contest/${key}`);
     }),
   );
-  const p = templatePlan(db, { items: [{ tag: 'dp', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 7, 3);
+  const p = templatePlan(db, { items: [{ tag: '动态规划', attempts: 5, ac: 1, acRate: 20, avgAcRate: 60, gap: 40, solved: 1 }], byDifficulty: [], generatedAt: '' }, '2026-08-10', 7, 3);
   // 每天任务数指练习题密度：回顾/模拟赛按既有节奏额外穿插
   const practiceByDate = new Map<string, string[]>();
   for (const t of p.tasks) {
@@ -352,11 +352,11 @@ test('generatePlan falls back to template when AI call fails', async () => {
 test('recommendProblems prioritizes weak-tag problems, excludes AC-ed and anchors difficulty', () => {
   seed();
   const pkg = buildPlanPackage(db, 1, { days: 7, startDate: today() });
-  // 弱项应为 greedy（1/2 AC 率低）或 dp
+  // 弱项应为贪心（1/2 AC 率低）或动态规划（dp 经 canonicalTag 归并）
   const recs = recommendProblems(db, pkg.profile, { limit: 10 });
   assert.ok(recs.length >= 1);
   const firstTags = new Set(recs[0].tags);
-  assert.ok(firstTags.has('greedy') || firstTags.has('dp'), `首个推荐应含弱项 tag: ${JSON.stringify(recs[0].tags)}`);
+  assert.ok(firstTags.has('贪心') || firstTags.has('动态规划'), `首个推荐应含弱项 tag: ${JSON.stringify(recs[0].tags)}`);
   // 排除已 AC：seed 中 A/B/C 已 AC，只有 D 未 AC → 推荐不应包含 A/B/C
   const keys = recs.map((r) => r.problemKey);
   assert.ok(!keys.includes('A') && !keys.includes('B') && !keys.includes('C'), `不应推荐已 AC 题: ${keys}`);
@@ -444,17 +444,17 @@ function seedGrouped(): void {
 
 test('recommendProblemsByWeakTag groups by weak tag, limits per tag, AC only as review', () => {
   seedGrouped();
-  const groups = recommendProblemsByWeakTag(db, PROFILE(['dp', 'graphs']) as never, {
+  const groups = recommendProblemsByWeakTag(db, PROFILE(['动态规划', '图论']) as never, {
     perTag: 5,
     reviewPerTag: 1,
     level: null, // 不过滤难度，聚焦分组语义
   });
   const tags = groups.map((g) => g.tag);
-  assert.ok(tags.includes('dp'), `应包含 dp 组: ${tags}`);
-  assert.ok(tags.includes('graphs'), `应包含 graphs 组: ${tags}`);
+  assert.ok(tags.includes('动态规划'), `应包含动态规划组: ${tags}`);
+  assert.ok(tags.includes('图论'), `应包含图论组: ${tags}`);
   assert.ok(tags.includes('综合练习'), `应包含兜底组: ${tags}`);
 
-  const dp = groups.find((g) => g.tag === 'dp')!;
+  const dp = groups.find((g) => g.tag === '动态规划')!;
   // 未 AC 新题在前（role=weak），已 AC 仅 1 道且标注 review
   const weak = dp.problems.filter((p) => p.role === 'weak');
   const review = dp.problems.filter((p) => p.role === 'review');
@@ -475,12 +475,12 @@ test('recommendProblemsByWeakTag respects perTag limit and difficulty range', ()
     more.push(sub('codeforces', `DP${i}`, 'WA', ['dp'], 1500 + i * 100, '2026-07-29T10:00:00.000Z', `https://codeforces.com/contest/DP${i}`));
   }
   insertNormalized(db, 1, more);
-  const groups = recommendProblemsByWeakTag(db, PROFILE(['dp']) as never, {
+  const groups = recommendProblemsByWeakTag(db, PROFILE(['动态规划']) as never, {
     perTag: 2,
     reviewPerTag: 0,
     level: { solvedCount: 10, medianDifficulty: 1500, p75Difficulty: 1550, suggestedRange: [1500, 1600] },
   });
-  const dp = groups.find((g) => g.tag === 'dp')!;
+  const dp = groups.find((g) => g.tag === '动态规划')!;
   assert.equal(dp.problems.filter((p) => p.role === 'weak').length, 2); // perTag 限量
   assert.ok(dp.problems.every((p) => p.difficulty !== null && p.difficulty >= 1500 && p.difficulty <= 1600));
   assert.ok(dp.problems.every((p) => p.role === 'weak')); // reviewPerTag=0 → 无复习位
@@ -489,13 +489,13 @@ test('recommendProblemsByWeakTag respects perTag limit and difficulty range', ()
 test('recommendProblemsByWeakTag picks oldest-AC problem for review slot', () => {
   seedGrouped();
   // A 的 AC 时间（07-20）早于 B（07-25）；dp 组复习位应取 A（久未重做）
-  const groups = recommendProblemsByWeakTag(db, PROFILE(['dp', 'graphs']) as never, {
+  const groups = recommendProblemsByWeakTag(db, PROFILE(['动态规划', '图论']) as never, {
     perTag: 5,
     reviewPerTag: 1,
     level: null,
   });
-  const dp = groups.find((g) => g.tag === 'dp')!;
-  const graphs = groups.find((g) => g.tag === 'graphs')!;
+  const dp = groups.find((g) => g.tag === '动态规划')!;
+  const graphs = groups.find((g) => g.tag === '图论')!;
   assert.equal(dp.problems.find((p) => p.role === 'review')?.problemKey, 'A');
   assert.equal(graphs.problems.find((p) => p.role === 'review')?.problemKey, 'B'); // graphs 组内唯一 AC
 });
@@ -504,7 +504,7 @@ test('buildPlanPackage renders grouped problem list in prompt markdown', () => {
   seedGrouped();
   const pkg = buildPlanPackage(db, 1, { days: 7, startDate: '2026-08-10' });
   // 提示词中出现分组标题与题目行（role 标注）
-  assert.match(pkg.prompt, /### dp/);
+  assert.match(pkg.prompt, /### 动态规划/);
   assert.match(pkg.prompt, /### 综合练习/);
   assert.match(pkg.prompt, /codeforces\/D《T D》\s*\|\s*难度1500\s*\|\s*未AC/);
   assert.match(pkg.prompt, /codeforces\/A《T A》\s*\|\s*难度1500\s*\|\s*已AC-可作复习/);
@@ -519,7 +519,7 @@ test('buildPlanPackage renders grouped problem list in prompt markdown', () => {
 test('recommendProblemsByWeakTag refills round-robin to reach minNewProblems', () => {
   seedGrouped();
   // 基础选取：dp 组区间内新题仅 D（1 道）→ minNew=3 时应从组内剩余扩充
-  const groups = recommendProblemsByWeakTag(db, PROFILE(['dp']) as never, {
+  const groups = recommendProblemsByWeakTag(db, PROFILE(['动态规划']) as never, {
     perTag: 1,
     reviewPerTag: 0,
     minNewProblems: 3,
@@ -540,7 +540,7 @@ test('recommendProblemsByWeakTag relaxes difficulty range only after in-range ex
     sub('codeforces', 'D', 'WA', ['dp'], 1500, '2026-07-28T10:00:00.000Z', 'https://codeforces.com/contest/D'),
     sub('codeforces', 'DP9', 'WA', ['dp'], 2500, '2026-07-30T10:00:00.000Z', 'https://codeforces.com/contest/DP9'),
   ]);
-  const groups = recommendProblemsByWeakTag(db, PROFILE(['dp']) as never, {
+  const groups = recommendProblemsByWeakTag(db, PROFILE(['动态规划']) as never, {
     perTag: 1,
     reviewPerTag: 0,
     minNewProblems: 2,
@@ -554,7 +554,7 @@ test('recommendProblemsByWeakTag relaxes difficulty range only after in-range ex
 test('recommendProblemsByWeakTag stops when candidates exhausted (no crash)', () => {
   seedGrouped();
   // minNew 远超候选总量 → 返回全部可用新题，不死循环
-  const groups = recommendProblemsByWeakTag(db, PROFILE(['dp']) as never, {
+  const groups = recommendProblemsByWeakTag(db, PROFILE(['动态规划']) as never, {
     perTag: 1,
     reviewPerTag: 0,
     minNewProblems: 999,

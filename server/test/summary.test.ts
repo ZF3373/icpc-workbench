@@ -86,7 +86,8 @@ test('buildPracticeSummary 汇总总量 / 平台 / 难度 / 标签 / 弱项', (t
   assert.equal(lg.solved, 1);
   assert.equal(lg.lastActiveAt!.slice(0, 10), dateStr(2));
 
-  const dp = s.topTags.find((x) => x.tag === 'dp')!;
+  // dp 经 canonicalTag 归并为「动态规划」（线性dp 无别名映射保持原样）
+  const dp = s.topTags.find((x) => x.tag === '动态规划')!;
   assert.equal(dp.solved, 2);
   assert.equal(dp.attempts, 5);
   // 噪声标签（赛事/来源类）不参与知识点画像

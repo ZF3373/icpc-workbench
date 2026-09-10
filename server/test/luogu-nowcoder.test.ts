@@ -124,13 +124,14 @@ test('luogu: with cookie normalizes records and problem info', async () => {
     },
     '/problem/': (url) => {
       const pid = url.includes('P1001') ? 'P1001' : url.includes('P1002') ? 'P1002' : 'P1003';
-      // 新版 Lentille 接口：tags 为 tag id 数组
+      // 线上 Lentille 接口真实结构：data.problem（非 currentData），标题字段为 name（非 title）
+      // tags 为 tag id 数组，经 /_lfe/tags 字典转名称
       return {
         code: 200,
-        currentData: {
+        data: {
           problem: {
             pid,
-            title: pid === 'P1001' ? 'A+B Problem' : `T ${pid}`,
+            name: pid === 'P1001' ? 'A+B Problem' : `T ${pid}`,
             difficulty: pid === 'P1001' ? 2 : undefined,
             tags: pid === 'P1001' ? [42, 108] : [],
           },
@@ -180,13 +181,44 @@ test('luogu: 秒级 submitTime 正确转毫秒（回归：曾被当毫秒解析�
         },
       };
     },
-    '/problem/': () => ({ code: 200, currentData: { problem: { pid: 'P1001', difficulty: 2, tags: [] } } }),
+    '/problem/': () => ({ code: 200, data: { problem: { pid: 'P1001', difficulty: 2, tags: [] } } }),
     '_lfe/tags': () => ({ tags: [] }),
   });
   const adapter = createLuoguAdapter(fetchFn);
   const rows = await adapter.fetchUserSubmissions('123', { cookie: COOKIE });
   assert.equal(rows.length, 1);
   assert.equal(rows[0].submittedAt, new Date(1790000000 * 1000).toISOString());
+});
+
+test('luogu: 题目页返回 data.problem.name（无 title）时标题取 name 而非退化 pid', async () => {
+  // 回归：LuoguProblem 曾缺 name 字段，fetchProblemInfo 只读 p.title 得到 undefined，
+  // 标题退化为 pid。线上 Lentille 接口标题字段为 name，需兼容取值。
+  const fetchFn = router({
+    'record/list': (url) => {
+      const page = new URL(url).searchParams.get('page');
+      if (page !== '1') return { code: 200, currentData: { records: { result: [] } } };
+      return {
+        code: 200,
+        currentData: {
+          records: {
+            result: [
+              { id: 9201, status: 12, submitTime: 1700000000000, problem: { pid: 'P3372' } },
+            ],
+          },
+        },
+      };
+    },
+    '/problem/': () => ({
+      code: 200,
+      data: { problem: { pid: 'P3372', name: '【模板】线段树 1', difficulty: 4, tags: [42, 523] } },
+    }),
+    '_lfe/tags': () => ({ tags: [{ id: 42, name: '线段树' }, { id: 523, name: '模板题' }] }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  const rows = await adapter.fetchUserSubmissions('123', { cookie: COOKIE });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].problem.title, '【模板】线段树 1', '标题应取 name 而非退化成 pid');
+  assert.deepEqual(rows[0].problem.tags, ['线段树', '模板题']);
 });
 
 test('luogu: 分页可超过 100 页（>2000 条提交的首次全量同步不被截断）', async () => {

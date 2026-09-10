@@ -19,10 +19,12 @@ import { ClearOutlined, CloudDownloadOutlined, InboxOutlined, PlusOutlined, Read
 import type { ColumnsType } from 'antd/es/table'
 import { useSearchParams } from 'react-router-dom'
 import type { PlatformId } from '../../../shared/src/index.ts'
-import { expandTag, PLATFORMS } from '../../../shared/src/index.ts'
+import { PLATFORMS } from '../../../shared/src/index.ts'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
 import { difficultyColor, PLATFORM_COLOR, tagColor } from '../ui'
+import { buildTagAliasSet, matchesProblemFilters } from '../problemFilter'
+import { canonicalTag, filterNoiseTags } from '../../../shared/src/index.ts'
 import { get, post } from '../api'
 
 interface ProblemRow {
@@ -48,7 +50,7 @@ const STATUS_TABS: Array<{ key: StatusFilter; label: string }> = [
   { key: 'none', label: '未做' },
 ]
 
-/** 难度分桶（筛选下拉与概览面板共用） */
+/** 难度分桶（右侧概览「难度分布」共用） */
 const DIFF_BUCKETS: Array<{ key: string; min: number | null; max: number | null }> = [
   { key: '<1200', min: 0, max: 1199 },
   { key: '1200-1399', min: 1200, max: 1399 },
@@ -66,12 +68,22 @@ export default function Problems() {
   const [rows, setRows] = useState<ProblemRow[]>([])
   const [loading, setLoading] = useState(false)
   const [platform, setPlatform] = useState<string>()
-  const [difficulty, setDifficulty] = useState<string>()
-  // 支持从其它页面带 ?tag= 跳入（如掌握度地图「查看全部」）
-  const [tagFilter, setTagFilter] = useState<string | undefined>(() => searchParams.get('tag') ?? undefined)
+  // 所选标签按「逻辑或」组合；支持从其它页面带 ?tag= 跳入（如掌握度地图「查看全部」）
+  const [tagFilters, setTagFilters] = useState<string[]>(() => {
+    const t = searchParams.get('tag')
+    return t ? [t] : []
+  })
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [q, setQ] = useState<string>()
   const [qInput, setQInput] = useState('')
+  // 难度区间（CF rating 标尺，闭区间；未知难度的题在设置区间后不显示）
+  const [diffMin, setDiffMin] = useState<number | undefined>()
+  const [diffMax, setDiffMax] = useState<number | undefined>()
+  // 「过滤问题」面板：编辑草稿，点「应用」才生效（展开时以已生效条件为初值）
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [draftTags, setDraftTags] = useState<string[]>([])
+  const [draftDiffMin, setDraftDiffMin] = useState<number | undefined>()
+  const [draftDiffMax, setDraftDiffMax] = useState<number | undefined>()
   // 内置题库开箱即用：默认包含未做题库题（否则题库再大默认视图也只有做过的题）
   const [includeBank, setIncludeBank] = useState(true)
   const [importOpen, setImportOpen] = useState(false)
@@ -81,37 +93,67 @@ export default function Problems() {
     setLoading(true)
     const params = new URLSearchParams()
     if (platform) params.set('platform', platform)
-    if (difficulty) params.set('difficulty', difficulty)
     if (q) params.set('q', q)
     if (includeBank) params.set('bank', '1')
     get<ProblemRow[]>(`/api/problems?${params.toString()}`)
       .then(setRows)
       .catch((e: Error) => message.error(e.message))
       .finally(() => setLoading(false))
-  }, [platform, difficulty, q, includeBank])
+  }, [platform, q, includeBank])
 
   useEffect(() => {
     load()
   }, [load])
 
-  // 分类栏标签计数：基于当前服务端筛选结果统计
-  const tagCounts = useMemo(() => {
+  // 标签计数：基于当前服务端筛选结果统计（侧边栏取前 60，过滤面板下拉用全量）
+  // 过滤噪声标签（年份/赛事/省份等）+ 归并英文别名到中文规范名（dp → 动态规划）
+  const tagCountEntries = useMemo(() => {
     const m = new Map<string, number>()
-    for (const r of rows) for (const t of r.tags) m.set(t, (m.get(t) ?? 0) + 1)
-    return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, TAXONOMY_MAX)
+    for (const r of rows)
+      for (const t of filterNoiseTags(r.tags).map((tag) => canonicalTag(tag)))
+        m.set(t, (m.get(t) ?? 0) + 1)
+    return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
   }, [rows])
+  const tagCounts = useMemo(() => tagCountEntries.slice(0, TAXONOMY_MAX), [tagCountEntries])
 
-  // 标签 / 状态为客户端过滤（平台、难度、搜索仍走服务端）；标签用同义别名命中（二分 ↔ binary search）
-  const tagAliases = useMemo(() => new Set(tagFilter ? expandTag(tagFilter) : []), [tagFilter])
+  // 标签 / 状态 / 难度区间为客户端过滤（平台、搜索仍走服务端）；
+  // 标签按「逻辑或」组合：命中任一所选标签（含同义别名，二分 ↔ binary search）即保留
+  const tagAliases = useMemo(() => buildTagAliasSet(tagFilters), [tagFilters])
   const filtered = useMemo(
-    () =>
-      rows.filter((r) => {
-        if (tagFilter && !r.tags.some((t) => tagAliases.has(t))) return false
-        if (statusFilter !== 'all' && r.status !== statusFilter) return false
-        return true
-      }),
-    [rows, tagFilter, tagAliases, statusFilter],
+    () => rows.filter((r) => matchesProblemFilters(r, { tagAliases, diffMin, diffMax, status: statusFilter })),
+    [rows, tagAliases, diffMin, diffMax, statusFilter],
   )
+
+  // 已生效的面板条件数（用于面板收起时的角标提示）
+  const activeFilterCount = tagFilters.length + (diffMin != null || diffMax != null ? 1 : 0)
+
+  const toggleFilterPanel = () => {
+    if (!filterOpen) {
+      setDraftTags(tagFilters)
+      setDraftDiffMin(diffMin)
+      setDraftDiffMax(diffMax)
+    }
+    setFilterOpen(!filterOpen)
+  }
+
+  const applyPanelFilters = () => {
+    setTagFilters(draftTags)
+    setDiffMin(draftDiffMin)
+    setDiffMax(draftDiffMax)
+  }
+
+  const clearPanelFilters = () => {
+    setDraftTags([])
+    setDraftDiffMin(undefined)
+    setDraftDiffMax(undefined)
+    setTagFilters([])
+    setDiffMin(undefined)
+    setDiffMax(undefined)
+  }
+
+  // 侧边栏标签点击 = 加入 / 移出多选（再点一次取消）
+  const toggleSidebarTag = (t: string) =>
+    setTagFilters((arr) => (arr.includes(t) ? arr.filter((x) => x !== t) : [...arr, t]))
 
   // 概览面板：难度 / 平台分布（随当前数据集联动）
   const diffDist = useMemo(
@@ -140,9 +182,13 @@ export default function Problems() {
 
   const resetFilters = () => {
     setPlatform(undefined)
-    setDifficulty(undefined)
-    setTagFilter(undefined)
+    setTagFilters([])
     setStatusFilter('all')
+    setDiffMin(undefined)
+    setDiffMax(undefined)
+    setDraftTags([])
+    setDraftDiffMin(undefined)
+    setDraftDiffMax(undefined)
     setQ(undefined)
     setQInput('')
     setIncludeBank(true)
@@ -271,7 +317,7 @@ export default function Problems() {
     },
   ]
 
-  const diffMax = Math.max(1, ...diffDist.map((d) => d.count))
+  const diffDistMax = Math.max(1, ...diffDist.map((d) => d.count))
   const platMax = Math.max(1, ...platDist.map((d) => d.count))
 
   return (
@@ -296,8 +342,8 @@ export default function Problems() {
           <div className="taxonomy-list">
             <button
               type="button"
-              className={`taxonomy-item${!tagFilter ? ' is-active' : ''}`}
-              onClick={() => setTagFilter(undefined)}
+              className={`taxonomy-item${tagFilters.length === 0 ? ' is-active' : ''}`}
+              onClick={() => setTagFilters([])}
             >
               <span className="taxonomy-item__marker" style={{ background: '#86a8ff' }} />
               <span className="taxonomy-item__name">全部标签</span>
@@ -307,8 +353,8 @@ export default function Problems() {
               <button
                 key={t}
                 type="button"
-                className={`taxonomy-item${tagFilter === t ? ' is-active' : ''}`}
-                onClick={() => setTagFilter(tagFilter === t ? undefined : t)}
+                className={`taxonomy-item${tagFilters.includes(t) ? ' is-active' : ''}`}
+                onClick={() => toggleSidebarTag(t)}
               >
                 <span className="taxonomy-item__marker" style={{ background: tagColor(t) }} />
                 <span className="taxonomy-item__name">{t}</span>
@@ -316,7 +362,7 @@ export default function Problems() {
               </button>
             ))}
           </div>
-          <div className="taxonomy-footer">点击标签筛选，再点一次取消</div>
+          <div className="taxonomy-footer">点击标签加入筛选（再点一次取消），多选按「或」组合</div>
         </aside>
 
         {/* 中栏：题目工作区 */}
@@ -324,7 +370,13 @@ export default function Problems() {
           <div className="workspace-topline">
             <div>
               <span className="workspace-kicker">PROBLEM LIBRARY</span>
-              <h2>{tagFilter ?? '全部题目'}</h2>
+              <h2>
+                {tagFilters.length === 0
+                  ? '全部题目'
+                  : tagFilters.length === 1
+                    ? tagFilters[0]
+                    : `已选 ${tagFilters.length} 个标签`}
+              </h2>
             </div>
             <span className="result-count">
               共 <strong>{filtered.length}</strong> 题
@@ -338,14 +390,6 @@ export default function Problems() {
               value={platform}
               onChange={setPlatform}
               options={PLATFORMS.map((p) => ({ value: p.id, label: p.name }))}
-            />
-            <Select
-              allowClear
-              placeholder="难度区间"
-              style={{ width: 130 }}
-              value={difficulty}
-              onChange={setDifficulty}
-              options={DIFF_BUCKETS.map((b) => ({ value: b.key, label: b.key }))}
             />
             <Input.Search
               allowClear
@@ -362,6 +406,64 @@ export default function Problems() {
               含题库未做题
             </Checkbox>
           </div>
+          {/* 「过滤问题」面板（CF 风格）：难度区间 + 标签多选，点「应用」生效 */}
+          <div className={`filter-panel${filterOpen ? ' is-open' : ''}`}>
+            <button type="button" className="filter-panel__toggle" onClick={toggleFilterPanel}>
+              <span className="filter-panel__arrow">→</span>
+              过滤问题
+              {activeFilterCount > 0 && <span className="filter-panel__badge">{activeFilterCount}</span>}
+            </button>
+            {filterOpen && (
+              <div className="filter-panel__body">
+                <div className="filter-panel__field">
+                  <span className="filter-panel__label">难度:</span>
+                  <InputNumber
+                    size="small"
+                    min={0}
+                    max={4000}
+                    placeholder="最低"
+                    style={{ width: 90 }}
+                    value={draftDiffMin}
+                    onChange={(v) => setDraftDiffMin(v ?? undefined)}
+                  />
+                  <span className="filter-panel__dash">—</span>
+                  <InputNumber
+                    size="small"
+                    min={0}
+                    max={4000}
+                    placeholder="最高"
+                    style={{ width: 90 }}
+                    value={draftDiffMax}
+                    onChange={(v) => setDraftDiffMax(v ?? undefined)}
+                  />
+                </div>
+                <div className="filter-panel__field">
+                  <span className="filter-panel__label">标签:</span>
+                  <Select
+                    mode="multiple"
+                    allowClear
+                    showSearch
+                    placeholder="选择标签（可多选）"
+                    style={{ flex: 1, minWidth: 0 }}
+                    value={draftTags}
+                    onChange={setDraftTags}
+                    options={tagCountEntries.map(([t]) => ({ value: t, label: t }))}
+                  />
+                </div>
+                <div className="filter-panel__note">
+                  *所选标签按逻辑「或」组合，同义标签自动归并（二分 ↔ binary search）；设置难度区间后未知难度的题不显示
+                </div>
+                <div className="filter-panel__actions">
+                  <Button type="primary" size="small" onClick={applyPanelFilters}>
+                    应用
+                  </Button>
+                  <Button size="small" onClick={clearPanelFilters}>
+                    清除
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
           <div className="status-row">
             <div className="status-tabs">
               {STATUS_TABS.map((t) => (
@@ -375,10 +477,29 @@ export default function Problems() {
                 </button>
               ))}
             </div>
-            {tagFilter && (
-              <Tag closable onClose={() => setTagFilter(undefined)}>
-                {tagFilter}
-              </Tag>
+            {(tagFilters.length > 0 || diffMin != null || diffMax != null) && (
+              <div className="status-chips">
+                {tagFilters.map((t) => (
+                  <Tag key={t} closable onClose={() => toggleSidebarTag(t)}>
+                    {t}
+                  </Tag>
+                ))}
+                {(diffMin != null || diffMax != null) && (
+                  <Tag
+                    closable
+                    onClose={() => {
+                      setDiffMin(undefined)
+                      setDiffMax(undefined)
+                    }}
+                  >
+                    {diffMin != null && diffMax != null
+                      ? `难度 ${diffMin}–${diffMax}`
+                      : diffMin != null
+                        ? `难度 ≥ ${diffMin}`
+                        : `难度 ≤ ${diffMax}`}
+                  </Tag>
+                )}
+              </div>
             )}
           </div>
           <div className="problem-table">
@@ -402,7 +523,7 @@ export default function Problems() {
                 <div className="dist-row" key={d.key}>
                   <span className="dist-row__label mono">{d.key}</span>
                   <span className="dist-row__track">
-                    <i style={{ width: `${(d.count / diffMax) * 100}%`, background: d.color }} />
+                    <i style={{ width: `${(d.count / diffDistMax) * 100}%`, background: d.color }} />
                   </span>
                   <span className="dist-row__count mono">{d.count}</span>
                 </div>
