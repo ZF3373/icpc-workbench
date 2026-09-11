@@ -253,17 +253,19 @@ export async function uploadAiFile(
 }
 
 /**
- * 提取文档文本（当前支持 PDF）。
- * 客户端读出原始字节后直传服务端 /api/ai/extract-text，服务端用 unpdf 提取文本返回。
- * 用于上传 PDF 附件时将其内容注入对话（不依赖 Files API，兼容所有模型）。
+ * 提取文档文本（支持 PDF/Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）。
+ * 客户端读出原始字节后直传服务端 /api/ai/extract-text，服务端按文件类型
+ * 提取文本或转 Markdown 返回，用于上传文档附件时将内容注入对话。
  */
 export async function extractDocumentText(
   file: File,
   signal?: AbortSignal,
-): Promise<{ text: string; pages: number; warning?: string }> {
+): Promise<{ text: string; pages?: number; warning?: string }> {
   const buf = await file.arrayBuffer()
   const headers: Record<string, string> = {
-    'Content-Type': file.type || 'application/pdf',
+    // 固定 octet-stream：避免 express.json() 全局中间件拦截 application/json 等类型
+    // 导致 req.body 被提前解析为对象而非原始字节流；服务端按文件扩展名识别格式
+    'Content-Type': 'application/octet-stream',
     'x-file-name': encodeURIComponent(file.name),
   }
   const res = await fetch('/api/ai/extract-text', { method: 'POST', headers, body: buf, signal })
@@ -275,5 +277,5 @@ export async function extractDocumentText(
     } catch { /* 非 JSON 响应，保留默认消息 */ }
     throw new Error(msg)
   }
-  return (await res.json()) as { text: string; pages: number; warning?: string }
+  return (await res.json()) as { text: string; pages?: number; warning?: string }
 }

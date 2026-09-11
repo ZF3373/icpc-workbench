@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Alert, App as AntdApp, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag } from 'antd'
+import type { TextAreaRef } from 'antd/es/input/TextArea'
 import {
+  CopyOutlined,
   DeleteOutlined,
+  EditOutlined,
   HolderOutlined,
   LoadingOutlined,
   PaperClipOutlined,
@@ -30,6 +33,7 @@ import {
 import type { PlanListItem } from '../types'
 import Markdown from '../components/Markdown'
 import PageHeader from '../components/PageHeader'
+import { rememberSessionFiles, getSessionFileText, forgetSessionFiles } from './sessionFiles'
 import {
   extractAbilityUpdate,
   extractModifyBlock,
@@ -41,6 +45,9 @@ import {
   extractListCreate,
   stripListCreate,
   type ListCreateDraft,
+  extractPlanCreate,
+  stripPlanCreate,
+  type PlanCreateDraft,
 } from '../aiBlocks'
 
 /**
@@ -62,10 +69,14 @@ interface ChatMsg extends PlanChatTurn {
   appliedTpl?: number[]
   /** 该消息的 list-create 块是否已导入题单 */
   appliedList?: boolean
+  /** 该消息的 plan-create 块是否已生成训练计划 */
+  appliedPlan?: boolean
   /** AI 的思维链内容（reasoning_content，如 DeepSeek-R1 / o1 模型） */
   reasoning?: string
   /** 本次回复的 token 用量（服务端 usage 事件） */
   usage?: TokenUsage
+  /** 该助手消息是一次失败回合（API 报错 / 空中止）：再次编辑时会被剔除，不回传给模型 */
+  failed?: boolean
 }
 interface ChatSession {
   id: string
@@ -202,6 +213,7 @@ function deleteSessionById(id: string): void {
   // 若该会话正在生成，中止其流式请求
   sessionAbortControllers.get(id)?.abort()
   sessionAbortControllers.delete(id)
+  forgetSessionFiles(id) // 同步清理该会话的附件内容缓存
   setChatState((prev) => {
     const remaining = prev.sessions.filter((s) => s.id !== id)
     const sessions = remaining.length > 0 ? remaining : [createSession()]
@@ -287,12 +299,19 @@ export default function Assistant() {
   const [applying, setApplying] = useState(false)
   const [tplWriting, setTplWriting] = useState<Set<string>>(new Set())
   const [listCreating, setListCreating] = useState(false)
+  const [planCreating, setPlanCreating] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dragOverId, setDragOverId] = useState<string | null>(null)
   /** 拖拽源 id（ref 即时读写，不依赖 state 异步更新） */
   const dragIdRef = useRef<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  /** 消息列表可滚动容器，用于判断用户是否在底部附近 */
+  const msgsRef = useRef<HTMLDivElement>(null)
+  /** 用户是否在底部附近（true 时流式更新自动滚到底，false 时不打断用户上滑查看） */
+  const stickToBottomRef = useRef(true)
+  /** 输入框引用：「再次编辑」时把历史消息回填并聚焦输入框 */
+  const inputRef = useRef<TextAreaRef>(null)
 
   // ---------- 图片附件（Files API） ----------
   /** 本条消息待发送的附件（上传成功后的 file_id 引用） */
@@ -322,6 +341,12 @@ export default function Assistant() {
   const MAX_TEXT_FILE_BYTES = 1024 * 1024
   /** PDF 文件大小上限：10 MiB（服务端用 unpdf 提取文本，上限与服务端一致） */
   const MAX_PDF_FILE_BYTES = 10 * 1024 * 1024
+  /** 文档文件（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）大小上限：20 MiB */
+  const MAX_DOC_FILE_BYTES = 20 * 1024 * 1024
+  /** 服务端 docConverter 支持的文档扩展名（走 /extract-text 提取文本） */
+  const DOCUMENT_EXTENSIONS = [
+    '.docx', '.xlsx', '.xls', '.pptx', '.html', '.htm', '.csv', '.json', '.xml', '.epub',
+  ]
 
   const isImageFile = (f: File): boolean =>
     IMAGE_TYPES.includes(f.type) || /\.(jpe?g|png|gif|webp)$/i.test(f.name)
@@ -336,17 +361,24 @@ export default function Assistant() {
   const isPdfFile = (f: File): boolean =>
     f.type === 'application/pdf' || /\.pdf$/i.test(f.name)
 
+  /** 文档文件（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）：走服务端 docConverter 提取 */
+  const isDocumentFile = (f: File): boolean => {
+    const lower = f.name.toLowerCase()
+    return DOCUMENT_EXTENSIONS.some((ext) => lower.endsWith(ext))
+  }
+
   const handlePickFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return
     const all = Array.from(files)
-    // 分流：图片走 Files API，文本直接读取内容，PDF 走服务端提取
+    // 分流：图片走 Files API，文本直接读取内容，PDF + 文档走服务端提取
     const images = all.filter(isImageFile)
     const pdfs = all.filter(isPdfFile)
-    const texts = all.filter((f) => !isImageFile(f) && !isPdfFile(f) && isTextFile(f))
-    const unsupported = all.filter((f) => !isImageFile(f) && !isPdfFile(f) && !isTextFile(f))
+    const docs = all.filter((f) => !isImageFile(f) && !isPdfFile(f) && isDocumentFile(f))
+    const texts = all.filter((f) => !isImageFile(f) && !isPdfFile(f) && !isDocumentFile(f) && isTextFile(f))
+    const unsupported = all.filter((f) => !isImageFile(f) && !isPdfFile(f) && !isDocumentFile(f) && !isTextFile(f))
 
     if (unsupported.length > 0) {
-      message.warning(`不支持的文件：${unsupported.map((f) => f.name).join('、')}（仅支持图片、文本/代码或 PDF 文件）`)
+      message.warning(`不支持的文件：${unsupported.map((f) => f.name).join('、')}（支持图片、文本/代码、PDF、Word、Excel、PPT、HTML、CSV、JSON、XML、EPub）`)
     }
 
     // 文本文件：读取内容作为附件（与图片统一管理，显示为可删除标签）
@@ -380,22 +412,25 @@ export default function Assistant() {
       }
     }
 
-    // PDF 文件：走服务端提取文本，作为文本附件注入
-    if (pdfs.length > 0) {
+    // PDF + 文档文件：走服务端提取文本，作为文本附件注入
+    const extractable = [...pdfs, ...docs]
+    if (extractable.length > 0) {
       setUploadingAtts(true)
       try {
-        const pdfAtts: ChatFileAttachment[] = []
-        for (const f of pdfs) {
-          if (f.size > MAX_PDF_FILE_BYTES) {
-            message.warning(`「${f.name}」超过 10 MiB，已跳过（PDF 文件上限 10 MiB）`)
+        const docAtts: ChatFileAttachment[] = []
+        for (const f of extractable) {
+          const maxBytes = isPdfFile(f) ? MAX_PDF_FILE_BYTES : MAX_DOC_FILE_BYTES
+          const label = isPdfFile(f) ? 'PDF' : '文档'
+          if (f.size > maxBytes) {
+            message.warning(`「${f.name}」超过 ${maxBytes / 1024 / 1024} MiB，已跳过（${label}文件上限）`)
             continue
           }
           try {
             const { text, warning } = await extractDocumentText(f)
             if (warning) message.warning(`「${f.name}」：${warning}`)
             if (!text) continue
-            pdfAtts.push({
-              fileId: `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            docAtts.push({
+              fileId: `doc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
               filename: f.name,
               bytes: f.size,
               textContent: text,
@@ -404,13 +439,13 @@ export default function Assistant() {
             message.error(`提取「${f.name}」文本失败：${(e as Error).message}`)
           }
         }
-        if (pdfAtts.length > 0) {
+        if (docAtts.length > 0) {
           const room = 8 - pendingAtts.length
-          const picked = pdfAtts.slice(0, room)
-          if (picked.length < pdfAtts.length) message.warning('每条消息最多附带 8 个文件')
+          const picked = docAtts.slice(0, room)
+          if (picked.length < docAtts.length) message.warning('每条消息最多附带 8 个文件')
           if (picked.length > 0) {
             setPendingAtts((prev) => [...prev, ...picked])
-            message.success(`已提取 ${picked.length} 个 PDF 文件`)
+            message.success(`已提取 ${picked.length} 个文档文件`)
           }
         }
       } finally {
@@ -488,10 +523,12 @@ export default function Assistant() {
     dragCounter.current = 0
     setDragOver(false)
     if (!e.dataTransfer?.files || e.dataTransfer.files.length === 0) return
-    // 过滤：仅接受图片或文本文件（handlePickFiles 内部会二次校验并提示不支持的文件）
-    const files = Array.from(e.dataTransfer.files).filter((f) => isImageFile(f) || isTextFile(f))
+    // 过滤：仅接受支持的文件类型（handlePickFiles 内部会二次校验并提示不支持的文件）
+    const files = Array.from(e.dataTransfer.files).filter(
+      (f) => isImageFile(f) || isTextFile(f) || isPdfFile(f) || isDocumentFile(f),
+    )
     if (files.length === 0) {
-      message.warning('仅支持图片（JPEG/PNG/GIF/WebP）或文本/代码文件')
+      message.warning('不支持的文件类型（支持图片、文本/代码、PDF、Word、Excel、PPT、HTML、CSV、JSON、XML、EPub）')
       return
     }
     void handlePickFiles(files as unknown as FileList)
@@ -546,20 +583,27 @@ export default function Assistant() {
 
   useEffect(loadAbility, [loadAbility])
 
+  // 流式更新时只在用户已在底部附近时才自动滚动，不打断用户上滑查看历史
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (stickToBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
   }, [messages, sending])
 
   const send = async () => {
     const text = input.trim()
     const atts = pendingAtts
     if ((!text && atts.length === 0) || sendingIds.has(activeId)) return
+    // 发新消息时恢复自动滚动到底部
+    stickToBottomRef.current = true
     const sessionId = activeId
     const session = sessions.find((s) => s.id === sessionId)
     if (!session) return
 
     // 发送给服务端的附件（含 textContent），存入会话历史的附件（剥离 textContent 避免 localStorage 爆满）
     const attsForSend = atts
+    // 附件全文入会话级缓存：后续任意轮次发送时从缓存回填，AI 不会"忘记"已上传文件
+    rememberSessionFiles(sessionId, atts)
     const attsForStore = atts.map(({ textContent: _tc, ...rest }) => rest)
     const userMsg: ChatMsg = {
       role: 'user',
@@ -604,9 +648,22 @@ export default function Assistant() {
           messages: nextMessages.map(({ role, content, attachments }, idx) => ({
             role,
             content,
-            // 最后一条 user 消息使用含 textContent 的完整附件；历史消息的 textContent 已剥离
+            // 带附件的消息：最后一条用本轮新附件全文；历史消息从会话缓存回填全文
+            // （textContent 已从消息存储剥离，缓存让 AI 在后续轮次仍记得文件内容）
             ...(attachments && attachments.length > 0
-              ? { attachments: idx === nextMessages.length - 1 ? attsForSend : attachments }
+              ? {
+                  attachments: attachments
+                    .map((a) => ({
+                      ...a,
+                      textContent:
+                        idx === nextMessages.length - 1
+                          ? attsForSend.find((x) => x.fileId === a.fileId)?.textContent
+                          : getSessionFileText(sessionId, a.fileId),
+                    }))
+                    // 图片附件（file-api-…）必须保留（textContent 恒空）；
+                    // 仅剔除"本地文本附件但缓存未命中/超出容量"的残缺项
+                    .filter((a) => a.fileId.startsWith('file-') || a.textContent !== undefined),
+                }
               : {}),
           })),
           ...(sendPlanId !== undefined ? { planId: sendPlanId } : {}),
@@ -717,7 +774,7 @@ export default function Assistant() {
         patchActiveSessionMessages(sessionId, (msgs) => {
           const last = msgs[msgs.length - 1]
           if (last && last.role === 'assistant' && last.content === '') {
-            return [...msgs.slice(0, -1), { ...last, content: '（已停止生成）' }]
+            return [...msgs.slice(0, -1), { ...last, content: '（已停止生成）', failed: true }]
           }
           if (last && last.role === 'assistant' && last.content !== '') {
             return [...msgs.slice(0, -1), { ...last, content: `${last.content}\n\n> ⏹️ **已停止生成。**` }]
@@ -731,9 +788,9 @@ export default function Assistant() {
         patchActiveSessionMessages(sessionId, (msgs) => {
           const last = msgs[msgs.length - 1]
           if (last && last.role === 'assistant' && last.content === '') {
-            return [...msgs.slice(0, -1), { ...last, content: `⚠️ ${err.message}` }]
+            return [...msgs.slice(0, -1), { ...last, content: `⚠️ ${err.message}`, failed: true }]
           }
-          return [...msgs, { role: 'assistant', content: `⚠️ ${err.message}` }]
+          return [...msgs, { role: 'assistant', content: `⚠️ ${err.message}`, failed: true }]
         })
       }
     } finally {
@@ -876,12 +933,68 @@ export default function Assistant() {
     }
   }
 
+  const confirmPlanCreate = async (draft: PlanCreateDraft, msgIndex: number) => {
+    setPlanCreating(true)
+    try {
+      const result = await post<{ ok: boolean; planId: number; title: string; taskCount: number }>(
+        '/api/plans/import',
+        { raw: draft.raw, startDate: draft.startDate, days: draft.days },
+      )
+      message.success(`训练计划「${result.title}」已创建（${result.taskCount} 个任务），到「训练计划」页可查看`)
+      patchActiveSessionMessages(activeId, (msgs) =>
+        msgs.map((m, i) => (i === msgIndex ? { ...m, appliedPlan: true } : m)),
+      )
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setPlanCreating(false)
+    }
+  }
+
   const openPlanApply = (raw: string) => {
     if (planId === undefined) {
       message.warning('AI 回复包含计划修改，但当前未关联计划：请在左侧选择要修改的计划后让 AI 重新生成')
       return
     }
     setApplyTarget({ planId, raw })
+  }
+
+  /**
+   * 「再次编辑」：把指定用户消息回填到输入框，并截断该消息及其后的所有消息
+   * （分支编辑语义，与主流聊天产品一致）。这样重发后不会出现"原对话 + 重复的新对话"
+   * 两条几乎相同的对话。同时回填该消息当时的附件到输入区，重发时文件内容不丢。
+   */
+  const editUserMessage = (msgIndex: number) => {
+    const userMsg = messages[msgIndex]
+    if (!userMsg || userMsg.role !== 'user') return
+    const content = userMsg.content ?? ''
+    const atts = userMsg.attachments ?? []
+
+    // 回填该消息的附件（图片附件缺 file-api 引用有效性，仍按原样回填；
+    // 文本附件内容由会话缓存兜底，重发时仍带全文）
+    if (atts.length > 0) {
+      setPendingAtts((prev) => {
+        const existing = new Set(prev.map((a) => a.fileId))
+        const restored = atts
+          .filter((a) => !existing.has(a.fileId))
+          .map((a) => ({
+            fileId: a.fileId,
+            filename: a.filename,
+            bytes: a.bytes,
+            textContent: getSessionFileText(activeId, a.fileId),
+          }))
+        return [...prev, ...restored]
+      })
+    }
+
+    // 截断该用户消息及其后所有消息（含成功/失败回复）
+    patchActiveSessionMessages(activeId, (msgs) => {
+      if (msgIndex >= msgs.length) return msgs
+      return msgs.slice(0, msgIndex)
+    })
+
+    setChatState((prev) => ({ ...prev, input: content }))
+    inputRef.current?.focus()
   }
 
   return (
@@ -1125,12 +1238,20 @@ export default function Assistant() {
                 <PaperClipOutlined style={{ fontSize: 40, marginBottom: 12 }} />
                 <div style={{ fontSize: 15, fontWeight: 500 }}>松开以添加文件</div>
                 <div style={{ fontSize: 12, marginTop: 4, opacity: 0.7 }}>
-                  图片（JPEG/PNG/GIF/WebP ≤64MiB）或文本/代码文件（≤1MiB）
+                  图片（JPEG/PNG/GIF/WebP ≤64MiB）、文本/代码（≤1MiB）或文档（PDF/Word/Excel/PPT/HTML/CSV/JSON/XML/EPub ≤20MiB）
                 </div>
               </div>
             </div>
           )}
-          <div className="plan-chat-msgs">
+          <div
+            className="plan-chat-msgs"
+            ref={msgsRef}
+            onScroll={(e) => {
+              const el = e.currentTarget
+              // 距底部 80px 以内视为"在底部"，允许自动滚动；超出则用户主动上滑，停止跟随
+              stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+            }}
+          >
             {messages.length === 0 && !sending && (
               <div style={{ color: '#8993a2', fontSize: 13, padding: '32px 16px', textAlign: 'center' }}>
                 <RobotOutlined style={{ fontSize: 32, display: 'block', marginBottom: 12 }} />
@@ -1157,6 +1278,33 @@ export default function Assistant() {
                       </div>
                     )}
                     {m.content && <Markdown text={m.content} />}
+                    {m.content && (
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
+                        <Button
+                          size="small"
+                          type="text"
+                          className="msg-copy-btn"
+                          icon={<CopyOutlined />}
+                          onClick={() => {
+                            navigator.clipboard
+                              ?.writeText(m.content ?? '')
+                              .then(() => message.success('已复制'))
+                              .catch(() => message.warning('复制失败，请手动选择复制'))
+                          }}
+                        >
+                          复制
+                        </Button>
+                        <Button
+                          size="small"
+                          type="text"
+                          className="msg-copy-btn"
+                          icon={<EditOutlined />}
+                          onClick={() => editUserMessage(i)}
+                        >
+                          再次编辑
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 )
               }
@@ -1165,10 +1313,12 @@ export default function Assistant() {
               const tplAdds = extractTemplateAdd(m.content)
               const hasTpl = tplAdds.length > 0
               const listDraft = extractListCreate(m.content)
+              const planDraft = extractPlanCreate(m.content)
               let text = stripModifyBlock(m.content)
               if (abilityUpd) text = stripAbilityUpdate(text)
               if (hasTpl) text = stripTemplateAdd(text)
               if (listDraft) text = stripListCreate(text)
+              if (planDraft) text = stripPlanCreate(text)
               // 旧消息用 m.applied 表示模板已写入（向后兼容：无 appliedTpl 时视为该消息模板均已应用）
               const appliedTpl =
                 m.applied === true && !m.appliedTpl ? tplAdds.map((_, j) => j) : (m.appliedTpl ?? [])
@@ -1197,7 +1347,23 @@ export default function Assistant() {
                     </details>
                   )}
                   <Markdown text={text} />
-                  {(modify || abilityUpd || hasTpl || listDraft) && (
+                  {text.trim() && (
+                    <Button
+                      size="small"
+                      type="text"
+                      className="msg-copy-btn"
+                      icon={<CopyOutlined />}
+                      onClick={() => {
+                        navigator.clipboard
+                          ?.writeText(text)
+                          .then(() => message.success('已复制'))
+                          .catch(() => message.warning('复制失败，请手动选择复制'))
+                      }}
+                    >
+                      复制
+                    </Button>
+                  )}
+                  {(modify || abilityUpd || hasTpl || listDraft || planDraft) && (
                     <Space style={{ marginTop: 8 }} wrap>
                       {modify && (
                         <Button
@@ -1265,6 +1431,17 @@ export default function Assistant() {
                           {m.appliedList ? `✓ 已导入题单：${listDraft.title}` : `导入题单：「${listDraft.title}」`}
                         </Button>
                       )}
+                      {planDraft && (
+                        <Button
+                          size="small"
+                          type="primary"
+                          disabled={m.appliedPlan}
+                          loading={planCreating}
+                          onClick={() => void confirmPlanCreate(planDraft, i)}
+                        >
+                          {m.appliedPlan ? `✓ 已生成计划：${planDraft.title}` : `生成训练计划：「${planDraft.title}」`}
+                        </Button>
+                      )}
                     </Space>
                   )}
                   {m.usage && (
@@ -1308,6 +1485,7 @@ export default function Assistant() {
               </div>
             )}
             <Input.TextArea
+              ref={inputRef}
               value={input}
               onChange={(e) => setChatState((prev) => ({ ...prev, input: e.target.value }))}
               placeholder="向 AI 教练提问…（可粘贴代码，拖入或附加图片/代码文件）Enter 发送，Shift+Enter 换行"
@@ -1329,7 +1507,7 @@ export default function Assistant() {
               ref={fileInputRef}
               type="file"
               multiple
-              accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.txt,.md,.py,.cpp,.c,.cc,.cxx,.h,.hpp,.java,.kt,.rs,.go,.js,.ts,.jsx,.tsx,.rb,.php,.sh,.bash,.zsh,.sql,.json,.xml,.yaml,.yml,.toml,.csv,.tsv,.html,.css,.scss,.less,.vue,.svelte,.swift,.m,.scala,.clj,.ex,.exs,.erl,.hs,.lua,.pl,.r,.dart,.groovy,.gradle,.cmake,.ini,.cfg,.conf,.properties"
+              accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.xlsx,.xls,.pptx,.html,.htm,.csv,.json,.xml,.epub,.txt,.md,.py,.cpp,.c,.cc,.cxx,.h,.hpp,.java,.kt,.rs,.go,.js,.ts,.jsx,.tsx,.rb,.php,.sh,.bash,.zsh,.sql,.yaml,.yml,.toml,.tsv,.css,.scss,.less,.vue,.svelte,.swift,.m,.scala,.clj,.ex,.exs,.erl,.hs,.lua,.pl,.r,.dart,.groovy,.gradle,.cmake,.ini,.cfg,.conf,.properties"
               hidden
               onChange={(e) => void handlePickFiles(e.target.files)}
             />

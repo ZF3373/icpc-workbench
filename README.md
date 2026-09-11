@@ -9,27 +9,31 @@
 - **弱项分析**：按标签 / 难度区间 / 平台统计 AC 率，输出相对自身平均的弱项画像；近 12 周趋势
 - **掌握度地图**：按知识点五档评估掌握度（未开始→接触→入门→掌握→熟练），串联刷题数据、弱项画像与模板课程；每个知识点可直达对应练习题目（含题库未做题，按难度从低到高）与课程；CF 等平台的英文标签与课程中文知识点自动归并（binary search ↔ 二分），同一知识点不分裂；掌握/熟练带 ⭐/🏆 徽章、升档进度条与新达成 🎉 标记
 - **练习数据汇总**：一键生成完整个人画像（总量/平台/难度/知识点/弱项/掌握度/趋势/近期 AC/卡壳题/复习库/课程进度/打卡），可下载 `.md` 存档复盘
-- **今日训练**：按弱项 + 计划任务智能挑题，每天一个可执行的小目标
+- **今日训练**：按弱项 + 计划任务智能挑题，每天一个可执行的小目标；每题可一键同步该平台最新提交（做完题后即时拉取 AC 状态刷新推荐）
 - **AI 训练计划（双通道）**：
   - 内置生成：配置 OpenAI 兼容 API Key 一键生成（DeepSeek / OpenAI / 智谱 / Ollama 等）
   - 导出通道：无 Key 也可下载数据包 + 提示词 `.md`，手动喂给任意 AI，返回的 JSON 通过设置页「导入 AI 计划」粘贴/上传即可入库（自动清洗围栏与解释文字）
   - 提示词已内置完整练习数据汇总：AI 能看到掌握薄弱知识点、课程盲区、近期在练的题、卡壳题、复习库到期与打卡节奏，据此编排重做/补模板/复习任务
+  - **自定义训练要求**：生成计划时可手写额外要求（如「重点补 DP 和图论」「每天不超过 3 题」「避开周末」），注入 AI 提示词后优先满足，与数据画像冲突时尽量兼顾
   - 任务全部附带可点击的题目链接：练习任务直接跳题目页；回顾/模拟赛任务跳 CF 提交记录/题集入口；AI 输出缺链接时自动按题库回退补链
-- **AI 助手（全局）**：左侧菜单「AI 助手」独立的 AI 交流窗口——回答算法问题、粘贴代码调试（markdown 代码块 + 数学公式渲染）、解读练习数据与问题分布统计（自动注入练习数据汇总 + 弱项画像 + 近期赛事日历）；可关联训练计划让 AI 直接修改计划（plan-modify 块 → 前端确认后原位应用，「日期+标题」相同的任务保留打卡记录）；AI 评估后可一键更新估算能力值（ability-update 块，今日训练三档随之按新值分档，可随时恢复计算值）；AI 讨论中可把思路沉淀为模板写入模板库（template-add 块，用户确认后落库）；模拟赛安排会自动对齐近 14 天真实赛事时间
+- **AI 助手（全局）**：左侧菜单「AI 助手」独立的 AI 交流窗口——回答算法问题、粘贴代码调试（markdown 代码块 + 数学公式渲染）、解读练习数据与问题分布统计（自动注入练习数据汇总 + 弱项画像 + 近期赛事日历）；可关联训练计划让 AI 直接修改计划（plan-modify 块 → 前端确认后原位应用，「日期+标题」相同的任务保留打卡记录）；也支持让 AI 从零生成全新训练计划（plan-create 块 → 确认后创建新计划入库，与 plan-modify 区别在于无需关联现有计划）；AI 评估后可一键更新估算能力值（ability-update 块，今日训练三档随之按新值分档，可随时恢复计算值）；AI 讨论中可把思路沉淀为模板写入模板库（template-add 块，用户确认后落库）；模拟赛安排会自动对齐近 14 天真实赛事时间
   - **联网搜索**：到「设置 → AI 配置」配置搜索引擎（Tavily / Brave，均有免费额度）+ API Key 后，AI 需要时会自动搜索互联网获取最新信息（近期赛事、最新文档等），回复末尾附搜索来源链接；留空则不启用
   - **工具调用（function calling）**：AI 可抓取给定网址内容（fetch-url）与解析 PDF 文件（pdf-parse），支持「帮我把这个题单链接的题目导入题单整理」等场景；需模型支持 function calling（DeepSeek / GPT / 智谱等均支持）
+  - **多格式文档附件**：除图片外，消息可附带 PDF / Word / Excel / PPT / HTML / CSV / JSON / XML / EPub 文档（PDF ≤10 MiB、其余 ≤20 MiB），服务端本地提取文本注入对话（不依赖 Files API，兼容所有模型）；附件内容按会话级缓存，后续任意轮次 AI 都能引用已上传文件（不会"忘记"）
   - **多会话并行**：每个会话独立标记生成状态，会话 A 回复中切到会话 B 照常输入发送，两个会话并行流式输出互不阻塞；生成中发送按钮变红色「停止」可中止（已收到部分保留并标注「已停止生成」）
   - 多会话管理：侧边栏会话记录，支持新建 / 切换 / 删除 / 置顶 / 双击重命名 / 拖拽排序，会话记录保存在浏览器本地
   - 切换模块再回来不丢会话；生成中切走，回来后回复自动出现
-  - **可配输出上限**：「设置 → AI 配置」可调最大输出 token（长输出场景调大）与模型上下文长度（超限自动裁剪最早消息并提示）；回复因达到上限被截断时末尾会出现提示
+  - **消息复制 / 再次编辑**：助手消息可一键复制全文；用户消息支持「再次编辑」重发（失败回合自动剔除不回传给模型）
+  - **数学公式渲染增强**：AI 输出的裸数学表达式（不带 `$` 定界符的下标/上标/LaTeX 命令等）自动识别并包裹渲染；`\(...\)` / `\[...\]` 定界符自动归一化为 `$` / `$$`；Unicode 数学符号（≤ ≥ ≠ ⊕ ⊗ ℓ 等）自动转为 LaTeX 命令；解析失败时以普通文本回退而非刺眼红字
+  - **可配输出上限**：「设置 → AI 配置」可调最大输出 token（默认 384K，长输出场景可再调大）与模型上下文长度（默认 1000K，超限自动裁剪最早消息并提示）；回复因达到上限被截断时末尾会出现提示
   - 图片附件：消息可附上题面 / 评测截图（JPEG/PNG/GIF/WebP，≤64MiB），经 OpenAI 兼容 Files API 上传后以 file 内容块随消息引用
-- **题单整理**：粘贴平台题单（洛谷 / Codeforces / AtCoder / 代码源 / 牛客 / LeetCode 的题号或链接，每行一题）自动识别建单；按知识点分类（已同步题库 tags 规则分类 + AI 分类 + 手动调整），联查题库标注难度与已 AC 状态；AI 读取题单内容结合弱项画像给出练习建议
+- **题单整理**：粘贴平台题单（洛谷 / Codeforces / AtCoder / 代码源 / 牛客 / LeetCode 的题号或链接，每行一题）自动识别建单；按知识点分类（已同步题库 tags 规则分类 + AI 分类 + 手动调整），联查题库标注难度与已 AC 状态；洛谷题单中的 CF/AtCoder 镜像题自动回退到原生平台查 tags 分类；规则分类只更新题库有 tags 的题，查不到的保留已有分类（不会被抹成「其他」）；AI 读取题单内容结合弱项画像给出练习建议
 - **复习库**：题目复评与遗忘曲线调度（到期数量提醒、正/负反馈调节复习间隔）
 - **模板库**：114 节内置算法模板课程（分 10 大类），学习状态/笔记/进度追踪；自建模板支持 Tab 缩进的代码编辑框（Tab 缩进、Shift+Tab 反缩进、回车自动缩进，保留撤销栈）；思路备注支持完整 Markdown 渲染（GFM 表格/删除线/代码块 + 数学公式，行内 `$...$` 与块级 `$$...$$`，兼容 Obsidian 语法）；页头可切换缩进空格数（2/4，本地持久化）
 - **赛事中心**：Codeforces / AtCoder / 洛谷 / 牛客 四平台场次聚合（即将开始 / 已结束，单源失败自动降级），赛前选场、赛后补题
 - **日历打卡**：月历查看每天训练任务、跳转做题链接、逐任务打卡；打卡数据与计划页联动；连续打卡统计
 - **打卡提醒**：设置页配置每日提醒时间，应用打开期间到点若当天仍有未打卡任务，弹浏览器系统通知 + 页面内通知，点击直达日历；赛前提醒可配置开赛前 N 分钟通知（每场一次，点击直达赛事中心）
-- **软件更新**：双通道检测（正式版 + GitHub 最新提交构建）+ 应用内一键自更新（详见下文）
+- **软件更新**：双通道检测（正式版 + GitHub 最新提交构建）+ 应用内一键自更新（更新驱动挂在全局 Provider，发起更新后切到别的模块也不会中断下载/替换流程；刷新页面自动恢复更新进度）
 - **Web 挂件**：`http://localhost:3001/widget` 零依赖单页（Express 直接服务），常驻小窗展示当天任务、连续打卡徽标，可直接打卡/跳转做题
 
 ## 技术架构
@@ -39,7 +43,7 @@ icpc-workbench/
 ├── server/          # Node.js + Express + node:sqlite（内置 SQLite，零原生依赖）
 │   ├── adapters/    # 平台适配器（CF/AtCoder 自动；洛谷/牛客/代码源/LeetCode 受限）+ 增量同步
 │   ├── analysis/    # 聚合统计 / 弱项画像 / 周趋势
-│   ├── ai/          # OpenAI 兼容 provider + plan-prompt.md / assistant-prompt.md 提示词模板 + function calling 工具注册（fetch-url / pdf-parse / 联网搜索）
+│   ├── ai/          # OpenAI 兼容 provider + plan-prompt.md / assistant-prompt.md 提示词模板 + function calling 工具注册（fetch-url / pdf-parse / 联网搜索）+ 文档转换器（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub → Markdown）
 │   ├── contests/    # 四平台赛事聚合（CF/AtCoder/洛谷/牛客，单源失败降级）
 │   ├── plans/       # 计划生成（AI 优先，失败/未配置降级模板）+ 入库
 │   ├── import/      # 手动导入（JSON/CSV/表单）+ 事务入库
@@ -166,7 +170,7 @@ node server/scripts/build-exe.mjs
 | AtCoder | ✅ | 社区 API `kenkoooo.com` v3 | 支持增量（from_second）；题目资源 24h 磁盘缓存；官方要求页间 ≥1s |
 | 洛谷 | ✅（需 Cookie） | `record/list` 非官方 API | 设置页填写 `_uid` / `__client_id` 两项 Cookie 后自动同步；难度分级（0-8）自动映射为 CF rating；标签经 `x-lentille-request` 头 + `/_lfe/tags` 字典获取 |
 | 牛客 | ✅ | 公开 HTML `acm/contest/profile/{uid}/practice-coding` | 无需登录/Cookie（牛客已下线 JSON API）；解析提交表格，支持增量与分页；题目无难度/标签字段（数据源限制） |
-| 代码源 | ✅（需 Cookie） | Hydro HTML `/record?uidOrName=` | 设置页填写 `sid` 一项会话 Cookie 后自动同步（每页 100 条，增量提前终止）；状态文本按 Hydro STATUS_TEXTS 映射（满分 Accepted=AC）；仅含非比赛提交（与站点「评测记录」页范围一致，Hydro 过滤 `{contest: null}`）；暂无难度/标签（Hydro 无统一标尺）；题库页 `/p/{id}` 公开 |
+| 代码源 | ✅（需 Cookie） | Hydro JSON API `/record?uidOrName=`（`Accept: application/json`） | 设置页填写 `sid` 一项会话 Cookie 后自动同步（每页 100 条，增量提前终止）；走 Hydro 原生 JSON 内容协商直接取 rdocs 数组，不依赖 HTML 模板解析，Hydro 升级改前端模板不会破坏适配器；状态按 Hydro STATUS 数字枚举映射统一 Verdict；仅含非比赛提交；题库页 `/p/{id}` 公开 |
 | LeetCode | ✅（需 Cookie） | leetcode.cn GraphQL `submissionList` | 设置页填写 Cookie 后自动同步（每页 40 条，最多 250 页）；仅接入力扣中国（leetcode.cn），国际版接口结构不同暂未接入；题库匿名可访问 |
 
 > 洛谷基于社区维护的非官方 API，接口结构可能随平台变更；若同步失败请更新 Cookie 重试。Cookie 仅保存在本机数据库，请勿外泄。
@@ -206,11 +210,14 @@ GET  /api/reviews/due-count       # 到期复习数量
 POST /api/reviews/:id/feedback    # 复习反馈（记住/遗忘 → 调度下次复习）
 GET  /api/contests                # 四平台赛事聚合（?type=upcoming|finished&platform=&limit=）
 GET  /api/plans | POST /api/plans/generate | POST /api/plans/import | GET /api/plans/:id | DELETE /api/plans/:id
+                                   # generate body: { days?, startDate?, dailyTasks?, requirements? } ← requirements 为用户手写训练要求，注入 AI 提示词优先满足
                                    # import body: { raw, startDate?, days? } ← 任意 AI 返回的计划 JSON 文本
 PATCH /api/plans/tasks/:taskId    # 编辑单条任务（taskDate/title/kind/url/note，仅更新提交字段）
 DELETE /api/plans/tasks/:taskId   # 删除单条任务（打卡记录级联删除）
 POST /api/plans/:id/apply         # 应用 AI 计划修改（body: { raw }；按「日期+标题」匹配保留打卡）
 POST /api/ai/chat                # 全局 AI 助手对话（body: { messages, planId? }；注入练习汇总/弱项画像/能力值/赛事日历，planId 给定可改计划；user 消息可带 attachments: [{ fileId, filename? }]，≤8 个；支持 function calling 工具：联网搜索 / fetch-url 抓取网页 / pdf-parse 解析 PDF）
+POST /api/ai/chat                # 全局 AI 助手对话（body: { messages, planId? }；注入练习汇总/弱项画像/能力值/赛事日历/当前日期，planId 给定可改计划、无 planId 时可生成新计划；user 消息可带 attachments: [{ fileId, filename? }]，≤8 个，支持图片/PDF/多格式文档/文本代码；支持 function calling 工具：联网搜索 / fetch-url 抓取网页 / pdf-parse 解析 PDF）
+POST /api/ai/extract-text         # 本地提取文档文本（原始字节流，header: content-type + x-file-name；PDF 用 unpdf ≤10MiB，Word/Excel/PPT/HTML/CSV/JSON/XML/EPub 用 docConverter ≤20MiB；返回 { text, pages?, warning? }）
 POST /api/ai/files               # 上传文件到 AI Files API（原始字节流直传，header: x-file-name / x-expires-seconds?；服务端转 multipart 转发上游，purpose=user_data，≤64MiB）
 GET  /api/ai/files               # 列出文件（?after=&limit=1-1000&order=asc|desc，游标分页）
 GET  /api/ai/files/:fileId       # 查询文件元信息
@@ -245,7 +252,7 @@ npm test            # server 单元测试（schema/配置/适配器/导入/同�
 npm run typecheck   # 双端类型检查
 ```
 
-测试覆盖：数据库 schema 与约束、配置校验、CF/AtCoder/牛客赛事适配器归一化（mock + 真实网络验证）、CSV 解析、导入去重、增量同步、统计/弱项/趋势与手工计算一致性、AI 生成三路径（成功/失败/未配置）、更新双通道判定与 SHA256 校验解析。
+测试覆盖：数据库 schema 与约束、配置校验、CF/AtCoder/牛客赛事适配器归一化（mock + 真实网络验证）、CSV 解析、导入去重、增量同步、统计/弱项/趋势与手工计算一致性、AI 生成三路径（成功/失败/未配置）、更新双通道判定与 SHA256 校验解析、文档转换器（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）、Markdown 数学公式预处理管线、会话级附件内容缓存。
 
 ## 许可证
 

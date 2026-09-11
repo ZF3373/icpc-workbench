@@ -441,17 +441,36 @@ test('nowcoder: parses practice-coding HTML without cookie, url works', async ()
   );
 });
 
-test('nowcoder: incremental sync stops when page is older than since', async () => {
+test('nowcoder: 增量依赖 knownExternalIds 精确判重，不用 since 时间截断', async () => {
+  // 场景：提交时间早于 since（上次同步时刻）的新记录（评测/列表延迟导致）
+  // 必须照常入库——时间截断会漏掉它（真实踩坑：84681878 提交于上次同步前却晚出现在列表）
   const fetchFn = router({
     'practice-coding': () =>
       ncPage([['5001', '10001', 'A+B', '答案正确', 'C++', '2026-08-01 10:00:00']]),
   });
   const adapter = createNowcoderAdapter(fetchFn);
-  // since 晚于页内最早提交 → 首条已旧 → 停止，返回空
   const rows = await adapter.fetchUserSubmissions('87654321', {
-    since: '2026-08-02T00:00:00.000Z',
+    since: '2026-08-02T00:00:00.000Z', // 晚于提交时间，也不应截断
+  });
+  assert.equal(rows.length, 1, '提交时间早于 since 的新记录必须入库（knownExternalIds 才是增量依据）');
+  assert.equal(rows[0].externalId, '5001');
+});
+
+test('nowcoder: 整页已知时增量早停（knownExternalIds）', async () => {
+  // 首页全为已知提交 → 不再翻更旧的页（增量早停，防全量重扫）
+  let pageCalls = 0;
+  const fetchFn = router({
+    'practice-coding': (url) => {
+      pageCalls += 1;
+      return ncPage([['5001', '10001', 'A+B', '答案正确', 'C++', '2026-08-01 10:00:00']]);
+    },
+  });
+  const adapter = createNowcoderAdapter(fetchFn);
+  const rows = await adapter.fetchUserSubmissions('87654321', {
+    knownExternalIds: new Set(['5001']),
   });
   assert.equal(rows.length, 0);
+  assert.equal(pageCalls, 1, '整页已知应只请求一页即停');
 });
 
 test('nowcoder: HTTP failure throws', async () => {

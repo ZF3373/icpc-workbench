@@ -14,9 +14,9 @@ export interface AiConfig {
   model: string;
   /** AI 对话超时（毫秒），用户可在设置页调整；缺省 120000（2 分钟） */
   timeoutMs?: number;
-  /** AI 单次回复最大 token 数，用户可在设置页调整；缺省 8192。值越大越不易截断，但受模型上限约束 */
+  /** AI 单次回复最大 token 数，用户可在设置页调整；缺省 393216（384K）。值越大越不易截断，但受模型上限约束 */
   maxTokens?: number;
-  /** 模型上下文窗口大小（token 数），含输入+输出；对话历史超限时自动裁剪最早消息。缺省 131072（128K） */
+  /** 模型上下文窗口大小（token 数），含输入+输出；对话历史超限时自动裁剪最早消息。缺省 1024000（1000K） */
   contextWindow?: number;
   /** 联网搜索引擎：tavily（默认，AI 友好）或 brave */
   searchEngine?: 'tavily' | 'brave';
@@ -43,8 +43,8 @@ export const DEFAULT_CONFIG: AppConfig = {
     apiKey: '',
     model: 'deepseek-chat',
     timeoutMs: 120000,
-    maxTokens: 8192,
-    contextWindow: 131072,
+    maxTokens: 393216,
+    contextWindow: 1024000,
   },
 };
 

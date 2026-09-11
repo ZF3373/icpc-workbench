@@ -30,6 +30,42 @@ function classifyByTags(tagsJson: string | null | undefined): string | null {
   return canonical ?? null;
 }
 
+/**
+ * 按平台+题号在题库查题（取 tags 等分类依据）。
+ * 洛谷题单常含 CF / AtCoder 镜像题（key 形如 CF351E / at_agc018_c），这些题在洛谷库
+ * 大多不存在，但同一道题以原生 key（351E / agc018_c）存于 codeforces / atcoder 库——
+ * 按前缀回退到镜像源平台再查一次，否则规则分类永远查不到 tags 而全部落到「其他」。
+ */
+function lookupProblemTags(
+  db: Db,
+  platform: string,
+  problemKey: string,
+): { tags: string | null; title: string | null; url: string | null; difficulty: number | null } | undefined {
+  const row = db
+    .prepare('SELECT tags, title, url, difficulty FROM problems WHERE platform = ? AND problem_key = ?')
+    .get(platform, problemKey) as
+    | { tags: string | null; title: string | null; url: string | null; difficulty: number | null }
+    | undefined;
+  if (row) return row;
+  // 洛谷 CF 镜像（CF351E / CF958E2 → codeforces/351E / 958E2；后缀模式同 parseProblemList 的 CF_KEY_RE）
+  if (platform === 'luogu' && /^CF\d{1,6}[A-Z][0-9]?$/.test(problemKey)) {
+    return db
+      .prepare('SELECT tags, title, url, difficulty FROM problems WHERE platform = ? AND problem_key = ?')
+      .get('codeforces', problemKey.slice(2)) as
+      | { tags: string | null; title: string | null; url: string | null; difficulty: number | null }
+      | undefined;
+  }
+  // 洛谷 AtCoder 镜像（at_agc018_c / AT_agc018_c → atcoder/agc018_c）
+  if (platform === 'luogu' && /^at_/i.test(problemKey)) {
+    return db
+      .prepare('SELECT tags, title, url, difficulty FROM problems WHERE platform = ? AND problem_key = ?')
+      .get('atcoder', problemKey.slice(3).toLowerCase()) as
+      | { tags: string | null; title: string | null; url: string | null; difficulty: number | null }
+      | undefined;
+  }
+  return undefined;
+}
+
 /** 解析 AI 回复中的 JSON（围栏/前后解释文字/尾逗号容错，同 planService 思路） */
 function extractAiJson(raw: string): unknown {
   let text = raw.trim();
@@ -95,12 +131,8 @@ export function listsRoutes(
       const listId = Number(ins.run(DEFAULT_USER_ID, title.trim(), typeof sourceUrl === 'string' && sourceUrl.trim() ? sourceUrl.trim() : null).lastInsertRowid);
       for (let pos = 0; pos < parsed.length; pos += 1) {
         const it = parsed[pos];
-        // 题库信息回填：标题/难度/标签分类/链接兜底
-        const p = db
-          .prepare('SELECT title, url, tags, difficulty FROM problems WHERE platform = ? AND problem_key = ?')
-          .get(it.platform, it.problemKey) as
-          | { title: string; url: string | null; tags: string; difficulty: number | null }
-          | undefined;
+        // 题库信息回填：标题/难度/标签分类/链接兜底（含 CF/AtCoder 镜像题回退查询）
+        const p = lookupProblemTags(db, it.platform, it.problemKey);
         const finalUrl = it.url ?? p?.url ?? getAdapter(it.platform)?.problemUrl({ problemKey: it.problemKey }) ?? null;
         const category = classifyByTags(p?.tags) ?? '未分类';
         insItem.run(listId, it.platform, it.problemKey, it.title ?? p?.title ?? null, finalUrl, category, pos);
@@ -196,6 +228,8 @@ export function listsRoutes(
   });
 
   // POST /api/lists/:id/classify → 按题库 tags 规则分类（幂等，无 AI）
+  // 只更新题库能查到 tags 的题；查不到的保留现有分类——用户此前通过
+  // 「AI 分类」或手动调整设置的分类不应被规则分类抹成「其他」。
   r.post('/:id/classify', (req, res) => {
     const id = Number(req.params.id);
     const list = db
@@ -207,17 +241,20 @@ export function listsRoutes(
       .all(id) as Array<{ id: number; platform: PlatformId; problem_key: string; category: string }>;
     const upd = db.prepare('UPDATE problem_list_items SET category = ? WHERE id = ?');
     let updated = 0;
+    let unmatched = 0;
     for (const it of items) {
-      const p = db
-        .prepare('SELECT tags FROM problems WHERE platform = ? AND problem_key = ?')
-        .get(it.platform, it.problem_key) as { tags: string } | undefined;
-      const category = classifyByTags(p?.tags) ?? '其他';
+      const p = lookupProblemTags(db, it.platform, it.problem_key);
+      const category = classifyByTags(p?.tags);
+      if (category === null) {
+        unmatched += 1; // 题库查不到/tags 归并不进目录：保留现有分类
+        continue;
+      }
       if (category !== it.category) {
         upd.run(category, it.id);
         updated += 1;
       }
     }
-    res.json({ ok: true, updated, total: items.length });
+    res.json({ ok: true, updated, total: items.length, unmatched });
   });
 
   // POST /api/lists/:id/ai-classify → AI 分类（题库 tags 覆盖不到的题目）

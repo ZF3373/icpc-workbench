@@ -107,7 +107,7 @@ test('POST /api/ai/extract-text: PDF 提取成功返回 text + pages', async () 
   });
 });
 
-test('POST /api/ai/extract-text: 非 PDF content-type 返回 400', async () => {
+test('POST /api/ai/extract-text: 不支持的文件类型返回 400', async () => {
   await withServer(async (root) => {
     const res = await fetch(`${root}/api/ai/extract-text`, {
       method: 'POST',
@@ -115,7 +115,7 @@ test('POST /api/ai/extract-text: 非 PDF content-type 返回 400', async () => {
       body: new Uint8Array([1, 2, 3]),
     });
     assert.equal(res.status, 400);
-    assert.match(((await res.json()) as { error: string }).error, /仅处理 PDF/);
+    assert.match(((await res.json()) as { error: string }).error, /不支持的文件类型/);
   });
 });
 

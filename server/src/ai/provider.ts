@@ -321,7 +321,7 @@ export class AiProvider {
           model: this.cfg.model,
           messages,
           temperature: opts.temperature ?? 0.2,
-          max_tokens: opts.maxTokens ?? 8192,
+          max_tokens: opts.maxTokens ?? 393216,
           ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools } : {}),
         }),
       },
@@ -398,7 +398,7 @@ export class AiProvider {
         model: this.cfg.model,
         messages,
         temperature: opts.temperature ?? 0.2,
-        max_tokens: opts.maxTokens ?? 8192,
+        max_tokens: opts.maxTokens ?? 393216,
         stream: true,
         // 请求 token 用量统计（OpenAI/DeepSeek 支持；不支持的 API 会忽略此字段，不影响兼容性）
         stream_options: { include_usage: true },

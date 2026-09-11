@@ -136,3 +136,55 @@ export function extractListCreate(reply: string): ListCreateDraft | null {
 export function stripListCreate(reply: string): string {
   return reply.replace(/```[a-zA-Z-]*list-create[\s\S]*?```/g, '').trim()
 }
+
+/** plan-create 块草稿（AI 建议生成新训练计划，确认后走 POST /api/plans/import） */
+export interface PlanCreateDraft {
+  title: string
+  /** 块内 JSON 原文（发给 /api/plans/import 的 raw 参数，parsePlanJson 会容错解析） */
+  raw: string
+  startDate?: string
+  days?: number
+}
+
+/**
+ * 解析回复中的 plan-create 块（AI 训练计划生成建议）。
+ * 与 list-create（导入题单到「题单整理」）和 plan-modify（修改已关联的计划）不同：
+ * plan-create 用于在聊天中按用户要求**生成全新的训练计划**，确认后创建新计划入库。
+ */
+export function extractPlanCreate(reply: string): PlanCreateDraft | null {
+  const m = reply.match(/```[a-zA-Z-]*plan-create[\s\S]*?\n([\s\S]*?)```/)
+  if (!m) return null
+  const blockText = m[1].trim()
+  // 容错解析：先尝试标准 JSON.parse，失败后截取 {...} 并修尾逗号
+  let v: { title?: unknown; startDate?: unknown; days?: unknown }
+  try {
+    v = JSON.parse(blockText) as typeof v
+  } catch {
+    try {
+      const start = blockText.indexOf('{')
+      const end = blockText.lastIndexOf('}')
+      if (start === -1 || end <= start) return null
+      const cleaned = blockText
+        .slice(start, end + 1)
+        .replace(/,\s*([}\]])/g, '$1')
+      v = JSON.parse(cleaned) as typeof v
+    } catch {
+      return null
+    }
+  }
+  const title = typeof v.title === 'string' ? v.title.trim() : ''
+  if (!title) return null
+  const draft: PlanCreateDraft = { title, raw: blockText }
+  if (typeof v.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v.startDate)) {
+    draft.startDate = v.startDate
+  }
+  if (Number.isInteger(v.days) && (v.days as number) > 0 && (v.days as number) <= 90) {
+    draft.days = v.days as number
+  }
+  return draft
+}
+
+/** 剥离 plan-create 块后的可见文本 */
+export function stripPlanCreate(reply: string): string {
+  return reply.replace(/```[a-zA-Z-]*plan-create[\s\S]*?```/g, '').trim()
+}

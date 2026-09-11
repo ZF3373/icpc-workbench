@@ -133,6 +133,92 @@ function seedProblems(db: Db): void {
   ]);
 }
 
+test('lists: 洛谷 CF/AtCoder 镜像题回退到源平台题库取 tags 分类', async () => {
+  await withServer(async ({ base, db }) => {
+    // 题库中只有源平台的镜像题：codeforces/351E 与 atcoder/agc018_c
+    // （洛谷库中不存在 CF351E / at_agc018_c —— 洛谷题单镜像题的典型形态）
+    const sub = (platform: string, key: string, tags: string[]): NormalizedSubmission => ({
+      problem: { platform: platform as NormalizedSubmission['problem']['platform'], problemKey: key, title: `T${key}`, tags, url: `https://example.com/${key}` },
+      verdict: 'WA',
+      submittedAt: '2026-08-01T00:00:00.000Z',
+      externalId: `${key}-WA`,
+    });
+    insertNormalized(db, DEFAULT_USER_ID, [
+      sub('codeforces', '351E', ['dp']),
+      sub('atcoder', 'agc018_c', ['graphs']),
+    ]);
+
+    // 从洛谷题单页复制的文本：镜像题链接指向 luogu.com.cn
+    const res = await fetch(`${base}/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title: '洛谷题单',
+        raw: 'https://www.luogu.com.cn/problem/CF351E\nhttps://www.luogu.com.cn/problem/at_agc018_c',
+      }),
+    });
+    assert.equal(res.status, 200);
+    const listId = (db.prepare('SELECT id FROM problem_lists').get() as { id: number }).id;
+    const detail = (await (await fetch(`${base}/${listId}`)).json()) as {
+      items: Array<{ problem_key: string; category: string }>;
+    };
+    const byKey = new Map(detail.items.map((i) => [i.problem_key, i]));
+    // 导入时即通过镜像回退命中源平台 tags：dp → 动态规划、graphs → 图论
+    assert.equal(byKey.get('CF351E')!.category, '动态规划');
+    assert.equal(byKey.get('at_agc018_c')!.category, '图论');
+
+    // 再跑规则分类（幂等）：镜像题不回落到「其他」
+    const cls = (await (await fetch(`${base}/${listId}/classify`, { method: 'POST' })).json()) as {
+      updated: number;
+    };
+    assert.equal(cls.updated, 0, '分类已在导入时命中，重跑不应变更');
+    const after = db
+      .prepare('SELECT problem_key, category FROM problem_list_items')
+      .all() as Array<{ problem_key: string; category: string }>;
+    const catByKey = new Map(after.map((r) => [r.problem_key, r.category]));
+    assert.equal(catByKey.get('CF351E'), '动态规划');
+    assert.equal(catByKey.get('at_agc018_c'), '图论');
+  });
+});
+
+test('lists: 规则分类不覆盖查不到 tags 的题的已有分类', async () => {
+  await withServer(async ({ base, db }) => {
+    // 题库只有 P1001（tags 二分）；P9999 不在题库
+    const sub = (platform: string, key: string, tags: string[]): NormalizedSubmission => ({
+      problem: { platform: platform as NormalizedSubmission['problem']['platform'], problemKey: key, title: `T${key}`, tags, url: `https://example.com/${key}` },
+      verdict: 'WA',
+      submittedAt: '2026-08-01T00:00:00.000Z',
+      externalId: `${key}-WA`,
+    });
+    insertNormalized(db, DEFAULT_USER_ID, [sub('luogu', 'P1001', ['二分'])]);
+
+    await fetch(`${base}/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: '混合题单', raw: 'P1001\nP9999' }),
+    });
+    const listId = (db.prepare('SELECT id FROM problem_lists').get() as { id: number }).id;
+    // 模拟用户先手动/AI 把 P9999 分到「数据结构」
+    const p9999 = db.prepare("SELECT id FROM problem_list_items WHERE problem_key = 'P9999'").get() as { id: number };
+    db.prepare('UPDATE problem_list_items SET category = ? WHERE id = ?').run('数据结构', p9999.id);
+
+    // 重跑规则分类：P1001 命中 tags 不变；P9999 查不到 tags → 必须保留「数据结构」而非抹成「其他」
+    const cls = (await (await fetch(`${base}/${listId}/classify`, { method: 'POST' })).json()) as {
+      ok: boolean;
+      updated: number;
+      unmatched: number;
+    };
+    assert.equal(cls.ok, true);
+    assert.equal(cls.unmatched, 1, 'P9999 查不到 tags 应计入 unmatched');
+    const cats = db
+      .prepare('SELECT problem_key, category FROM problem_list_items')
+      .all() as Array<{ problem_key: string; category: string }>;
+    const catByKey = new Map(cats.map((r) => [r.problem_key, r.category]));
+    assert.equal(catByKey.get('P1001'), '二分');
+    assert.equal(catByKey.get('P9999'), '数据结构', '查不到 tags 的题不应被抹成其他');
+  });
+});
+
 test('lists: import parses text, rule-classifies from bank tags, detail shows solved', async () => {
   await withServer(async ({ base, db }) => {
     seedProblems(db);

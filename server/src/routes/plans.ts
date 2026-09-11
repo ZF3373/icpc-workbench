@@ -21,9 +21,9 @@ export function plansRoutes(
 ): Router {
   const r = Router();
 
-  // POST /api/plans/generate  body: { days?, startDate?, dailyTasks? }
+  // POST /api/plans/generate  body: { days?, startDate?, dailyTasks?, requirements? }
   r.post('/generate', asyncHandler(async (req, res) => {
-    const { days, startDate, dailyTasks } = req.body ?? {};
+    const { days, startDate, dailyTasks, requirements } = req.body ?? {};
     try {
       const result = await generatePlan(db, getAiConfig(), {
         days: Number(days) || 14,
@@ -32,6 +32,11 @@ export function plansRoutes(
         dailyTasks:
           Number.isInteger(dailyTasks) && (dailyTasks as number) >= 1 && (dailyTasks as number) <= 6
             ? (dailyTasks as number)
+            : undefined,
+        // 用户手写的训练要求（≤500 字）：注入 AI 提示词，AI 生成时优先满足
+        requirements:
+          typeof requirements === 'string' && requirements.trim() !== ''
+            ? requirements.trim().slice(0, 500)
             : undefined,
       });
       res.json(result);

@@ -179,15 +179,20 @@ function normalize(
   models: Map<string, { difficulty?: number | null }>,
 ): NormalizedSubmission {
   const title = problems.get(s.problem_id)?.title ?? s.problem_id;
-  const difficulty = models.get(s.problem_id)?.difficulty ?? undefined;
+  const rawDifficulty = models.get(s.problem_id)?.difficulty;
+  // kenkoooo 难度模型对极简题（abc A 题）会给出负值（如 -1152），
+  // 与题库路径 fetchAtcoderBank 一致钳到 CF 实际下限 800，避免负难度
+  // 入库拉低难度分位/能力值统计
+  const difficulty =
+    typeof rawDifficulty === 'number' && Number.isFinite(rawDifficulty)
+      ? Math.max(800, Math.round(rawDifficulty))
+      : undefined;
   return {
     problem: {
       platform: 'atcoder' as PlatformId,
       problemKey: s.problem_id,
       title,
-      ...(typeof difficulty === 'number' && Number.isFinite(difficulty)
-        ? { difficulty }
-        : {}),
+      ...(difficulty !== undefined ? { difficulty } : {}),
       url: `https://atcoder.jp/contests/${s.contest_id}/tasks/${s.problem_id}`,
       tags: [],
     },

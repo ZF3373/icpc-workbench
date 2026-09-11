@@ -52,7 +52,8 @@ export function parseNcSearchRow(html: string, problemKey: string): BackfillInfo
     .filter(Boolean);
   const tds = [...m[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((x) => x[1]);
   const diffText = (tds[2] ?? '').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
-  const difficulty = /^\d+$/.test(diffText) ? Number(diffText) : null;
+  // 难度分为 CF 风格分值（约 200-3800）；过小值（演示题脏数据）视为无效
+  const difficulty = /^\d+$/.test(diffText) && Number(diffText) >= 100 ? Number(diffText) : null;
   return { problemKey, difficulty, title, tags: tags.length > 0 ? tags : null };
 }
 

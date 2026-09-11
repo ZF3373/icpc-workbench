@@ -403,6 +403,23 @@ test('buildPlanPackage prompt has placeholders rendered', () => {
   assert.ok(pkg.problems.length > 0);
 });
 
+test('buildPlanPackage 注入用户训练要求到提示词', () => {
+  seed();
+  const req = '主攻图论与 DP，题目难度 1600-1900，周日不安排任务';
+  const pkg = buildPlanPackage(db, 1, { days: 7, startDate: '2026-08-10', requirements: req });
+  assert.ok(pkg.prompt.includes(req), '用户要求原文应出现在提示词');
+  assert.ok(pkg.prompt.includes('用户的额外要求'), '提示词应包含要求区块标题');
+  assert.equal(pkg.meta.requirements, req);
+});
+
+test('buildPlanPackage 未填要求时提示词给出占位而非残留花括号', () => {
+  seed();
+  const pkg = buildPlanPackage(db, 1, { days: 7, startDate: '2026-08-10' });
+  assert.ok(pkg.prompt.includes('（无额外要求）'));
+  assert.ok(!pkg.prompt.includes('{requirements}'), '占位符应被替换');
+  assert.equal(pkg.meta.requirements, undefined);
+});
+
 test('renderTemplate replaces known vars and keeps unknown', () => {
   assert.equal(renderTemplate('a={x} b={y}', { x: '1' }), 'a=1 b={y}');
 });

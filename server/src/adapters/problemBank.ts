@@ -216,7 +216,9 @@ function parseNcRows(html: string): NcBankRow[] {
     );
     if (tds.length < 3) continue; // 异常行跳过
     const diffText = tds[2];
-    const difficulty = /^\d+$/.test(diffText) ? Number(diffText) : null;
+    // 牛客难度分为 CF 风格分值（约 200-3800）；过小值（如 NC1 Hello 演示题的 2）
+    // 是站点脏数据，越界无效 → null，避免拉低难度分位统计
+    const difficulty = /^\d+$/.test(diffText) && Number(diffText) >= 100 ? Number(diffText) : null;
     rows.push({ problemId, title: tds[1], difficulty });
   }
   return rows;

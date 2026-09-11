@@ -82,7 +82,9 @@ function parseTime(t: string): number {
  * 牛客适配器（公开 HTML 表格解析，无需登录）：
  * - 提交列表：GET /acm/contest/profile/{uid}/practice-coding?pageSize=10&page={n}
  *   （牛客已下线 JSON API；该页面匿名可访问，含运行ID/题目/结果/语言/提交时间）
- * - 表格按提交时间倒序 → 增量同步可在遇到旧条目时提前停止（since 截断）
+ * - 表格按提交时间倒序 → 增量同步依赖同步层注入的 knownExternalIds（提交号精确判重），
+ *   整页已知即提前停止。**不要**用 since（上次同步时刻）按提交时间截断——评测/列表
+ *   数据延迟会让"提交时间早于上次同步"的新记录出现（实测踩坑），时间截断会漏掉它们。
  * - 分批防封号：单次同步受 maxSubmissions 新增上限与页数预算约束，触及即停（opts.truncated），
  *   下次同步通过 backfill 游标续拉更早历史。限速 500ms/页防反爬。
  */
@@ -94,7 +96,6 @@ export function createNowcoderAdapter(fetchFn: typeof fetch = fetch): PlatformAd
       handle: string,
       opts?: FetchOptions,
     ): Promise<NormalizedSubmission[]> {
-      const sinceMs = opts?.since ? Date.parse(opts.since) : 0;
       let firstPageEmpty = false; // 首页空 = 页面结构变化/风控，须抛错而非"同步成功 0 条"
       return pagedFetch<NcRow>({
         pageSize: PAGE_SIZE,
@@ -119,10 +120,8 @@ export function createNowcoderAdapter(fetchFn: typeof fetch = fetch): PlatformAd
         },
         externalIdOf: (row) => row.submissionId,
         normalize: (row) => {
-          // since 截断：表格按时间 DESC，旧于增量起点的行不落库（不视为已知也不计新增）
-          const timeMs = parseTime(row.timeText);
-          if (sinceMs > 0 && timeMs > 0 && timeMs <= sinceMs) return null;
           const verdict = RESULT_MAP[row.result] ?? 'SKIPPED';
+          const timeMs = parseTime(row.timeText);
           return {
             problem: {
               platform: 'nowcoder' as PlatformId,

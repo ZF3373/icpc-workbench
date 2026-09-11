@@ -4,6 +4,7 @@ import {
   AutoComplete,
   Button,
   Card,
+  Collapse,
   DatePicker,
   Form,
   Input,
@@ -22,7 +23,7 @@ import {
   Upload,
   App as AntdApp,
 } from 'antd'
-import { ApiOutlined, ImportOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, AppstoreOutlined } from '@ant-design/icons'
+import { ApiOutlined, ImportOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, AppstoreOutlined, LinkOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
@@ -33,7 +34,7 @@ import PlatformTag from '../components/PlatformTag'
 import { get, post } from '../api'
 import { assembleCookie as assembleCookieHeader, extractCookieValue, type CookieFieldDef } from '../cookies'
 import { openExternal } from '../externalLinks'
-import { useSoftwareUpdate } from '../useSoftwareUpdate'
+import { useSoftwareUpdate } from '../updateContext'
 import type { ContestReminderConfig, ReminderConfig } from '../types'
 
 interface SettingsData {
@@ -96,7 +97,7 @@ export default function Settings() {
     get<SettingsData>('/api/settings')
       .then((d) => {
         setData(d)
-        aiForm.setFieldsValue({ ...d.ai, timeoutMs: d.ai.timeoutMs ? d.ai.timeoutMs / 1000 : 120, maxTokens: d.ai.maxTokens ?? 8192, contextWindow: d.ai.contextWindow ?? 131072, searchEngine: d.ai.searchEngine ?? 'tavily', searchApiKey: d.ai.searchApiKey ?? '' })
+        aiForm.setFieldsValue({ ...d.ai, timeoutMs: d.ai.timeoutMs ? d.ai.timeoutMs / 1000 : 120, maxTokens: Math.round((d.ai.maxTokens ?? 393216) / 1024), contextWindow: Math.round((d.ai.contextWindow ?? 1024000) / 1024), searchEngine: d.ai.searchEngine ?? 'tavily', searchApiKey: d.ai.searchApiKey ?? '' })
         const handles: Record<string, string> = {}
         const cookies: Record<string, Record<string, string>> = {}
         for (const a of d.accounts) handles[a.platform] = a.handle
@@ -125,6 +126,20 @@ export default function Settings() {
       .catch(() => {})
   }, [])
 
+  // 进入设置页时自动检测已保存 Cookie 的平台登录态，驱动面板右侧连接状态点。
+  // 仅对 cookie 类平台、有已保存 Cookie 且尚未检测过的触发，避免重复请求。
+  useEffect(() => {
+    if (!data) return
+    for (const p of data.platforms) {
+      if (p.sync !== 'cookie') continue
+      if (cookieCheck[p.id] !== undefined) continue
+      if (!data.cookies[p.id]?.cookie) continue
+      void checkCookie(p.id)
+    }
+    // checkCookie 闭包随渲染刷新，此处只需在 data 变化（加载完成）时驱动一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data])
+
   const { info, checking, check, phase, percent, busy, result, runUpdate, hasUpdate } = useSoftwareUpdate()
 
   if (!data) return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />
@@ -133,9 +148,9 @@ export default function Settings() {
     const v = await aiForm.validateFields().catch(() => null)
     if (!v) return
     try {
-      // 表单以秒为单位，后端存储毫秒
+      // 表单以秒/K 为单位，后端存储毫秒/token
       const { timeoutMs, maxTokens, contextWindow, ...rest } = v
-      await post('/api/settings/ai', { ...rest, timeoutMs: Math.round(timeoutMs * 1000), maxTokens, contextWindow })
+      await post('/api/settings/ai', { ...rest, timeoutMs: Math.round(timeoutMs * 1000), maxTokens: Math.round(maxTokens * 1024), contextWindow: Math.round(contextWindow * 1024) })
       message.success('AI 配置已保存')
       load()
     } catch (e) {
@@ -221,6 +236,12 @@ export default function Settings() {
       // csrf: '' 让后端清掉历史遗留的 csrf 记录——同步请求全是 GET，不需要 x-csrf-token
       await post('/api/settings/cookies', { platform, cookie: assembleCookie(platform, cookieInputs[platform]), csrf: '' })
       message.success(`${PLATFORMS.find((p) => p.id === platform)?.name} Cookie 已保存`)
+      // 清除旧检测结果：上方 data 变化驱动的 effect 会据此重新检测，刷新连接状态点
+      setCookieCheck((s) => {
+        const next = { ...s }
+        delete next[platform]
+        return next
+      })
       load()
     } catch (e) {
       message.error((e as Error).message)
@@ -312,11 +333,11 @@ export default function Settings() {
             <Form.Item name="timeoutMs" label="对话超时（秒）" tooltip="AI 助手对话的最长等待时间。响应慢的模型可适当调大，默认 120 秒">
               <InputNumber min={30} max={600} step={30} addonAfter="秒" style={{ width: '100%' }} />
             </Form.Item>
-            <Form.Item name="maxTokens" label="最大输出 token" tooltip="AI 单次回复的最大 token 数。批量整理模板等长输出场景可调大，但不得超过所使用模型的上限。默认 8192">
-              <InputNumber min={512} max={393216} step={1000} addonAfter="tokens" style={{ width: '100%' }} />
+            <Form.Item name="maxTokens" label="最大输出" tooltip="AI 单次回复的最大长度。批量整理模板等长输出场景可调大，但不得超过所使用模型的上限。默认 384K（=393216 tokens）">
+              <InputNumber min={1} max={384} step={1} addonAfter="K tokens" style={{ width: '100%' }} />
             </Form.Item>
-            <Form.Item name="contextWindow" label="模型上下文长度" tooltip="模型支持的最大上下文 token 数（含输入+输出）。对话历史超过此长度时自动裁剪最早的消息。当前主流模型多为百万级上下文，请按你实际使用的模型参数填写，设置过小会频繁裁剪丢失上下文，过大会触发 API 超限报错。默认 131072（128K）">
-              <InputNumber min={2048} max={2097152} step={4096} addonAfter="tokens" style={{ width: '100%' }} />
+            <Form.Item name="contextWindow" label="模型上下文长度" tooltip="模型支持的最大上下文长度（含输入+输出）。对话历史超过此长度时自动裁剪最早的消息。当前主流模型多为百万级上下文，请按你实际使用的模型参数填写，设置过小会频繁裁剪丢失上下文，过大会触发 API 超限报错。默认 1000K（=1024000 tokens）">
+              <InputNumber min={2} max={2048} step={16} addonAfter="K tokens" style={{ width: '100%' }} />
             </Form.Item>
             <div style={{ borderTop: '1px solid var(--border-color, rgba(255,255,255,0.06))', margin: '12px 0', paddingTop: 12 }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: 'var(--text-1, #e8eaed)' }}>联网搜索（可选）</div>
@@ -367,94 +388,124 @@ export default function Settings() {
       </Col>
       <Col xs={24} lg={12}>
         <Card title={<span className="settings-section-title"><UserOutlined />平台账号与适配器</span>} size="small">
-          {data.platforms.map((p) => {
-            const account = data.accounts.find((a) => a.platform === p.id)
-            const enabled = data.adapterEnabled[p.id] !== false
-            const syncNote =
-              p.sync === 'auto' ? '自动同步' : p.sync === 'cookie' ? '配置 Cookie 后自动同步' : '仅手动导入'
-            const c = cookieInputs[p.id] ?? {}
-            return (
-              <div key={p.id} className="platform-row">
-                <div className="platform-row-head">
-                  <PlatformTag id={p.id} name={<b>{p.name}</b>} />
-                  <Tag color={SYNC_NOTE_COLOR[p.sync]}>{syncNote}</Tag>
-                  <span className="spacer" />
-                  <Space size={6}>
+          <Collapse
+            defaultActiveKey={data.platforms.map((p) => p.id)}
+            size="small"
+            className="platform-collapse"
+            items={data.platforms.map((p) => {
+              const account = data.accounts.find((a) => a.platform === p.id)
+              const enabled = data.adapterEnabled[p.id] !== false
+              const syncNote =
+                p.sync === 'auto' ? '自动同步' : p.sync === 'cookie' ? '配置 Cookie 后自动同步' : '仅手动导入'
+              const c = cookieInputs[p.id] ?? {}
+              const check = cookieCheck[p.id]
+              const fields = COOKIE_FORM[p.id] ?? []
+              // 连接状态点：自动同步平台看「已绑定 + 适配器开启」；cookie 平台看检测登录态
+              // （未检测但有已保存 Cookie 时显示检测中，由上方 effect 自动触发检测）
+              const dot =
+                p.sync === 'auto'
+                  ? account && enabled
+                    ? { cls: 'conn-dot-ok', title: '已连接' }
+                    : { cls: 'conn-dot-fail', title: '未连接' }
+                  : check === 'checking'
+                    ? { cls: 'conn-dot-checking', title: '检测中…' }
+                    : check
+                      ? check.ok
+                        ? { cls: 'conn-dot-ok', title: '已连接' }
+                        : { cls: 'conn-dot-fail', title: '未连接' }
+                      : data.cookies[p.id]?.cookie
+                        ? { cls: 'conn-dot-checking', title: '检测中…' }
+                        : { cls: 'conn-dot-fail', title: '未连接' }
+              return {
+                key: p.id,
+                label: (
+                  <Space size={8}>
+                    <a
+                      className="platform-link"
+                      title={`打开 ${p.name} 官网`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        openExternal(p.homepage)
+                      }}
+                    >
+                      <PlatformTag id={p.id} name={<b>{p.name}</b>} />
+                      <LinkOutlined className="platform-link-icon" />
+                    </a>
+                    <Tag color={SYNC_NOTE_COLOR[p.sync]}>{syncNote}</Tag>
+                    {account && <span className="bound-info">已绑定 {account.handle}</span>}
+                  </Space>
+                ),
+                extra: (
+                  <Space size={6} onClick={(e) => e.stopPropagation()}>
                     <span className="adapter-label">自动同步</span>
                     <Switch
                       size="small"
                       checked={enabled}
                       onChange={(v) => toggleAdapter(p.id, v)}
                     />
+                    <span className={`conn-dot ${dot.cls}`} title={dot.title} />
                   </Space>
-                </div>
-                <Space wrap>
-                  <Input
-                    placeholder={p.id === 'codeforces' ? 'CF handle' : '用户名 / uid'}
-                    style={{ width: 200 }}
-                    value={handleInputs[p.id] ?? ''}
-                    onChange={(e) => setHandleInputs((s) => ({ ...s, [p.id]: e.target.value }))}
-                  />
-                  <Button onClick={() => bindAccount(p.id)}>
-                    保存
-                  </Button>
-                  {account && <span className="bound-info">已绑定 {account.handle}</span>}
-                </Space>
-                {p.sync === 'cookie' && (
-                  <div style={{ marginTop: 10 }}>
-                    {(() => {
-                      const check = cookieCheck[p.id]
-                      const fields = COOKIE_FORM[p.id] ?? []
-                      return (
-                        <>
-                          <Space wrap>
-                            {fields.map((f) =>
-                              f.password ? (
-                                <Input.Password
-                                  key={f.key}
-                                  placeholder={f.placeholder}
-                                  style={{ width: 300 }}
-                                  value={c[f.key] ?? ''}
-                                  onChange={(e) =>
-                                    setCookieInputs((s) => ({ ...s, [p.id]: { ...(s[p.id] ?? {}), [f.key]: e.target.value } }))
-                                  }
-                                />
-                              ) : (
-                                <Input
-                                  key={f.key}
-                                  placeholder={f.placeholder}
-                                  style={{ width: 200 }}
-                                  value={c[f.key] ?? ''}
-                                  onChange={(e) =>
-                                    setCookieInputs((s) => ({ ...s, [p.id]: { ...(s[p.id] ?? {}), [f.key]: e.target.value } }))
-                                  }
-                                />
-                              ),
-                            )}
-                            <Button size="small" onClick={() => saveCookie(p.id)}>
-                              保存 Cookie
-                            </Button>
-                            <Button size="small" loading={check === 'checking'} onClick={() => checkCookie(p.id)}>
-                              检测 Cookie
-                            </Button>
-                          </Space>
-                          {check && check !== 'checking' && (
-                            <Alert
-                              style={{ marginTop: 8, maxWidth: 520 }}
-                              type={check.ok ? 'success' : 'warning'}
-                              showIcon
-                              closable
-                              message={check.message}
-                            />
+                ),
+                children: (
+                  <>
+                    <Space wrap>
+                      <Input
+                        placeholder={p.id === 'codeforces' ? 'CF handle' : '用户名 / uid'}
+                        style={{ width: 200 }}
+                        value={handleInputs[p.id] ?? ''}
+                        onChange={(e) => setHandleInputs((s) => ({ ...s, [p.id]: e.target.value }))}
+                      />
+                      <Button onClick={() => bindAccount(p.id)}>保存</Button>
+                    </Space>
+                    {p.sync === 'cookie' && (
+                      <div style={{ marginTop: 10 }}>
+                        <Space wrap>
+                          {fields.map((f) =>
+                            f.password ? (
+                              <Input.Password
+                                key={f.key}
+                                placeholder={f.placeholder}
+                                style={{ width: 300 }}
+                                value={c[f.key] ?? ''}
+                                onChange={(e) =>
+                                  setCookieInputs((s) => ({ ...s, [p.id]: { ...(s[p.id] ?? {}), [f.key]: e.target.value } }))
+                                }
+                              />
+                            ) : (
+                              <Input
+                                key={f.key}
+                                placeholder={f.placeholder}
+                                style={{ width: 200 }}
+                                value={c[f.key] ?? ''}
+                                onChange={(e) =>
+                                  setCookieInputs((s) => ({ ...s, [p.id]: { ...(s[p.id] ?? {}), [f.key]: e.target.value } }))
+                                }
+                              />
+                            ),
                           )}
-                        </>
-                      )
-                    })()}
-                  </div>
-                )}
-              </div>
-            )
-          })}
+                          <Button size="small" onClick={() => saveCookie(p.id)}>
+                            保存 Cookie
+                          </Button>
+                          <Button size="small" loading={check === 'checking'} onClick={() => checkCookie(p.id)}>
+                            检测 Cookie
+                          </Button>
+                        </Space>
+                        {check && check !== 'checking' && (
+                          <Alert
+                            style={{ marginTop: 8, maxWidth: 520 }}
+                            type={check.ok ? 'success' : 'warning'}
+                            showIcon
+                            closable
+                            message={check.message}
+                          />
+                        )}
+                      </div>
+                    )}
+                  </>
+                ),
+              }
+            })}
+          />
           <p className="muted-note">
             说明：Codeforces / AtCoder / 牛客自动同步；洛谷、代码源、LeetCode 填写 Cookie 后自动同步（未配置时请在「题目管理」手动导入）。代码源基于 Hydro 搭建，只需复制 sid 一项会话 Cookie；LeetCode 为力扣中国（leetcode.cn），需复制 LEETCODE_SESSION 与 csrftoken 两项 Cookie。
           </p>

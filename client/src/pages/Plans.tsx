@@ -339,7 +339,7 @@ function GenerateModal({ open, form, onClose, onDone }: { open: boolean; form: R
   const submit = async () => {
     const v = (await form
       .validateFields()
-      .catch(() => null)) as unknown as { days: number; startDate: { format(f: string): string }; dailyTasks?: number } | null
+      .catch(() => null)) as unknown as { days: number; startDate: { format(f: string): string }; dailyTasks?: number; requirements?: string } | null
     if (!v) return
     setBusy(true)
     try {
@@ -348,6 +348,8 @@ function GenerateModal({ open, form, onClose, onDone }: { open: boolean; form: R
         startDate: v.startDate.format('YYYY-MM-DD'),
         // 每天任务数留空 = AI 自行安排（1-3）
         dailyTasks: v.dailyTasks ?? undefined,
+        // 用户手写的训练要求（可选）
+        requirements: v.requirements?.trim() || undefined,
       })
       message.success(`已生成「${r.title}」（${r.source === 'ai' ? 'AI' : '模板'}）`)
       onDone()
@@ -368,6 +370,19 @@ function GenerateModal({ open, form, onClose, onDone }: { open: boolean; form: R
         </Form.Item>
         <Form.Item name="startDate" label="开始日期" rules={[{ required: true }]}>
           <DatePicker style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item
+          name="requirements"
+          label="训练要求"
+          extra="可选。写下你对计划的要求（如：主攻图论与 DP、多安排 Div.2 赛题、周末留空），AI 生成时会优先满足"
+          rules={[{ max: 500, message: '最多 500 字' }]}
+        >
+          <Input.TextArea
+            rows={3}
+            placeholder="如：主攻图论和动态规划，题目难度 1600-1900，周日不安排任务"
+            maxLength={500}
+            showCount
+          />
         </Form.Item>
       </Form>
     </Modal>

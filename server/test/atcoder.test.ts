@@ -22,9 +22,16 @@ function router(
 const PROBLEMS = [
   { id: 'abc321_a', contest_id: 'abc321', title: '321-like Checker' },
   { id: 'abc321_b', contest_id: 'abc321', title: 'Cutoff' },
+  { id: 'abc321_c', contest_id: 'abc321', title: '321-like Checker (Easy)' },
+  { id: 'abc321_d', contest_id: 'abc321', title: 'Polygon' },
 ];
 
-const MODELS = { abc321_a: { difficulty: 125 }, abc321_b: { difficulty: null } };
+const MODELS = {
+  abc321_a: { difficulty: 125 },
+  abc321_b: { difficulty: null },
+  abc321_c: { difficulty: -1152 }, // kenkoooo 对极简题给出负值
+  abc321_d: { difficulty: 926.4 }, // 非整数难度（四舍五入）
+};
 
 function submission(over: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -62,11 +69,21 @@ test('normalizes AtCoder submissions with title/difficulty/link', async () => {
   assert.equal(r.verdict, 'AC');
   assert.equal(r.problem.problemKey, 'abc321_a');
   assert.equal(r.problem.title, '321-like Checker');
-  assert.equal(r.problem.difficulty, 125);
+  assert.equal(r.problem.difficulty, 800); // 125 低于 CF 下限 → 钳到 800（与题库路径一致）
   assert.equal(r.problem.url, 'https://atcoder.jp/contests/abc321/tasks/abc321_a');
   assert.equal(new Date(r.submittedAt).toISOString(), new Date(1700000000 * 1000).toISOString());
   assert.equal(rows[1].verdict, 'WA');
   assert.equal('difficulty' in rows[1].problem, false); // null 难度省略
+});
+
+test('负难度钳到 CF 下限 800，非整数难度四舍五入（与题库路径一致）', async () => {
+  const adapter = makeAdapter(() => [
+    submission({ id: 1003, problem_id: 'abc321_c' }),
+    submission({ id: 1004, problem_id: 'abc321_d' }),
+  ]);
+  const rows = await adapter.fetchUserSubmissions('u');
+  assert.equal(rows[0].problem.difficulty, 800); // -1152 → 800
+  assert.equal(rows[1].problem.difficulty, 926); // 926.4 → 926
 });
 
 test('pages through 500-per-page until short page, dedupes by id', async () => {

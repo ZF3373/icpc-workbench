@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Popconfirm, Space } from 'antd'
 import { openExternal } from './externalLinks'
-import { useSoftwareUpdate } from './useSoftwareUpdate'
+import { useSoftwareUpdate } from './updateContext'
 
 const LAST_CHECK_KEY = 'update.lastCheckAt'
 const DISMISS_KEY = 'update.dismissed'

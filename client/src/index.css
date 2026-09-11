@@ -451,6 +451,28 @@ body {
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.16);
 }
 
+/* 设置页平台名：可点击跳转官网，默认像普通文本，hover 才高亮 + 显链接图标 */
+.platform-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+  text-decoration: none;
+}
+.platform-link:hover {
+  color: var(--brand, #86a8ff);
+}
+.platform-link-icon {
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.platform-link:hover .platform-link-icon {
+  opacity: 0.7;
+}
+
 /* 带圆点的状态标签 */
 .dot-tag {
   display: inline-flex;
@@ -1828,36 +1850,62 @@ body {
   margin: 8px 0 0;
 }
 
-/* 平台账号行：独立圆角小面板 */
-.platform-row {
+/* 平台账号折叠面板：每平台一个独立圆角面板，可收起 */
+.platform-collapse.ant-collapse {
+  border: none;
+  background: transparent;
+}
+.platform-collapse .ant-collapse-item {
   border: 1px solid var(--line-soft);
   border-radius: 10px;
-  padding: 12px 14px;
   margin-bottom: 12px;
   background: var(--bg-elevated);
+  overflow: hidden;
   transition: border-color 0.2s ease;
 }
-
-.platform-row:hover {
+.platform-collapse .ant-collapse-item:last-child {
+  margin-bottom: 0;
+}
+.platform-collapse .ant-collapse-item:hover {
   border-color: rgba(134, 168, 255, 0.28);
 }
-
-.platform-row-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 10px;
+.platform-collapse .ant-collapse-header {
+  align-items: center !important;
 }
-
-.platform-row-head .spacer {
-  flex: 1;
+.platform-collapse .ant-collapse-content-box {
+  padding-top: 4px !important;
 }
 
 .adapter-label {
   font-size: 12px;
   color: var(--text-3);
   margin-right: 4px;
+}
+
+/* 平台连接状态点：绿=已连接，红=未连接，蓝=检测中 */
+.conn-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.conn-dot-ok {
+  background: var(--green, #69d7a5);
+  box-shadow: 0 0 0 2px rgba(105, 215, 165, 0.18);
+}
+.conn-dot-fail {
+  background: var(--red, #ff7b84);
+  box-shadow: 0 0 0 2px rgba(255, 123, 132, 0.18);
+}
+.conn-dot-checking {
+  background: var(--blue, #58a3ff);
+  box-shadow: 0 0 0 2px rgba(88, 163, 255, 0.18);
+  animation: conn-dot-pulse 1s ease-in-out infinite;
+}
+@keyframes conn-dot-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
 }
 
 .bound-info {
@@ -1931,8 +1979,33 @@ body {
   font-size: 13px;
 }
 
+/* 助手消息复制按钮：默认低透明度，hover 消息时显现 */
+.msg-copy-btn {
+  margin-top: 6px;
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--text-3, #8993a2);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  height: 24px;
+}
+.plan-chat-msg:hover .msg-copy-btn {
+  opacity: 0.7;
+}
+.msg-copy-btn:hover {
+  opacity: 1 !important;
+  color: var(--brand, #86a8ff) !important;
+}
+
 .plan-chat-msg-assistant .markdown-body {
   font-size: 13px;
+}
+
+/* KaTeX 解析失败的公式以普通文本回退显示（非刺眼红色） */
+.katex-error {
+  color: inherit !important;
+  font-family: "Cascadia Code", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.95em;
 }
 
 .plan-chat-msg-assistant .markdown-body p:first-child {

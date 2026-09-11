@@ -284,3 +284,63 @@ test('chat: attachments validation errors', async () => {
     assert.equal(captured.length, 0);
   });
 });
+
+// ---------- 历史消息中的本地文本附件（textContent 已剥离） ----------
+
+test('chat: 本地附件（doc-/text- 前缀 fileId）不转 file 内容块', async () => {
+  await withChatCapture(async (root, captured) => {
+    const res = await fetch(`${root}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            role: 'user',
+            content: '翻译并讲解D题',
+            // 客户端持久化的历史消息：textContent 被剥离，只剩本地生成的假 fileId
+            attachments: [{ fileId: 'doc-1234567890-abc123', filename: 'contest-60875-en.pdf', bytes: 304742 }],
+          },
+          { role: 'assistant', content: '这是D题的讲解……' },
+          { role: 'user', content: '那复杂度是多少？' },
+        ],
+      }),
+    });
+    assert.equal(res.status, 200);
+    await res.text();
+
+    assert.equal(captured.length, 1);
+    const msgs = captured[0]!;
+    // 历史附件消息必须仍是纯字符串（无 file 内容块）——
+    // 若被转为 file 块，上游不支持 audio/file 能力的模型会 400，第二轮起每次调用都失败
+    assert.equal(typeof msgs[0]!.content, 'string');
+    assert.match(msgs[0]!.content as string, /contest-60875-en\.pdf/);
+    assert.match(msgs[0]!.content as string, /附件内容未随本轮携带/);
+  });
+});
+
+test('chat: 首轮本地附件带 textContent 时正常拼接文本', async () => {
+  await withChatCapture(async (root, captured) => {
+    const res = await fetch(`${root}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          {
+            role: 'user',
+            content: '讲解这题',
+            attachments: [
+              { fileId: 'text-1-a', filename: 'a.cpp', bytes: 10, textContent: 'int main(){}' },
+            ],
+          },
+        ],
+      }),
+    });
+    assert.equal(res.status, 200);
+    await res.text();
+
+    const msgs = captured[0]!;
+    // 文本附件内容以代码块拼接到消息文本，仍是纯字符串
+    assert.equal(typeof msgs[0]!.content, 'string');
+    assert.match(msgs[0]!.content as string, /```cpp\nint main\(\)\{\}\n```/);
+  });
+});

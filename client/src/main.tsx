@@ -8,6 +8,7 @@ import 'dayjs/locale/zh-cn'
 import 'antd/dist/reset.css'
 import './index.css'
 import { setupExternalLinks } from './externalLinks'
+import { UpdateProvider } from './updateContext'
 import App from './App.tsx'
 
 dayjs.locale('zh-cn')
@@ -89,7 +90,9 @@ createRoot(document.getElementById('root')!).render(
     >
       <AntdApp>
         <BrowserRouter>
-          <App />
+          <UpdateProvider>
+            <App />
+          </UpdateProvider>
         </BrowserRouter>
       </AntdApp>
     </ConfigProvider>

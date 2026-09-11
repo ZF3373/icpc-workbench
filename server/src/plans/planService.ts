@@ -84,7 +84,7 @@ export interface PlanPackage {
   /** 注入提示词的数据汇总精简版（Markdown 行） */
   summaryPrompt: string;
   prompt: string;
-  meta: { startDate: string; days: number; generatedAt: string };
+  meta: { startDate: string; days: number; requirements?: string; generatedAt: string };
 }
 
 export function addDays(dateStr: string, n: number): string {
@@ -216,16 +216,22 @@ export function savePlan(
 
 /**
  * 生成训练计划：优先调用 AI（OpenAI 兼容），失败或未配置时降级为模板计划。
+ * requirements：用户手写的训练要求，注入 AI 提示词（模板路径无 AI 参与，仅记录到目标）。
  */
 export async function generatePlan(
   db: Db,
   aiConfig: AiConfig,
-  opts: { days?: number; startDate?: string; dailyTasks?: number; provider?: AiProvider } = {},
+  opts: { days?: number; startDate?: string; dailyTasks?: number; requirements?: string; provider?: AiProvider } = {},
 ): Promise<{ planId: number; source: 'ai' | 'template'; title: string }> {
   const userId = DEFAULT_USER_ID;
   const days = opts.days ?? 14;
   const startDate = opts.startDate ?? today();
-  const pkg = buildPlanPackage(db, userId, { days, startDate, dailyTasks: opts.dailyTasks });
+  const pkg = buildPlanPackage(db, userId, {
+    days,
+    startDate,
+    dailyTasks: opts.dailyTasks,
+    requirements: opts.requirements,
+  });
   const provider = opts.provider ?? new AiProvider(aiConfig);
 
   if (provider.enabled) {
@@ -250,11 +256,15 @@ export async function generatePlan(
 export function buildPlanPackage(
   db: Db,
   userId: number,
-  opts: { days?: number; startDate?: string; dailyTasks?: number } = {},
+  opts: { days?: number; startDate?: string; dailyTasks?: number; requirements?: string } = {},
 ): PlanPackage {
   const days = opts.days ?? 14;
   const startDate = opts.startDate ?? today();
   const dailyTasks = typeof opts.dailyTasks === 'number' ? opts.dailyTasks : undefined;
+  const requirements =
+    typeof opts.requirements === 'string' && opts.requirements.trim() !== ''
+      ? opts.requirements.trim()
+      : undefined;
   // minAttempts=5：过小的样本（如 3 次提交 0AC）不足以支撑"弱项"结论
   const profile = computeWeakness(db, userId, { minAttempts: 5, topN: 8 });
   const trend = computeTrend(db, userId, 12);
@@ -277,6 +287,8 @@ export function buildPlanPackage(
     trend: JSON.stringify(trend),
     summary: summaryPrompt,
     problems: renderProblemGroups(problems),
+    // 用户手写的训练要求：未填写时给出"无"占位，避免模板占位符残留
+    requirements: requirements ?? '（无额外要求）',
   });
 
   return {
@@ -288,7 +300,7 @@ export function buildPlanPackage(
     summary,
     summaryPrompt,
     prompt,
-    meta: { startDate, days, generatedAt: new Date().toISOString() },
+    meta: { startDate, days, requirements, generatedAt: new Date().toISOString() },
   };
 }
 

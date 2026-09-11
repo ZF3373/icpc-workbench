@@ -8,12 +8,14 @@ import {
   RedoOutlined,
   ReadOutlined,
   SendOutlined,
+  SyncOutlined,
 } from '@ant-design/icons'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
 import { difficultyColor, tagColor } from '../ui'
 import { get, post } from '../api'
 import type { StreakInfo, TodayPlan, TodayBandKey } from '../types'
+import type { PlatformId } from '../../../shared/src/index.ts'
 
 /** 每档题量（与后端默认一致；「换一批」在同一档内轮换） */
 const BAND_TONE: Record<TodayBandKey, string> = {
@@ -29,6 +31,10 @@ export default function Today() {
   const [rotate, setRotate] = useState(0)
   const [streak, setStreak] = useState<StreakInfo | null>(null)
   const [queued, setQueued] = useState<Set<number>>(new Set())
+  /** 正在同步的平台集合（按 platform 维度去重，同一平台同时只同步一次） */
+  const [syncingPlatforms, setSyncingPlatforms] = useState<Set<string>>(new Set())
+  /** 已绑定的平台账号 handle 映射（同步时需要） */
+  const [accountHandles, setAccountHandles] = useState<Record<string, string>>({})
 
   const load = useCallback(
     (rot: number) => {
@@ -49,6 +55,14 @@ export default function Today() {
     get<StreakInfo>('/api/checkins/streak')
       .then(setStreak)
       .catch(() => undefined)
+    // 加载已绑定的平台账号（同步按钮需要 handle）
+    get<{ accounts: Array<{ platform: string; handle: string }> }>('/api/settings')
+      .then((d) => {
+        const map: Record<string, string> = {}
+        for (const a of d.accounts) map[a.platform] = a.handle
+        setAccountHandles(map)
+      })
+      .catch(() => undefined)
   }, [])
 
   const addToReview = async (p: { id: number; platform: string; problemKey: string }) => {
@@ -58,6 +72,40 @@ export default function Today() {
       setQueued((s) => new Set(s).add(p.id))
     } catch (e) {
       message.error((e as Error).message)
+    }
+  }
+
+  /** 同步单个平台的提交记录（做完题后立即拉取最新 AC 状态） */
+  const syncPlatform = async (platform: PlatformId) => {
+    const handle = accountHandles[platform]
+    if (!handle) {
+      message.warning(`未绑定 ${platform} 账号，请到「设置 → 平台账号」绑定后再同步`)
+      return
+    }
+    setSyncingPlatforms((s) => new Set(s).add(platform))
+    try {
+      const r = await post<{ imported: number; skipped: number; errors: string[] }>(
+        `/api/sync/${platform}`,
+        { handle },
+      )
+      if (r.errors.length > 0) {
+        message.warning(`${platform}：${r.errors[0]}`, 6)
+      }
+      if (r.imported > 0) {
+        message.success(`${platform} 同步完成：新增 ${r.imported} 条提交`)
+        // 同步到新数据后刷新今日推荐（推荐基于最新 AC 记录）
+        load(rotate)
+      } else {
+        message.info(`${platform} 同步完成：暂无新提交`)
+      }
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setSyncingPlatforms((s) => {
+        const next = new Set(s)
+        next.delete(platform)
+        return next
+      })
     }
   }
 
@@ -201,15 +249,28 @@ export default function Today() {
                               <Tag key={t}>{t}</Tag>
                             ))}
                           </Space>
-                          <Button
-                            size="small"
-                            type="text"
-                            icon={<ReadOutlined />}
-                            disabled={queued.has(p.id)}
-                            onClick={() => addToReview(p)}
-                          >
-                            {queued.has(p.id) ? '已加入' : '复习'}
-                          </Button>
+                          <Space size={4}>
+                            <Button
+                              size="small"
+                              type="text"
+                              icon={<ReadOutlined />}
+                              disabled={queued.has(p.id)}
+                              onClick={() => addToReview(p)}
+                            >
+                              {queued.has(p.id) ? '已加入' : '复习'}
+                            </Button>
+                            <Tooltip title={`同步 ${p.platform} 的提交记录（做完题后点此拉取最新 AC 状态）`}>
+                              <Button
+                                size="small"
+                                type="text"
+                                icon={<SyncOutlined spin={syncingPlatforms.has(p.platform)} />}
+                                disabled={syncingPlatforms.has(p.platform)}
+                                onClick={() => syncPlatform(p.platform as PlatformId)}
+                              >
+                                同步
+                              </Button>
+                            </Tooltip>
+                          </Space>
                         </div>
                       </Card>
                     ))
