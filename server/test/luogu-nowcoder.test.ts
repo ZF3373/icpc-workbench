@@ -54,6 +54,20 @@ test('luogu: checkAuth reports valid cookie via record/list self-check', async (
   assert.equal(r.ok, true);
 });
 
+test('luogu: checkAuth works with new Lentille structure (data.data.records)', async () => {
+  // 洛谷升级 Lentille 管线后，_contentOnly=1 失效，需 x-lentille-request: content-only 请求头
+  // 响应结构从 data.currentData.records 变为 data.data.records
+  const fetchFn = router({
+    'record/list': () => ({
+      code: 200,
+      data: { records: { result: [{ id: 1, status: 12, submitTime: 1700000000 }] } },
+    }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  const r = await adapter.checkAuth!({ cookie: COOKIE });
+  assert.equal(r.ok, true);
+});
+
 test('luogu: checkAuth reports invalid cookie missing _uid', async () => {
   const adapter = createLuoguAdapter(router({}));
   const r = await adapter.checkAuth!({ cookie: '__client_id=abc' });
@@ -162,6 +176,33 @@ test('luogu: with cookie normalizes records and problem info', async () => {
   assert.equal(rows[1].problem.title, 'T P1002');
   assert.equal('difficulty' in rows[1].problem, false); // 无难度时不写入
   assert.equal(rows[2].verdict, 'RE'); // status 11 = UKE → RE
+});
+
+test('luogu: fetchUserSubmissions works with new Lentille structure (data.data.records)', async () => {
+  // 洛谷升级 Lentille 管线后响应结构从 data.currentData.records 变为 data.data.records
+  const fetchFn = router({
+    'record/list': (url) => {
+      const page = new URL(url).searchParams.get('page');
+      if (page !== '1') return { code: 200, data: { records: { result: [] } } };
+      return {
+        code: 200,
+        data: {
+          records: {
+            result: [
+              { id: 9301, status: 12, submitTime: 1700000000000, problem: { pid: 'P1001', difficulty: 2 } },
+            ],
+          },
+        },
+      };
+    },
+    '/problem/': () => ({ code: 200, data: { problem: { pid: 'P1001', difficulty: 2, tags: [] } } }),
+    '_lfe/tags': () => ({ tags: [] }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  const rows = await adapter.fetchUserSubmissions('123', { cookie: COOKIE });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].externalId, '9301');
+  assert.equal(rows[0].verdict, 'AC');
 });
 
 test('luogu: 秒级 submitTime 正确转毫秒（回归：曾被当毫秒解析全部落回 1970）', async () => {

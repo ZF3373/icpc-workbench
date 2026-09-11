@@ -33,7 +33,7 @@ export function stripAbilityUpdate(reply: string): string {
   return reply.replace(/```[a-zA-Z-]*ability-update[\s\S]*?```/g, '').trim()
 }
 
-/** template-add 块草稿（AI 建议写入模板库的模板内容，确认后走 POST /api/templates/custom） */
+/** template-add 块草稿（AI 建议写入模板库的模板内容，确认后写入） */
 export interface TemplateAddDraft {
   categoryKey: string
   name: string
@@ -43,6 +43,9 @@ export interface TemplateAddDraft {
   idea?: string
   complexity?: string
   url?: string
+  /** 可选：已有内置模板的 id（如 math-game-theory）。
+   *  存在时写入该内置条目（PUT /api/templates/:id/content），而非新建自定义模板 */
+  templateId?: string
 }
 
 /** 解析回复中全部 template-add 块（AI 模板库写入建议）：返回草稿数组，缺 name 的块跳过，无块返回空数组 */
@@ -63,6 +66,7 @@ export function extractTemplateAdd(reply: string): TemplateAddDraft[] {
         ...(typeof v.idea === 'string' && v.idea.trim() !== '' ? { idea: v.idea } : {}),
         ...(typeof v.complexity === 'string' && v.complexity.trim() !== '' ? { complexity: v.complexity } : {}),
         ...(typeof v.url === 'string' && v.url.trim() !== '' ? { url: v.url.trim() } : {}),
+        ...(typeof v.templateId === 'string' && v.templateId.trim() !== '' ? { templateId: v.templateId.trim() } : {}),
       })
     } catch {
       // 单块 JSON 非法跳过，不影响其余块解析

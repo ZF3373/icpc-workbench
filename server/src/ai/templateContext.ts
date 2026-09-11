@@ -52,7 +52,7 @@ export function buildTemplateLibrarySummary(db: Db): string {
 
   const lines: string[] = [];
 
-  // 内置课程模板：按分类列出名称、难度、状态
+  // 内置课程模板：按分类列出名称、难度、状态、模板 ID（供 AI 在 template-add 中引用以完善已有条目）
   for (const cat of CURRICULUM) {
     const items: string[] = [];
     for (const t of cat.templates) {
@@ -60,7 +60,7 @@ export function buildTemplateLibrarySummary(db: Db): string {
       const statusTag = p?.status === 'mastered' ? '✓已掌握' : p?.status === 'learning' ? '学习中' : '';
       const contentTag = p?.hasContent ? '✏已有内容' : '';
       const tags = [statusTag, contentTag].filter(Boolean).join(' ');
-      items.push(`  - ${t.name}（难度${t.difficulty}${tags ? `，${tags}` : ''}）`);
+      items.push(`  - ${t.name}（难度${t.difficulty}${tags ? `，${tags}` : ''}，id=${t.id}）`);
     }
     lines.push(`### ${cat.name}（${cat.key}）`);
     lines.push(items.join('\n'));

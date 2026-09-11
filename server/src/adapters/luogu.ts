@@ -85,9 +85,15 @@ interface LuoguRecord {
   problem?: LuoguProblem;
 }
 
+/** 洛谷提交列表响应（Lentille 管线，需 x-lentille-request: content-only 请求头）。
+ *  新结构：data.data.records.result；旧结构（已下线）：data.currentData.records.result */
 interface LuoguListResp {
   code?: number;
+  status?: number;
   currentData?: {
+    records?: { result?: LuoguRecord[] };
+  };
+  data?: {
     records?: { result?: LuoguRecord[] };
   };
 }
@@ -150,8 +156,8 @@ export async function fetchWithChallenge(
 
 /**
  * 洛谷适配器（需登录 Cookie + CSRF）：
- * - 提交列表：GET /record/list?user={uid}&page={n}&_contentOnly=1
- * - 题目信息（难度/标签）：GET /problem/{pid}?_contentOnly=1（进程内缓存，并发受限）
+ * - 提交列表：GET /record/list?user={uid}&page={n}（需 x-lentille-request: content-only 请求头）
+ * - 题目信息（难度/标签）：GET /problem/{pid}（需 x-lentille-request: content-only 请求头，进程内缓存，并发受限）
  * - 未配置 Cookie 时抛 ManualImportRequiredError 引导配置/手动导入
  */
 export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapter {
@@ -266,8 +272,11 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
       let rowCapped = false; // 触及新增上限
       for (let page = startPage, n = 0; n < budget; page += 1, n += 1) {
         reachedPage = page;
-        const url = `${API}/record/list?user=${encodeURIComponent(handle)}&page=${page}&_contentOnly=1`;
-        const res = await fetchWithChallenge(fetchFn, url, cookie, opts?.csrf);
+        const url = `${API}/record/list?user=${encodeURIComponent(handle)}&page=${page}`;
+        const res = await fetchWithChallenge(fetchFn, url, cookie, opts?.csrf, {
+          'x-lentille-request': 'content-only',
+          Accept: 'application/json',
+        });
         // 302 且无新 C3VK = 未登录 / Cookie 无效（洛谷重定向到登录页）
         if ([301, 302, 303].includes(res.status)) {
           throw new Error('洛谷返回登录跳转：Cookie 无效或已过期，请在设置中重新填写（需登录洛谷后复制最新 Cookie）');
@@ -286,10 +295,11 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
         } catch {
           throw new Error('洛谷 API 响应解析失败（页面异常或结构变化）');
         }
-        if (![0, 200].includes(data.code ?? -1) || !data.currentData?.records) {
+        // 兼容新旧结构：新 Lentille data.data.records；旧 data.currentData.records
+        const records = data.data?.records?.result ?? data.currentData?.records?.result;
+        if (![0, 200].includes(data.code ?? data.status ?? -1) || !records) {
           throw new Error('洛谷 API 响应异常（Cookie 可能已过期或触发风控）');
         }
-        const records = data.currentData.records.result;
         if (!Array.isArray(records) || records.length === 0) {
           naturalEnd = true;
           break;
@@ -390,10 +400,10 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
         }
         const res = await fetchWithChallenge(
           fetchFn,
-          `${API}/record/list?user=${encodeURIComponent(uid)}&page=1&_contentOnly=1`,
+          `${API}/record/list?user=${encodeURIComponent(uid)}&page=1`,
           opts.cookie,
           opts.csrf,
-          { Accept: 'application/json' },
+          { 'x-lentille-request': 'content-only', Accept: 'application/json' },
         );
         if (res.status === 504) {
           return { ok: false, message: '洛谷挑战重试超限（可能触发风控），请稍后重试' };
@@ -408,8 +418,10 @@ export function createLuoguAdapter(fetchFn: typeof fetch = fetch): PlatformAdapt
         if (!text.trim().startsWith('{')) {
           return { ok: false, message: '返回非 JSON（Cookie 无效或已过期），请重新登录洛谷后复制最新 Cookie' };
         }
-        const data = JSON.parse(text) as { code?: number; currentData?: { records?: unknown } };
-        if (![0, 200].includes(data.code ?? -1) || !data.currentData?.records) {
+        const data = JSON.parse(text) as LuoguListResp;
+        // 兼容新旧结构：新 Lentille data.data.records；旧 data.currentData.records
+        const records = data.data?.records?.result ?? data.currentData?.records?.result;
+        if (![0, 200].includes(data.code ?? data.status ?? -1) || !records) {
           return { ok: false, message: '响应结构异常（Cookie 可能已过期或触发风控），请重新复制 Cookie' };
         }
         return { ok: true, message: 'Cookie 有效 ✓（登录态正常）' };

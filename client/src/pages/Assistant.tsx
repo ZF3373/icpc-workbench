@@ -22,6 +22,7 @@ import {
   generateSessionTitle,
   get,
   post,
+  put,
   uploadAiFile,
   extractDocumentText,
   type AbilityInfo,
@@ -853,7 +854,9 @@ export default function Assistant() {
 
   const tplKey = (msgIndex: number, draftIndex: number) => `${msgIndex}:${draftIndex}`
 
-  /** 写入单个模板草稿（不弹 toast，供单条/批量复用），返回是否成功 */
+  /** 写入单个模板草稿（不弹 toast，供单条/批量复用），返回是否成功。
+   *  有 templateId → 完善已有内置模板（PUT /api/templates/:id/content）；
+   *  无 templateId → 新建自定义模板（POST /api/templates/custom） */
   const writeOneTemplate = async (
     draft: TemplateAddDraft,
     msgIndex: number,
@@ -862,16 +865,27 @@ export default function Assistant() {
     const key = tplKey(msgIndex, draftIndex)
     setTplWriting((prev) => new Set(prev).add(key))
     try {
-      await post('/api/templates/custom', {
-        categoryKey: draft.categoryKey,
-        name: draft.name,
-        difficulty: draft.difficulty,
-        tags: draft.tags,
-        code: draft.code,
-        idea: draft.idea,
-        complexity: draft.complexity,
-        url: draft.url,
-      })
+      if (draft.templateId) {
+        // 完善已有内置模板条目：写入 code/idea/complexity/url 到 template_progress
+        await put(`/api/templates/${draft.templateId}/content`, {
+          code: draft.code,
+          idea: draft.idea,
+          complexity: draft.complexity,
+          url: draft.url,
+        })
+      } else {
+        // 新建自定义模板
+        await post('/api/templates/custom', {
+          categoryKey: draft.categoryKey,
+          name: draft.name,
+          difficulty: draft.difficulty,
+          tags: draft.tags,
+          code: draft.code,
+          idea: draft.idea,
+          complexity: draft.complexity,
+          url: draft.url,
+        })
+      }
       patchActiveSessionMessages(activeId, (msgs) =>
         msgs.map((m, i) =>
           i === msgIndex ? { ...m, appliedTpl: [...(m.appliedTpl ?? []), draftIndex] } : m,
@@ -892,7 +906,11 @@ export default function Assistant() {
 
   const confirmTemplate = async (draft: TemplateAddDraft, msgIndex: number, draftIndex: number) => {
     if (await writeOneTemplate(draft, msgIndex, draftIndex)) {
-      message.success(`「${draft.name}」已写入模板库，到「模板库」页可继续完善`)
+      message.success(
+        draft.templateId
+          ? `「${draft.name}」模板内容已完善，到「模板库」页可查看`
+          : `「${draft.name}」已写入模板库，到「模板库」页可继续完善`,
+      )
     }
   }
 
@@ -1404,7 +1422,11 @@ export default function Assistant() {
                               loading={tplWriting.has(tplKey(i, j))}
                               onClick={() => void confirmTemplate(draft, i, j)}
                             >
-                              {applied ? `✓ 已写入：${draft.name}` : `写入模板库：「${draft.name}」`}
+                              {applied
+                                ? `✓ 已完善：${draft.name}`
+                                : draft.templateId
+                                  ? `完善模板：「${draft.name}」`
+                                  : `写入模板库：「${draft.name}」`}
                             </Button>
                           )
                         })}
