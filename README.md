@@ -1,5 +1,7 @@
 # ICPC Workbench · ICPC 备赛工作台
 
+**中文** | [English](./README.en.md)
+
 基于刷题记录（Codeforces / AtCoder / 洛谷 / 牛客 / 代码源 / LeetCode）分析弱项、由 AI 生成个性化训练计划，并提供日历打卡的**本地 Web 应用**。
 
 ## 功能
