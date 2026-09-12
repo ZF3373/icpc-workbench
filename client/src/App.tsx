@@ -9,6 +9,7 @@ import Assistant from './pages/Assistant'
 import Lists from './pages/Lists'
 import CalendarPage from './pages/Calendar'
 import Settings from './pages/Settings'
+import About from './pages/About'
 import Today from './pages/Today'
 import Reviews from './pages/Reviews'
 import Contests from './pages/Contests'
@@ -96,6 +97,7 @@ export default function App() {
             <Route path="/reviews" element={<Reviews />} />
             <Route path="/contests" element={<Contests />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/about" element={<About />} />
           </Routes>
         </div>
       </Content>

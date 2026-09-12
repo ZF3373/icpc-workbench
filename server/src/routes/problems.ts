@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { expandTag } from '../../../shared/src/index.ts';
+import { canonicalTag, expandTag, filterNoiseTags } from '../../../shared/src/index.ts';
 import type { PlatformId } from '../../../shared/src/index.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
@@ -125,6 +125,36 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = fetch): Router {
     } catch (e) {
       res.status(502).json({ error: (e as Error).message });
     }
+  }));
+
+  // POST /api/problems/clean-tags
+  // 物理清洗库内所有题目的标签（一次性维护操作）：
+  // - 归并：英文别名 → 中文规范名（dp → 动态规划、binary search → 二分），并去重
+  // - 过滤：噪声标签（年份/赛事/地区/题型事务等非算法维度）
+  // 掌握度地图、统计、弱项等分析模块读取时已做同样处理，清洗后库内原始数据与
+  // 读取视图一致，题目列表标签栏、复习库等直接展示 tags 的位置同步受益。
+  r.post('/clean-tags', asyncHandler(async (_req, res) => {
+    const rows = db.prepare('SELECT id, tags FROM problems').all() as Array<{ id: number; tags: string }>;
+    const update = db.prepare('UPDATE problems SET tags = ? WHERE id = ?');
+    let problemsCleaned = 0;
+    let tagsRemoved = 0;
+    db.exec('BEGIN');
+    try {
+      for (const row of rows) {
+        const raw = safeTags(row.tags);
+        const next = [...new Set(filterNoiseTags(raw).map((t) => canonicalTag(t)))];
+        if (JSON.stringify(next) !== JSON.stringify(raw)) {
+          tagsRemoved += raw.length - next.length;
+          update.run(JSON.stringify(next), row.id);
+          problemsCleaned += 1;
+        }
+      }
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+    res.json({ ok: true, total: rows.length, problemsCleaned, tagsRemoved });
   }));
 
   // POST /api/problems/backfill-difficulty

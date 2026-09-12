@@ -203,7 +203,7 @@ export default function Today() {
                     <span className="band-title">
                       <span className="band-dot" style={{ background: BAND_TONE[band.key] }} />
                       {band.label}
-                      <span className="band-range mono">
+                      <span className="band-range mono" style={{ color: BAND_TONE[band.key] }}>
                         {band.range[0]}–{band.range[1]}
                       </span>
                     </span>

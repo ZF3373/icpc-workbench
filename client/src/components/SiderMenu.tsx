@@ -129,8 +129,8 @@ export default function SiderMenu({ selected, collapsed, onNavigate }: SiderMenu
         </div>
       ))}
 
-      {/* 固定项：设置 */}
-      {renderNavItem(MENU_FIXED_BOTTOM, null)}
+      {/* 固定项：底部（设置、关于） */}
+      {MENU_FIXED_BOTTOM.map((key) => renderNavItem(key, null))}
     </nav>
   )
 }

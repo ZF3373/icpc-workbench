@@ -10,11 +10,10 @@ import {
   Input,
   InputNumber,
   Modal,
-  Popconfirm,
-  Progress,
   Row,
   Col,
   Select,
+  Segmented,
   Space,
   Spin,
   Switch,
@@ -23,7 +22,7 @@ import {
   Upload,
   App as AntdApp,
 } from 'antd'
-import { ApiOutlined, ImportOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, AppstoreOutlined, LinkOutlined } from '@ant-design/icons'
+import { ApiOutlined, ImportOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, LinkOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
@@ -34,7 +33,7 @@ import PlatformTag from '../components/PlatformTag'
 import { get, post } from '../api'
 import { assembleCookie as assembleCookieHeader, extractCookieValue, type CookieFieldDef } from '../cookies'
 import { openExternal } from '../externalLinks'
-import { useSoftwareUpdate } from '../updateContext'
+import { useTheme, type ThemePreference } from '../themeContext'
 import type { ContestReminderConfig, ReminderConfig } from '../types'
 
 interface SettingsData {
@@ -76,6 +75,7 @@ const COOKIE_FORM: Partial<Record<PlatformId, CookieFieldDef[]>> = {
 
 export default function Settings() {
   const { message } = AntdApp.useApp()
+  const { preference, setPreference } = useTheme()
   const [data, setData] = useState<SettingsData | null>(null)
   const [aiForm] = Form.useForm()
   const [handleInputs, setHandleInputs] = useState<Record<string, string>>({})
@@ -86,7 +86,6 @@ export default function Settings() {
   const [contestReminder, setContestReminder] = useState<ContestReminderConfig>({ enabled: false, minutesBefore: 30 })
   const [importOpen, setImportOpen] = useState(false)
   const [exportDays, setExportDays] = useState(14)
-  const [appVersion, setAppVersion] = useState('')
   const [aiTesting, setAiTesting] = useState(false)
   const [aiTestResult, setAiTestResult] = useState<{ ok: boolean; message: string } | null>(null)
   const [modelsLoading, setModelsLoading] = useState(false)
@@ -120,12 +119,6 @@ export default function Settings() {
 
   useEffect(load, [aiForm])
 
-  useEffect(() => {
-    get<{ version?: string }>('/api/health')
-      .then((h) => setAppVersion(h.version ?? ''))
-      .catch(() => {})
-  }, [])
-
   // 进入设置页时自动检测已保存 Cookie 的平台登录态，驱动面板右侧连接状态点。
   // 仅对 cookie 类平台、有已保存 Cookie 且尚未检测过的触发，避免重复请求。
   useEffect(() => {
@@ -139,8 +132,6 @@ export default function Settings() {
     // checkCookie 闭包随渲染刷新，此处只需在 data 变化（加载完成）时驱动一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data])
-
-  const { info, checking, check, phase, percent, busy, result, runUpdate, hasUpdate } = useSoftwareUpdate()
 
   if (!data) return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />
 
@@ -310,7 +301,21 @@ export default function Settings() {
 
   return (
     <div>
-      <PageHeader title="设置" description="配置平台账号、AI 和提醒" />
+      <PageHeader
+        title="设置"
+        description="配置平台账号、AI 和提醒"
+        extra={
+          <Segmented
+            value={preference}
+            onChange={(v) => setPreference(v as ThemePreference)}
+            options={[
+              { label: '跟随系统', value: 'system' },
+              { label: '亮色', value: 'light' },
+              { label: '暗色', value: 'dark' },
+            ]}
+          />
+        }
+      />
       <Row gutter={[16, 24]}>
       <Col xs={24} lg={12}>
         <Card title={<span className="settings-section-title"><RobotOutlined />AI 配置（OpenAI 兼容接口）</span>} size="small">
@@ -607,88 +612,6 @@ export default function Settings() {
               提示词已内置你的完整练习数据汇总（弱项、掌握度、卡壳题、复习库、课程进度）；「数据汇总」也可单独下载，用于复盘或喂给其他 AI。
             </span>
           </Space>
-        </Card>
-      </Col>
-
-      <Col span={24}>
-        <Card title={<span className="settings-section-title"><AppstoreOutlined />软件更新</span>} size="small">
-          <Space wrap>
-            <span>
-              当前版本：<b>{appVersion || '未知'}</b>
-            </span>
-            {info?.buildCommit && info.buildCommit !== 'dev' && (
-              <span>
-                构建 commit：<b className="mono">{info.buildCommit}</b>
-              </span>
-            )}
-            <Button loading={checking} onClick={check}>
-              检查更新
-            </Button>
-            {hasUpdate && info!.canSelfUpdate && (
-              <Popconfirm
-                title="确认更新？"
-                description="将下载并替换程序文件（约百余 MB），完成后需关闭并重新打开软件；练习数据不受影响。"
-                okText="开始更新"
-                cancelText="取消"
-                onConfirm={runUpdate}
-              >
-                <Button type="primary" loading={busy}>
-                  一键更新
-                </Button>
-              </Popconfirm>
-            )}
-            {hasUpdate && !info!.canSelfUpdate && info!.releasePage && (
-              <Button type="primary" onClick={() => openExternal(info!.releasePage!)}>
-                前往下载 {info!.latest}
-              </Button>
-            )}
-          </Space>
-          {busy && (
-            <div style={{ marginTop: 12, maxWidth: 720 }}>
-              <Progress percent={percent} status="active" />
-              <span style={{ color: 'var(--text-tertiary, #8993a2)', fontSize: 12 }}>
-                {phase === 'verifying' ? '正在校验文件完整性…' : '正在下载更新（下载完自动替换，请勿关闭软件）'}
-              </span>
-            </div>
-          )}
-          {result && (
-            <Alert
-              style={{ marginTop: 12, maxWidth: 720 }}
-              type={result.ok ? 'success' : 'error'}
-              showIcon
-              message={result.text}
-            />
-          )}
-          {info && (
-            <Alert
-              style={{ marginTop: 12, maxWidth: 720 }}
-              type={info.ok ? (hasUpdate ? 'warning' : 'success') : 'info'}
-              showIcon
-              message={
-                info.ok
-                  ? hasUpdate
-                    ? info.channel === 'commit'
-                      ? `有新提交构建 ${info.commit?.shortSha}（当前 ${info.current}）`
-                      : `发现新版本 ${info.latest}（当前 ${info.current}）`
-                    : `已是最新版本（${info.current}${info.buildCommit && info.buildCommit !== 'dev' ? ` · ${info.buildCommit}` : ''}）`
-                  : `检查更新失败：${info.message ?? '网络异常'}，可稍后重试`
-              }
-              description={
-                info.ok && hasUpdate ? (
-                  info.channel === 'commit' ? (
-                    <span>
-                      包含最新提交修复{info.commit?.message ? `：${info.commit.message}` : ''}。
-                      {!info.canSelfUpdate && info.commit && (
-                        <a onClick={() => openExternal(info.commit!.page)}>查看该构建 ↗</a>
-                      )}
-                    </span>
-                  ) : (
-                    '正式版更新；到下载页下载安装包覆盖，或下载便携版用新 exe 替换旧文件即可，练习数据不受影响。'
-                  )
-                ) : undefined
-              }
-            />
-          )}
         </Card>
       </Col>
 

@@ -5,7 +5,7 @@ import {
   Form,
   Input,
   InputNumber,
-  message,
+  App as AntdApp,
   Modal,
   Select,
   Space,
@@ -15,7 +15,7 @@ import {
   Tooltip,
   Upload,
 } from 'antd'
-import { ClearOutlined, CloudDownloadOutlined, InboxOutlined, PlusOutlined, ReadOutlined } from '@ant-design/icons'
+import { ClearOutlined, CloudDownloadOutlined, InboxOutlined, PlusOutlined, ReadOutlined, TagsOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useSearchParams } from 'react-router-dom'
 import type { PlatformId } from '../../../shared/src/index.ts'
@@ -64,6 +64,8 @@ const DIFF_BUCKETS: Array<{ key: string; min: number | null; max: number | null 
 const TAXONOMY_MAX = 60
 
 export default function Problems() {
+  // React 19 下 antd 静态 message/Modal.confirm 静默失效，必须用 App 上下文实例
+  const { message, modal } = AntdApp.useApp()
   const [searchParams] = useSearchParams()
   const [rows, setRows] = useState<ProblemRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -87,6 +89,7 @@ export default function Problems() {
   // 内置题库开箱即用：默认包含未做题库题（否则题库再大默认视图也只有做过的题）
   const [includeBank, setIncludeBank] = useState(true)
   const [importOpen, setImportOpen] = useState(false)
+  const [cleaning, setCleaning] = useState(false)
   const [manualForm] = Form.useForm()
 
   const load = useCallback(() => {
@@ -104,6 +107,36 @@ export default function Problems() {
   useEffect(() => {
     load()
   }, [load])
+
+  // 一键标签清洗：归并英文别名为中文规范名 + 清除噪声标签（写入数据库，全站生效）
+  const cleanTags = () => {
+    modal.confirm({
+      title: '合并与过滤所有标签？',
+      content:
+        '将把库内全部题目的英文别名归并为中文规范名（dp → 动态规划、binary search → 二分），并清除年份、赛事、地区等噪声标签。掌握度地图、数据概览、弱项分析会自动同步。',
+      okText: '开始清洗',
+      cancelText: '取消',
+      onOk: async () => {
+        setCleaning(true)
+        try {
+          const r = await post<{ total: number; problemsCleaned: number; tagsRemoved: number }>(
+            '/api/problems/clean-tags',
+            {},
+          )
+          message.success(
+            r.problemsCleaned > 0
+              ? `清洗完成：${r.problemsCleaned} 道题的标签已更新，共清除/归并 ${r.tagsRemoved} 个标签`
+              : `所有 ${r.total} 道题的标签已经是干净的，无需清洗`,
+          )
+          load()
+        } catch (e) {
+          message.error((e as Error).message)
+        } finally {
+          setCleaning(false)
+        }
+      },
+    })
+  }
 
   // 标签计数：基于当前服务端筛选结果统计（侧边栏取前 60，过滤面板下拉用全量）
   // 过滤噪声标签（年份/赛事/省份等）+ 归并英文别名到中文规范名（dp → 动态规划）
@@ -326,9 +359,16 @@ export default function Problems() {
         title="题目管理"
         description="管理和导入你在各平台的刷题记录"
         extra={
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setImportOpen(true)}>
-            导入题目
-          </Button>
+          <Space>
+            <Tooltip title="归并英文别名为中文规范名，清除噪声标签（写入数据库）">
+              <Button icon={<TagsOutlined />} loading={cleaning} onClick={cleanTags}>
+                合并与过滤
+              </Button>
+            </Tooltip>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setImportOpen(true)}>
+              导入题目
+            </Button>
+          </Space>
         }
       />
 

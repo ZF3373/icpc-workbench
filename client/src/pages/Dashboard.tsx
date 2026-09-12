@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Button, Card, Col, Empty, Row, Spin, Table, App as AntdApp } from 'antd'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { Button, Card, Col, Empty, Row, Spin, App as AntdApp } from 'antd'
 import {
   CheckCircleOutlined,
+  HolderOutlined,
   RadarChartOutlined,
   SendOutlined,
   SyncOutlined,
@@ -20,17 +21,34 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import type { ColumnsType } from 'antd/es/table'
+import type { DifficultyStat, OverallStats, PlatformStat, TrendPoint, WeaknessProfile } from '../types'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
 import StatStrip from '../components/StatStrip'
 import { platformName, rateColor } from '../ui'
 import { get, post } from '../api'
-import type { DifficultyStat, OverallStats, PlatformStat, TrendPoint, WeaknessProfile } from '../types'
 import type { PlatformId, SyncResult } from '../../../shared/src/index.ts'
 
 interface SyncAllResponse {
   results: Array<SyncResult & { durationMs?: number }>
+}
+
+/** 平台卡片拖拽顺序持久化（localStorage，与侧边栏菜单/模板分类同模式） */
+const PLATFORM_ORDER_KEY = 'icpc-platform-card-order-v1'
+function getPlatformOrder(): string[] | null {
+  try {
+    const raw = localStorage.getItem(PLATFORM_ORDER_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+function savePlatformOrder(keys: string[]): void {
+  try {
+    localStorage.setItem(PLATFORM_ORDER_KEY, JSON.stringify(keys))
+  } catch {
+    // 隐私模式写入失败忽略
+  }
 }
 
 const CHART_COLORS = {
@@ -70,6 +88,24 @@ export default function Dashboard() {
   const [trend, setTrend] = useState<TrendPoint[] | null>(null)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
+  const [platformOrder, setPlatformOrder] = useState<string[] | null>(getPlatformOrder)
+  const [dragPlatform, setDragPlatform] = useState<PlatformId | null>(null)
+  /** 拖拽源平台（ref 即时读写，不依赖 state 异步更新） */
+  const dragPlatformRef = useRef<PlatformId | null>(null)
+  /** 最新顺序镜像：mousemove 是连续事件，渲染会延迟一帧，mouseup 落盘必须读 ref 而非渲染闭包 */
+  const orderRef = useRef<string[] | null>(platformOrder)
+
+  /** 按持久化顺序重排平台卡片，新平台追加到末尾 */
+  const orderedPlatforms = useMemo(() => {
+    if (!stats) return []
+    if (!platformOrder) return stats.byPlatform
+    const map = new Map(stats.byPlatform.map((p) => [p.platform, p]))
+    const ordered = platformOrder.map((k) => map.get(k as PlatformId)).filter(Boolean) as PlatformStat[]
+    for (const p of stats.byPlatform) {
+      if (!ordered.includes(p)) ordered.push(p)
+    }
+    return ordered
+  }, [stats, platformOrder])
 
   const load = useCallback(() => {
     setLoading(true)
@@ -90,6 +126,53 @@ export default function Dashboard() {
   useEffect(() => {
     load()
   }, [load])
+
+  // ---------- 平台卡片拖拽排序（mouse 事件方案，兼容 WebView2/WKWebView） ----------
+
+  const persistPlatformOrder = () => {
+    if (orderRef.current) savePlatformOrder(orderRef.current)
+  }
+
+  const clearPlatformDrag = () => {
+    dragPlatformRef.current = null
+    setDragPlatform(null)
+  }
+
+  // 拖拽中松手在卡片外时也要落盘并清除状态
+  useEffect(() => {
+    if (dragPlatform === null) return
+    const onUp = () => {
+      persistPlatformOrder()
+      clearPlatformDrag()
+    }
+    document.addEventListener('mouseup', onUp)
+    return () => document.removeEventListener('mouseup', onUp)
+  }, [dragPlatform])
+
+  const handlePlatformMouseDown = (e: ReactMouseEvent<HTMLDivElement>, key: PlatformId) => {
+    e.preventDefault() // 阻止默认行为避免拖拽时选中文本
+    dragPlatformRef.current = key
+    setDragPlatform(key)
+  }
+
+  // 悬停到其他卡片时实时重排（被拖卡片移动到目标位置，其余顺延）
+  const handlePlatformMouseEnter = (key: PlatformId) => {
+    const drag = dragPlatformRef.current
+    if (drag === null || drag === key) return
+    const keys = orderedPlatforms.map((p) => p.platform)
+    const fromIdx = keys.indexOf(drag)
+    const toIdx = keys.indexOf(key)
+    if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return
+    keys.splice(fromIdx, 1)
+    keys.splice(toIdx, 0, drag)
+    orderRef.current = keys
+    setPlatformOrder(keys)
+  }
+
+  const handlePlatformMouseUp = () => {
+    persistPlatformOrder()
+    clearPlatformDrag()
+  }
 
   // 一键同步所有已绑定账号（增量），完成后刷新概览数据
   const doSync = async () => {
@@ -151,27 +234,6 @@ export default function Dashboard() {
       </div>
     )
   }
-
-  const platformCols: ColumnsType<PlatformStat> = [
-    {
-      title: '平台',
-      dataIndex: 'platform',
-      render: (v: PlatformId) => <PlatformTag id={v} />,
-    },
-    { title: '提交', dataIndex: 'attempts', align: 'right' },
-    { title: 'AC', dataIndex: 'ac', align: 'right' },
-    {
-      title: 'AC 率',
-      dataIndex: 'acRate',
-      align: 'right',
-      render: (v: number) => (
-        <span className="mono" style={{ color: rateColor(v), fontWeight: 600 }}>
-          {v}%
-        </span>
-      ),
-    },
-    { title: '已解', dataIndex: 'solved', align: 'right' },
-  ]
 
   const diffData = stats.byDifficulty
     .slice()
@@ -237,8 +299,44 @@ export default function Dashboard() {
 
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col xs={24} xl={10}>
-          <Card title="平台分布" size="small">
-            <Table size="small" rowKey="platform" columns={platformCols} dataSource={stats.byPlatform} pagination={false} />
+          <Card
+            title="平台分布"
+            size="small"
+            extra={<span style={{ fontSize: 12, color: 'var(--text-3)' }}>拖动卡片可排序</span>}
+          >
+            <div className="platform-card-grid" style={{ userSelect: dragPlatform !== null ? 'none' : undefined }}>
+              {orderedPlatforms.map((p) => (
+                <div
+                  key={p.platform}
+                  className={`platform-stat-card${dragPlatform === p.platform ? ' is-dragging' : ''}`}
+                  onMouseDown={(e) => handlePlatformMouseDown(e, p.platform)}
+                  onMouseEnter={() => handlePlatformMouseEnter(p.platform)}
+                  onMouseUp={handlePlatformMouseUp}
+                >
+                  <div className="platform-stat-head">
+                    <PlatformTag id={p.platform} />
+                    <HolderOutlined className="platform-drag-handle" />
+                  </div>
+                  <div className="platform-stat-nums">
+                    <span>
+                      <strong className="mono">{p.attempts}</strong> 提交
+                    </span>
+                    <span>
+                      <strong className="mono">{p.ac}</strong> AC
+                    </span>
+                    <span className="mono" style={{ color: rateColor(p.acRate), fontWeight: 600 }}>
+                      {p.acRate}%
+                    </span>
+                    <span>
+                      <strong className="mono" style={{ color: 'var(--green)' }}>
+                        {p.solved}
+                      </strong>{' '}
+                      已解
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
           </Card>
         </Col>
         <Col xs={24} xl={14}>

@@ -11,6 +11,7 @@ import {
   FileTextOutlined,
   FlagOutlined,
   HeatMapOutlined,
+  InfoCircleOutlined,
   ReadOutlined,
   RobotOutlined,
   ScheduleOutlined,
@@ -39,6 +40,7 @@ export const MENU: MenuMeta[] = [
   { key: '/reviews', icon: <ReadOutlined />, label: '复习库' },
   { key: '/contests', icon: <FlagOutlined />, label: '赛事中心' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' },
+  { key: '/about', icon: <InfoCircleOutlined />, label: '关于' },
 ]
 
 const menuMap = new Map(MENU.map((m) => [m.key, m]))
@@ -60,7 +62,7 @@ export const MENU_GROUPS: MenuGroup[] = [
 
 /** 固定项（不在分组内、不可拖拽） */
 export const MENU_FIXED_TOP = '/'
-export const MENU_FIXED_BOTTOM = '/settings'
+export const MENU_FIXED_BOTTOM: string[] = ['/settings', '/about']
 
 // ---------- 顺序持久化 ----------
 
