@@ -683,6 +683,7 @@ export default function Problems() {
 }
 
 function SyncTab({ onDone }: { onDone: () => void }) {
+  const { message } = AntdApp.useApp()
   const [platform, setPlatform] = useState<PlatformId>('codeforces')
   const [handle, setHandle] = useState('')
   const [busy, setBusy] = useState(false)
@@ -727,6 +728,7 @@ const LUOGU_DIFFICULTY_OPTIONS = [
 
 /** 「拉取题库」页签：从公开题库批量入库，扩充训练计划待选题池（无需账号）。 */
 function BankTab({ onDone }: { onDone: () => void }) {
+  const { message } = AntdApp.useApp()
   const [platform, setPlatform] = useState<'luogu' | 'nowcoder' | 'codeforces' | 'leetcode' | 'atcoder' | 'daimayuan'>('luogu')
   const [max, setMax] = useState(1000)
   const [luoguMin, setLuoguMin] = useState(3)
@@ -822,6 +824,7 @@ function BankTab({ onDone }: { onDone: () => void }) {
 
 /** 「拉取题库」页签内的难度回填区块：对库内未知难度的洛谷/牛客题逐题查询公开接口补全。 */
 function BackfillDifficultyCard() {
+  const { message } = AntdApp.useApp()
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<string>()
 
