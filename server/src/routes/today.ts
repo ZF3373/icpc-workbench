@@ -33,7 +33,8 @@ export function todayRoutes(db: Db): Router {
     // 2) 候选题：题库中有难度、未 AC 的题（提交记录里 AC 过的排除）
     const candidates = db
       .prepare(
-        `SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url, p.tags
+        `SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
+                COALESCE((SELECT json_group_array(topic_id) FROM problem_topics pt WHERE pt.problem_id = p.id), '[]') AS tags
            FROM problems p
           WHERE p.difficulty IS NOT NULL
             AND NOT EXISTS (

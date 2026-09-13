@@ -31,17 +31,17 @@ import PageHeader from '../components/PageHeader'
 import { saveUrlAsFile } from '../download'
 import PlatformTag from '../components/PlatformTag'
 import { get, post } from '../api'
-import { assembleCookie as assembleCookieHeader, extractCookieValue, type CookieFieldDef } from '../cookies'
+import { assembleCookie as assembleCookieHeader, type CookieFieldDef } from '../cookies'
 import { openExternal } from '../externalLinks'
 import { useTheme, type ThemePreference } from '../themeContext'
 import type { ContestReminderConfig, ReminderConfig } from '../types'
 
 interface SettingsData {
-  ai: { enabled: boolean; baseURL: string; apiKey: string; model: string; timeoutMs?: number; maxTokens?: number; contextWindow?: number; searchEngine?: 'tavily' | 'brave'; searchApiKey?: string }
+  ai: { enabled: boolean; baseURL: string; apiKey: string; model: string; timeoutMs?: number; maxTokens?: number; contextWindow?: number; searchEngine?: 'tavily' | 'brave'; searchApiKey?: string; hasApiKey?: boolean; hasSearchApiKey?: boolean }
   accounts: Array<{ platform: PlatformId; handle: string; last_sync_at: string | null; enabled: number }>
   adapterEnabled: Record<string, boolean>
   platforms: typeof PLATFORMS
-  cookies: Record<string, { cookie?: string; csrf?: string }>
+  cookies: Record<string, { configured: boolean }>
   reminder: ReminderConfig
   contestReminder: ContestReminderConfig
   sync: { maxSubmissions: number }
@@ -96,17 +96,11 @@ export default function Settings() {
     get<SettingsData>('/api/settings')
       .then((d) => {
         setData(d)
-        aiForm.setFieldsValue({ ...d.ai, timeoutMs: d.ai.timeoutMs ? d.ai.timeoutMs / 1000 : 120, maxTokens: Math.round((d.ai.maxTokens ?? 393216) / 1024), contextWindow: Math.round((d.ai.contextWindow ?? 1024000) / 1024), searchEngine: d.ai.searchEngine ?? 'tavily', searchApiKey: d.ai.searchApiKey ?? '' })
+        aiForm.setFieldsValue({ ...d.ai, apiKey: '', timeoutMs: d.ai.timeoutMs ? d.ai.timeoutMs / 1000 : 120, maxTokens: Math.round((d.ai.maxTokens ?? 393216) / 1024), contextWindow: Math.round((d.ai.contextWindow ?? 1024000) / 1024), searchEngine: d.ai.searchEngine ?? 'tavily', searchApiKey: '' })
         const handles: Record<string, string> = {}
         const cookies: Record<string, Record<string, string>> = {}
         for (const a of d.accounts) handles[a.platform] = a.handle
-        for (const [platform, c] of Object.entries(d.cookies)) {
-          // 已保存的是拼装好的 Cookie 头，回填时按平台字段定义拆回各输入框
-          const saved = c.cookie ?? ''
-          cookies[platform] = Object.fromEntries(
-            (COOKIE_FORM[platform as PlatformId] ?? []).map((f) => [f.key, extractCookieValue(saved, f.cookieName)]),
-          )
-        }
+        // Cookie 不会回传到前端；保留空输入框，用户可显式更新或清除。
         setHandleInputs(handles)
         setCookieInputs(cookies)
         setReminderEnabled(d.reminder.enabled)
@@ -126,7 +120,7 @@ export default function Settings() {
     for (const p of data.platforms) {
       if (p.sync !== 'cookie') continue
       if (cookieCheck[p.id] !== undefined) continue
-      if (!data.cookies[p.id]?.cookie) continue
+      if (!data.cookies[p.id]?.configured) continue
       void checkCookie(p.id)
     }
     // checkCookie 闭包随渲染刷新，此处只需在 data 变化（加载完成）时驱动一次
@@ -141,7 +135,7 @@ export default function Settings() {
     try {
       // 表单以秒/K 为单位，后端存储毫秒/token
       const { timeoutMs, maxTokens, contextWindow, ...rest } = v
-      await post('/api/settings/ai', { ...rest, timeoutMs: Math.round(timeoutMs * 1000), maxTokens: Math.round(maxTokens * 1024), contextWindow: Math.round(contextWindow * 1024) })
+      await post('/api/settings/ai', { ...rest, ...(rest.apiKey ? {} : { apiKey: undefined }), ...(rest.searchApiKey ? {} : { searchApiKey: undefined }), timeoutMs: Math.round(timeoutMs * 1000), maxTokens: Math.round(maxTokens * 1024), contextWindow: Math.round(contextWindow * 1024) })
       message.success('AI 配置已保存')
       load()
     } catch (e) {
@@ -418,7 +412,7 @@ export default function Settings() {
                       ? check.ok
                         ? { cls: 'conn-dot-ok', title: '已连接' }
                         : { cls: 'conn-dot-fail', title: '未连接' }
-                      : data.cookies[p.id]?.cookie
+                      : data.cookies[p.id]?.configured
                         ? { cls: 'conn-dot-checking', title: '检测中…' }
                         : { cls: 'conn-dot-fail', title: '未连接' }
               return {

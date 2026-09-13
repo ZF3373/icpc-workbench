@@ -87,6 +87,24 @@ test('POST /ai/models returns sorted deduped ids and forwards api key', async ()
   await upstream.close();
 });
 
+test('GET /api/settings reports secret presence without returning secret values', async () => {
+  await withServer(async (db, base) => {
+    saveAiConfig(db, DEFAULT_CONFIG, { apiKey: 'ai-secret', searchApiKey: 'search-secret' });
+    db.prepare("INSERT INTO settings (key, value) VALUES ('cookie.luogu', 'session=secret')").run();
+    const res = await fetch(base);
+    const body = (await res.json()) as {
+      ai: { apiKey: string; searchApiKey: string; hasApiKey: boolean; hasSearchApiKey: boolean };
+      cookies: Record<string, { configured: boolean }>;
+    };
+    assert.equal(body.ai.apiKey, '');
+    assert.equal(body.ai.searchApiKey, '');
+    assert.equal(body.ai.hasApiKey, true);
+    assert.equal(body.ai.hasSearchApiKey, true);
+    assert.deepEqual(body.cookies.luogu, { configured: true });
+    assert.doesNotMatch(JSON.stringify(body), /secret/);
+  });
+});
+
 test('POST /ai/test succeeds via /models and reports configured model', async () => {
   const upstream = await startUpstream({ withModels: true, requireKey: 'secret' });
   await withServer(async (_db, base) => {

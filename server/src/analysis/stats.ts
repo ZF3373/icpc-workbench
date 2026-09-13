@@ -64,7 +64,8 @@ export function fetchRows(
   filter: StatsFilter = {},
 ): SubmissionRow[] {
   let sql = `
-    SELECT s.platform, s.verdict, s.submitted_at, p.problem_key, p.difficulty, p.tags
+    SELECT s.platform, s.verdict, s.submitted_at, p.problem_key, p.difficulty,
+           COALESCE((SELECT json_group_array(topic_id) FROM problem_topics pt WHERE pt.problem_id = p.id), '[]') AS tags
     FROM submissions s JOIN problems p ON s.problem_id = p.id
     WHERE s.user_id = ?
   `;

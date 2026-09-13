@@ -62,14 +62,22 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
 
   // GET /api/settings → AI 配置 + 平台账号 + 适配器开关 + Cookie 配置 + 打卡提醒
   r.get('/', (_req, res) => {
-    const ai = aiConfigFromDb(db, config);
+    const savedAi = aiConfigFromDb(db, config);
+    // 秘密只用于服务端请求上游，不能通过读取设置接口回传给 WebView/浏览器。
+    const ai = {
+      ...savedAi,
+      apiKey: '',
+      searchApiKey: '',
+      hasApiKey: Boolean(savedAi.apiKey),
+      hasSearchApiKey: Boolean(savedAi.searchApiKey),
+    };
     const accounts = db
       .prepare(
         'SELECT platform, handle, last_sync_at, enabled FROM platform_accounts WHERE user_id = ?',
       )
       .all(DEFAULT_USER_ID);
     const adapterEnabled: Record<string, boolean> = {};
-    const cookies: Record<string, { cookie?: string; csrf?: string }> = {};
+    const cookies: Record<string, { configured: boolean }> = {};
     for (const p of PLATFORMS) {
       const row = db
         .prepare('SELECT value FROM settings WHERE key = ?')
@@ -82,10 +90,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
         .prepare('SELECT value FROM settings WHERE key = ?')
         .get(`csrf.${p.id}`) as { value: string } | undefined;
       if (c || csrf) {
-        cookies[p.id] = {
-          ...(c ? { cookie: c.value } : {}),
-          ...(csrf ? { csrf: csrf.value } : {}),
-        };
+        cookies[p.id] = { configured: true };
       }
     }
     res.json({

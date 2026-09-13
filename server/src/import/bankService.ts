@@ -1,5 +1,6 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
+import { refreshProblemTopics } from '../topics/pipeline.ts';
 
 /** 纯题目批量入库结果 */
 export interface BankImportResult {
@@ -45,6 +46,7 @@ export function upsertBankProblems(
        url = COALESCE(excluded.url, problems.url),
        tags = CASE WHEN excluded.tags != '[]' THEN excluded.tags ELSE problems.tags END`,
   );
+  const findProblem = db.prepare('SELECT id, title FROM problems WHERE platform = ? AND problem_key = ?');
 
   db.exec('BEGIN');
   try {
@@ -69,6 +71,8 @@ export function upsertBankProblems(
         r.url,
         JSON.stringify(r.tags ?? []),
       );
+      const problem = findProblem.get(r.platform, r.problemKey) as { id: number; title: string };
+      refreshProblemTopics(db, problem.id, problem.title);
     }
     db.exec('COMMIT');
     return [...byPlatform.entries()].map(([platform, keys]) => {

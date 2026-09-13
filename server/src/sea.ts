@@ -209,7 +209,7 @@ if (isSea()) {
   }
 } else {
   const { app, port } = startServer();
-  app.listen(port, () => {
+  app.listen(port, '127.0.0.1', () => {
     console.log(`[server] listening on http://localhost:${port}`);
     console.log(`[server] widget page: http://localhost:${port}/widget`);
   });

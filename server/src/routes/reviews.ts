@@ -39,7 +39,8 @@ function toReviewItem(r: RawReviewRow): ReviewItem {
 }
 
 const SELECT_SQL = `
-  SELECT ri.id, p.platform, p.problem_key, p.title, p.difficulty, p.url, p.tags,
+  SELECT ri.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
+         COALESCE((SELECT json_group_array(topic_id) FROM problem_topics pt WHERE pt.problem_id = p.id), '[]') AS tags,
          ri.stage, ri.note, ri.added_at, ri.last_reviewed_at, ri.next_due_on
     FROM review_items ri
     JOIN problems p ON p.id = ri.problem_id

@@ -27,7 +27,8 @@ function sub(
     problem: {
       platform,
       problemKey: key,
-      title: `T ${key}`,
+      // 知识点由独立标题管线生成；tags 仅保留为题源审计字段。
+      title: tags.join(' '),
       ...(difficulty !== undefined ? { difficulty } : {}),
       tags,
     },

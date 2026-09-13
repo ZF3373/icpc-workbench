@@ -41,11 +41,45 @@ interface FetchResult {
 }
 
 /**
+ * 阻止工具访问本机/内网 HTTP 服务。该工具的 URL 来自模型调用，不能把它当作
+ * 可信输入。此处覆盖不依赖 DNS 的主机名与字面 IP 地址；域名解析与逐跳重定向
+ * 校验应在后续网络层增强中继续补上。
+ */
+export function validatePublicFetchUrl(raw: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return '网址格式非法';
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '网址需以 http:// 或 https:// 开头';
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return '禁止访问本机或本地域名';
+  // IPv4: loopback, RFC1918, link-local, carrier-grade NAT, unspecified, metadata endpoint.
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const [a, b, c, d] = ipv4.slice(1).map(Number);
+    if ([a, b, c, d].some((n) => n > 255) || a === 0 || a === 10 || a === 127 ||
+      (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) {
+      return '禁止访问内网或链路本地地址';
+    }
+  }
+  // IPv6 loopback/unspecified/link-local/unique-local, including IPv4-mapped loopback.
+  if (host === '::1' || host === '::' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('::ffff:127.')) {
+    return '禁止访问内网或链路本地地址';
+  }
+  return null;
+}
+
+/**
  * 执行网址读取：主路径 Tavily Extract（能处理 JS 渲染页面），失败或未配置时走兜底直接 fetch。
  * 失败不抛错（对齐 web_search），返回 content 为空 + error 说明。
  * cookies 可选：对已配置 Cookie 的平台（如洛谷）携带认证信息以读取需登录的页面。
  */
 export async function executeFetchUrl(url: string, cfg: SearchConfig, cookies?: PlatformCookies): Promise<FetchResult> {
+  const invalid = validatePublicFetchUrl(url);
+  if (invalid) return { content: '', title: url, error: invalid };
   const engine = cfg.searchEngine ?? 'tavily';
   const apiKey = cfg.searchApiKey?.trim();
 
@@ -251,8 +285,9 @@ registerTool({
     if (!url) {
       return { content: '请提供要读取的网址（url 参数不能为空）。' };
     }
-    if (!/^https?:\/\//i.test(url)) {
-      return { content: `网址需以 http:// 或 https:// 开头：${url}` };
+    const invalid = validatePublicFetchUrl(url);
+    if (invalid) {
+      return { content: `无法读取该网址：${invalid}` };
     }
     const { content, title, error } = await executeFetchUrl(url, ctx.cfg, ctx.cookies);
     if (!content.trim()) {

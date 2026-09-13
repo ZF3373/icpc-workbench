@@ -39,6 +39,20 @@ CREATE TABLE IF NOT EXISTS problems (
   UNIQUE (platform, problem_key)
 );
 
+-- 平台原始 tags 仅作审计数据；训练/统计只读取本表的自建知识点标注。
+-- 一个题可命中多个知识点，confidence/evidence 使结果可审计、可人工复核。
+CREATE TABLE IF NOT EXISTS problem_topics (
+  problem_id  INTEGER NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
+  topic_id    TEXT NOT NULL,
+  confidence  REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+  method      TEXT NOT NULL, -- title-rule / manual / future-model
+  evidence    TEXT NOT NULL DEFAULT '[]',
+  pipeline_version TEXT NOT NULL,
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (problem_id, topic_id)
+);
+CREATE INDEX IF NOT EXISTS idx_problem_topics_topic ON problem_topics(topic_id, confidence);
+
 CREATE TABLE IF NOT EXISTS submissions (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id      INTEGER NOT NULL REFERENCES users(id),

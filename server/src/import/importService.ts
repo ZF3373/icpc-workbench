@@ -1,5 +1,6 @@
 import type { NormalizedSubmission, PlatformId } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
+import { refreshProblemTopics } from '../topics/pipeline.ts';
 
 export interface InsertResult {
   imported: number;
@@ -35,6 +36,7 @@ export function insertNormalized(
        (user_id, platform, problem_id, verdict, language, submitted_at, external_id)
      VALUES (?, ?, (SELECT id FROM problems WHERE platform = ? AND problem_key = ?), ?, ?, ?, ?)`,
   );
+  const findProblem = db.prepare('SELECT id, title FROM problems WHERE platform = ? AND problem_key = ?');
   // 手动导入（externalId 以 manual: 开头）与平台同步数据协调：
   // 同平台同题同结果已存在（无论来源是同步还是手动）→ 跳过，避免重复计数
   const manualDup = db.prepare(
@@ -62,6 +64,8 @@ export function insertNormalized(
         s.problem.url ?? null,
         JSON.stringify(s.problem.tags),
       );
+      const problem = findProblem.get(s.problem.platform, s.problem.problemKey) as { id: number; title: string };
+      refreshProblemTopics(db, problem.id, problem.title);
       // 手动导入协调：同题同结果已存在 → 跳过（不再重复计入）
       if (String(s.externalId).startsWith('manual:')) {
         const dup = manualDup.get(

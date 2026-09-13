@@ -64,7 +64,9 @@ app.get('/api/health', (_req, res) => {
 app.use(errorHandler);
 
 const port = Number(process.env.PORT ?? config.port);
-const server: Server = app.listen(port, () => {
+// 这是本地单用户应用：绝不默认暴露到局域网。若以后需要远程访问，应单独
+// 设计认证和 TLS，而不是通过修改此处的默认行为绕过安全边界。
+const server: Server = app.listen(port, '127.0.0.1', () => {
   console.log(`[server] listening on http://localhost:${port}`);
   console.log(`[server] widget page: http://localhost:${port}/widget`);
 });

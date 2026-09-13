@@ -9,6 +9,7 @@ import { bucketForDifficulty, safeTags } from '../analysis/stats.ts';
 import { backfillDifficulties } from '../analysis/difficultyBackfill.ts';
 import { fetchLuoguBank, fetchNowcoderBank, fetchCodeforcesBank, fetchLeetcodeBank, fetchAtcoderBank, fetchDaimayuanBank } from '../adapters/problemBank.ts';
 import { upsertBankProblems } from '../import/bankService.ts';
+import { rebuildTopicAnnotations } from '../topics/pipeline.ts';
 
 interface ProblemRow {
   id: number;
@@ -34,7 +35,8 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = fetch): Router {
       return res.status(400).json({ error: `platform 非法: ${String(platform)}` });
     }
     let sql = `
-      SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url, p.tags,
+      SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
+             COALESCE((SELECT json_group_array(topic_id) FROM problem_topics pt WHERE pt.problem_id = p.id), '[]') AS tags,
              COUNT(s.id) AS attempts,
              COALESCE(SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END), 0) AS ac_count,
              MAX(CASE WHEN s.verdict = 'AC' THEN s.submitted_at END) AS last_ac_at
@@ -156,6 +158,14 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = fetch): Router {
     }
     res.json({ ok: true, total: rows.length, problemsCleaned, tagsRemoved });
   }));
+
+  // POST /api/problems/topics/rebuild body: { limit? }
+  // 原始题源 tags 仅保留在 problems.tags 作审计；知识点由自建管线独立生成。
+  r.post('/topics/rebuild', (req, res) => {
+    const requested = Number(req.body?.limit);
+    const limit = Number.isInteger(requested) ? Math.min(20_000, Math.max(1, requested)) : 5000;
+    res.json({ ok: true, ...rebuildTopicAnnotations(db, limit) });
+  });
 
   // POST /api/problems/backfill-difficulty
   // 对库内未知难度的洛谷/牛客题逐题查询公开接口回填（匿名可访问）：

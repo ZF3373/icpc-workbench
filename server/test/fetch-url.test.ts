@@ -4,6 +4,7 @@ import {
   executeFetchUrl,
   htmlToText,
   extractTitle,
+  validatePublicFetchUrl,
 } from '../src/ai/fetch-url.ts';
 // 静态导入触发 fetch_url 注册副作用（registerTool 在模块顶层执行）
 import '../src/ai/fetch-url.ts';
@@ -129,6 +130,15 @@ describe('extractTitle', () => {
 
   it('解码 title 中的实体', () => {
     assert.equal(extractTitle('<title>A &amp; B &lt;test&gt;</title>'), 'A & B <test>');
+  });
+});
+
+describe('validatePublicFetchUrl', () => {
+  it('rejects loopback, private, link-local and local hostnames', () => {
+    for (const url of ['http://127.0.0.1/', 'http://10.0.0.8/', 'http://169.254.169.254/', 'http://[::1]/', 'http://localhost:3000/', 'https://host.local/a']) {
+      assert.ok(validatePublicFetchUrl(url), `${url} should be rejected`);
+    }
+    assert.equal(validatePublicFetchUrl('https://example.com/problem'), null);
   });
 });
 
