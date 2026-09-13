@@ -2,6 +2,7 @@ import type { PlatformId } from '../../../shared/src/index.ts';
 import { PLATFORMS, canonicalTag } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { filterNoiseTags } from './tags.ts';
+import { TOPIC_TAGS_SQL } from '../topics/pipeline.ts';
 
 export function bucketForDifficulty(difficulty: number | null | undefined): string {
   if (difficulty === null || difficulty === undefined || !Number.isFinite(difficulty)) {
@@ -65,7 +66,7 @@ export function fetchRows(
 ): SubmissionRow[] {
   let sql = `
     SELECT s.platform, s.verdict, s.submitted_at, p.problem_key, p.difficulty,
-           COALESCE((SELECT json_group_array(topic_id) FROM problem_topics pt WHERE pt.problem_id = p.id), '[]') AS tags
+           ${TOPIC_TAGS_SQL}
     FROM submissions s JOIN problems p ON s.problem_id = p.id
     WHERE s.user_id = ?
   `;

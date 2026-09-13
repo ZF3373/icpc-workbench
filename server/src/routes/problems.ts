@@ -9,7 +9,7 @@ import { bucketForDifficulty, safeTags } from '../analysis/stats.ts';
 import { backfillDifficulties } from '../analysis/difficultyBackfill.ts';
 import { fetchLuoguBank, fetchNowcoderBank, fetchCodeforcesBank, fetchLeetcodeBank, fetchAtcoderBank, fetchDaimayuanBank } from '../adapters/problemBank.ts';
 import { upsertBankProblems } from '../import/bankService.ts';
-import { rebuildTopicAnnotations } from '../topics/pipeline.ts';
+import { rebuildTopicAnnotations, TOPIC_TAGS_SQL } from '../topics/pipeline.ts';
 
 interface ProblemRow {
   id: number;
@@ -36,7 +36,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = fetch): Router {
     }
     let sql = `
       SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
-             COALESCE((SELECT json_group_array(topic_id) FROM problem_topics pt WHERE pt.problem_id = p.id), '[]') AS tags,
+             ${TOPIC_TAGS_SQL},
              COUNT(s.id) AS attempts,
              COALESCE(SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END), 0) AS ac_count,
              MAX(CASE WHEN s.verdict = 'AC' THEN s.submitted_at END) AS last_ac_at

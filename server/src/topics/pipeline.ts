@@ -18,6 +18,16 @@ const RULES: Array<{ id: string; patterns: RegExp[] }> = [
 
 export const TOPIC_PIPELINE_VERSION = 'title-rules-v1';
 
+/**
+ * 统计/推荐读取路径的知识点来源：已有管线标注的题用标注结果，
+ * 未标注的题回退题源 tags（仅作审计的字段），保证管线覆盖不足时统计不中断。
+ * 注意：所有调用处的题目表别名必须是 p。
+ */
+export const TOPIC_TAGS_SQL =
+  'CASE WHEN EXISTS (SELECT 1 FROM problem_topics pt WHERE pt.problem_id = p.id) ' +
+  'THEN (SELECT json_group_array(ptx.topic_id) FROM problem_topics ptx WHERE ptx.problem_id = p.id) ' +
+  'ELSE p.tags END AS tags';
+
 export interface TopicAnnotation {
   topicId: string;
   confidence: number;

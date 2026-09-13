@@ -3,6 +3,7 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { safeTags } from '../analysis/stats.ts';
 import { intervalDaysForStage, scheduleNext } from '../reviews/schedule.ts';
+import { TOPIC_TAGS_SQL } from '../topics/pipeline.ts';
 import type { ReviewItem } from '../../../shared/src/index.ts';
 
 interface RawReviewRow {
@@ -40,7 +41,7 @@ function toReviewItem(r: RawReviewRow): ReviewItem {
 
 const SELECT_SQL = `
   SELECT ri.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
-         COALESCE((SELECT json_group_array(topic_id) FROM problem_topics pt WHERE pt.problem_id = p.id), '[]') AS tags,
+         ${TOPIC_TAGS_SQL},
          ri.stage, ri.note, ri.added_at, ri.last_reviewed_at, ri.next_due_on
     FROM review_items ri
     JOIN problems p ON p.id = ri.problem_id

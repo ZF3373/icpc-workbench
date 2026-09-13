@@ -225,7 +225,9 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       ...(b.searchEngine === 'tavily' || b.searchEngine === 'brave' ? { searchEngine: b.searchEngine } : {}),
       ...(typeof b.searchApiKey === 'string' ? { searchApiKey: b.searchApiKey } : {}),
     });
-    res.json(aiConfigFromDb(db, config));
+    // 与 GET 一致：保存后的响应同样不能把秘密回传给前端。
+    const saved = aiConfigFromDb(db, config);
+    res.json({ ...saved, apiKey: '', searchApiKey: '', hasApiKey: Boolean(saved.apiKey), hasSearchApiKey: Boolean(saved.searchApiKey) });
   });
 
   // POST /api/settings/ai/test  body: { baseURL?, apiKey?, model? }
