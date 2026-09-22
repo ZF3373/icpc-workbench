@@ -18,6 +18,16 @@ import {
   MAX_SYNC_MAX_SUBMISSIONS,
 } from '../adapters/sync.ts';
 import { getAutoContinueRounds } from '../adapters/syncScheduler.ts';
+import {
+  DEFAULT_HOST_MIN_INTERVAL_MS,
+  DEFAULT_REQUEST_INTERVAL_SCALE,
+  HOST_MIN_INTERVAL_MS,
+  MAX_REQUEST_INTERVAL_SCALE,
+  MIN_REQUEST_INTERVAL_SCALE,
+  hostOf,
+  intervalForHost,
+  setRequestIntervalScale,
+} from '../net/hostThrottle.ts';
 import { chatUrl } from '../ai/provider.ts';
 
 const DEFAULT_REMINDER_TIME = '20:00';
@@ -92,6 +102,8 @@ export function readSyncSettings(db: Db): {
   maxSubmissions: number;
   autoContinueRounds: number;
   jisuankePracticeSync: boolean;
+  requestIntervalScale: number;
+  requestIntervalBase: Record<string, number>;
 } {
   const row = db
     .prepare('SELECT value FROM settings WHERE key = ?')
@@ -99,7 +111,11 @@ export function readSyncSettings(db: Db): {
   const practice = db
     .prepare('SELECT value FROM settings WHERE key = ?')
     .get('jisuanke.practiceSync') as { value: string } | undefined;
+  const scaleRow = db
+    .prepare('SELECT value FROM settings WHERE key = ?')
+    .get('sync.requestIntervalScale') as { value: string } | undefined;
   const n = Number(row?.value);
+  const scale = Number(scaleRow?.value);
   return {
     maxSubmissions:
       Number.isInteger(n) && n >= MIN_SYNC_MAX_SUBMISSIONS && n <= MAX_SYNC_MAX_SUBMISSIONS
@@ -107,6 +123,21 @@ export function readSyncSettings(db: Db): {
         : DEFAULT_SYNC_MAX_SUBMISSIONS,
     autoContinueRounds: getAutoContinueRounds(db),
     jisuankePracticeSync: practice?.value !== 'false',
+    // 拉取速度全局倍率：越界/缺失回退默认 1×（= 安全下限）。与节流层实际生效值同源同口径。
+    requestIntervalScale:
+      Number.isFinite(scale) &&
+      scale >= MIN_REQUEST_INTERVAL_SCALE &&
+      scale <= MAX_REQUEST_INTERVAL_SCALE
+        ? scale
+        : DEFAULT_REQUEST_INTERVAL_SCALE,
+    // 各平台 1× 基准间隔（毫秒）：前端据此实时换算「当前倍率下每次请求间隔 = 基准 × 倍率」，
+    // 拖动滑块即可看到每个平台的秒数，无需往返服务端。域名取自平台 homepage（与节流表键一致）。
+    requestIntervalBase: Object.fromEntries(
+      PLATFORMS.map((p) => [
+        p.id,
+        intervalForHost(hostOf(p.homepage), HOST_MIN_INTERVAL_MS, DEFAULT_HOST_MIN_INTERVAL_MS),
+      ]),
+    ),
   };
 }
 
@@ -446,14 +477,17 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     res.json({ ok: true });
   });
 
-  // POST /api/settings/sync  body: { maxSubmissions, autoContinueRounds?, jisuankePracticeSync? }
+  // POST /api/settings/sync  body: { maxSubmissions, autoContinueRounds?, jisuankePracticeSync?, requestIntervalScale? }
   // maxSubmissions：100–1500（MIN/MAX_SYNC_MAX_SUBMISSIONS），单次同步新增上限，防封号。
   // autoContinueRounds：0–50 的**数字**，后台续拉轮数上限（0 = 关闭）；**省略即保留已存值**（前端只改
   // 一项时不会把另一项重置成默认）。jisuankePracticeSync：布尔，计蒜客「同步自由练题提交」开关
   // （落库为 settings['jisuanke.practiceSync'] 的 'true'/'false'；同样省略即保留已存值）。
+  // requestIntervalScale：1–5 的**数值**（可带小数，如 1.5），拉取速度全局倍率（1 = 安全下限/最快）；
+  // 同样省略即保留已存值。写入后实时下发到节流层（setRequestIntervalScale），无需重启。
   // 各项都先校验后写入：任一非法则整次请求不落库。
   r.post('/sync', (req, res) => {
-    const { maxSubmissions, autoContinueRounds, jisuankePracticeSync } = req.body ?? {};
+    const { maxSubmissions, autoContinueRounds, jisuankePracticeSync, requestIntervalScale } =
+      req.body ?? {};
     const n = Number(maxSubmissions);
     if (!Number.isInteger(n) || n < MIN_SYNC_MAX_SUBMISSIONS || n > MAX_SYNC_MAX_SUBMISSIONS) {
       return res
@@ -480,6 +514,22 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     if (jisuankePracticeSync !== undefined && typeof jisuankePracticeSync !== 'boolean') {
       return res.status(400).json({ error: 'jisuankePracticeSync 需为布尔值' });
     }
+    // 倍率同样严格要求 number 类型：null/''/false 强转后是 0，而 0 低于安全下限 1×，
+    // 不能让它被静默写成「比安全下限还快」。类型/范围不符即 400，已存值原样保留。
+    let scale: number | undefined;
+    if (requestIntervalScale !== undefined) {
+      if (
+        typeof requestIntervalScale !== 'number' ||
+        !Number.isFinite(requestIntervalScale) ||
+        requestIntervalScale < MIN_REQUEST_INTERVAL_SCALE ||
+        requestIntervalScale > MAX_REQUEST_INTERVAL_SCALE
+      ) {
+        return res.status(400).json({
+          error: `requestIntervalScale 需为 ${MIN_REQUEST_INTERVAL_SCALE}–${MAX_REQUEST_INTERVAL_SCALE} 的数值（1 = 安全下限/最快；省略该字段则保留已存值）`,
+        });
+      }
+      scale = requestIntervalScale;
+    }
     const upsert = db.prepare(
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     );
@@ -487,6 +537,10 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     if (rounds !== undefined) upsert.run('sync.autoContinueRounds', String(rounds));
     if (typeof jisuankePracticeSync === 'boolean') {
       upsert.run('jisuanke.practiceSync', String(jisuankePracticeSync));
+    }
+    if (scale !== undefined) {
+      upsert.run('sync.requestIntervalScale', String(scale));
+      setRequestIntervalScale(scale); // 实时下发到全局节流层，下一次平台请求即按新间隔
     }
     res.json(readSyncSettings(db));
   });

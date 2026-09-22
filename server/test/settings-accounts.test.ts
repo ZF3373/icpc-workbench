@@ -221,8 +221,18 @@ test('GET / returns sync.maxSubmissions default; POST /sync saves and validates'
     });
     assert.equal(res.status, 200);
     // 响应带完整的 sync 设置（Task 8 起含 autoContinueRounds，未传时保持默认 3；
-    // Task 9 起含 jisuankePracticeSync，键缺失 = 默认开启）
-    assert.deepEqual(await res.json(), { maxSubmissions: 800, autoContinueRounds: 3, jisuankePracticeSync: true });
+    // Task 9 起含 jisuankePracticeSync，键缺失 = 默认开启；拉取速度起含 requestIntervalScale/
+    // requestIntervalBase，未传倍率时保持默认 1×）。只断言本用例关心的字段，避免与新增字段强耦合。
+    const saved = (await res.json()) as {
+      maxSubmissions: number;
+      autoContinueRounds: number;
+      jisuankePracticeSync: boolean;
+      requestIntervalScale: number;
+    };
+    assert.equal(saved.maxSubmissions, 800);
+    assert.equal(saved.autoContinueRounds, 3);
+    assert.equal(saved.jisuankePracticeSync, true);
+    assert.equal(saved.requestIntervalScale, 1);
     // 持久化到 settings 表
     const row = db.prepare("SELECT value FROM settings WHERE key = 'sync.maxSubmissions'").get() as { value: string };
     assert.equal(row.value, '800');

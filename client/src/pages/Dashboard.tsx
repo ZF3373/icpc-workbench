@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
-import { Button, Card, Col, Empty, Row, Spin, App as AntdApp } from 'antd'
+import { Button, Card, Col, Empty, Row, Spin, App as AntdApp, Tooltip as AntTooltip } from 'antd'
 import {
   CheckCircleOutlined,
   HolderOutlined,
@@ -225,9 +225,14 @@ export default function Dashboard() {
 
   const syncButton = (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-      <Button icon={<SyncOutlined spin={syncing} />} loading={syncing} onClick={doSync}>
-        同步数据
-      </Button>
+      <AntTooltip
+        title="频繁拉取可能触发风控，如刷题记录过多请间隔分次逐渐拉取"
+        placement="left"
+      >
+        <Button icon={<SyncOutlined spin={syncing} />} loading={syncing} onClick={doSync}>
+          同步数据
+        </Button>
+      </AntTooltip>
       <SyncProgressHint />
     </div>
   )

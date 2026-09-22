@@ -15,6 +15,11 @@ import {
   createHostThrottle,
   HOST_MIN_INTERVAL_MS,
   DEFAULT_HOST_MIN_INTERVAL_MS,
+  DEFAULT_REQUEST_INTERVAL_SCALE,
+  MAX_REQUEST_INTERVAL_SCALE,
+  MIN_REQUEST_INTERVAL_SCALE,
+  getRequestIntervalScale,
+  setRequestIntervalScale,
 } from '../src/net/hostThrottle.ts';
 
 /** 可控时钟 + 假睡眠（不真正等待，睡眠即推进时钟），并记录每次睡眠时长 */
@@ -259,4 +264,106 @@ test('hostThrottle: 生产间隔表覆盖 8 个平台且不低于各适配器自
     assert.ok(interval! >= delay * 1.5, `${host} 的节流间隔(${interval})应显著高于适配器自带延迟(${delay})`);
   }
   assert.ok(DEFAULT_HOST_MIN_INTERVAL_MS > 0);
+});
+
+test('hostThrottle: 安全下限足够保守（1× 时各站均 ≥ 官方要求的 2 倍裕度）', () => {
+  // 用户把速度滑块拉到最快端（1×）时仍会生效的下限，必须显著高于各站官方阈值，
+  // 以保证「滑到最短也绝不触发风控」。official = 各站官方/反爬要求的最小间隔。
+  const officialMin: Record<string, number> = {
+    'atcoder.jp': 1000, // kenkoooo/AtCoder 官方要求 ≥1s
+    'codeforces.com': 500, // CF 建议 ≤2 req/s
+    'kenkoooo.com': 1000, // ≥1s
+  };
+  for (const [host, min] of Object.entries(officialMin)) {
+    assert.ok(
+      HOST_MIN_INTERVAL_MS[host]! >= min * 2,
+      `${host} 安全下限(${HOST_MIN_INTERVAL_MS[host]})应 ≥ 官方要求(${min})的 2 倍`,
+    );
+  }
+  // 其余无明确官方阈值的站点也统一抬到 ≥1.5s
+  for (const [host, interval] of Object.entries(HOST_MIN_INTERVAL_MS)) {
+    if (officialMin[host] === undefined) {
+      assert.ok(interval >= 1500, `${host} 安全下限(${interval})应 ≥1500ms`);
+    }
+  }
+  assert.ok(MIN_REQUEST_INTERVAL_SCALE === 1, '倍率下限必须为 1：不允许调到安全下限以下');
+  // 洛谷风控在各平台中最严：间隔必须取全表最长一档，不得回落到短间隔组
+  const luogu = HOST_MIN_INTERVAL_MS['www.luogu.com.cn']!;
+  for (const [host, interval] of Object.entries(HOST_MIN_INTERVAL_MS)) {
+    assert.ok(luogu >= interval!, `洛谷间隔(${luogu})应不短于任一平台（${host}=${interval}）`);
+  }
+});
+
+test('hostThrottle: setRequestIntervalScale 越界/非法值收敛到合法域', () => {
+  try {
+    assert.equal(setRequestIntervalScale(2.5), 2.5, '合法值原样生效');
+    assert.equal(getRequestIntervalScale(), 2.5);
+    assert.equal(setRequestIntervalScale(0.2), MIN_REQUEST_INTERVAL_SCALE, '低于下限 → 收敛到 1×');
+    assert.equal(setRequestIntervalScale(99), MAX_REQUEST_INTERVAL_SCALE, '高于上限 → 收敛到 5×');
+    assert.equal(setRequestIntervalScale(Number.NaN), DEFAULT_REQUEST_INTERVAL_SCALE, 'NaN → 默认 1×');
+    assert.equal(
+      setRequestIntervalScale(Number.POSITIVE_INFINITY),
+      DEFAULT_REQUEST_INTERVAL_SCALE,
+      'Infinity → 默认 1×',
+    );
+  } finally {
+    setRequestIntervalScale(DEFAULT_REQUEST_INTERVAL_SCALE);
+  }
+});
+
+test('hostThrottle: 全局倍率实时缩放有效间隔（setter 后下一次请求即生效）', async () => {
+  const clock = fakeClock();
+  const calls: Array<{ url: string; at: number }> = [];
+  const throttle = createHostThrottle(
+    (async (input: string | URL | Request) => {
+      calls.push({ url: String(input), at: clock.now() });
+      return new Response('{}');
+    }) as unknown as typeof fetch,
+    { minIntervalMs: { 'a.test': 1000 }, now: clock.now, sleep: clock.sleep },
+  );
+  try {
+    assert.equal(throttle.intervalFor('a.test'), 1000, '默认 1× 时等于基准');
+    setRequestIntervalScale(2);
+    assert.equal(throttle.intervalFor('a.test'), 2000, '倍率即时反映到 intervalFor（无需重建）');
+
+    await throttle.fetch('https://a.test/1');
+    await throttle.fetch('https://a.test/2');
+    assert.deepEqual(
+      calls.map((c) => c.at),
+      [1000, 3000],
+      '2×：空闲桶首请求先等 (2-1)×基准，请求间距为 2× 间隔',
+    );
+  } finally {
+    setRequestIntervalScale(DEFAULT_REQUEST_INTERVAL_SCALE);
+  }
+});
+
+test('hostThrottle: 倍率 >1 时空闲桶首请求也按节奏；1× 首请求立即发出', async () => {
+  const clock = fakeClock();
+  const calls: Array<{ url: string; at: number }> = [];
+  const throttle = createHostThrottle(
+    (async (input: string | URL | Request) => {
+      calls.push({ url: String(input), at: clock.now() });
+      return new Response('{}');
+    }) as unknown as typeof fetch,
+    { minIntervalMs: { 'a.test': 1000 }, now: clock.now, sleep: clock.sleep },
+  );
+  try {
+    setRequestIntervalScale(1);
+    await throttle.fetch('https://a.test/warm');
+    assert.equal(calls[0]!.at, 0, '1×：首请求不前置等待');
+
+    setRequestIntervalScale(3);
+    clock.advance(60_000); // 桶空闲（距上次预约远超间隔）
+    await throttle.fetch('https://a.test/1');
+    assert.equal(calls[1]!.at, 62_000, '3×：空闲桶首请求先等 (3-1)×1000');
+    await throttle.fetch('https://a.test/2');
+    assert.equal(calls[2]!.at, 65_000, '请求间距仍为完整 3× 间隔');
+
+    //  burst 进行中（桶未空闲）不叠加前置等待：紧接着并发一次，只按预约错开
+    await throttle.fetch('https://a.test/3');
+    assert.equal(calls[3]!.at, 68_000, '非空闲桶只按预约间隔错开，不另加前置等待');
+  } finally {
+    setRequestIntervalScale(DEFAULT_REQUEST_INTERVAL_SCALE);
+  }
 });

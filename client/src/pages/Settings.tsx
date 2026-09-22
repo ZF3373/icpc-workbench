@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Alert,
   AutoComplete,
@@ -48,7 +48,15 @@ interface SettingsData {
   cookies: Record<string, { configured: boolean; masked?: string; hasUa?: boolean }>
   reminder: ReminderConfig
   contestReminder: ContestReminderConfig
-  sync: { maxSubmissions: number; autoContinueRounds?: number; jisuankePracticeSync?: boolean }
+  sync: {
+    maxSubmissions: number
+    autoContinueRounds?: number
+    jisuankePracticeSync?: boolean
+    /** 拉取速度全局倍率（1 = 安全下限/最快）；旧版服务端无此字段时可空 */
+    requestIntervalScale?: number
+    /** 各平台 1× 基准间隔（毫秒）；前端按 基准 × 倍率 实时换算每个平台的秒数 */
+    requestIntervalBase?: Record<string, number>
+  }
 }
 
 const SYNC_NOTE_COLOR: Record<string, string> = {
@@ -95,6 +103,15 @@ export default function Settings() {
   const [syncRounds, setSyncRounds] = useState(6)
   /** 计蒜客「同步自由练题提交」开关（键缺失 = 默认开启） */
   const [practiceSync, setPracticeSync] = useState(true)
+  /** 拉取速度全局倍率（1× = 安全下限/最快，越大越慢越稳）；拖动滑块即时预览，松手才落库 */
+  const [syncScale, setSyncScale] = useState(1)
+  /** 各平台 1× 基准间隔（毫秒），由服务端下发；用于实时显示「当前倍率下每次请求间隔」 */
+  const [intervalBase, setIntervalBase] = useState<Record<string, number>>({})
+  /** 服务端当前已落库的倍率（用于去重提交与失败回滚基准） */
+  const savedScale = useRef<number>(1)
+  /** onChange 防抖补提交的定时器：rc-slider 只在 document 监听 mouseup（无指针捕获），
+   *  鼠标在浏览器窗口外松开时 onChangeComplete 丢失、拖到的值不落库——用防抖兜底。 */
+  const scaleSaveTimer = useRef<number | null>(null)
 
   const load = () => {
     get<SettingsData>('/api/settings')
@@ -113,6 +130,9 @@ export default function Settings() {
         setSyncMax(d.sync?.maxSubmissions ?? 300)
         setSyncRounds(d.sync?.autoContinueRounds ?? 3)
         setPracticeSync(d.sync?.jisuankePracticeSync !== false)
+        setSyncScale(d.sync?.requestIntervalScale ?? 1)
+        savedScale.current = d.sync?.requestIntervalScale ?? 1
+        setIntervalBase(d.sync?.requestIntervalBase ?? {})
       })
       .catch((e: Error) => message.error(e.message))
   }
@@ -249,6 +269,34 @@ export default function Settings() {
       message.error((e as Error).message)
       load() // 回滚到服务端实际值
     }
+  }
+
+  /** 拉取速度全局倍率：落库 settings['sync.requestIntervalScale'] 并实时下发到节流层（滑块松手时调用） */
+  const saveSyncScale = async (v: number) => {
+    if (savedScale.current === v) return
+    savedScale.current = v
+    try {
+      const r = await post<{ requestIntervalScale: number }>('/api/settings/sync', {
+        maxSubmissions: syncMax,
+        requestIntervalScale: v,
+      })
+      const applied = r.requestIntervalScale ?? v
+      savedScale.current = applied
+      setSyncScale(applied)
+      message.success(`拉取速度已保存：${applied.toFixed(1)}×`)
+    } catch (e) {
+      message.error((e as Error).message)
+      load() // 回滚到服务端实际值（load 会同步 savedScale）
+    }
+  }
+
+  /** 拖动过程中的防抖兜底提交（600ms 无新变化即落库一次） */
+  const queueSyncScaleSave = (v: number) => {
+    if (scaleSaveTimer.current !== null) window.clearTimeout(scaleSaveTimer.current)
+    scaleSaveTimer.current = window.setTimeout(() => {
+      scaleSaveTimer.current = null
+      void saveSyncScale(v)
+    }, 600)
   }
 
   const saveCookie = async (platform: PlatformId) => {
@@ -726,6 +774,46 @@ export default function Settings() {
                 续拉进度与「停止续拉」在「题目管理 → 导入 → 平台同步」中显示。
               </span>
             </Space>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <Space align="center" wrap={false} style={{ width: '100%', maxWidth: 460 }}>
+              <span style={{ whiteSpace: 'nowrap' }}>拉取速度</span>
+              <Slider
+                min={1}
+                max={5}
+                step={0.5}
+                value={syncScale}
+                marks={{ 1: '1×', 5: '5×' }}
+                onChange={(v) => {
+                  setSyncScale(v)
+                  queueSyncScaleSave(v)
+                }}
+                onChangeComplete={(v) => {
+                  if (scaleSaveTimer.current !== null) {
+                    window.clearTimeout(scaleSaveTimer.current)
+                    scaleSaveTimer.current = null
+                  }
+                  void saveSyncScale(v)
+                }}
+                style={{ flex: 1, minWidth: 140 }}
+              />
+              <Tag color="blue" style={{ marginInlineEnd: 0 }}>{syncScale.toFixed(1)}×</Tag>
+            </Space>
+            <div className="muted-note" style={{ fontSize: 12, lineHeight: '20px', marginTop: 2 }}>
+              {PLATFORMS.map((p, i) => {
+                const baseMs = intervalBase[p.id]
+                if (!baseMs) return null
+                return (
+                  <span key={p.id} style={{ whiteSpace: 'nowrap' }}>
+                    {i > 0 && <span style={{ margin: '0 4px', opacity: 0.5 }}>·</span>}
+                    {p.name} {((baseMs * syncScale) / 1000).toFixed(1)}s
+                  </span>
+                )
+              })}
+            </div>
+            <div className="muted-note" style={{ fontSize: 12, lineHeight: '18px' }}>
+              1× = 安全下限：最快也不触发风控；大于 1× 时每次请求（含同步首请求）都按上述间隔执行。
+            </div>
           </div>
           <div style={{ marginTop: 8 }}>
             <Space wrap>

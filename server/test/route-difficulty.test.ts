@@ -319,6 +319,21 @@ function settingsApp(db: Db): express.Express {
   return app;
 }
 
+/** POST /api/settings/sync 现还返回 requestIntervalScale / requestIntervalBase（拉取速度倍率）。
+ *  下面这些用例只关心三项核心字段，挑出来比对，避免与后续新增字段强耦合。 */
+function coreSync(j: unknown): {
+  maxSubmissions: number;
+  autoContinueRounds: number;
+  jisuankePracticeSync: boolean;
+} {
+  const o = j as Record<string, unknown>;
+  return {
+    maxSubmissions: o.maxSubmissions as number,
+    autoContinueRounds: o.autoContinueRounds as number,
+    jisuankePracticeSync: o.jisuankePracticeSync as boolean,
+  };
+}
+
 test('GET /api/settings: sync 给出 autoContinueRounds（默认 3）与 jisuankePracticeSync（默认开启）', async () => {
   const db = createDb(':memory:');
   await withApp(settingsApp(db), async (base) => {
@@ -337,15 +352,15 @@ test('POST /api/settings/sync: autoContinueRounds 可选（省略则保留已存
   await withApp(settingsApp(db), async (base) => {
     const first = await postJson(base, '/api/settings/sync', { maxSubmissions: 1000, autoContinueRounds: 3 });
     assert.equal(first.status, 200);
-    assert.deepEqual(await first.json(), { maxSubmissions: 1000, autoContinueRounds: 3, jisuankePracticeSync: true });
+    assert.deepEqual(coreSync(await first.json()), { maxSubmissions: 1000, autoContinueRounds: 3, jisuankePracticeSync: true });
 
     // 只改上限：轮数保持上一次写入的值
     const second = await postJson(base, '/api/settings/sync', { maxSubmissions: 1500 });
-    assert.deepEqual(await second.json(), { maxSubmissions: 1500, autoContinueRounds: 3, jisuankePracticeSync: true });
+    assert.deepEqual(coreSync(await second.json()), { maxSubmissions: 1500, autoContinueRounds: 3, jisuankePracticeSync: true });
 
     // 0 = 关闭续拉，属合法值
     const off = await postJson(base, '/api/settings/sync', { maxSubmissions: 1500, autoContinueRounds: 0 });
-    assert.deepEqual(await off.json(), { maxSubmissions: 1500, autoContinueRounds: 0, jisuankePracticeSync: true });
+    assert.deepEqual(coreSync(await off.json()), { maxSubmissions: 1500, autoContinueRounds: 0, jisuankePracticeSync: true });
   });
   db.close();
 });
@@ -365,11 +380,11 @@ test('POST /api/settings/sync: jisuankePracticeSync 落库为 true/false 字符�
 
     // 只改上限：练习同步开关保持上次写入的 false（省略即保留）
     const keep = await postJson(base, '/api/settings/sync', { maxSubmissions: 500 });
-    assert.deepEqual(await keep.json(), { maxSubmissions: 500, autoContinueRounds: 3, jisuankePracticeSync: false });
+    assert.deepEqual(coreSync(await keep.json()), { maxSubmissions: 500, autoContinueRounds: 3, jisuankePracticeSync: false });
 
     const on = await postJson(base, '/api/settings/sync', { maxSubmissions: 500, jisuankePracticeSync: true });
     assert.equal(read()?.value, 'true');
-    assert.deepEqual(await on.json(), { maxSubmissions: 500, autoContinueRounds: 3, jisuankePracticeSync: true });
+    assert.deepEqual(coreSync(await on.json()), { maxSubmissions: 500, autoContinueRounds: 3, jisuankePracticeSync: true });
 
     // 非布尔（含字符串 'false'）：拒绝且不改动已存值
     for (const bad of ['false', 0, 1, null]) {
@@ -429,7 +444,7 @@ test('POST /api/settings/sync: null / 空串 / 布尔 / 数组等非数字 autoC
 
     // 「保留已存值」的正确写法是**省略该字段**（不是传 null）
     const omitted = await postJson(base, '/api/settings/sync', { maxSubmissions: 500 });
-    assert.deepEqual(await omitted.json(), { maxSubmissions: 500, autoContinueRounds: 7, jisuankePracticeSync: true });
+    assert.deepEqual(coreSync(await omitted.json()), { maxSubmissions: 500, autoContinueRounds: 7, jisuankePracticeSync: true });
     assert.equal(raw(), '7');
   });
   db.close();

@@ -7,6 +7,7 @@ import { applyPendingRestore, createBackup, maybeDailyBackup } from './backup.ts
 import { seedBuiltinBank } from './db/builtinBank.ts';
 import { initAdapters } from './adapters/index.ts';
 import { configureSyncScheduler } from './adapters/syncScheduler.ts';
+import { setRequestIntervalScale } from './net/hostThrottle.ts';
 import { asyncHandler } from './asyncHandler.ts';
 import { errorHandler, securityHeaders } from './middleware.ts';
 import { backupsRoutes } from './routes/backups.ts';
@@ -40,6 +41,12 @@ seedBuiltinBank(db); // 内置题库播种：版本变化时 upsert 一次，日
 initAdapters(config.dataDir);
 // 后台分批续拉调度器：截断的同步按平台节奏自动续拉下一批（未装配则不排期，不影响手动同步）
 configureSyncScheduler({ db });
+// 拉取速度全局倍率：从设置恢复（缺失/越界 → setRequestIntervalScale 收敛为默认 1× = 安全下限）。
+// 节流层每次请求实时读取该值，故此处一次下发即对整个进程生效，无需重启或重建节流单例。
+const intervalScaleRow = db
+  .prepare('SELECT value FROM settings WHERE key = ?')
+  .get('sync.requestIntervalScale') as { value: string } | undefined;
+setRequestIntervalScale(Number(intervalScaleRow?.value));
 // 知识点存储目录（便宜：只记路径）；JSONL → SQLite 的重建在 listen 之后做，见文件末尾
 initKnowledgeStore(config.dataDir);
 // 每日首次启动自动备份（settings 键幂等）；失败不阻塞启动

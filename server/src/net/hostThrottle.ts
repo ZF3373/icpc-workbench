@@ -11,8 +11,11 @@
  *   并发发起的同域请求因此天然按顺序错开，不会同时打同一站点。
  * - **间隔是下限而非叠加**：调用方本来就等够了（适配器自身的页间 sleep 更慢时）不会额外等待。
  * - **按域名分桶**：各平台节奏互相独立；子域沿用父域配置（`mirror.codeforces.com` → `codeforces.com`）。
- * - **只等一个间隔**：不排队等长任务，最长只等该域一个间隔（≤1.5s），
+ * - **只等一个间隔**：不排队等长任务，预约等待最长一个间隔（1× 时 ≤2.5s），
  *   因此调用点自带的 `AbortSignal.timeout` 超时语义基本不受影响。
+ * - **空闲桶首请求也按节奏（仅倍率 >1×）**：先等 `(倍率-1)×基准` 再发首请求。
+ *   增量同步常态下「每站点只发 1 次请求」，若首请求立即发出，倍率将毫无可观测效果；
+ *   1× 时该前置等待恒为 0，安全下限不额外增加启动延迟。
  *
  * 已知取舍：
  * - 等待时长不计入 `sync_runs.waited_ms`（那里统计的是适配器自身 sleep 与限流退避）；
@@ -35,7 +38,7 @@ export interface HostThrottleOptions {
 export interface HostThrottle {
   /** 节流后的 fetch：可直接注入 createHttpClient / 路由的 fetchFn */
   fetch: typeof fetch;
-  /** 该域名当前的最小间隔（毫秒），供诊断与断言 */
+  /** 该域名当前生效的最小间隔（毫秒，已含全局拉取速度倍率），供诊断与断言 */
   intervalFor(host: string): number;
   /**
    * 该节奏桶的累计统计（单调递增，进程内）：
@@ -51,25 +54,65 @@ export interface HostThrottle {
 }
 
 /**
- * 生产间隔表：每个值都显著高于对应适配器自带的页间延迟
- * （CF 500ms / AtCoder 1000ms / 洛谷 300ms / 牛客 500ms / QOJ 1000ms /
- * 力扣 300ms / 代码源 400ms / 计蒜客 400ms），从而把整体频率压下来。
- * 同时尊重各站官方要求：AtCoder ≥1s、CF 官方建议 ≤2 req/s（这里取 ~0.83 req/s）。
+ * 生产间隔表 ＝ 全局「安全下限」（拉取速度倍率 1× 时各域名的最小请求间隔）。
+ *
+ * 这里的每个值都是**用户把速度滑块拉到最快端（1×）时仍会生效的下限**，因此刻意取得
+ * 很保守：对每个站点都留出官方要求的 2–4 倍裕度（AtCoder ≥1s → 2.5s；CF ≤2req/s
+ * 即 ≥500ms → 2s；kenkoooo ≥1s → 2s），其余无明确官方阈值的站点也统一抬到 1.5s 上下。
+ * 目的是「即便用户滑到最短间隔也绝不会触发平台风控」——倍率只能调慢（见
+ * MIN_REQUEST_INTERVAL_SCALE），没有任何途径让间隔低于本表。
+ *
+ * 洛谷（www.luogu.com.cn）取全表最严一档：其风控在各平台中最严，请求稍密即下发
+ * 人机校验挑战（适配器层另有 fetchWithChallenge 兜底），故间隔必须最长而非最短。
+ *
+ * 同时每个值都显著高于对应适配器自带的页间延迟（CF 500ms / AtCoder 1000ms / 洛谷 300ms /
+ * 牛客 500ms / QOJ 1000ms / 力扣 300ms / 代码源 400ms / 计蒜客 400ms）；由于节流间隔是
+ * 「下限而非叠加」，本表事实上就是各平台拉取的有效节奏总闸。
  */
 export const HOST_MIN_INTERVAL_MS: Record<string, number> = {
-  'codeforces.com': 1200,
-  'atcoder.jp': 1500,
-  'www.luogu.com.cn': 700,
-  'ac.nowcoder.com': 1100,
-  'qoj.ac': 1500,
-  'leetcode.cn': 700,
-  'bs.daimayuan.top': 800,
-  'www.jisuanke.com': 800,
-  'kenkoooo.com': 1000,
+  'codeforces.com': 2000,
+  'atcoder.jp': 2500,
+  'www.luogu.com.cn': 4000,
+  'ac.nowcoder.com': 2000,
+  'qoj.ac': 2500,
+  'leetcode.cn': 1500,
+  'bs.daimayuan.top': 1500,
+  'www.jisuanke.com': 1500,
+  'kenkoooo.com': 2000,
 };
 
-/** 未登记域名的兜底间隔：保守但不至于拖慢一次性请求 */
-export const DEFAULT_HOST_MIN_INTERVAL_MS = 600;
+/** 未登记域名的兜底间隔：同样作为安全下限，保守但不至于拖慢一次性请求 */
+export const DEFAULT_HOST_MIN_INTERVAL_MS = 1200;
+
+/**
+ * 全局「拉取速度」倍率取值域：对所有域名间隔等比缩放。
+ * - 下限 1× ＝ HOST_MIN_INTERVAL_MS 的安全下限（最快端，已保证不触发风控）；
+ * - 越大越慢越稳；只允许调慢，不允许调到安全下限以下。
+ * 单一全局值，满足「统一一个值」的同时保留各域名的相对安全调参。
+ */
+export const MIN_REQUEST_INTERVAL_SCALE = 1;
+export const MAX_REQUEST_INTERVAL_SCALE = 5;
+export const DEFAULT_REQUEST_INTERVAL_SCALE = 1;
+
+/**
+ * 当前全局倍率（模块级可变单例）：生产节流单例与 QOJ 自定义传输层共用同一份，
+ * 因此设置页改一次即对所有平台请求生效。`intervalFor` 每次请求实时读取本值，
+ * 故 setter 调用后**无需重启、无需重建节流单例**即生效。默认 1× = 安全下限。
+ */
+let intervalScale = DEFAULT_REQUEST_INTERVAL_SCALE;
+
+/** 设置全局倍率；越界或非法（NaN/Infinity）收敛到合法值，返回最终生效值。 */
+export function setRequestIntervalScale(scale: number): number {
+  intervalScale = Number.isFinite(scale)
+    ? Math.min(MAX_REQUEST_INTERVAL_SCALE, Math.max(MIN_REQUEST_INTERVAL_SCALE, scale))
+    : DEFAULT_REQUEST_INTERVAL_SCALE;
+  return intervalScale;
+}
+
+/** 读取当前全局倍率（诊断/测试用） */
+export function getRequestIntervalScale(): number {
+  return intervalScale;
+}
 
 /** 从 fetch 入参解析域名；无法解析返回空串（落到兜底桶） */
 export function hostOf(input: string | URL | Request): string {
@@ -155,7 +198,9 @@ export function createHostThrottle(
   /** 节奏桶 → 累计请求数 / 最近一次请求时刻（仅统计，不影响节流判定） */
   const statsByBucket = new Map<string, { requests: number; lastRequestAt: number }>();
 
-  const intervalFor = (host: string): number => intervalForHost(host, table, fallback);
+  // 全局倍率实时作用于每次请求：intervalScale 是模块级可变值，setter 改后下一次请求即生效
+  const intervalFor = (host: string): number =>
+    Math.round(intervalForHost(host, table, fallback) * intervalScale);
 
   const throttledFetch = (async (
     input: RequestInfo | URL,
@@ -163,9 +208,19 @@ export function createHostThrottle(
   ): Promise<Response> => {
     const host = hostOf(input as string | URL | Request);
     const bucket = bucketOf(host, table);
-    const interval = intervalFor(host);
+    const base = intervalForHost(host, table, fallback);
+    const interval = Math.round(base * intervalScale);
     const t = now();
-    const startAt = Math.max(t, nextAllowedAt.get(bucket) ?? 0);
+    const prevAllowed = nextAllowedAt.get(bucket);
+    // 倍率 >1 时空闲桶的首请求也按节奏：先等 (倍率-1)×基准 再发。
+    // 否则「每站点仅 1 次请求」的增量同步里首请求恒立即发出，倍率毫无可观测效果；
+    // 1× 时 preWait 恒为 0，安全下限不增加启动延迟。
+    const idle = prevAllowed === undefined || prevAllowed <= t;
+    const preWait =
+      idle && intervalScale > MIN_REQUEST_INTERVAL_SCALE
+        ? Math.round(base * (intervalScale - MIN_REQUEST_INTERVAL_SCALE))
+        : 0;
+    const startAt = Math.max(t + preWait, prevAllowed ?? 0);
     nextAllowedAt.set(bucket, startAt + interval);
     const wait = startAt - t;
     if (wait > 0) await sleepInterruptible(wait, init?.signal, sleep);
