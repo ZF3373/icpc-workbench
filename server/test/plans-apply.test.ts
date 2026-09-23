@@ -69,7 +69,7 @@ test('apply: keeps matching tasks with checkins, adds and removes others', async
     });
     assert.equal(res.status, 200);
     const body = (await res.json()) as { ok: boolean; added: number; removed: number; kept: number; checkinsKept: number };
-    assert.deepEqual(body, { ok: true, added: 1, removed: 2, kept: 1, checkinsKept: 1 });
+    assert.deepEqual(body, { ok: true, added: 1, removed: 2, kept: 1, checkinsKept: 1, droppedInvalid: 0 });
 
     const title = (db.prepare('SELECT title FROM plans WHERE id = ?').get(planId) as { title: string }).title;
     assert.equal(title, '修改后计划');

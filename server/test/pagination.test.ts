@@ -192,3 +192,42 @@ test('pagedFetch: normalize returning null skips row (not known, not counted)', 
   assert.deepEqual(out.map((r) => r.externalId), ['a', 'c']);
   assert.equal(opts.truncated, undefined); // 不足一页 → 自然结束
 });
+
+test('pagedFetch: fetchPage 回传 rawCount 时按原始行数判短页（解析丢行不误判到底）', async () => {
+  // 第 1 页实际有 3 行，但 1 行畸形被解析层丢弃：rows 2 条 + rawCount 3 → 不能判「最后一页」，
+  // 否则更早历史被永久放弃（自然结束会清掉 sync_truncated）。第 2 页真短页 → 自然结束。
+  let callCount = 0;
+  const opts: { truncated?: boolean } = {};
+  const out = await pagedFetch<string>({
+    pageSize: 3,
+    perSyncMax: 100,
+    fetchPage: async () => {
+      callCount += 1;
+      if (callCount === 1) return { rows: ['a', 'b'], rawCount: 3 };
+      if (callCount === 2) return { rows: ['c'], rawCount: 1 };
+      return [];
+    },
+    externalIdOf: (s) => s,
+    normalize: (s) => norm(s),
+    opts,
+  });
+  assert.deepEqual(out.map((r) => r.externalId), ['a', 'b', 'c']);
+  assert.equal(opts.truncated, undefined); // 短页 = 自然结束，不截断
+});
+
+test('pagedFetch: rawCount 为 0（整页无数据行）仍判自然结束', async () => {
+  let callCount = 0;
+  const out = await pagedFetch<string>({
+    pageSize: 3,
+    perSyncMax: 100,
+    fetchPage: async () => {
+      callCount += 1;
+      return { rows: [], rawCount: 2 }; // 只有表头等非数据行
+    },
+    externalIdOf: (s) => s,
+    normalize: (s) => norm(s),
+    opts: {},
+  });
+  assert.deepEqual(out, []);
+  assert.equal(callCount, 1); // 空页即停
+});

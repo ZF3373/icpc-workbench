@@ -290,3 +290,30 @@ test('回收站：旧墓碑无快照按题号兜底重建；题目已存在时�
     assert.equal(countOf(d, "SELECT COUNT(*) c FROM deleted_problems WHERE problem_key = '1A'"), 0);
   });
 });
+
+test('RESTORE: 恢复去重墓碑时若等价类仍有活行 → 只清墓碑，不重建重复题', async () => {
+  await withServer(async (base) => {
+    const d = db!;
+    // 活行是规范键 '1A'；回收站里的墓碑是去重时记下的变体键 '1a'（同归一化等价类）
+    d.prepare(
+      "INSERT INTO deleted_problems (platform, problem_key, normalized_key, title, difficulty, tags) VALUES ('codeforces', '1a', '1a', 'T', 1500, '[]')",
+    ).run();
+    const res = await fetch(`${base}/deleted/restore`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', problemKey: '1a' }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { ok: boolean; recreated: boolean };
+    assert.equal(body.recreated, false, '等价类有活行时不得重建（否则恢复→重复→再清理死循环）');
+    // 墓碑被清掉，回收站不再显示
+    const trash = await fetch(`${base}/deleted`);
+    const items = (await trash.json()) as Array<{ problem_key: string }>;
+    assert.equal(items.length, 0);
+    // 活行未被复制：等价类内仍只有 1 行
+    const rows = d
+      .prepare("SELECT problem_key FROM problems WHERE platform='codeforces' AND LOWER(REPLACE(problem_key,' ','')) = '1a'")
+      .all() as Array<{ problem_key: string }>;
+    assert.deepEqual(rows.map((r) => r.problem_key), ['1A']);
+  });
+});

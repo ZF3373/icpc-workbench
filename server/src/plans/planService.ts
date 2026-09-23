@@ -6,6 +6,7 @@ import { canonicalTag } from '../../../shared/src/index.ts';
 import type { AiConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
+import { localToday } from '../dates.ts';
 import { AiProvider } from '../ai/provider.ts';
 import { computeTrend } from '../analysis/trend.ts';
 import { computeWeakness, type WeaknessProfile } from '../analysis/weakness.ts';
@@ -94,7 +95,19 @@ export function addDays(dateStr: string, n: number): string {
 }
 
 export function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  return localToday();
+}
+
+/**
+ * 严格日历日期校验：正则 + 回环比对。
+ * 只有正则不够——Date.parse 会把 '2026-09-31T00:00:00Z' 回滚成 10-01（合法毫秒数），
+ * '2026-02-30' 同理；落库后该任务匹配不到任何日历格、/api/checkins/date/:date 查不到，
+ * 成为日历上的"隐身任务"。回环比对保证字符串本身就是真实存在的日历日。
+ */
+export function isCalendarDate(d: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  const ms = Date.parse(`${d}T00:00:00Z`);
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === d;
 }
 
 export function renderTemplate(tpl: string, vars: Record<string, string>): string {
@@ -155,7 +168,7 @@ export function savePlan(
   rawPrompt?: string,
 ): number {
   if (!input.title.trim()) throw new Error('计划标题不能为空');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.startDate)) throw new Error('startDate 格式非法');
+  if (!isCalendarDate(input.startDate)) throw new Error('startDate 日期非法（需为真实存在的 YYYY-MM-DD）');
   if (!Number.isInteger(input.days) || input.days <= 0 || input.days > 90) {
     throw new Error('days 非法（1-90）');
   }
@@ -163,7 +176,7 @@ export function savePlan(
     throw new Error('计划至少需要 1 个任务');
   }
   const tasks = input.tasks.map((t, i) => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(t.date)) throw new Error(`任务 ${i + 1} 日期格式非法`);
+    if (!isCalendarDate(t.date)) throw new Error(`任务 ${i + 1} 日期非法（需为真实存在的 YYYY-MM-DD）`);
     const kind = t.kind ?? 'practice';
     if (!(TASK_KINDS as readonly string[]).includes(kind)) {
       throw new Error(`任务 ${i + 1} kind 非法: ${kind}`);
@@ -740,6 +753,8 @@ export interface PlanModification {
   startDate: string;
   days: number;
   tasks: PlanTaskInput[];
+  /** 因非真实日历日期（如 2026-09-31）或越界被丢弃的任务数（透出给用户） */
+  droppedInvalid?: number;
 }
 
 /**
@@ -750,7 +765,7 @@ export interface PlanModification {
 export function parsePlanModifyJson(raw: string, planStartDate: string, planDays: number): PlanModification {
   const obj = parseJsonLoose(extractJsonText(raw));
   const startDate =
-    typeof obj.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(obj.startDate) ? obj.startDate : planStartDate;
+    typeof obj.startDate === 'string' && isCalendarDate(obj.startDate) ? obj.startDate : planStartDate;
   const rawDays = obj.days;
   const days =
     Number.isInteger(rawDays) && (rawDays as number) > 0 && (rawDays as number) <= 90 ? (rawDays as number) : planDays;
@@ -760,14 +775,17 @@ export function parsePlanModifyJson(raw: string, planStartDate: string, planDays
   const startMs = Date.parse(`${startDate}T00:00:00Z`);
   const endMs = startMs + (days - 1) * 86_400_000;
   const inRange = (d: string): boolean => {
+    // isCalendarDate 先行：'2026-09-31' 会被 Date.parse 回滚成 10-01 而误过范围检查
+    if (!isCalendarDate(d)) return false;
     const ms = Date.parse(`${d}T00:00:00Z`);
     return Number.isFinite(ms) && ms >= startMs && ms <= endMs;
   };
-  const tasks = (obj.tasks as unknown[])
+  const shaped = (obj.tasks as unknown[])
     .filter((t): t is Record<string, unknown> => typeof t === 'object' && t !== null)
-    .filter((t) => typeof t.title === 'string' && t.title.trim() && typeof t.date === 'string')
-    .filter((t) => inRange(t.date as string))
-    .map((t) => ({
+    .filter((t) => typeof t.title === 'string' && t.title.trim() && typeof t.date === 'string');
+  const ranged = shaped.filter((t) => inRange(t.date as string));
+  const droppedInvalid = shaped.length - ranged.length;
+  const tasks = ranged.map((t) => ({
       date: t.date as string,
       title: t.title as string,
       kind: TASK_KINDS.includes(t.kind as TaskKind) ? (t.kind as string) : 'practice',
@@ -783,6 +801,7 @@ export function parsePlanModifyJson(raw: string, planStartDate: string, planDays
     startDate,
     days,
     tasks,
+    ...(droppedInvalid > 0 ? { droppedInvalid } : {}),
   };
 }
 
@@ -791,6 +810,8 @@ export interface PlanModifyResult {
   removed: number;
   kept: number;
   checkinsKept: number;
+  /** 解析阶段因非真实日历日期或越界被丢弃的任务数 */
+  droppedInvalid: number;
 }
 
 /**
@@ -878,7 +899,13 @@ export function applyPlanModification(
       }
     }
     db.exec('COMMIT');
-    return { added: mod.tasks.length - kept, removed, kept, checkinsKept };
+    return {
+      added: mod.tasks.length - kept,
+      removed,
+      kept,
+      checkinsKept,
+      droppedInvalid: mod.droppedInvalid ?? 0,
+    };
   } catch (e) {
     db.exec('ROLLBACK');
     if (String((e as Error).message).includes('UNIQUE')) {

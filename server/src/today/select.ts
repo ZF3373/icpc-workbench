@@ -2,7 +2,7 @@ import type { TodayBandKey, TodayProblem } from '../../../shared/src/index.ts';
 
 /**
  * 今日训练选题（借鉴 cf-compass 今日训练）：
- * - 能力值 level = 近期 AC 难度中位数（千位内四舍五入到百），无数据回退 1200
+ * - 能力值 level 由 ability.ts 的加权解题证据模型估算（本模块的 estimateLevel 仅作样本不足时的回退）
  * - 三档难度带：巩固区 [level-200, level) / 同段区 [level, level+200] / 挑战区 (level+200, level+400]
  * - 每档优先命中弱项标签的题，再按「离档心最近」补齐；同日多次请求结果稳定（rotate 平移窗口）
  */
@@ -15,6 +15,8 @@ export interface CandidateProblem {
   difficulty: number | null;
   url: string | null;
   tags: string[];
+  /** 已在复习队列时为 review_items.id，否则 null/undefined */
+  reviewItemId?: number | null;
 }
 
 export interface BandRange {
@@ -54,8 +56,9 @@ export function bandRanges(level: number): Record<TodayBandKey, BandRange> {
 }
 
 /**
- * 近期 AC 难度中位数 → 能力值（四舍五入到百；空数据回退 1200）。
- * 过滤 ≤0：AtCoder Problems 难度标尺可为负（水题），混入会把中位数拉到不存在的 rating 段。
+ * AC 难度中位数 → 能力值（四舍五入到百；空数据回退 1200）。
+ * 仅作 ability.ts 的样本不足回退路径；过滤 ≤0：AtCoder Problems 难度标尺可为负（水题），
+ * 混入会把中位数拉到不存在的 rating 段。
  */
 export function estimateLevel(acDifficulties: number[], fallback = 1200): number {
   const xs = acDifficulties.filter((d) => Number.isFinite(d) && d > 0).sort((a, b) => a - b);
@@ -115,6 +118,7 @@ export function pickBand(
       url: c.url,
       tags: c.tags,
       weakTags: weak,
+      reviewItemId: c.reviewItemId ?? null,
     })),
   };
 }

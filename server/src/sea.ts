@@ -46,7 +46,7 @@ import { widgetRoutes, setWidgetPublicDir } from './routes/widget.ts';
 import { setSchemaSql } from './db/index.ts';
 import { setBuiltinBankJson, seedBuiltinBank } from './db/builtinBank.ts';
 import { setPromptTemplate } from './plans/planService.ts';
-import { aiRoutes, setAssistantPromptTemplate } from './routes/ai.ts';
+import { aiRoutes, setAssistantPromptTemplate, setTitlePromptTemplate } from './routes/ai.ts';
 import { PLATFORMS } from '../../shared/src/index.ts';
 import { setTaxonomyJson } from './knowledge/taxonomy.ts';
 import { setRulesJson } from './knowledge/ruleEngine.ts';
@@ -68,6 +68,9 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
   setSchemaSql(readTextAsset('src/db/schema.sql'));
   setPromptTemplate(readTextAsset('src/ai/plan-prompt.md'));
   setAssistantPromptTemplate(readTextAsset('src/ai/assistant-prompt.md'));
+  // 会话标题提示词同样必须入包：漏了它，打包版每次 POST /api/ai/title 都读盘失败 → 502，
+  // 前端静默回退成「首条消息截断」，用户永远拿不到生成的标题
+  setTitlePromptTemplate(readTextAsset('src/ai/title-prompt.md'));
   setBuiltinBankJson(readTextAsset('src/data/bank-builtin.json'));
   setTaxonomyJson(readTextAsset('src/knowledge/taxonomy.json'));
   setRulesJson(readTextAsset('src/knowledge/rules.json'));

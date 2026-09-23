@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Button, Card, Col, Empty, Progress, Row, Space, Spin, Tag, Tooltip, App as AntdApp } from 'antd'
 import {
@@ -13,8 +13,8 @@ import {
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
 import { difficultyColor, tagColor } from '../ui'
-import { get, post } from '../api'
-import type { StreakInfo, TodayPlan, TodayBandKey } from '../types'
+import { del, get, post } from '../api'
+import type { StreakInfo, TodayPlan, TodayBandKey, TodayProblem } from '../types'
 import type { PlatformId } from '../../../shared/src/index.ts'
 
 /** 每档题量（与后端默认一致；「换一批」在同一档内轮换） */
@@ -30,21 +30,32 @@ export default function Today() {
   const [loading, setLoading] = useState(true)
   const [rotate, setRotate] = useState(0)
   const [streak, setStreak] = useState<StreakInfo | null>(null)
-  const [queued, setQueued] = useState<Set<number>>(new Set())
   /** 正在同步的平台集合（按 platform 维度去重，同一平台同时只同步一次） */
   const [syncingPlatforms, setSyncingPlatforms] = useState<Set<string>>(new Set())
   /** 已绑定的平台账号 handle 映射（同步时需要） */
   const [accountHandles, setAccountHandles] = useState<Record<string, string>>({})
 
+  // 只认最新一次请求：连点「换一批」会有多个 rotate 请求在途，旧响应晚到会把新一批盖掉
+  const reqSeq = useRef(0)
+
   const load = useCallback(
-    (rot: number) => {
-      setLoading(true)
+    (rot: number, silent = false) => {
+      const seq = (reqSeq.current += 1)
+      if (!silent) setLoading(true)
       get<TodayPlan>(`/api/today?rotate=${rot}`)
-        .then(setPlan)
-        .catch((e: Error) => message.error(e.message))
-        .finally(() => setLoading(false))
+        .then((res) => {
+          if (seq === reqSeq.current) setPlan(res)
+        })
+        .catch((e: Error) => {
+          if (seq === reqSeq.current) message.error(e.message)
+        })
+        .finally(() => {
+          // 只看「是否最新一次请求」，不看 silent：静默重拉晚于一次普通刷新返回时，
+          // 数据已经落地，loading 也必须收掉，否则顶部刷新圈会一直转
+          if (seq === reqSeq.current) setLoading(false)
+        })
     },
-    [],
+    [message],
   )
 
   useEffect(() => {
@@ -65,11 +76,20 @@ export default function Today() {
       .catch(() => undefined)
   }, [])
 
-  const addToReview = async (p: { id: number; platform: string; problemKey: string }) => {
+  /** 是否已在复习队列（以服务端 reviewItemId 为准，增删后立即静默重拉） */
+  const isQueued = (p: TodayProblem) => p.reviewItemId != null
+
+  const toggleReview = async (p: TodayProblem) => {
     try {
-      await post('/api/reviews', { platform: p.platform, problemKey: p.problemKey })
-      message.success(`「${p.problemKey}」已加入复习队列`)
-      setQueued((s) => new Set(s).add(p.id))
+      if (p.reviewItemId != null) {
+        await del(`/api/reviews/${p.reviewItemId}`)
+        message.success(`「${p.problemKey}」已移出复习队列`)
+      } else {
+        await post('/api/reviews', { platform: p.platform, problemKey: p.problemKey })
+        message.success(`「${p.problemKey}」已加入复习队列`)
+      }
+      // 静默重拉：让 reviewItemId 回到真实值，再点一次才是「移出」而不是「重复加入」
+      load(rotate, true)
     } catch (e) {
       message.error((e as Error).message)
     }
@@ -250,15 +270,17 @@ export default function Today() {
                             ))}
                           </Space>
                           <Space size={4}>
-                            <Button
-                              size="small"
-                              type="text"
-                              icon={<ReadOutlined />}
-                              disabled={queued.has(p.id)}
-                              onClick={() => addToReview(p)}
-                            >
-                              {queued.has(p.id) ? '已加入' : '复习'}
-                            </Button>
+                            <Tooltip title={isQueued(p) ? '已在复习队列，点击移出' : '加入复习队列（间隔复习）'}>
+                              <Button
+                                size="small"
+                                type="text"
+                                className={isQueued(p) ? 'review-added-btn' : undefined}
+                                icon={isQueued(p) ? <CheckCircleOutlined /> : <ReadOutlined />}
+                                onClick={() => void toggleReview(p)}
+                              >
+                                {isQueued(p) ? '已加入' : '复习'}
+                              </Button>
+                            </Tooltip>
                             <Tooltip title={`同步 ${p.platform} 的提交记录（做完题后点此拉取最新 AC 状态）`}>
                               <Button
                                 size="small"
@@ -282,8 +304,15 @@ export default function Today() {
 
           <Card size="small" style={{ marginTop: 16 }}>
             <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
-              <span style={{ color: '#8993a2', fontSize: 12 }}>
-                <SendOutlined /> 能力值由近 60 天 AC 难度中位数估算；做完题后同步数据，推荐会随之进化。
+              <span
+                style={{ color: '#8993a2', fontSize: 12 }}
+                title={
+                  plan.levelDetail && plan.levelDetail.base != null
+                    ? `难度基数 ${plan.levelDetail.base} · 通过率校准 ${plan.levelDetail.performanceAdj >= 0 ? '+' : ''}${plan.levelDetail.performanceAdj} · 新练习 ${plan.levelDetail.newEvidence} 次`
+                    : undefined
+                }
+              >
+                <SendOutlined /> 能力值由解题难度与独立完成度加权估算：补题、看题解后的题降权，偶然题不抬基数，并按近期通过率缓慢校准；做完题同步数据，推荐会随之进化。
               </span>
               {plan.planProgress && (
                 <Progress

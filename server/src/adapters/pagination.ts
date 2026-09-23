@@ -49,8 +49,13 @@ export interface PagedFetchConfig<R> {
   pageSize: number;
   /** 每次同步的保守页数上限（按平台风控强度选定） */
   perSyncMax: number;
-  /** 拉取指定页的全部原始行（空数组 = 已到尽头） */
-  fetchPage: (page: number) => Promise<R[]>;
+  /**
+   * 拉取指定页（空数组 = 已到尽头）。
+   * 也可返回 { rows, rawCount }：rawCount 为**平台侧原始数据行数**（解析丢弃畸形行前），
+   * 「最后一页」判定只看 rawCount —— 解析层丢行（畸形行/页脚）会让 rows.length 偏小，
+   * 若按解析后行数判短页，中间页会被误判为到底，更早历史被永久放弃。
+   */
+  fetchPage: (page: number) => Promise<R[] | { rows: R[]; rawCount: number }>;
   /** 原始行的平台侧提交号（去重 / 已知判定） */
   externalIdOf: (row: R) => string;
   /** 原始行 → 统一结构；返回 null 表示跳过（评测中 / 隐藏等，不计入已知也不计入新增） */
@@ -101,7 +106,9 @@ export async function pagedFetch<R>(cfg: PagedFetchConfig<R>): Promise<Normalize
 
   for (let page = startPage, n = 0; n < budget; page += 1, n += 1) {
     reachedPage = page;
-    const rows = await cfg.fetchPage(page);
+    const fetched = await cfg.fetchPage(page);
+    const rawCount = Array.isArray(fetched) ? fetched.length : fetched.rawCount;
+    const rows: R[] = Array.isArray(fetched) ? fetched : fetched.rows;
     if (rows.length === 0) {
       naturalEnd = true;
       break;
@@ -143,8 +150,8 @@ export async function pagedFetch<R>(cfg: PagedFetchConfig<R>): Promise<Normalize
       break;
     }
     knownRun = 0; // 本页出现了新行 → 仍在有效补全区段，重新计数
-    if (rows.length < cfg.pageSize) {
-      naturalEnd = true; // 最后一页
+    if (rawCount < cfg.pageSize) {
+      naturalEnd = true; // 最后一页（按平台原始行数判，解析丢行不误判到底）
       break;
     }
     if (cfg.pageDelayMs) await sleep(cfg.pageDelayMs);

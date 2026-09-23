@@ -23,11 +23,13 @@ export interface ConvertResult {
 /** 提取后正文最大字符数，超出截断（与 PDF 路径一致） */
 const MAX_TEXT_CHARS = 50000;
 
-/** 文件扩展名 → 转换器映射表（不含 PDF，PDF 由 pdf.ts 单独处理） */
+/** 文件扩展名 → 转换器映射表（不含 PDF，PDF 由 pdf.ts 单独处理）。
+ *  注：不支持 .xls（BIFF 旧格式）——ExcelJS 的 wb.xlsx.load 只认 zip 容器，
+ *  真实 .xls 必然抛 "Can't find end of central directory"，映射过去只会让用户
+ *  上传后撞上神秘错误；这里明确拒绝，客户端 accept 列表同步移除。 */
 const EXT_CONVERTERS: Record<string, (data: Uint8Array, filename: string) => Promise<ConvertResult>> = {
   '.docx': convertDocx,
   '.xlsx': convertXlsx,
-  '.xls': convertXlsx,
   '.pptx': convertPptx,
   '.html': convertHtml,
   '.htm': convertHtml,

@@ -206,3 +206,28 @@ test('POST /import rejects missing raw, invalid JSON, and out-of-range dates', a
     assert.equal(outOfRange.status, 400);
   });
 });
+
+test('PATCH /api/plans/tasks/:id 改日期时同步迁移打卡记录的冗余 task_date', async () => {
+  await withServer(async (db, base) => {
+    db.prepare(
+      "INSERT INTO plans (user_id, title, goal, start_date, end_date, source) VALUES (1, 'p', '', '2026-08-10', '2026-08-12', 'template')",
+    ).run();
+    const planId = (db.prepare('SELECT id FROM plans').get() as { id: number }).id;
+    db.prepare(
+      "INSERT INTO plan_tasks (plan_id, task_date, title, kind) VALUES (?, '2026-08-10', 't1', 'practice')",
+    ).run(planId);
+    const taskId = (db.prepare('SELECT id FROM plan_tasks').get() as { id: number }).id;
+    db.prepare('INSERT INTO checkins (user_id, task_id, task_date) VALUES (1, ?, ?)').run(taskId, '2026-08-10');
+
+    const res = await fetch(`${base}/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ taskDate: '2026-08-11' }),
+    });
+    assert.equal(res.status, 200);
+    // checkins.task_date 是冗余副本：不同步迁移的话，连续打卡/挂件永远记在旧日期，
+    // 且重新打卡也修不好（INSERT OR IGNORE 按 task_id 去重）
+    const cd = db.prepare('SELECT task_date FROM checkins WHERE task_id = ?').get(taskId) as { task_date: string };
+    assert.equal(cd.task_date, '2026-08-11');
+  });
+});

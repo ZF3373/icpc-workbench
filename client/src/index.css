@@ -1134,6 +1134,11 @@ body {
   background: var(--overlay-1);
 }
 
+/* 已在复习队列的题目行按钮：绿色对勾，与「加入」的书本图标区分 */
+.review-added-btn {
+  color: #48c774 !important;
+}
+
 /* ---------- 概览面板 ---------- */
 
 .side-panel {

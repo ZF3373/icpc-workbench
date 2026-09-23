@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Db } from './db/index.ts';
+import { localToday } from './dates.ts';
 
 /**
  * SQLite 备份与恢复点：
@@ -225,9 +226,9 @@ export function applyPendingRestore(dbPath: string, dataDir?: string): string | 
   }
 }
 
-/** 每日首次启动备份：settings 键 backup.lastDailyAt 记录最近备份日期（UTC），幂等 */
+/** 每日首次启动备份：settings 键 backup.lastDailyAt 记录最近备份日期（本地日），幂等 */
 export function maybeDailyBackup(db: Db, dir?: string): { created: boolean; file?: string } {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localToday();
   const row = db
     .prepare("SELECT value FROM settings WHERE key = 'backup.lastDailyAt'")
     .get() as { value: string } | undefined;

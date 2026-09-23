@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { notification } from 'antd'
+import { App as AntdApp } from 'antd'
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import { get } from './api'
@@ -15,6 +15,8 @@ const TICK_MS = 30_000
  * 当天全部打卡完成或暂无任务时不打扰（无任务不落标记，稍后生成计划仍可提醒）。
  */
 export default function Reminder() {
+  // React 19 下 antd 静态 notification 静默失效，必须用 App 上下文实例
+  const { notification } = AntdApp.useApp()
   const nav = useNavigate()
 
   useEffect(() => {
@@ -70,7 +72,7 @@ export default function Reminder() {
       stopped = true
       clearInterval(timer)
     }
-  }, [nav])
+  }, [nav, notification])
 
   return null
 }

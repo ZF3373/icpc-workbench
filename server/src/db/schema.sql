@@ -81,6 +81,9 @@ CREATE INDEX IF NOT EXISTS idx_problems_difficulty ON problems(difficulty);
 -- 快照列之前的旧墓碑行为 NULL（当时无回收站），恢复时退化为「题号即标题」的最小重建。
 -- normalized_key = 去空格、忽略大小写的题号，与 clean-tags 判重（NORMALIZED_KEY_SQL）同一口径：
 -- 墓碑匹配按归一化键而非原始键，否则删掉 '1a' 后题库下发 '1A' 会绕过墓碑再造第三行重复。
+-- 放行例外：写入题号在 problems 里已有完全相同的行时不挡（那是更新既有行，不是复活）。
+-- clean-tags 去重给被删重复行记的墓碑与保留行同属一个等价类，少了这条例外会连保留行的
+-- 后续同步与题库更新一起永久挡掉。判定实现见 server/src/import/tombstones.ts。
 CREATE TABLE IF NOT EXISTS deleted_problems (
   platform    TEXT NOT NULL,
   problem_key TEXT NOT NULL,
@@ -179,6 +182,7 @@ CREATE TABLE IF NOT EXISTS submissions (
   language     TEXT,
   submitted_at TEXT NOT NULL,                  -- ISO8601 UTC
   external_id  TEXT,                           -- 平台侧提交号（去重用）
+  context      TEXT,                           -- 提交语境：contest / virtual / practice；NULL = 平台不下发（能力值据此区分赛场 AC 与补题）
   UNIQUE (user_id, platform, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_submissions_user_platform ON submissions(user_id, platform);

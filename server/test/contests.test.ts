@@ -184,3 +184,58 @@ test('selectContests: filter by phase/platform, sort upcoming asc & finished by 
   const fin = selectContests(all, { type: 'finished' });
   assert.deepEqual(fin.map((c) => c.id), ['recent', 'old']);
 });
+
+test('selectContests: type=running 返回进行中的比赛（开赛后不应从两个页签同时消失）', () => {
+  const now = Date.now();
+  const mk = (id: string, startOffsetMin: number, duration: number): ContestInfo => ({
+    id,
+    platform: 'codeforces',
+    name: id,
+    category: 'Div. 2',
+    startTimeIso: new Date(now + startOffsetMin * 60_000).toISOString(),
+    durationMinutes: duration,
+    phase: 'FINE',
+    url: `https://codeforces.com/contest/${id}`,
+  });
+  const all = [
+    mk('upcoming1', 60, 120),   // 1 小时后开始
+    mk('running1', -30, 120),   // 半小时前开赛，还有 90 分钟结束
+    mk('finished1', -300, 120), // 已结束
+  ];
+  assert.deepEqual(selectContests(all, { type: 'running', limit: 20 }).map((c) => c.id), ['running1']);
+  assert.deepEqual(selectContests(all, { type: 'upcoming', limit: 20 }).map((c) => c.id), ['upcoming1']);
+  assert.deepEqual(selectContests(all, { type: 'finished', limit: 20 }).map((c) => c.id), ['finished1']);
+});
+
+test('contests route: type=running 只返回进行中的比赛（express 路由映射）', async () => {
+  const { contestsRoutes } = await import('../src/routes/contests.ts');
+  const express = (await import('express')).default;
+  const now = Math.floor(Date.now() / 1000);
+  const fetchStub: typeof fetch = (async (input: string | URL | Request) => {
+    const u = String(input);
+    if (u.includes('contest.list')) {
+      return new Response(JSON.stringify({
+        status: 'OK',
+        result: [
+          { id: 1, name: 'Future Round', type: 'ICPC', phase: 'BEFORE', startTimeSeconds: now + 3600, durationSeconds: 7200 },
+          { id: 2, name: 'Live Round', type: 'ICPC', phase: 'CODING', startTimeSeconds: now - 1800, durationSeconds: 7200 },
+          { id: 3, name: 'Past Round', type: 'ICPC', phase: 'FINISHED', startTimeSeconds: now - 86400, durationSeconds: 7200 },
+        ],
+      }), { status: 200 });
+    }
+    return new Response('', { status: 404 }); // 其余数据源失败 → 降级跳过
+  }) as typeof fetch;
+  const app = express();
+  app.use('/api/contests', contestsRoutes(fetchStub));
+  const srv = app.listen(0);
+  const port = (srv.address() as import('node:net').AddressInfo).port;
+  const base = `http://127.0.0.1:${port}/api/contests`;
+  try {
+    const res = await fetch(`${base}?type=running`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { contests: Array<{ id: string }> };
+    assert.deepEqual(body.contests.map((c) => c.id), ['cf-2'], '开赛中的比赛必须出现在 running 结果里');
+  } finally {
+    srv.close();
+  }
+});

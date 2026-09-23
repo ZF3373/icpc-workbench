@@ -438,3 +438,31 @@ test('POST /api/sync/all syncs every bound account and reports incremental', asy
     srv.close();
   }
 });
+
+test('sync: days 窗口触及单次上限时如实上报截断（不谎报「已同步完成」）', async () => {
+  // days 模式不注入 knownExternalIds，窗口内所有行都吃 maxSubmissions 预算：
+  // 活跃账号窗口内 >300 条 → rowCapped → 必须如实回写 truncated，否则用户被告知
+  // 「已同步最近 N 天」而窗口内更早的历史被静默丢弃。
+  let call = 0;
+  const fake: PlatformAdapter = {
+    platform: 'codeforces',
+    async fetchUserSubmissions(_handle, opts) {
+      call += 1;
+      if (opts) opts.truncated = true; // 适配器触及新增上限
+      return [sub('1919A', `days-${call}`)];
+    },
+    problemUrl() {
+      return 'https://codeforces.com/';
+    },
+  };
+  register(fake);
+  const result = await syncPlatform(db, 'codeforces', 'tourist', { days: 30, triggeredBy: 'days' });
+  assert.equal(result.truncated, true, 'days 模式截断必须体现在结果里');
+  assert.match(result.note ?? '', /上限|未覆盖|再次/);
+  const run = db
+    .prepare("SELECT truncated FROM sync_runs WHERE mode = 'days' ORDER BY id DESC LIMIT 1")
+    .get() as { truncated: number };
+  assert.equal(run.truncated, 1, 'sync_runs 也要如实记录截断');
+  // days 模式不注册后台续拉、不改账号状态（语义不变）
+  assert.equal(db.prepare('SELECT COUNT(*) AS c FROM platform_accounts').get()!.c, 0);
+});

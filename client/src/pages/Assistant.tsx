@@ -368,7 +368,7 @@ export default function Assistant() {
   const [ability, setAbility] = useState<AbilityInfo | null>(null)
   const [abilityError, setAbilityError] = useState(false)
   const [needConfig, setNeedConfig] = useState(false)
-  const [applyTarget, setApplyTarget] = useState<{ planId: number; raw: string } | null>(null)
+  const [applyTarget, setApplyTarget] = useState<{ planId: number; raw: string; planTitle: string } | null>(null)
   const [applying, setApplying] = useState(false)
   const [tplWriting, setTplWriting] = useState<Set<string>>(new Set())
   const [listCreating, setListCreating] = useState(false)
@@ -432,7 +432,7 @@ export default function Assistant() {
   const MAX_DOC_FILE_BYTES = 20 * 1024 * 1024
   /** 服务端 docConverter 支持的文档扩展名（走 /extract-text 提取文本） */
   const DOCUMENT_EXTENSIONS = [
-    '.docx', '.xlsx', '.xls', '.pptx', '.html', '.htm', '.csv', '.json', '.xml', '.epub',
+    '.docx', '.xlsx', '.pptx', '.html', '.htm', '.csv', '.json', '.xml', '.epub',
   ]
 
   const isImageFile = (f: File): boolean =>
@@ -604,7 +604,9 @@ export default function Assistant() {
     e.stopPropagation()
   }, [])
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
+  // 不 memo：handlePickFiles 每次渲染都是新版本（它读当前的 pendingAtts 算剩余配额），
+  // 一旦被 useCallback 冻在首次渲染上，「每条消息最多 8 个附件」的上限就从拖拽口被绕开
+  const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
     dragCounter.current = 0
@@ -619,7 +621,7 @@ export default function Assistant() {
       return
     }
     void handlePickFiles(files as unknown as FileList)
-  }, [message])
+  }
 
   // 拖拽中松手在列表外时清除状态（mouse 事件方案，兼容 WebView2/WKWebView）
   useEffect(() => {
@@ -1105,7 +1107,9 @@ export default function Assistant() {
       message.warning('AI 回复包含计划修改，但当前未关联计划：请在左侧选择要修改的计划后让 AI 重新生成')
       return
     }
-    setApplyTarget({ planId, raw })
+    // 计划可以中途改选（会话上方的下拉框），确认框必须点名要替换的是哪个计划，
+    // 否则「应用旧回复」会把当前选中的另一个计划整体替换掉（其任务与打卡一并清除）
+    setApplyTarget({ planId, raw, planTitle: plans.find((p) => p.id === planId)?.title ?? `计划 #${planId}` })
   }
 
   /**
@@ -1383,7 +1387,7 @@ export default function Assistant() {
               <>
                 <div style={{ fontSize: 28, fontWeight: 700 }}>{ability.effective}</div>
                 <div style={{ fontSize: 12, color: '#8993a2' }}>
-                  计算值 {ability.computed}（近期 AC 难度中位数）
+                  计算值 {ability.computed}（加权解题证据估算）
                 </div>
                 {ability.override && (
                   <div style={{ marginTop: 8 }}>
@@ -1680,7 +1684,7 @@ export default function Assistant() {
               ref={fileInputRef}
               type="file"
               multiple
-              accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.xlsx,.xls,.pptx,.html,.htm,.csv,.json,.xml,.epub,.txt,.md,.py,.cpp,.c,.cc,.cxx,.h,.hpp,.java,.kt,.rs,.go,.js,.ts,.jsx,.tsx,.rb,.php,.sh,.bash,.zsh,.sql,.yaml,.yml,.toml,.tsv,.css,.scss,.less,.vue,.svelte,.swift,.m,.scala,.clj,.ex,.exs,.erl,.hs,.lua,.pl,.r,.dart,.groovy,.gradle,.cmake,.ini,.cfg,.conf,.properties"
+              accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.xlsx,.pptx,.html,.htm,.csv,.json,.xml,.epub,.txt,.md,.py,.cpp,.c,.cc,.cxx,.h,.hpp,.java,.kt,.rs,.go,.js,.ts,.jsx,.tsx,.rb,.php,.sh,.bash,.zsh,.sql,.yaml,.yml,.toml,.tsv,.css,.scss,.less,.vue,.svelte,.swift,.m,.scala,.clj,.ex,.exs,.erl,.hs,.lua,.pl,.r,.dart,.groovy,.gradle,.cmake,.ini,.cfg,.conf,.properties"
               hidden
               onChange={(e) => void handlePickFiles(e.target.files)}
             />
@@ -1715,7 +1719,13 @@ export default function Assistant() {
         <Alert
           type="info"
           showIcon
-          message="将以 AI 给出的任务列表整体替换该计划的任务。日期与标题都相同的任务会保留原 id 与打卡记录；其余任务新增/删除（被删除任务的打卡将一并清除）。"
+          message={
+            <>
+              目标计划：<b>{applyTarget?.planTitle}</b>
+              <br />
+              将以 AI 给出的任务列表整体替换该计划的任务。日期与标题都相同的任务会保留原 id 与打卡记录；其余任务新增/删除（被删除任务的打卡将一并清除）。
+            </>
+          }
         />
       </Modal>
 

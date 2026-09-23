@@ -1,4 +1,4 @@
-import type { NormalizedSubmission, PlatformId } from '../../../shared/src/index.ts';
+import type { NormalizedSubmission, PlatformId, Verdict } from '../../../shared/src/index.ts';
 
 /**
  * 平台无公开提交 API 或反爬拦截时抛出。
@@ -51,6 +51,13 @@ export interface FetchOptions {
    * 并跳过已知条目，实现真实增量拉取。
    */
   knownExternalIds?: Set<string>;
+  /**
+   * 库中已有提交号 → 当前存储的 verdict（同步层注入，与 knownExternalIds 同源同键）。
+   * 平台侧改判（评测中→终态、重判等）后，适配器可比对出「verdict 变了的已知行」并重发，
+   * 由写入层刷新既有行——否则该行被 INSERT OR IGNORE 永久冻结在旧判定上。
+   * 未注入时适配器应视已知行为无改判（维持跳过语义，兼容旧调用方）。
+   */
+  knownVerdicts?: Map<string, Verdict>;
   /** 分页间隔（毫秒），仅测试用：传 0 跳过限速 sleep，缺省由适配器自定（洛谷 300ms） */
   pageDelayMs?: number;
   /**

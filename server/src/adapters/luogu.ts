@@ -164,6 +164,11 @@ export async function fetchWithChallenge(
 export function createLuoguAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
   const http = asHttpClient(fetchFn);
   const problemCache = new Map<string, { difficulty?: number; title?: string; tags: string[] }>();
+  // 题目详情失败退避（pid → 失败时刻，5 分钟内不重试，同 tagDictFailedAt 做法）：
+  // 风控 302/单题 404 都可能只是瞬时的——失败绝不能写进 problemCache（内容负缓存），
+  // 那会让这道题在整个进程生命周期内拿不回难度/标题
+  const problemFetchFailedAt = new Map<string, number>();
+  const PROBLEM_FETCH_BACKOFF_MS = 5 * 60 * 1000;
   // tag id → 名称字典（/_lfe/tags，无需登录；进程内缓存，失败 5 分钟退避）
   const tagDict = new Map<number, string>();
   let tagDictPromise: Promise<void> | null = null;
@@ -200,7 +205,14 @@ export function createLuoguAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
   ): Promise<{ difficulty?: number; title?: string; tags: string[] }> {
     const hit = problemCache.get(pid);
     if (hit) return hit;
-    const empty = { tags: [] };
+    // 退避期内不重试（该题上次拉取刚失败）
+    if (Date.now() - (problemFetchFailedAt.get(pid) ?? 0) < PROBLEM_FETCH_BACKOFF_MS) {
+      return { tags: [] };
+    }
+    const fail = (): { difficulty?: number; title?: string; tags: string[] } => {
+      problemFetchFailedAt.set(pid, Date.now()); // 只记退避时刻，不污染内容缓存
+      return { tags: [] };
+    };
     try {
       // 洛谷题目页已迁移到 LentilleDataResponse 管线：需请求头 x-lentille-request: content-only
       // （_contentOnly=1 参数已失效）；响应 tags 为 tag id 数组，经 /_lfe/tags 字典转名称
@@ -210,8 +222,7 @@ export function createLuoguAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
         Referer: `${API}/problem/${pid}`,
       });
       if ([301, 302, 303, 504].includes(res.status) || !res.ok) {
-        problemCache.set(pid, empty);
-        return empty;
+        return fail();
       }
       const data = (await res.json()) as {
         currentData?: { problem?: LuoguProblem };
@@ -220,8 +231,7 @@ export function createLuoguAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
       };
       const p = data?.currentData?.problem ?? data?.data?.problem ?? data?.problem;
       if (!p) {
-        problemCache.set(pid, empty);
-        return empty;
+        return fail();
       }
       await ensureTagDict(cookie);
       const tags = resolveTags(p?.tags, tagDict);
@@ -238,8 +248,7 @@ export function createLuoguAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
       problemCache.set(pid, info);
       return info;
     } catch {
-      problemCache.set(pid, empty);
-      return empty;
+      return fail();
     }
   }
 

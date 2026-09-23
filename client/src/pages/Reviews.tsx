@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import dayjs from 'dayjs'
 import { Button, Card, Empty, Modal, Popconfirm, Space, Spin, Tag, Tooltip, App as AntdApp } from 'antd'
 import { DeleteOutlined, EditOutlined, ReadOutlined } from '@ant-design/icons'
 import PageHeader from '../components/PageHeader'
@@ -16,7 +17,8 @@ const FEEDBACK_META: Array<{ key: ReviewFeedback; label: string; tone: 'danger' 
 ]
 
 function dueText(item: ReviewItem): { text: string; overdue: boolean } {
-  const today = new Date().toISOString().slice(0, 10)
+  // 本地日界（dayjs）：与日历页「今天」一致；UTC 取日会让本地 0–8 点的「今日到期」错位一天
+  const today = dayjs().format('YYYY-MM-DD')
   if (item.nextDueOn < today) return { text: `逾期 ${item.nextDueOn}`, overdue: true }
   if (item.nextDueOn === today) return { text: '今日到期', overdue: true }
   return { text: item.nextDueOn, overdue: false }
@@ -88,7 +90,7 @@ export default function Reviews() {
     }
   }
 
-  const dueCount = items.filter((i) => i.nextDueOn <= new Date().toISOString().slice(0, 10)).length
+  const dueCount = items.filter((i) => i.nextDueOn <= dayjs().format('YYYY-MM-DD')).length
 
   return (
     <div>

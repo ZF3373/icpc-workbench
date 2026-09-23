@@ -8,10 +8,12 @@ import { throttledFetch } from '../net/hostThrottle.ts';
 export function contestsRoutes(fetchFn: typeof fetch = throttledFetch): Router {
   const r = Router();
 
-  // GET /api/contests?type=upcoming|finished&platform=&limit=
+  // GET /api/contests?type=upcoming|running|finished&platform=&limit=
   // 聚合 Codeforces / AtCoder / 洛谷 / 牛客 公开赛事（各源独立缓存 60 分钟，单源失败降级跳过）
   r.get('/', asyncHandler(async (req, res) => {
-    const type = req.query.type === 'finished' ? 'finished' : 'upcoming';
+    // running 必须独立可见：开赛后约 2 小时内比赛既不在 upcoming 也没到 finished，
+    // 缺这个档会让「进行中」的比赛从赛事中心两个页签同时消失（恰是最想看它的时候）
+    const type = req.query.type === 'finished' ? 'finished' : req.query.type === 'running' ? 'running' : 'upcoming';
     const platform = typeof req.query.platform === 'string' ? req.query.platform : undefined;
     if (platform && !PLATFORMS.some((p) => p.id === platform)) {
       return res.status(400).json({ error: `platform 非法: ${platform}` });

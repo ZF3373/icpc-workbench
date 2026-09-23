@@ -429,7 +429,10 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
 
     let mastered = 0;
     let learning = 0;
-    for (const entry of progress.values()) {
+    // 分子与 total=TEMPLATE_TOTAL 同口径，只数内置课程：progress 里也有自建模板的进度行
+    // （c-<id>），混进来会让「课程模板 X/Y 已掌握」的分子超过分母
+    for (const [templateId, entry] of progress) {
+      if (!isTemplateId(templateId)) continue;
       if (entry.status === 'mastered') mastered++;
       else if (entry.status === 'learning') learning++;
     }

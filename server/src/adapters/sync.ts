@@ -1,6 +1,7 @@
 import type {
   PlatformId,
   SyncResult,
+  Verdict,
 } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
@@ -57,16 +58,23 @@ export const DEFAULT_SYNC_MAX_SUBMISSIONS = 300;
 export const MIN_SYNC_MAX_SUBMISSIONS = 100;
 export const MAX_SYNC_MAX_SUBMISSIONS = 1500;
 
-/** 库中该平台已有的平台侧提交号（适配器提前终止分页用） */
-function loadKnownExternalIds(
+/** 库中该平台已有的平台侧提交号与当前 verdict（适配器提前终止分页 + 改判检测用） */
+function loadKnownSubmissions(
   db: Db,
   userId: number,
   platform: PlatformId,
-): Set<string> {
+): { ids: Set<string>; verdicts: Map<string, Verdict> } {
   const rows = db
-    .prepare('SELECT external_id FROM submissions WHERE user_id = ? AND platform = ?')
-    .all(userId, platform) as Array<{ external_id: string }>;
-  return new Set(rows.map((r) => r.external_id));
+    .prepare('SELECT external_id, verdict FROM submissions WHERE user_id = ? AND platform = ?')
+    .all(userId, platform) as Array<{ external_id: string; verdict: Verdict }>;
+  const ids = new Set<string>();
+  const verdicts = new Map<string, Verdict>();
+  for (const r of rows) {
+    if (r.external_id == null) continue;
+    ids.add(r.external_id);
+    verdicts.set(r.external_id, r.verdict);
+  }
+  return { ids, verdicts };
 }
 
 /** 读取单次同步上限设置（sync.maxSubmissions），越界回退默认值 */
@@ -224,9 +232,9 @@ async function runSyncPlatform(
     // 注入库中已有提交号，适配器整页已知即提前终止分页，实现真实增量。
     // days 窗口模式不注入（否则整页已知会提前终止，覆盖不到窗口内漏拉的历史），
     // 窗口终止由 since 早停承担，重复插入由唯一键去重兜底。
-    const knownExternalIds =
+    const knownSubs =
       !daysWindow && !handleChanged && adapter.knownIdsFilter
-        ? loadKnownExternalIds(db, userId, platform)
+        ? loadKnownSubmissions(db, userId, platform)
         : undefined;
     // 需登录平台：从 settings 读取 Cookie / CSRF 注入适配器
     const readSetting = (key: string): string | undefined => {
@@ -257,7 +265,7 @@ async function runSyncPlatform(
       ...(cookie ? { cookie } : {}),
       ...(csrf ? { csrf } : {}),
       ...(ua ? { ua } : {}),
-      ...(knownExternalIds ? { knownExternalIds } : {}),
+      ...(knownSubs ? { knownExternalIds: knownSubs.ids, knownVerdicts: knownSubs.verdicts } : {}),
       maxSubmissions,
       ...(practiceSync !== undefined ? { practiceSync } : {}),
       ...(backfill ? { backfill: true } : {}),
@@ -283,15 +291,25 @@ async function runSyncPlatform(
     });
     result.imported = r.imported;
     result.skipped = r.skipped;
-    if (!daysWindow && !handleChanged && (since || (knownExternalIds && knownExternalIds.size > 0))) {
+    if (!daysWindow && !handleChanged && (since || (knownSubs && knownSubs.ids.size > 0))) {
       result.incremental = true;
     }
 
-    // days 窗口模式为补充拉取：不改 platform_accounts 状态（last_sync_at / 补全游标保持原样）
+    // days 窗口模式为补充拉取：不改 platform_accounts 状态（last_sync_at / 补全游标保持原样）；
+    // 但触及上限时必须如实上报（result.truncated + sync_runs.truncated）——否则用户被告知
+    // 「已同步最近 N 天」，窗口内未覆盖完的历史被静默丢弃。不注册后台续拉（避免无限循环），
+    // 提示用户再次点击同步或调大单次上限即可续拉。
     if (daysWindow) {
-      result.note = `已同步最近 ${daysWindow} 天：新增 ${r.imported} 条（重复 ${r.skipped} 条自动跳过）。`;
+      if (truncated) {
+        result.truncated = true;
+        result.note =
+          `最近 ${daysWindow} 天内提交较多，已达单次上限：本次新增 ${r.imported} 条，窗口内仍有未覆盖的记录` +
+          `（重复 ${r.skipped} 条自动跳过）。再次点击同步可继续补全，或在「设置 → 平台账号与适配器」调大单次上限。`;
+      } else {
+        result.note = `已同步最近 ${daysWindow} 天：新增 ${r.imported} 条（重复 ${r.skipped} 条自动跳过）。`;
+      }
       recordSyncRun(db, userId, platform, handle, startedAt, startedTick, {
-        mode, status: 'ok', imported: r.imported, skipped: r.skipped, truncated: false, waitedMs,
+        mode, status: 'ok', imported: r.imported, skipped: r.skipped, truncated, waitedMs,
         triggeredBy: opts.triggeredBy ?? 'days', nextSuggestedSyncAt: null,
       });
       return result;

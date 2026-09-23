@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Calendar, Card, Col, Empty, Row, Space, Spin, Tag, App as AntdApp } from 'antd'
 import { CheckOutlined, FieldTimeOutlined, FireOutlined, TrophyOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
@@ -30,9 +30,14 @@ export default function CalendarPage() {
   const [loadingTasks, setLoadingTasks] = useState(false)
   const [streak, setStreak] = useState<StreakInfo>({ current: 0, longest: 0, totalDays: 0 })
 
+  // 只认最新一次请求：快速切换月份/日期会有多个请求在途，旧响应晚到会盖掉新视图
+  //（与 Today.tsx / HistoryPanel 的 reqSeq 护栏同款）
+  const monthSeq = useRef(0)
   const loadMonth = useCallback((m: string) => {
+    const seq = (monthSeq.current += 1)
     get<DayPlanInfo[]>(`/api/checkins?month=${m}`)
       .then((rows) => {
+        if (seq !== monthSeq.current) return
         const map: Record<string, DayPlanInfo> = {}
         for (const r of rows) map[r.date] = r
         setMonthData(map)
@@ -40,12 +45,19 @@ export default function CalendarPage() {
       .catch((e: Error) => message.error(e.message))
   }, [])
 
+  const daySeq = useRef(0)
   const loadDay = useCallback((d: string) => {
+    const seq = (daySeq.current += 1)
     setLoadingTasks(true)
     get<DayTask[]>(`/api/checkins/date/${d}`)
-      .then(setTasks)
+      .then((rows) => {
+        if (seq !== daySeq.current) return
+        setTasks(rows)
+      })
       .catch((e: Error) => message.error(e.message))
-      .finally(() => setLoadingTasks(false))
+      .finally(() => {
+        if (seq === daySeq.current) setLoadingTasks(false)
+      })
   }, [])
 
   const loadStreak = useCallback(() => {

@@ -33,7 +33,9 @@ const EXISTING_PRIORITY_SQL =
 
 /**
  * problems upsert 语句（当源由参数决定）。
- * - title：非空才覆盖（题库偶尔给出空标题）
+ * - title：非空才覆盖（题库偶尔给出空标题）；且**不覆盖为题号本身**——上游拉取失败时
+ *   适配器会退化成 title = problemKey 兜底（如洛谷风控），这不算"拿到了标题"，
+ *   覆盖掉人工/题库先落下的好标题是脏写
  * - url：COALESCE 保留已有
  * - tags：**写入即净化**；非空才覆盖
  * - difficulty / difficulty_source：按来源优先级决定是否覆盖
@@ -52,7 +54,8 @@ export function problemUpsertSql(source: DifficultySource): string {
       (platform, problem_key, title, difficulty, url, tags, difficulty_source, native_difficulty, difficulty_scale)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(platform, problem_key) DO UPDATE SET
-      title = CASE WHEN excluded.title != '' THEN excluded.title ELSE problems.title END,
+      title = CASE WHEN excluded.title != '' AND excluded.title != problems.problem_key
+                   THEN excluded.title ELSE problems.title END,
       url = COALESCE(excluded.url, problems.url),
       tags = CASE WHEN excluded.tags != '[]' THEN excluded.tags ELSE problems.tags END,
       difficulty = CASE

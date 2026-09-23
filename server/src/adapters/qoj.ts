@@ -500,7 +500,9 @@ export function createQojAdapter(fetchFn: HttpInit): PlatformAdapter {
         },
         externalIdOf: (row) => row.submissionId,
         normalize: normalizeQojRow,
-        knownExternalIds: opts?.backfill ? undefined : opts?.knownExternalIds,
+        // 补全模式同样注入 knownExternalIds：已知行跳过、连续 2 个整页已知即判定补到尽头
+        //（与 CF/牛客/洛谷同口径）。传 undefined 会让每轮把已入库的行重新当「新增」吃满预算。
+        knownExternalIds: opts?.knownExternalIds,
         maxSubmissions: opts?.maxSubmissions,
         backfill: opts?.backfill,
         backfillFromPage: opts?.backfillFromPage,

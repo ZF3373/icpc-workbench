@@ -10,6 +10,7 @@ import type { PlatformId } from '../../../shared/src/index.ts';
 import { PLATFORMS, platformMeta, canonicalTag } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { bucketForDifficulty, fetchRows, rate, safeTags } from './stats.ts';
+import { localToday } from '../dates.ts';
 import { filterNoiseTags } from './tags.ts';
 import { computeWeakness, type WeaknessItem } from './weakness.ts';
 import { computeMastery } from './mastery.ts';
@@ -120,7 +121,7 @@ export interface PracticeSummary {
   level: UserLevel;
 }
 
-const todayStr = (): string => new Date().toISOString().slice(0, 10);
+const todayStr = (): string => localToday();
 
 export function buildPracticeSummary(db: Db, userId: number): PracticeSummary {
   const rows = fetchRows(db, userId);

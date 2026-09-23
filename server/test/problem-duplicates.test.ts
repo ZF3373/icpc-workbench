@@ -5,6 +5,8 @@ import type { AddressInfo } from 'node:net';
 import { createDb, type Db } from '../src/db/index.ts';
 import { problemsRoutes } from '../src/routes/problems.ts';
 import { upsertBankProblems } from '../src/import/bankService.ts';
+import { insertNormalized } from '../src/import/importService.ts';
+import type { NormalizedSubmission } from '../../shared/src/index.ts';
 
 let db: Db | undefined;
 afterEach(() => { db?.close(); db = undefined; });
@@ -159,5 +161,74 @@ test('clean-tags: 保留行没有复习条目时，重复行的复习条目并�
     const review = d.prepare('SELECT problem_id, note FROM review_items').get() as { problem_id: number; note: string };
     assert.equal(review.problem_id, 2, '复习条目并入保留行');
     assert.equal(review.note, '要搬走的笔记');
+  });
+});
+
+/**
+ * 去重墓碑与保留行同属一个归一化等价类（判重键就是 platform + 标题 + 归一化题号）。
+ * 只看等价类会把保留行此后所有的同步提交与题库更新一起永久挡掉：
+ * 表现为「这道题同步多少次提交数都不涨」，且毫无报错。放行条件 = 写入题号库里已有同键行
+ * （那是更新保留行，既不复活被删的那一行，也不新增等价类的第二行）。
+ */
+const subFor = (problemKey: string, externalId: string): NormalizedSubmission => ({
+  problem: { platform: 'codeforces', problemKey, title: 'Two Sum', difficulty: 1500, tags: [] },
+  verdict: 'AC',
+  submittedAt: '2024-02-01T00:00:00.000Z',
+  externalId,
+});
+
+test('clean-tags: 去重墓碑不得把保留题号后续的同步与题库更新一起永久挡掉', async () => {
+  await withServer(async (base) => {
+    const d = db!;
+    d.prepare(
+      "INSERT INTO submissions (user_id,platform,problem_id,verdict,submitted_at,external_id) VALUES (1,'codeforces',2,'AC','2024-01-01T00:00:00.000Z','s1')",
+    ).run();
+    const res = await fetch(`${base}/clean-tags`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(res.status, 200);
+    // 前置：'1a' 被删并记墓碑，保留行是 ' 1A'（等价类的另一个变体）
+    assert.equal(
+      (d.prepare("SELECT COUNT(*) c FROM deleted_problems WHERE problem_key = '1a'").get() as { c: number }).c,
+      1,
+    );
+
+    // 保留行自己的题号：必须照常收新提交（修复前 skipped=1，这道题从此同步不进来）
+    const sync = insertNormalized(d, 1, [subFor(' 1A', 's2')]);
+    assert.equal(sync.imported, 1, '保留题号的新提交应入库');
+    assert.equal(
+      (d.prepare("SELECT COUNT(*) c FROM problems WHERE platform = 'codeforces' AND title = 'Two Sum'").get() as { c: number })
+        .c,
+      2,
+      '只更新保留行，不得新增等价类的第二行（保留行 + 撞名的 P1A）',
+    );
+
+    // 题库更新同样要落到保留行上（标题/难度修正不再被墓碑吞掉）
+    upsertBankProblems(d, [
+      {
+        platform: 'codeforces',
+        problemKey: ' 1A',
+        title: 'Two Sum（题库修正名）',
+        difficulty: 1500,
+        nativeDifficulty: null,
+        difficultyScale: null,
+        url: null,
+        tags: [],
+      },
+    ]);
+    assert.equal(
+      (d.prepare("SELECT title FROM problems WHERE id = 2").get() as { title: string }).title,
+      'Two Sum（题库修正名）',
+    );
+
+    // 等价类的其它变体键仍然挡住：既非保留行的同键，就会重建重复行
+    const variant = insertNormalized(d, 1, [subFor('1A', 's3')]);
+    assert.equal(variant.imported, 0, '变体键不得借道墓碑重建第二行');
+    assert.equal(
+      (d.prepare("SELECT COUNT(*) c FROM problems WHERE problem_key = '1A'").get() as { c: number }).c,
+      0,
+    );
   });
 });

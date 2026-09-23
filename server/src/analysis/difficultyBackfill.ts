@@ -65,7 +65,7 @@ export interface PlatformBackfillResult {
   /** 本次因「单平台单次运行上限」未处理的题数（0 = 该平台目标已全部处理；>0 时再点一次继续） */
   capped: number;
   /** 每题明细（problemKey → 说明） */
-  details: Array<{ problemKey: string; action: 'filled' | 'repaired' | 'missing' | 'failed'; note?: string }>;
+  details: Array<{ problemKey: string; action: 'filled' | 'repaired' | 'missing' | 'failed' | 'skipped'; note?: string }>;
 }
 
 const NOWCODER_API = 'https://ac.nowcoder.com';
@@ -716,12 +716,15 @@ async function backfillPlatform(
     }
     consecutiveFails = 0;
 
-    const row = before.get(platform, t.problemKey) as {
-      title: string;
-      difficulty: number | null;
-      native_difficulty: string | null;
-      tags: string;
-    };
+    const row = before.get(platform, t.problemKey) as
+      | { title: string; difficulty: number | null; native_difficulty: string | null; tags: string }
+      | undefined;
+    if (!row) {
+      // 题目在回填途中被删（用户并发删除回收站等）：记为跳过。此处再往下会让
+      // row.title 抛 TypeError → 整个 backfillDifficulties reject → 路由 502、其余平台结果全丢
+      r.details.push({ problemKey: t.problemKey, action: 'skipped', note: '题目已被删除' });
+      continue;
+    }
     const tags = meta.tags === null ? null : purifyTags(meta.tags);
     const tagsJson = tags === null || tags.length === 0 ? null : JSON.stringify(tags);
     // 牛客历史缺陷：标题曾被标签污染；上游未给标题时用本地清洗兜底
@@ -745,12 +748,14 @@ async function backfillPlatform(
     );
 
     // 计数按**实际落库结果**判定（而不是按 SQL 分支二次推断）：manual 行不写原生值时不会被误计
-    const after = before.get(platform, t.problemKey) as {
-      title: string;
-      difficulty: number | null;
-      native_difficulty: string | null;
-      tags: string;
-    };
+    const after = before.get(platform, t.problemKey) as
+      | { title: string; difficulty: number | null; native_difficulty: string | null; tags: string }
+      | undefined;
+    if (!after) {
+      // UPDATE 已因行消失而空转（0 行受影响）：同样记跳过，防 TypeError 打穿整轮
+      r.details.push({ problemKey: t.problemKey, action: 'skipped', note: '题目已被删除' });
+      continue;
+    }
     const filledByWrite = row.difficulty === null && after.difficulty !== null;
     const filledNative = row.native_difficulty === null && after.native_difficulty !== null;
     const titleChanged = after.title !== row.title;

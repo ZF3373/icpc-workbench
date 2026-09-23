@@ -350,3 +350,14 @@ test('docConverter: 超长内容截断', async () => {
   assert.ok(result.text.length < 60000);
   assert.ok(result.text.includes('已截断'));
 });
+
+test('docConverter: .xls（BIFF 旧格式）不再伪装支持 —— ExcelJS 只能读 zip 系 xlsx', async () => {
+  // 旧实现把 .xls 映射到 convertXlsx：wb.xlsx.load 只认 zip 容器，真实 .xls（OLE2 头）
+  // 必然抛 "Can't find end of central directory"；即使用 xlsx 字节喂 .xls 后缀也只是侥幸。
+  // 与其让用户上传后报神秘错误，不如明确拒绝（客户端 accept 列表同步移除）。
+  assert.ok(!DOCUMENT_EXTENSIONS.includes('.xls'), '.xls 不应出现在支持列表');
+  await assert.rejects(
+    () => convertDocument(new Uint8Array([0xd0, 0xcf, 0x11, 0xe0]), 'legacy.xls'), // OLE2 魔数
+    /不支持/,
+  );
+});

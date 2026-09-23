@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
+import { localToday } from '../dates.ts';
 import { safeTags } from '../analysis/stats.ts';
 import { computeWeakness } from '../analysis/weakness.ts';
 import { knowledgeTagsSql } from '../knowledge/store.ts';
 import { bandRanges, pickBand, type CandidateProblem } from '../today/select.ts';
-import { effectiveAbility } from '../today/ability.ts';
+import { computeAbilityDetail, getAbilityOverride } from '../today/ability.ts';
 import type { TodayBandKey, TodayProblem } from '../../../shared/src/index.ts';
 
 /** 每档默认题量：巩固 2 / 同段 3 / 挑战 1（cf-compass 同段承担主训练量） */
@@ -23,19 +24,22 @@ export function todayRoutes(db: Db): Router {
   // GET /api/today?consolidation=&core=&challenge=&rotate=&windowDays=
   // 三档题单：题库未 AC 题 → 按能力值分档 → 弱项标签优先
   r.get('/', (req, res) => {
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = localToday();
 
-    // 1) 能力值：近 N 天 AC 难度中位数（N 默认 60），回退全部 AC，再回退 1200；
+    // 1) 能力值：加权解题证据模型（难度基数 × 独立完成度降权 × 通过率校准 → 缓慢校准）；
     //    AI 助手调整过的能力值（settings.ability.override）优先于计算值
     const windowDays = Math.min(365, Math.max(7, Number(req.query.windowDays) || 60));
-    const ability = effectiveAbility(db, DEFAULT_USER_ID, windowDays);
-    const level = ability.effective;
+    const ability = computeAbilityDetail(db, DEFAULT_USER_ID, windowDays);
+    const override = getAbilityOverride(db);
+    const level = override?.level ?? ability.level;
 
     // 2) 候选题：题库中有难度、未 AC 的题（提交记录里 AC 过的排除）
     const candidates = db
       .prepare(
         `SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
-                ${knowledgeTagsSql(db)}
+                ${knowledgeTagsSql(db)},
+                (SELECT ri.id FROM review_items ri
+                  WHERE ri.problem_id = p.id AND ri.user_id = ${DEFAULT_USER_ID}) AS review_item_id
            FROM problems p
           WHERE p.difficulty IS NOT NULL
             AND NOT EXISTS (
@@ -43,8 +47,19 @@ export function todayRoutes(db: Db): Router {
                WHERE s.problem_id = p.id AND s.user_id = ? AND s.verdict = 'AC'
             )`,
       )
-      .all(DEFAULT_USER_ID) as unknown as Array<Omit<CandidateProblem, 'tags'> & { tags: string }>;
-    const pool: CandidateProblem[] = candidates.map((c) => ({ ...c, tags: safeTags(c.tags) }));
+      .all(DEFAULT_USER_ID) as unknown as Array<{
+        id: number;
+        platform: string;
+        problem_key: string;
+        title: string;
+        difficulty: number | null;
+        url: string | null;
+        tags: string;
+        review_item_id: number | null;
+      }>;
+    const pool: CandidateProblem[] = candidates.map(
+      ({ review_item_id, tags, ...c }) => ({ ...c, tags: safeTags(tags), reviewItemId: review_item_id ?? null }),
+    );
 
     // 3) 弱项标签（gap > 0 才算弱）
     const weakness = computeWeakness(db, DEFAULT_USER_ID, { minAttempts: 5, topN: 15 });
@@ -79,8 +94,9 @@ export function todayRoutes(db: Db): Router {
     res.json({
       date: todayStr,
       level,
-      levelComputed: ability.computed,
-      levelOverride: ability.override,
+      levelComputed: ability.level,
+      levelDetail: ability.detail,
+      levelOverride: override,
       bands,
       dueReviews,
       planProgress: planProgressRow.total > 0 ? { total: planProgressRow.total, checked: planProgressRow.checked } : null,

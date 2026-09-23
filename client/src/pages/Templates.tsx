@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Link } from 'react-router-dom'
 import {
+  App as AntdApp,
   Button,
   Card,
   Dropdown,
@@ -9,7 +10,6 @@ import {
   Form,
   Input,
   InputNumber,
-  message,
   Modal,
   Popconfirm,
   Select,
@@ -119,6 +119,8 @@ const downloadTemplates = async (
 }
 
 export default function Templates() {
+  // React 19 下 antd 静态 message 静默失效，必须用 App 上下文实例
+  const { message } = AntdApp.useApp()
   const [data, setData] = useState<TemplatesResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeCat, setActiveCat] = useState<string>()

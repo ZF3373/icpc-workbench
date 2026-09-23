@@ -31,7 +31,7 @@ const CATEGORY_COLOR: Record<string, string> = {
   校赛: 'geekblue',
 }
 
-type ContestType = 'upcoming' | 'finished'
+type ContestType = 'upcoming' | 'running' | 'finished'
 
 function fmtStart(iso: string | null): string {
   if (!iso) return '时间待定'
@@ -48,6 +48,15 @@ function countdown(iso: string | null): string {
   if (d > 0) return `${d} 天 ${h} 小时后`
   if (h > 0) return `${h} 小时 ${m} 分后`
   return `${m} 分钟后`
+}
+
+/** 进行中的比赛：距结束还有多久（结束的瞬间会显示为「即将结束」） */
+function remaining(iso: string, durationMinutes: number): string {
+  const diff = new Date(iso).getTime() + durationMinutes * 60_000 - Date.now()
+  if (diff <= 0) return '即将结束'
+  const h = Math.floor(diff / 3_600_000)
+  const m = Math.floor((diff % 3_600_000) / 60_000)
+  return h > 0 ? `剩 ${h} 小时 ${m} 分结束` : `剩 ${m} 分钟结束`
 }
 
 function fmtDuration(min: number): string {
@@ -96,6 +105,9 @@ export default function Contests() {
             <Button type={tab === 'upcoming' ? 'primary' : 'default'} onClick={() => setTab('upcoming')}>
               即将开始
             </Button>
+            <Button type={tab === 'running' ? 'primary' : 'default'} onClick={() => setTab('running')}>
+              进行中
+            </Button>
             <Button type={tab === 'finished' ? 'primary' : 'default'} onClick={() => setTab('finished')}>
               最近结束
             </Button>
@@ -129,7 +141,11 @@ export default function Contests() {
         <Card>
           <Empty
             description={
-              tab === 'upcoming' ? '暂无已排期的比赛' : '暂无近期比赛记录 —— 洛谷仅返回最近两页赛事'
+              tab === 'upcoming'
+                ? '暂无已排期的比赛'
+                : tab === 'running'
+                  ? '当前没有进行中的比赛'
+                  : '暂无近期比赛记录 —— 洛谷仅返回最近两页赛事'
             }
           />
         </Card>
@@ -153,6 +169,9 @@ export default function Contests() {
                 </div>
                 {tab === 'upcoming' && c.startTimeIso && (
                   <div className="contest-countdown">{countdown(c.startTimeIso)}</div>
+                )}
+                {tab === 'running' && c.startTimeIso && (
+                  <div className="contest-countdown">{remaining(c.startTimeIso, c.durationMinutes)}</div>
                 )}
               </Card>
             </Col>

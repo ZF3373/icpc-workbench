@@ -83,8 +83,18 @@ export function fetchRows(
     params.push(filter.from);
   }
   if (filter.to) {
-    sql += ' AND s.submitted_at <= ?';
-    params.push(filter.to);
+    // 日期写法（YYYY-MM-DD）是「含当天」的闭区间：submitted_at 存完整 ISO 时刻，
+    // 直接 <= '2026-09-20' 会按字典序把当天所有提交排掉（都大于那个纯日期串）。
+    // 与 history.ts 的 parseExclusiveTo 同口径：日期 → 次日零点 + 开区间。
+    const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(filter.to);
+    const nextDay = dateOnly ? Date.parse(`${filter.to}T00:00:00.000Z`) + 86_400_000 : NaN;
+    if (Number.isFinite(nextDay)) {
+      sql += ' AND s.submitted_at < ?';
+      params.push(new Date(nextDay).toISOString());
+    } else {
+      sql += ' AND s.submitted_at <= ?';
+      params.push(filter.to);
+    }
   }
   return db.prepare(sql).all(...params) as unknown as SubmissionRow[];
 }
