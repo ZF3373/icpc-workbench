@@ -223,6 +223,14 @@ export function parseJisuankeTime(s: string | undefined): number {
   return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])) - 8 * 3600 * 1000;
 }
 
+/**
+ * 提交时间兜底：平台偶尔缺 time 或换了格式时不能退化成 epoch 0，
+ * 否则这条提交会落在 1970-01-01，把趋势图/能力值窗口/按日视图全部拉歪（牛客同款兜底）。
+ */
+function submittedAtFrom(ms: number): string {
+  return new Date(ms > 0 ? ms : Date.now()).toISOString();
+}
+
 /** 计蒜客 problemKey（`{contestId}-{problemId|identifier}`）→ 题目页链接 */
 export function jisuankeProblemUrl(problemKey: string): string {
   const m = problemKey.match(/^(\d+)-(.+)$/);
@@ -452,13 +460,28 @@ export function createJisuankeAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
           }
 
           const known = opts?.knownExternalIds;
-          const allKnown = rows.length > 0 && rows.every((r) => known?.has(String(r.hashId ?? '')));
-          if (!(allKnown && rows.length >= total)) {
+          const knownVerdicts = opts?.knownVerdicts;
+          // 「无新增」判据：不仅全部已知，还要求库中存储 verdict 与平台侧当前判定一致——
+          // 平台侧改判（挑战题 WT0 曾按二元域落库为 WA、平台重判等）的行要重新处理并刷新
+          const allKnownUnchanged =
+            rows.length > 0 &&
+            rows.every((r) => {
+              const id = String(r.hashId ?? '');
+              if (!known?.has(id)) return false;
+              const v = mapJisuankeVerdict(r.status);
+              // knownVerdicts 未注入（旧调用方）→ 按「无改判」处理，维持原跳过语义
+              return v !== null && (knownVerdicts?.get(id) ?? v) === v;
+            });
+          if (!(allKnownUnchanged && rows.length >= total)) {
             for (const row of rows) {
               const externalId = String(row.hashId ?? '');
-              if (externalId === '' || known?.has(externalId)) continue;
+              if (externalId === '') continue;
               const verdict = mapJisuankeVerdict(row.status);
               if (verdict === null) continue; // 评测中/系统态不落库
+              if (known?.has(externalId)) {
+                // 已入库：仅平台侧改判（存储 verdict ≠ 本次判定）时重发，交由写入层刷新既有行
+                if ((knownVerdicts?.get(externalId) ?? verdict) === verdict) continue;
+              }
               out.push({
                 problem: {
                   platform: 'jisuanke' as PlatformId,
@@ -471,7 +494,7 @@ export function createJisuankeAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
                 },
                 verdict,
                 ...(row.language ? { language: row.language } : {}),
-                submittedAt: new Date(parseJisuankeTime(row.time)).toISOString(),
+                submittedAt: submittedAtFrom(parseJisuankeTime(row.time)),
                 externalId,
               });
               if (maxSubmissions && out.length >= maxSubmissions) {
@@ -558,18 +581,8 @@ export function createJisuankeAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
         }
 
         rows.sort((a, b) => (b.time ?? 0) - (a.time ?? 0)); // 新→旧
-        let knownInContest = 0;
-        let storedOrSkipped = 0;
-        for (const row of rows) {
-          const externalId = String(row.hashId ?? `${contest.contestId}-${row.identifier ?? '?'}-${row.time ?? 0}`);
-          if (opts?.knownExternalIds?.has(externalId)) {
-            knownInContest += 1;
-            storedOrSkipped += 1;
-            continue;
-          }
-          const verdict = mapJisuankeVerdict(row.status);
-          if (verdict === null) continue; // 评测中/系统态不落库，也不计入已知
-          storedOrSkipped += 1;
+        // 行落库统一入口：返回 true 表示已触及单次新增上限（调用方需 break）
+        const emit = (row: JisuankeSubmissionRow, verdict: Verdict, externalId: string): boolean => {
           const pid = String(row.problemId ?? problemIds.get(row.identifier ?? '') ?? row.identifier ?? '');
           out.push({
             problem: {
@@ -582,10 +595,31 @@ export function createJisuankeAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
             },
             verdict,
             ...(row.language ? { language: row.language } : {}),
-            submittedAt: new Date((row.time ?? 0) * 1000).toISOString(),
+            submittedAt: submittedAtFrom((row.time ?? 0) * 1000),
             externalId,
           });
-          if (maxSubmissions && out.length >= maxSubmissions) {
+          return maxSubmissions != null && out.length >= maxSubmissions;
+        };
+        let knownInContest = 0;
+        let storedOrSkipped = 0;
+        for (const row of rows) {
+          const externalId = String(row.hashId ?? `${contest.contestId}-${row.identifier ?? '?'}-${row.time ?? 0}`);
+          const verdict = mapJisuankeVerdict(row.status);
+          if (opts?.knownExternalIds?.has(externalId)) {
+            knownInContest += 1;
+            storedOrSkipped += 1;
+            // 已入库：仅平台侧改判（存储 verdict ≠ 本次判定）时重发刷新，其余跳过
+            const stored = opts?.knownVerdicts?.get(externalId);
+            if (verdict === null || (stored ?? verdict) === verdict) continue;
+            if (emit(row, verdict, externalId)) {
+              rowCapped = true;
+              break;
+            }
+            continue;
+          }
+          if (verdict === null) continue; // 评测中/系统态不落库，也不计入已知
+          storedOrSkipped += 1;
+          if (emit(row, verdict, externalId)) {
             rowCapped = true;
             break;
           }
@@ -603,12 +637,17 @@ export function createJisuankeAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
           break;
         }
         if (rowCapped) break;
-        await sleepTracked(PAGE_DELAY_MS);
+        await sleepTracked(delayMs);
       }
 
-      // 截断判定：触及新增上限，或比赛数预算耗尽（未自然扫完/未增量早停）且比赛段有新增
+      // 截断判定：触及新增上限，或比赛数预算耗尽（未自然扫完/未增量早停）且比赛段有新增。
+      // backfill 且预算耗尽、还有未扫比赛时，即使 0 新增也要如实回写截断——否则
+      // sync_truncated/backfill_page 被同步层清空，第 N 场之后的比赛被永久放弃
+      // （全已知比赛段 + 比赛预算 < 总场数时恰好命中此死端）。
       const exhausted = processed >= PER_SYNC_MAX_CONTESTS;
-      const truncated = rowCapped || (!caughtUp && exhausted && out.length > outBeforeContests);
+      const hasMore = startIndex - 1 + processed < contests.length;
+      const truncated =
+        rowCapped || (!caughtUp && exhausted && (out.length > outBeforeContests || (opts?.backfill && hasMore)));
       if (truncated && opts) {
         opts.truncated = true;
         opts.backfillReachedPage = startIndex - 1 + processed; // 本次处理到的比赛序号（正数），下次续拉

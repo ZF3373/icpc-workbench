@@ -7,6 +7,7 @@ import { AiProvider } from '../ai/provider.ts';
 import {
   applyPlanModification,
   generatePlan,
+  isCalendarDate,
   parsePlanModifyJson,
   parsePlanJson,
   savePlan,
@@ -122,13 +123,16 @@ export function plansRoutes(
     const body = (req.body ?? {}) as Record<string, unknown>;
     const sets: string[] = [];
     const args: (string | number | null)[] = [];
+    let newTaskDate: string | null = null;
     if ('taskDate' in body) {
       const d = body.taskDate;
-      if (typeof d !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
-        return res.status(400).json({ error: 'taskDate 格式需为 YYYY-MM-DD' });
+      // 严格日历日校验：'2026-09-31' 过正则但会被 Date.parse 回滚，落库即成"隐身任务"
+      if (typeof d !== 'string' || !isCalendarDate(d)) {
+        return res.status(400).json({ error: 'taskDate 需为真实存在的日期（YYYY-MM-DD）' });
       }
       sets.push('task_date = ?');
       args.push(d);
+      newTaskDate = d;
     }
     if ('title' in body) {
       const t = body.title;
@@ -160,9 +164,18 @@ export function plansRoutes(
       return res.status(400).json({ error: '没有可更新字段（taskDate/title/kind/url/note）' });
     }
     args.push(taskId);
+    // taskDate 变更必须在同一事务里迁移 checkins.task_date（冗余副本，UNIQUE(task_id)）：
+    // 漏迁移会让连续打卡/挂件永远记在旧日期，且重新打卡也修不好（INSERT OR IGNORE 按 task_id 去重）
+    const movedDate = sets.includes('task_date = ?') ? newTaskDate : null;
     try {
+      db.exec('BEGIN');
       db.prepare(`UPDATE plan_tasks SET ${sets.join(', ')} WHERE id = ?`).run(...args);
+      if (movedDate) {
+        db.prepare('UPDATE checkins SET task_date = ? WHERE task_id = ?').run(movedDate, taskId);
+      }
+      db.exec('COMMIT');
     } catch (e) {
+      db.exec('ROLLBACK');
       // UNIQUE(plan_id, task_date, title) 冲突时给出友好提示
       if (String((e as Error).message).includes('UNIQUE')) {
         return res.status(400).json({ error: '同一天已存在同名任务' });

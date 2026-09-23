@@ -78,6 +78,9 @@ export interface NormalizedProblem {
   tags: string[];
 }
 
+/** 提交语境（能区分赛场发挥与练习/补题的平台才下发，其余为 undefined） */
+export type SubmissionContext = 'contest' | 'virtual' | 'practice';
+
 export interface NormalizedSubmission {
   problem: NormalizedProblem;
   verdict: Verdict;
@@ -86,6 +89,11 @@ export interface NormalizedSubmission {
   submittedAt: string;
   /** 平台侧提交号（去重/增量依据） */
   externalId: string;
+  /**
+   * 提交语境：contest = 比赛进行中（含现场非正式参赛）、virtual = 虚拟赛、practice = 赛后补题/题单练习。
+   * 目前仅 Codeforces 下发（user.status.participantType）；能力值算法用其区分赛场 AC 与补题 AC。
+   */
+  context?: SubmissionContext;
 }
 
 export interface SyncResult {
@@ -326,6 +334,8 @@ export interface TodayProblem {
   tags: string[];
   /** 命中的弱项标签（推荐理由） */
   weakTags: string[];
+  /** 已在复习队列时为复习条目 id（用于移出），否则 null */
+  reviewItemId: number | null;
 }
 
 export interface TodayBand {
@@ -339,10 +349,29 @@ export interface TodayBand {
   pool: number;
 }
 
+/** 能力值构成明细（透出给 UI / AI，便于理解计算值从哪来） */
+export interface AbilityLevelDetail {
+  /** 难度基数：窗口内解题证据的加权中位数（含离群折扣）；无任何带难度 AC 时为 null */
+  base: number | null;
+  /** 通过率校准修正（同段难度 AC 率推导，±150 封顶） */
+  performanceAdj: number;
+  /** 基数 + 校准后的目标值（未做平滑） */
+  target: number;
+  /** 自上次校准以来的新练习提交数（含失败；0 = 能力值保持不动） */
+  newEvidence: number;
+  /** 窗口内参与估算的解题证据条数 */
+  samples: number;
+}
+
 export interface TodayPlan {
   date: string;
-  /** 估算能力值（近期 AC 难度中位数，千人千面的三档分档基准） */
+  /**
+   * 估算能力值（加权解题证据模型：难度加权中位数 × 独立完成度降权 × 通过率校准，
+   * 再做有状态的缓慢校准；千人千面的三档分档基准）
+   */
   level: number;
+  /** 能力值构成明细（缺失时 UI 不展示构成） */
+  levelDetail?: AbilityLevelDetail;
   bands: TodayBand[];
   /** 到期复习数（来自复习库） */
   dueReviews: number;

@@ -163,3 +163,51 @@ test('manual import coordinates with synced data (same problem+verdict skipped)'
   const subs = db.prepare('SELECT COUNT(*) AS c FROM submissions').get() as { c: number };
   assert.equal(subs.c, 3); // 370117070-AC / 1919A-WA / 1919B-AC
 });
+
+test('insertNormalized: 同提交号平台侧改判 → 刷新既有行 verdict（计为有效写入）', () => {
+  // 场景：计蒜客挑战题 WT0 曾按二元域落库为 WA，平台侧终态 AC 到达后，
+  // 同 externalId 再次同步必须刷新 verdict，而不是被 INSERT OR IGNORE 永久丢弃。
+  const db = createDb(':memory:');
+  const mk = (verdict: 'WA' | 'AC') => [
+    {
+      problem: { platform: 'codeforces' as const, problemKey: '1A', title: 'T', tags: [] as string[] },
+      verdict,
+      submittedAt: '2026-01-01T00:00:00.000Z',
+      externalId: 'rev-1',
+    },
+  ];
+  insertNormalized(db, 1, mk('WA'));
+  const r2 = insertNormalized(db, 1, mk('AC'));
+  assert.equal(r2.imported, 1, '改判刷新算一次有效写入');
+  const v = db.prepare("SELECT verdict FROM submissions WHERE external_id = 'rev-1'").get() as { verdict: string };
+  assert.equal(v.verdict, 'AC');
+  // verdict 相同的重复行不产生写入
+  const r3 = insertNormalized(db, 1, mk('AC'));
+  assert.equal(r3.imported, 0);
+  assert.equal(r3.skipped, 1);
+});
+
+test('parseCsv: 剥离 UTF-8 BOM（Excel「CSV UTF-8」导出必带）', () => {
+  // Excel 的「CSV UTF-8」会在文件头写 \uFEFF：不剥离则表头首列变成 \uFEFFproblemKey，
+  // 整份文件被拒（「CSV 缺少列: problemKey」）——手动导入最常见的输入格式
+  const rows = parseCsv('\uFEFFproblemKey,verdict\n1A,AC\n');
+  assert.deepEqual(rows, [['problemKey', 'verdict'], ['1A', 'AC']]);
+});
+
+test('insertNormalized: 同步侧只带来题号当标题（拉取失败兜底）不覆盖已有人工/题库标题', () => {
+  const db = createDb(':memory:');
+  const mk = (title: string, verdict: 'AC' | 'WA') => [
+    {
+      problem: { platform: 'codeforces' as const, problemKey: '1900C', title, tags: [] as string[] },
+      verdict,
+      submittedAt: '2026-01-02T00:00:00.000Z',
+      externalId: `t-${verdict}-v2`,
+    },
+  ];
+  // 第一轮：题库/详情正常，带来真实标题
+  insertNormalized(db, 1, mk('Who Ntired the Editor', 'AC'));
+  // 第二轮：详情拉取失败（如洛谷风控），标题退化为题号本身
+  insertNormalized(db, 1, mk('1900C', 'WA'));
+  const t = db.prepare("SELECT title FROM problems WHERE problem_key = '1900C'").get() as { title: string };
+  assert.equal(t.title, 'Who Ntired the Editor', 'title === problemKey 视作未知，不得覆盖好标题');
+});

@@ -3,6 +3,7 @@ import type { DifficultyScale } from '../../../shared/src/difficulty.ts';
 import type { Db } from '../db/index.ts';
 import { annotateProblemsL1 } from '../knowledge/pipeline.ts';
 import { problemUpsertSql, purifyTags } from './problemWritePolicy.ts';
+import { createTombstoneMatcher } from './tombstones.ts';
 
 /** 纯题目批量入库结果 */
 export interface BankImportResult {
@@ -39,14 +40,12 @@ export function upsertBankProblems(
     tags: string[];
   }>,
 ): BankImportResult[] {
-  // 墓碑按归一化题号匹配（与 clean-tags 判重同口径）：题库下发的变体键（'1A'/'1a'/' 1A'）
-  // 不得绕过墓碑重建等价类的重复行
-  const isDeletedKey = db.prepare(
-    "SELECT 1 AS x FROM deleted_problems WHERE platform = ? AND normalized_key = LOWER(REPLACE(?, ' ', ''))",
-  );
+  // 墓碑匹配口径与提交同步共用一份（tombstones.ts）：题库下发的变体键（'1A'/'1a'/' 1A'）
+  // 不得绕过墓碑重建等价类的重复行，但等价类里还有活行时也不能把活行一起挡在门外
+  const tombstones = createTombstoneMatcher(db);
   // 结果仍覆盖入参出现过的全部平台（全被墓碑跳过时如实报 0/0，而不是整平台消失）
   const platforms = [...new Set(rows.map((r) => r.platform))];
-  const alive = rows.filter((r) => !isDeletedKey.get(r.platform, r.problemKey));
+  const alive = rows.filter((r) => !tombstones.isDeleted(r.platform, r.problemKey));
   const byPlatform = new Map<PlatformId, string[]>();
   for (const r of alive) {
     const keys = byPlatform.get(r.platform) ?? [];

@@ -94,6 +94,9 @@ async function gql(
     method: 'POST',
     headers,
     body: JSON.stringify({ query, variables }),
+    // 带着 LEETCODE_SESSION / csrftoken 却不跟随重定向 = 凭证可能被转发到站外主机；
+    // 其余登录态平台（洛谷/计蒜客/代码源/QOJ）同样一律 manual
+    redirect: 'manual',
   }, { timeoutMs: 20000 });
   if (res.status === 401 || res.status === 403) {
     throw new ManualImportRequiredError(
@@ -202,8 +205,9 @@ export function createLeetcodeAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
             externalId: String(row.id),
           };
         },
-        // 力扣用整页已知早停（knownIdsFilter）；补全模式由 backfill 跳页处理
-        knownExternalIds: opts?.backfill ? undefined : known,
+        // 力扣用整页已知早停（knownIdsFilter）；补全模式由 pagedFetch 的连续整页已知判据收尾，
+        // 同样注入 knownExternalIds——已知行不再重复产出吃掉新增预算
+        knownExternalIds: known,
         maxSubmissions: opts?.maxSubmissions,
         backfill: opts?.backfill,
         backfillFromPage: opts?.backfillFromPage,

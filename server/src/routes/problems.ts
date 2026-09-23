@@ -31,6 +31,8 @@ interface ProblemRow {
   attempts: number;
   ac_count: number;
   last_ac_at: string | null;
+  /** 已在复习队列时为 review_items.id，否则 null */
+  review_item_id: number | null;
 }
 
 /** deleted_problems 墓碑行（含删除时刻的题目快照，回收站恢复依据；快照列对旧墓碑可为 null） */
@@ -108,8 +110,10 @@ function buildProblemFilterSql(f: ProblemFilters): { where: string; params: Arra
     params.push(f.platform);
   }
   if (f.q !== undefined) {
-    where += ' AND (p.title LIKE ? OR p.problem_key LIKE ?)';
-    params.push(`%${f.q}%`, `%${f.q}%`);
+    // 关键词按字面量匹配：不转义的话用户输入 % 或 _ 会变成通配符（'1_2' 能命中 '112'）
+    const like = `%${f.q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    where += ` AND (p.title LIKE ? ESCAPE '\\' OR p.problem_key LIKE ? ESCAPE '\\')`;
+    params.push(like, like);
   }
   // 难度：JS 分支分支成闭区间；未知难度的题在设置区间后不显示（与原客户端行为一致）
   if (f.diffMin !== undefined || f.diffMax !== undefined) {
@@ -220,7 +224,9 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
              ${knowledgeTagsCoalesceSql()},
              COUNT(s.id) AS attempts,
              COALESCE(SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END), 0) AS ac_count,
-             MAX(CASE WHEN s.verdict = 'AC' THEN s.submitted_at END) AS last_ac_at
+             MAX(CASE WHEN s.verdict = 'AC' THEN s.submitted_at END) AS last_ac_at,
+             (SELECT ri.id FROM review_items ri
+               WHERE ri.problem_id = p.id AND ri.user_id = ${DEFAULT_USER_ID}) AS review_item_id
   `;
   /** 分页查询与计数查询共用的 FROM/WHERE（含未知难度分支），保证两者口径完全一致 */
   const filteredFrom = (f: ProblemFilters): { from: string; params: Array<string | number> } => {
@@ -586,11 +592,11 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     }
   }));
 
-  /** 合法的卡点性质（与 client 的选项一一对应） */
-  const INTENT_OUTCOMES = new Set(['cant_start', 'wrong_approach', 'implementation', 'slight_bug']);
+  /** 合法的卡点性质（与 client 的选项一一对应）。editorial = 看题解/视频讲解后才做出（能力值模型据此降权） */
+  const INTENT_OUTCOMES = new Set(['cant_start', 'editorial', 'wrong_approach', 'implementation', 'slight_bug']);
 
   // POST /api/problems/:platform/:key/intent
-  // body: { outcome: 'cant_start'|'wrong_approach'|'implementation'|'slight_bug', code?: string }
+  // body: { outcome: 'cant_start'|'editorial'|'wrong_approach'|'implementation'|'slight_bug', code?: string }
   // 记录用户自述的卡点。code 可省略（= 非知识点摩擦）。
   r.post('/:platform/:key/intent', (req, res) => {
     const { platform, key } = req.params;
@@ -599,7 +605,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     }
     const outcome = req.body?.outcome;
     if (typeof outcome !== 'string' || !INTENT_OUTCOMES.has(outcome)) {
-      return res.status(400).json({ error: 'outcome 需为 cant_start / wrong_approach / implementation / slight_bug' });
+      return res.status(400).json({ error: 'outcome 需为 cant_start / editorial / wrong_approach / implementation / slight_bug' });
     }
     const rawCode = req.body?.code;
     if (rawCode !== undefined && rawCode !== null && rawCode !== '') {
@@ -760,6 +766,18 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       db.prepare('DELETE FROM deleted_problems WHERE platform = ? AND problem_key = ?').run(platform, problemKey);
       return res.json({ ok: true, recreated: false });
     }
+    // 等价类查重（与 tombstones.ts 同口径：同平台、题号只差空格/大小写）：恢复去重墓碑时
+    // 保留行还在，若照墓碑原样重建，会把用户清理过的重复题再造成两行（恢复→重复→再清理死循环）
+    const sibling = db
+      .prepare(
+        `SELECT problem_key FROM problems
+          WHERE platform = ? AND LOWER(REPLACE(problem_key, ' ', '')) = LOWER(REPLACE(?, ' ', ''))`,
+      )
+      .get(platform, problemKey) as { problem_key: string } | undefined;
+    if (sibling) {
+      db.prepare('DELETE FROM deleted_problems WHERE platform = ? AND problem_key = ?').run(platform, problemKey);
+      return res.json({ ok: true, recreated: false, equivalentOf: sibling.problem_key });
+    }
     db.exec('BEGIN');
     try {
       db.prepare(
@@ -864,16 +882,18 @@ function findDuplicateGroups(db: Db): DuplicateGroup[] {
  * shared/src/difficulty.ts 一份，路由层不做任何本地换算）；原生难度未知 → label 也是 null
  * （**未知一律 null，不猜**：绝不退回用 CF rating 反推一个「档位名」）。
  */
-function toApiProblem(r: ProblemRow): Omit<ProblemRow, 'tags' | 'native_difficulty' | 'difficulty_scale'> & {
+function toApiProblem(r: ProblemRow): Omit<ProblemRow, 'tags' | 'native_difficulty' | 'difficulty_scale' | 'review_item_id'> & {
   tags: string[];
   nativeDifficulty: string | null;
   difficultyScale: string | null;
   difficultyLabel: string | null;
   status: 'ac' | 'tried' | 'none';
+  reviewItemId: number | null;
 } {
-  const { native_difficulty, difficulty_scale, ...rest } = r;
+  const { native_difficulty, difficulty_scale, review_item_id, ...rest } = r;
   return {
     ...rest,
+    reviewItemId: review_item_id ?? null,
     tags: safeTags(r.tags),
     nativeDifficulty: native_difficulty,
     difficultyScale: difficulty_scale,

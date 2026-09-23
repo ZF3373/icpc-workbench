@@ -1,10 +1,11 @@
 import { codeOfTag } from '../../shared/src/index.ts'
 
 /** 用户在题目页声明的卡点类型，与服务端 INTENT_OUTCOMES 白名单逐字一致 */
-export type IntentOutcome = 'cant_start' | 'wrong_approach' | 'implementation' | 'slight_bug'
+export type IntentOutcome = 'cant_start' | 'editorial' | 'wrong_approach' | 'implementation' | 'slight_bug'
 
 export const INTENT_OPTIONS: ReadonlyArray<{ value: IntentOutcome; label: string; hint: string }> = [
   { value: 'cant_start', label: '完全不会', hint: '不知道从哪下手，看题解才懂' },
+  { value: 'editorial', label: '看题解/讲解', hint: '做出来前看过题解或视频讲解' },
   { value: 'wrong_approach', label: '思路错', hint: '方向想错了，或漏了情况' },
   { value: 'implementation', label: '实现崩溃', hint: '知道怎么做，但写不出来/调不通' },
   { value: 'slight_bug', label: '差一点', hint: '思路对，小 bug 或边界没处理' },

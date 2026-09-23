@@ -109,6 +109,7 @@ assets['src/db/schema.sql'] = path.join(serverRoot, 'src', 'db', 'schema.sql');
 assets['src/data/bank-builtin.json'] = path.join(serverRoot, 'src', 'data', 'bank-builtin.json');
 assets['src/ai/plan-prompt.md'] = path.join(serverRoot, 'src', 'ai', 'plan-prompt.md');
 assets['src/ai/assistant-prompt.md'] = path.join(serverRoot, 'src', 'ai', 'assistant-prompt.md');
+assets['src/ai/title-prompt.md'] = path.join(serverRoot, 'src', 'ai', 'title-prompt.md');
 assets['src/knowledge/taxonomy.json'] = path.join(serverRoot, 'src', 'knowledge', 'taxonomy.json');
 assets['src/knowledge/rules.json'] = path.join(serverRoot, 'src', 'knowledge', 'rules.json');
 assets['public/widget.html'] = path.join(serverRoot, 'src', 'public', 'widget.html');

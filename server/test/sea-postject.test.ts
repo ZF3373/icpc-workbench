@@ -42,3 +42,21 @@ test('--overwrite 重试时其余参数保持一致', () => {
   assert.equal(retry.at(-1), '--overwrite');
   assert.deepEqual(retry.slice(0, -1), first);
 });
+
+/**
+ * SEA 提示词/资源注入的口径配对：sea.ts 里每个 readTextAsset(name) 都必须真的在
+ * build-exe.mjs 的资源表里 —— 漏一项不会有任何构建报错，只会在打包版运行时读盘失败。
+ * （曾漏 src/ai/title-prompt.md：AI 会话标题在桌面版永远生成不出来，前端静默回退。）
+ */
+test('sea.ts 读取的每项资源都在 build-exe 的资源表里', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const root = path.join(import.meta.dirname, '..');
+  const sea = fs.readFileSync(path.join(root, 'src', 'sea.ts'), 'utf8');
+  const build = fs.readFileSync(path.join(root, 'scripts', 'build-exe.mjs'), 'utf8');
+  const wanted = [...sea.matchAll(/readTextAsset\('([^']+)'\)/g)].map((m) => m[1]);
+  assert.ok(wanted.length >= 5, `sea.ts 资源读取清单异常，只找到 ${wanted.length} 项`);
+  const declared = new Set([...build.matchAll(/assets\['([^']+)'\]/g)].map((m) => m[1]));
+  const missing = [...new Set(wanted)].filter((name) => !declared.has(name));
+  assert.deepEqual(missing, [], `SEA 资源表缺内嵌项：${missing.join(', ')}`);
+});

@@ -4,6 +4,7 @@ import { DEFAULT_USER_ID } from '../constants.ts';
 import { safeTags } from '../analysis/stats.ts';
 import { intervalDaysForStage, scheduleNext } from '../reviews/schedule.ts';
 import { knowledgeTagsSql } from '../knowledge/store.ts';
+import { localToday } from '../dates.ts';
 import type { ReviewItem } from '../../../shared/src/index.ts';
 
 interface RawReviewRow {
@@ -50,7 +51,7 @@ const selectSql = (db: Db): string => `
 
 export function reviewsRoutes(db: Db): Router {
   const r = Router();
-  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const todayStr = localToday;
 
   // POST /api/reviews  body: { platform, problemKey } → 加入复习队列（已存在则幂等返回）
   r.post('/', (req, res) => {

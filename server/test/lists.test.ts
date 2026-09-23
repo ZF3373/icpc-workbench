@@ -366,3 +366,33 @@ test('lists: reorder persists dragged position order, detail reflects it', async
     assert.equal(bad3.status, 404);
   });
 });
+
+/** 列表卡片的「已解决 N/M」：N 按题计。同一题多次 AC（不同 external_id 可并存）
+ *  若按提交行数计，会出现 solved_count 超过 item_count 的荒唐分子。 */
+test('lists: 已解决数按题目去重统计，多次 AC 同一题只算一道', async () => {
+  await withServer(async ({ base, db }) => {
+    seedProblems(db);
+    insertNormalized(db, DEFAULT_USER_ID, [
+      {
+        problem: { platform: 'codeforces', problemKey: '1234A', title: 'T1234A', tags: ['greedy'] },
+        verdict: 'AC',
+        submittedAt: '2026-08-02T00:00:00.000Z',
+        externalId: '1234A-AC-2',
+      },
+    ]);
+    const res = await fetch(`${base}/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: '专题', raw: 'CF1234A\nP1001' }),
+    });
+    assert.equal(res.status, 200);
+    const lists = (await (await fetch(`${base}/`)).json()) as Array<{
+      id: number;
+      item_count: number;
+      solved_count: number;
+    }>;
+    assert.equal(lists.length, 1);
+    assert.equal(lists[0]!.item_count, 2);
+    assert.equal(lists[0]!.solved_count, 1, 'P1001 未 AC；1234A 两次 AC 也只算一道');
+  });
+});

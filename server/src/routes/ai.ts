@@ -488,16 +488,19 @@ export function aiRoutes(
       maxTokens,
     );
 
-    // 客户端中断传播：前端 AbortController.abort() → req aborted → 取消上游 AI 请求
-    // 参考 opencode 的 Cancel + ctx.Done() 机制，避免用户停止后仍浪费 API 配额
-    // 使用 req.on('aborted') 而非 res.on('close') / req.on('close')：
-    // - req.on('aborted') 仅在客户端主动断开连接时触发（正常完成不会触发）
-    // - res.on('close') / req.on('close') 在连接关闭的任何情况下都会触发，
-    //   包括工具执行期间的网络波动，可能在两轮流式之间误触发导致第二轮被中断
+    // 客户端中断传播：前端 AbortController.abort() → 取消上游 AI 请求与后续工具轮次，
+    // 避免用户点「停止」后仍继续烧配额（参考 opencode 的 Cancel + ctx.Done()）。
+    // 实测（Node 24 + node:http，POST 体已被 express.json 读完）：
+    // - req 'aborted' 不再触发（该事件在 body 读完后就没了），只挂它等于没挂；
+    // - req 'close' 在 body 读完的瞬间就触发，拿它当中断会误伤正常的多轮流式；
+    // - res 'close' 恰好在客户端断开的那一刻触发，正常 res.end() 之后也会触发，
+    //   故用 writableEnded 区分「我们把话说完了」与「对面走了」。
     const abortController = new AbortController();
-    req.on('aborted', () => {
+    const onClientGone = () => {
       if (!res.writableEnded) abortController.abort();
-    });
+    };
+    req.on('aborted', onClientGone);
+    res.on('close', onClientGone);
 
     try {
       // 上下文摘要：被裁消息较多时生成摘要注入对话，保留关键信息（能力/弱项/目标/结论）

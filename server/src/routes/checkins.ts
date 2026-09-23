@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
+import { localToday } from '../dates.ts';
 
 export interface StreakInfo {
   current: number;
@@ -43,7 +44,7 @@ export function checkinsRoutes(db: Db): Router {
     const rows = db
       .prepare('SELECT DISTINCT task_date FROM checkins WHERE user_id = ? ORDER BY task_date')
       .all(DEFAULT_USER_ID) as Array<{ task_date: string }>;
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = localToday();
     res.json(computeStreak(rows.map((r2) => r2.task_date), todayStr));
   });
 

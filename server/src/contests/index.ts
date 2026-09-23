@@ -60,7 +60,7 @@ export interface ContestFilter {
   limit?: number;
 }
 
-/** 筛选 + 排序：即将开始按时间升序；已结束按结束时间降序 */
+/** 筛选 + 排序：即将开始按开始时间升序；进行中按结束时间升序（即将结束的排前）；已结束按结束时间降序 */
 export function selectContests(all: ContestInfo[], filter: ContestFilter): ContestInfo[] {
   const now = Date.now();
   const limit = Math.min(100, Math.max(1, filter.limit ?? 20));
@@ -73,7 +73,7 @@ export function selectContests(all: ContestInfo[], filter: ContestFilter): Conte
       }
       const endA = new Date(a.startTimeIso!).getTime() + a.durationMinutes * 60_000;
       const endB = new Date(b.startTimeIso!).getTime() + b.durationMinutes * 60_000;
-      return endB - endA;
+      return filter.type === 'running' ? endA - endB : endB - endA;
     })
     .slice(0, limit);
 }

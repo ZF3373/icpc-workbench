@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  App as AntdApp,
   Button,
   Card,
   DatePicker,
@@ -8,7 +9,6 @@ import {
   Form,
   Input,
   InputNumber,
-  message,
   Modal,
   Popconfirm,
   Progress,
@@ -45,6 +45,8 @@ const KIND_OPTIONS = [
 ]
 
 export default function Plans() {
+  // React 19 下 antd 静态 message 静默失效，必须用 App 上下文实例
+  const { message } = AntdApp.useApp()
   const [plans, setPlans] = useState<PlanListItem[]>([])
   const [loading, setLoading] = useState(false)
   const [genOpen, setGenOpen] = useState(false)
@@ -335,6 +337,7 @@ export default function Plans() {
 }
 
 function GenerateModal({ open, form, onClose, onDone }: { open: boolean; form: ReturnType<typeof Form.useForm>[0]; onClose: () => void; onDone: () => void }) {
+  const { message } = AntdApp.useApp()
   const [busy, setBusy] = useState(false)
   const submit = async () => {
     const v = (await form

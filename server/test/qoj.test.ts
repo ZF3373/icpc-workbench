@@ -568,3 +568,23 @@ test('qoj: 走完整同步管道（Cookie 注入 → 拉取 → 入库 → sync_
     db.close();
   }
 });
+
+test('qoj: 补全模式同样按 knownExternalIds 跳过已知行（不白吃新增预算）', async () => {
+  // 与 CF/牛客/洛谷同口径：backfill 注入 knownExternalIds，已知行跳过、
+  // 连续 2 个整页已知即判定补到尽头。旧实现 backfill 传 undefined，
+  // 每轮把已入库的行重新当作「新增」吃满 maxSubmissions 预算，游标推进极慢。
+  const seenUrls: string[] = [];
+  // 两页提交都已入库（known 覆盖两页全部提交号）→ 连续 2 个整页已知 → 判定补到尽头
+  const known = new Set(
+    [...rowsFrom(500, 10, DEFAULT_TS), ...rowsFrom(490, 10, DEFAULT_TS)].map((r) => String(r.id)),
+  );
+  const adapter = createQojAdapter(router({
+    1: page(rowsFrom(500, 10, DEFAULT_TS)),
+    2: page(rowsFrom(490, 10, DEFAULT_TS)),
+  }, { seenUrls }));
+  const opts: FetchOptions = { cookie: COOKIE, backfill: true, knownExternalIds: known, pageDelayMs: 0 };
+  const subs = await adapter.fetchUserSubmissions('someone', opts);
+  assert.equal(subs.length, 0, '已知行不重复产出');
+  assert.equal(seenUrls.length, 2, '连续 2 个整页已知 → 判定已补到尽头');
+  assert.equal(opts.truncated, undefined);
+});

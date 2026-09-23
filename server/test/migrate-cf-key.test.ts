@@ -77,3 +77,47 @@ test('migrate: 合并带斜杠的历史 CF 题号，引用重指向规范行', (
     }
   }
 });
+
+/**
+ * submission_intents.problem_id 是 NOT NULL 外键且无 ON DELETE：斜杠行上有卡点时，
+ * 合并里的 DELETE FROM problems 会抛外键错 → 迁移整体回滚 → createDb 抛错，应用再也打不开。
+ */
+test('migrate: 斜杠行带卡点（submission_intents）时合并不炸启动', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'icpc-migrate-intent-'));
+  const file = path.join(dir, 'icpc.db');
+  try {
+    const db1 = createDb(file);
+    db1
+      .prepare("INSERT INTO problems (platform, problem_key, title) VALUES ('codeforces', '279B', 'Books')")
+      .run();
+    db1
+      .prepare("INSERT INTO problems (platform, problem_key, title) VALUES ('codeforces', '279/B', 'Books')")
+      .run();
+    const keepId = (db1.prepare("SELECT id FROM problems WHERE problem_key = '279B'").get() as { id: number }).id;
+    const slashedId = (db1.prepare("SELECT id FROM problems WHERE problem_key = '279/B'").get() as {
+      id: number;
+    }).id;
+    // 卡点挂在被合并的斜杠行上（用户是在旧写法那一行上声明的）
+    db1
+      .prepare("INSERT INTO submission_intents (user_id, problem_id, code, outcome) VALUES (1, ?, NULL, 'implementation')")
+      .run(slashedId);
+    db1.close();
+
+    const db2 = createDb(file); // 修复前：这里抛 FOREIGN KEY constraint failed
+    const intents = db2
+      .prepare('SELECT problem_id FROM submission_intents')
+      .all() as Array<{ problem_id: number }>;
+    assert.deepEqual(
+      intents.map((r) => r.problem_id),
+      [keepId],
+      '卡点并入保留行，而不是随被删行一起消失',
+    );
+    db2.close();
+  } finally {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch {
+      // Windows 下 WAL 句柄释放可能滞后，删不掉就留给系统临时目录清理
+    }
+  }
+});

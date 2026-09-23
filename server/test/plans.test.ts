@@ -10,6 +10,7 @@ import {
   computeUserLevel,
   generatePlan,
   parsePlanJson,
+  parsePlanModifyJson,
   recommendProblems,
   recommendProblemsByWeakTag,
   renderTemplate,
@@ -597,4 +598,32 @@ test('buildPlanPackage guarantees days*2 new problems when candidates suffice', 
   assert.ok(newCount >= 14, `7 天计划新题应 ≥14，实际 ${newCount}`);
   // 摘要行
   assert.match(pkg.prompt, /（新题 \d+ 道、已 AC 复习题 \d+ 道）/);
+});
+
+test('savePlan: 非真实日历日期（2026-09-31）被拒绝（Date.parse 会把它回滚成 10-01）', () => {
+  // 正则 /^\d{4}-\d{2}-\d{2}$/ 拦不住 2026-09-31：落库后该任务匹配不到任何日历格、
+  // /api/checkins/date/:date 查不到、addDays 推算全部走样。必须严格回环校验。
+  assert.throws(
+    () =>
+      savePlan(
+        db,
+        1,
+        { title: 'p', goal: '', startDate: '2026-09-28', days: 7, tasks: [{ date: '2026-09-31', title: 'x' }] },
+        'manual',
+      ),
+    /日期/,
+  );
+});
+
+test('parsePlanModifyJson: 非真实日历日期任务被丢弃并计数，好任务保留', () => {
+  const raw = JSON.stringify({
+    tasks: [
+      { date: '2026-09-30', title: '好任务' },
+      { date: '2026-09-31', title: '不存在的日子' },
+    ],
+  });
+  const mod = parsePlanModifyJson(raw, '2026-09-28', 7);
+  assert.equal(mod.tasks.length, 1);
+  assert.equal(mod.tasks[0].title, '好任务');
+  assert.equal(mod.droppedInvalid, 1, '丢弃数要透出给用户');
 });

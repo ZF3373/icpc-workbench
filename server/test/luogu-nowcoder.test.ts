@@ -558,6 +558,16 @@ test('nowcoder: 整页已知时增量早停（knownExternalIds）', async () => 
   assert.equal(pageCalls, 1, '整页已知应只请求一页即停');
 });
 
+/**
+ * 上面那条早停测试直接把 knownExternalIds 传进适配器，绕过了同步层的注入条件，
+ * 因而测不到真正的断点：sync.ts 只对声明了 knownIdsFilter 的适配器注入该集合。
+ * 牛客漏了这个标记 → 线上增量同步永远拿不到已知提交号（每轮全量重扫 + 永远报待补全）。
+ */
+test('nowcoder: 声明 knownIdsFilter，同步层才会注入 knownExternalIds', () => {
+  // 不注入 fetch：这里只看契约标记，不会真的发请求
+  assert.equal(createNowcoderAdapter().knownIdsFilter, true);
+});
+
 test('nowcoder: HTTP failure throws', async () => {
   const fetchFn = router({
     'practice-coding': () => ({ status: 403, body: '<html>blocked</html>' }),
@@ -655,4 +665,71 @@ test('luogu/nowcoder registered in registry', () => {
   initAdapters();
   assert.ok(getAdapter('luogu'));
   assert.ok(getAdapter('nowcoder'));
+});
+
+test('nowcoder: 瞬态/未终态结果（等待评测/运行中/系统错误/未知错误）不落库不计已知', async () => {
+  // 契约（pagination.ts normalize）：评测中/瞬态行返回 null —— 既不计入已知也不计入新增。
+  // 若按 SKIPPED 带真实提交号入库，该行下次同步即被判「已知」，终局判定（答案正确/答案错误）
+  // 永远补不回来（永久丢数据）。洛谷对 status 0/1/-1 同口径。
+  const fetchFn = router({
+    'practice-coding': (url) => {
+      const page = new URL(url).searchParams.get('page');
+      if (page !== '1') return ncPage([]);
+      return ncPage([
+        ['6001', '10001', 'A+B', '答案正确', 'C++', '2026-08-02 20:29:23'],
+        ['6002', '10002', 'B+C', '等待评测', 'C++', '2026-08-02 20:29:00'],
+        ['6003', '10003', 'C+D', '运行中', 'C++', '2026-08-02 20:28:00'],
+        ['6004', '10004', 'D+E', '系统错误', 'C++', '2026-08-02 20:27:00'],
+        ['6005', '10005', 'E+F', '未知错误', 'C++', '2026-08-02 20:26:00'],
+      ]);
+    },
+  });
+  const adapter = createNowcoderAdapter(fetchFn);
+  const rows = await adapter.fetchUserSubmissions('87654321', {});
+  // 只有终态行产出；瞬态行等待终态出现后由后续同步正常导入
+  assert.deepEqual(rows.map((r) => r.externalId), ['6001']);
+});
+
+test('luogu: 题目详情风控失败 → 退避后重试补全，而非进程级负缓存', async (t) => {
+  // 旧实现在 302/异常时 problemCache.set(pid, {tags:[]})：进程生命周期内的「永久负缓存」，
+  // 风控窗口过后同一适配器实例也拿不回难度/标题。改为 5 分钟退避（同 tagDictFailedAt 做法）。
+  t.mock.timers.enable({ now: Date.parse('2026-09-01T00:00:00Z'), apis: ['Date'] });
+  let problemOk = false;
+  let problemCalls = 0;
+  const recordPage = () => ({
+    code: 200,
+    data: {
+      records: {
+        result: [
+          { id: 777, status: 12, language: 'C++14', submitTime: 1789000000, problem: { pid: 'P1001' } },
+        ],
+      },
+    },
+  });
+  const fetchFn = router({
+    'record/list': (url: string) => {
+      const page = new URL(url).searchParams.get('page');
+      return page === '1' ? recordPage() : { code: 200, data: { records: { result: [] } } };
+    },
+    '/problem/P1001': () => {
+      problemCalls += 1;
+      if (!problemOk) return { status: 504, body: '' }; // 风控窗口内失败
+      return {
+        code: 0,
+        currentData: { problem: { pid: 'P1001', name: 'A+B Problem', difficulty: 1, tags: [7] } },
+      };
+    },
+    '_lfe/tags': () => ({ tags: [{ id: 7, name: '暴力枚举' }] }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  const first = await adapter.fetchUserSubmissions('uid', { cookie: COOKIE, pageDelayMs: 0 });
+  assert.equal(first.length, 1);
+  assert.equal(first[0].problem.difficulty, undefined, '风控窗口内：无难度可补');
+
+  problemOk = true;
+  t.mock.timers.setTime(Date.parse('2026-09-01T00:06:00Z')); // 越过 5 分钟退避期
+  const second = await adapter.fetchUserSubmissions('uid', { cookie: COOKIE, pageDelayMs: 0 });
+  assert.equal(problemCalls, 2, '退避期过后必须重试题目详情');
+  assert.equal(second[0].problem.difficulty, 800, '重试成功 → 难度随提交补全（洛谷 1 档 → CF800）');
+  assert.equal(second[0].problem.title, 'A+B Problem');
 });

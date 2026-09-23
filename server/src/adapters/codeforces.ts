@@ -1,12 +1,13 @@
 import type {
   NormalizedSubmission,
   PlatformId,
+  SubmissionContext,
   Verdict,
 } from '../../../shared/src/index.ts';
 import { difficultyFields } from '../../../shared/src/difficulty.ts';
 import type { PlatformAdapter } from './types.ts';
 import { asHttpClient, sleep, type HttpInit } from './http.ts';
-import { recordWait } from './pagination.ts';
+import { recordWait, BACKFILL_KNOWN_PAGE_LIMIT } from './pagination.ts';
 
 const API_BASE = 'https://codeforces.com/api';
 const PAGE_SIZE = 1000;
@@ -29,6 +30,27 @@ interface CFSubmission {
   verdict?: string;
   programmingLanguage?: string;
   creationTimeSeconds: number;
+  /** 参赛方式：CONTESTED=比赛现场 / OUT_OF_COMPETITION=现场非正式 / VIRTUAL=虚拟赛 / PRACTICE=赛后补题或题单练习 */
+  participantType?: string;
+}
+
+/**
+ * participantType → 提交语境。现场参赛（含非正式）与虚拟赛都是「当场发挥」，算 contest/virtual；
+ * PRACTICE 既含题单练习也含赛后补题（CF 的 user.status 对两者同义），能力值算法再结合
+ * 尝试次数与跨度进一步降权。未知/缺省 → undefined（视为平台不下发）。
+ */
+function contextOf(participantType: string | undefined): SubmissionContext | undefined {
+  switch (participantType) {
+    case 'CONTESTED':
+    case 'OUT_OF_COMPETITION':
+      return 'contest';
+    case 'VIRTUAL':
+      return 'virtual';
+    case 'PRACTICE':
+      return 'practice';
+    default:
+      return undefined;
+  }
 }
 
 interface CFResponse {
@@ -79,6 +101,7 @@ export function createCodeforcesAdapter(
       let naturalEnd = false;
       let caughtUp = false;
       let rowCapped = false;
+      let knownRun = 0;
       for (let n = 0; n < budget; n += 1) {
         const url = `${API_BASE}/user.status?handle=${encodeURIComponent(handle)}&from=${from}&count=${PAGE_SIZE}`;
         const res = await http.fetch(url, {}, {
@@ -110,9 +133,20 @@ export function createCodeforcesAdapter(
           break;
         }
         if (known && unknownInPage === 0) {
+          // 补全模式下「整页已知」不代表已到尽头 —— 更旧的历史本来就还没进过库。
+          // 与 pagination.ts 同口径：跳过该页继续向更旧，连续 BACKFILL_KNOWN_PAGE_LIMIT 页
+          // 整页已知才认「补到尽头」。少了这一支，补全会在第 1 页就停手并回传「未截断」，
+          // 同步层随即清掉 sync_truncated，更早的提交永远拉不回来。
+          if (opts?.backfill && knownRun + 1 < BACKFILL_KNOWN_PAGE_LIMIT) {
+            knownRun += 1;
+            from += PAGE_SIZE;
+            await sleep(PAGE_DELAY_MS);
+            continue;
+          }
           caughtUp = true; // 整页已知：更旧的提交也已在库，增量终止
           break;
         }
+        knownRun = 0; // 本页出现过新行 → 仍在有效补全区段，重新计数
         from += PAGE_SIZE;
         await sleep(PAGE_DELAY_MS); // CF 建议 <= 2 req/s
       }
@@ -136,6 +170,7 @@ export function createCodeforcesAdapter(
 function normalize(s: CFSubmission): NormalizedSubmission {
   const { contestId, index } = s.problem;
   const key = contestId !== undefined ? `${contestId}${index}` : index;
+  const context = contextOf(s.participantType);
   return {
     problem: {
       platform: 'codeforces' as PlatformId,
@@ -150,6 +185,7 @@ function normalize(s: CFSubmission): NormalizedSubmission {
     ...(s.programmingLanguage ? { language: s.programmingLanguage } : {}),
     submittedAt: new Date(s.creationTimeSeconds * 1000).toISOString(),
     externalId: String(s.id),
+    ...(context ? { context } : {}),
   };
 }
 

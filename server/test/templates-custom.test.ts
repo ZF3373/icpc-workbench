@@ -125,8 +125,17 @@ test('custom templates: create → merged in list → status → edit → delete
       headers: jsonHeaders,
       body: JSON.stringify({ status: 'mastered' }),
     });
-    const after = (await (await fetch(base)).json()) as { mastered: number };
-    assert.equal(after.mastered, 1);
+    const after = (await (await fetch(base)).json()) as {
+      mastered: number;
+      categories: Array<{ key: string; templates: Array<{ id: string; status: string }> }>;
+    };
+    // 进度写在建行了，但「课程模板 X/114 已掌握」只数内置课程：
+    // 自建模板（c-<id>）计入分子会顶破分母
+    assert.equal(
+      after.categories.find((c) => c.key === 'ds')!.templates.find((t) => t.id === id)!.status,
+      'mastered',
+    );
+    assert.equal(after.mastered, 0);
 
     // 编辑
     const edited = await fetch(`${base}/custom/${id.slice(2)}`, {

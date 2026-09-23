@@ -14,7 +14,7 @@ import {
 } from '../src/intentOptions.ts'
 
 /** 与服务端 routes/problems.ts 的 INTENT_OUTCOMES 白名单逐字一致 */
-const SERVER_ALLOWED: readonly string[] = ['cant_start', 'wrong_approach', 'implementation', 'slight_bug']
+const SERVER_ALLOWED: readonly string[] = ['cant_start', 'editorial', 'wrong_approach', 'implementation', 'slight_bug']
 
 describe('INTENT_OPTIONS', () => {
   it('value 集合与服务端白名单完全一致', () => {
@@ -38,7 +38,7 @@ describe('INTENT_OPTIONS', () => {
 
   it('类型 IntentOutcome 覆盖全部 value', () => {
     const values: IntentOutcome[] = INTENT_OPTIONS.map((o) => o.value)
-    assert.equal(values.length, 4)
+    assert.equal(values.length, 5)
   })
 })
 

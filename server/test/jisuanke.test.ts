@@ -614,3 +614,62 @@ test('jisuanke: fetchJisuankeContests pages twice, dedupes, caches', async () =>
   await fetchJisuankeContests(fetchFn);
   assert.equal(calls, 2, '30 分钟缓存内不再请求');
 });
+
+test('jisuanke: 平台侧改判（挑战题 WT0 曾按二元域落库）→ 已知行重发，交由写入层刷新 verdict', async () => {
+  // 数字域冲突：0/1 在二元训练赛是终态（未通过/通过），在挑战题域是瞬态（WT0/WT1）。
+  // 若 challenge 提交以 status=0 被落库为 WA，终态 AC（status=4）到达后必须能刷新，
+  // 否则该提交永远是 WA（永久错误状态）。knownVerdicts 携带库中存储 verdict 供比对。
+  const contestId = 9001;
+  const pages: Record<string, string | (() => string)> = {
+    '/api/contests?page=1': () => JSON.stringify([{ contestId, title: '挑战赛', startTime: bjTime(Date.UTC(2026, 8, 1)) }]),
+    '/api/contests?page=2': () => JSON.stringify([]),
+    '/api/contest/submissions': () =>
+      JSON.stringify([submissionRow({ hashId: 'h-rev', identifier: 'A', time: 1, status: 4 })]), // 终态 AC
+  };
+  const adapter = createJisuankeAdapter(router(pages));
+  const known = new Set(['h-rev']);
+  const knownVerdicts = new Map([['h-rev', 'WA' as const]]); // 库里存的是当初 WT0(→0) 按二元域落的 WA
+  const out = await adapter.fetchUserSubmissions('u', {
+    cookie: COOKIE,
+    knownExternalIds: known,
+    knownVerdicts: knownVerdicts,
+    pageDelayMs: 0,
+  });
+  assert.equal(out.length, 1, '已知但改判的行必须重发');
+  assert.equal(out[0].externalId, 'h-rev');
+  assert.equal(out[0].verdict, 'AC');
+});
+
+test('jisuanke: backfill 比赛预算耗尽且还有未扫比赛 → 0 新增也标记截断推进游标', async () => {
+  // 死端场景：35 场比赛、每场提交全部已知 → 旧逻辑 truncated=false → sync_truncated 被清空，
+  // 第 31 场及更早的比赛被永久放弃。预算耗尽且 hasMore 时必须如实回写 truncated + 游标。
+  const contests = Array.from({ length: 35 }, (_, i) => ({
+    contestId: i + 1,
+    title: `C${i + 1}`,
+    startTime: bjTime(Date.UTC(2026, 0, (i % 28) + 1)),
+  }));
+  const known = new Set(Array.from({ length: 35 }, (_, i) => `h-${i + 1}`));
+  // jisuanke 的 router 不给 handler 传 URL：用计数器按处理顺序回吐每场的（已知）提交行
+  let processedContests = 0;
+  const fetchFn = router({
+    '/api/contests?page=1': () => JSON.stringify(contests),
+    '/api/contests?page=2': () => JSON.stringify([]),
+    '/api/contest/submissions': () => {
+      processedContests += 1;
+      return JSON.stringify([submissionRow({ hashId: `h-${processedContests}`, identifier: 'A', time: 1, status: 'AC' })]);
+    },
+    '/api/contest/problems': () => JSON.stringify([]),
+  });
+  const adapter = createJisuankeAdapter(fetchFn);
+  const opts: FetchOptions = {
+    cookie: COOKIE,
+    backfill: true,
+    backfillFromPage: 1,
+    knownExternalIds: known,
+    pageDelayMs: 0,
+  };
+  const out = await adapter.fetchUserSubmissions('u', opts);
+  assert.equal(out.length, 0); // 全部已知，无新增
+  assert.equal(opts.truncated, true, '预算耗尽且还有未扫比赛时必须标记截断');
+  assert.equal(opts.backfillReachedPage, 30); // 游标推进到第 30 场，下轮从 31 继续
+});

@@ -80,12 +80,20 @@ function migrate(db: Db): void {
     db.exec('ALTER TABLE deleted_problems ADD COLUMN normalized_key TEXT');
     db.exec("UPDATE deleted_problems SET normalized_key = LOWER(REPLACE(problem_key, ' ', '')) WHERE normalized_key IS NULL");
   }
+  // v0.7: submissions 增加提交语境列（contest/virtual/practice，目前仅 Codeforces 下发）：
+  // 能力值算法据此区分赛场 AC 与赛后补题，补题/练习题降权
+  const submissionCols = columnsOf('submissions');
+  if (!submissionCols.has('context')) db.exec('ALTER TABLE submissions ADD COLUMN context TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS idx_deleted_problems_norm ON deleted_problems(platform, normalized_key)');
   mergeSlashedCfKeys(db);
   // v0.4.5 数据修复：洛谷秒级时间戳曾被按毫秒解析（见 fixLuoguTimestamps）
   fixLuoguTimestamps(db);
   // v0.6.1 数据修复：洛谷 language 是数字 langId，曾被绑成 REAL 存成 "34.0"（见 fixLuoguLanguageIds）
   fixLuoguLanguageIds(db);
+  // v0.6.2 数据修复：去重合并（mergeSlashedCfKeys / clean-tags 重复清理）把复习条目重指到保留行时，
+  // 老库残留过同一 (user_id, problem_id) 的多行。schema 的 UNIQUE 保证新库不会产生重复，但已存在的
+  // 重复不会被自动清除，而「是否在复习队列」的标量子查询只取第一行，会让另一条永久无法移出。这里补齐唯一性。
+  dedupeReviewItems(db);
 }
 
 /**
@@ -109,6 +117,9 @@ function mergeSlashedCfKeys(db: Db): void {
     'UPDATE submissions SET problem_id = ? WHERE problem_id = ?',
   );
   const repointPlanTasks = db.prepare('UPDATE plan_tasks SET problem_id = ? WHERE problem_id = ?');
+  // 卡点同样要并入保留行：submission_intents.problem_id 是 NOT NULL 外键且无 ON DELETE，
+  // 漏掉它会让这次合并的 DELETE 直接报外键错 —— 迁移回滚、createDb 抛错，应用再也起不来
+  const repointIntents = db.prepare('UPDATE submission_intents SET problem_id = ? WHERE problem_id = ?');
   // 复习条目同一题只留一条：规范行已有则丢弃斜杠行的
   const repointReviews = db.prepare(
     `UPDATE review_items SET problem_id = ? WHERE problem_id = ?
@@ -128,8 +139,18 @@ function mergeSlashedCfKeys(db: Db): void {
       }
       repointSubmissions.run(keep.id, row.id);
       repointPlanTasks.run(keep.id, row.id);
+      repointIntents.run(keep.id, row.id);
       repointReviews.run(keep.id, row.id, keep.id);
       dropReviews.run(row.id);
+      // 被合并键的知识点标注行随之失效（无外键约束，留着即孤儿行）；JSONL 源真相不变
+      db.prepare('DELETE FROM problem_keypoints WHERE platform = ? AND problem_key = ?').run(
+        'codeforces',
+        row.problem_key,
+      );
+      db.prepare('DELETE FROM knowledge_queue WHERE platform = ? AND problem_key = ?').run(
+        'codeforces',
+        row.problem_key,
+      );
       dropProblem.run(row.id);
     }
     db.exec('COMMIT');
@@ -193,6 +214,37 @@ function fixLuoguLanguageIds(db: Db): void {
     throw e;
   }
   if (fixed > 0) console.log(`[migrate] 已归一 ${fixed} 条洛谷 language（数字 langId 去掉 ".0" 尾巴）`);
+}
+
+/**
+ * v0.6.2 数据修复：复习条目同一 (user_id, problem_id) 只保留最早的一条。
+ *
+ * 背景：schema.sql 的 review_items 带 UNIQUE (user_id, problem_id)，新库不会产生重复；但历史库
+ * 可能在去重合并（mergeSlashedCfKeys / clean-tags 的重复清理）把 review_items 重指到保留行时
+ * 残留过重复行。重复不会报错，却会让各处「是否已在复习队列」的标量子查询
+ * （today/problems/history 的 `SELECT ri.id ... WHERE ri.problem_id = p.id`）只取第一行：
+ * 前端据此渲染单一的「移出」按钮并只删那一条，另一条永远删不掉、题目一直显示「已加入」。
+ *
+ * 按 id 升序保留最早一条（与用户最初加入的时间/进度一致），其余删除。幂等：无重复时不写库。
+ */
+function dedupeReviewItems(db: Db): void {
+  const dupes = db
+    .prepare(
+      `SELECT id FROM review_items
+        WHERE id NOT IN (SELECT MIN(id) FROM review_items GROUP BY user_id, problem_id)`,
+    )
+    .all() as Array<{ id: number }>;
+  if (dupes.length === 0) return;
+  const drop = db.prepare('DELETE FROM review_items WHERE id = ?');
+  db.exec('BEGIN');
+  try {
+    for (const row of dupes) drop.run(row.id);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  console.log(`[migrate] 已清理 ${dupes.length} 条重复复习条目（同一题只留最早一条）`);
 }
 
 function seed(db: Db): void {

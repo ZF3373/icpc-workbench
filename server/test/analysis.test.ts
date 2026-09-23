@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { NormalizedSubmission } from '../../shared/src/index.ts';
 import { createDb, type Db } from '../src/db/index.ts';
 import { insertNormalized } from '../src/import/importService.ts';
-import { computeOverall, bucketForDifficulty, rate } from '../src/analysis/stats.ts';
+import { computeOverall, fetchRows, bucketForDifficulty, rate } from '../src/analysis/stats.ts';
 import { computeWeakness } from '../src/analysis/weakness.ts';
 import { computeTrend, getWeekKey } from '../src/analysis/trend.ts';
 
@@ -199,4 +199,14 @@ test('getWeekKey ISO week correctness', () => {
   assert.equal(getWeekKey(new Date('2026-08-04T00:00:00Z')), '2026-W32');
   // 跨年边界：2021-01-01 属 2020-W53
   assert.equal(getWeekKey(new Date('2021-01-01T00:00:00Z')), '2020-W53');
+});
+
+/** to=YYYY-MM-DD 是「含当天」的日期：submitted_at 存完整 ISO 时刻，
+ *  直接 `<= '2026-08-04'` 会按字典序把当天所有提交排掉（from=to=今天 → 空窗）。 */
+test('fetchRows: 日期写法的 to 含当天（次日零点开区间）', () => {
+  seed();
+  const day = fetchRows(db, 1, { from: '2026-08-04', to: '2026-08-04' });
+  assert.equal(day.length, 3, '08-04 当天共 3 条提交（B×2 + P1001）');
+  const before = fetchRows(db, 1, { to: '2026-08-03' });
+  assert.equal(before.length, 3, '止于 08-03 只剩 07-28 的 3 条');
 });

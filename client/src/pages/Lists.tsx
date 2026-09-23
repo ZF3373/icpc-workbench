@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import {
   Alert,
+  App as AntdApp,
   Button,
   Card,
   Drawer,
   Empty,
   Form,
   Input,
-  message,
   Modal,
   Popconfirm,
   Select,
@@ -73,6 +73,8 @@ interface ListDetail {
 }
 
 export default function Lists() {
+  // React 19 下 antd 静态 message 静默失效，必须用 App 上下文实例
+  const { message } = AntdApp.useApp()
   const [lists, setLists] = useState<ListItemRow[]>([])
   const [loading, setLoading] = useState(false)
   const [importOpen, setImportOpen] = useState(false)

@@ -26,12 +26,13 @@ import { hostThrottle } from '../net/hostThrottle.ts';
 
 /**
  * 平台 → 用于统计请求数的站点（与该平台提交/题库请求的主域名一致，
- * 键名与 net/hostThrottle.ts 的 HOST_MIN_INTERVAL_MS 保持一致；AtCoder 另有 kenkoooo
- * 资源域名，但提交同步走 atcoder.jp，故取主域名）。
+ * 键名与 net/hostThrottle.ts 的 HOST_MIN_INTERVAL_MS 保持一致）。
+ * AtCoder 取 kenkoooo.com：提交同步与题库拉取都打 kenkoooo 的 AtCoderProblems API，
+ * atcoder.jp 只出现在题目链接里 —— 记成 atcoder.jp 会让这条同步的「请求数 / 心跳」永远是 0。
  */
 const PLATFORM_HOST: Record<PlatformId, string> = {
   codeforces: 'codeforces.com',
-  atcoder: 'atcoder.jp',
+  atcoder: 'kenkoooo.com',
   luogu: 'www.luogu.com.cn',
   nowcoder: 'ac.nowcoder.com',
   qoj: 'qoj.ac',

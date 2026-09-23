@@ -19,7 +19,7 @@ import {
   Upload,
 } from 'antd'
 import type { TreeSelectProps } from 'antd'
-import { ApartmentOutlined, ClearOutlined, CloudDownloadOutlined, DeleteOutlined, EditOutlined, HistoryOutlined, InboxOutlined, PlusOutlined, ReadOutlined, RestOutlined, TagsOutlined } from '@ant-design/icons'
+import { ApartmentOutlined, CheckOutlined, ClearOutlined, CloudDownloadOutlined, DeleteOutlined, EditOutlined, HistoryOutlined, InboxOutlined, PlusOutlined, ReadOutlined, RestOutlined, TagsOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useSearchParams } from 'react-router-dom'
 import SyncProgressHint from '../components/SyncProgressHint'
@@ -103,6 +103,8 @@ interface ProblemRow {
   ac_count: number
   last_ac_at: string | null
   status: 'ac' | 'tried' | 'none'
+  /** 已在复习队列时为复习条目 id（用于移出），旧服务端可能缺省 */
+  reviewItemId?: number | null
 }
 
 type StatusFilter = 'all' | 'ac' | 'tried' | 'none'
@@ -163,6 +165,8 @@ export default function Problems() {
   // 难度区间（CF rating 标尺，闭区间；未知难度的题在设置区间后不显示）
   const [diffMin, setDiffMin] = useState<number | undefined>()
   const [diffMax, setDiffMax] = useState<number | undefined>()
+  /** 「未知」难度桶：与 diffMin/diffMax 互斥（服务端 difficulty=未知 → IS NULL 分支） */
+  const [diffUnknown, setDiffUnknown] = useState(false)
   // 「过滤问题」面板：编辑草稿，点「应用」才生效（展开时以已生效条件为初值）
   const [filterOpen, setFilterOpen] = useState(false)
   const [draftTags, setDraftTags] = useState<string[]>([])
@@ -199,9 +203,11 @@ export default function Problems() {
     if (q) params.set('q', q)
     if (includeBank) params.set('bank', '1')
     if (statusFilter !== 'all') params.set('status', statusFilter)
-    // 难度：命中某个分桶时用桶名下发（「未知」桶 = difficulty IS NULL），否则用显式区间
+    // 难度：「未知」桶直接下发桶名（服务端 IS NULL 分支）；命中区间桶时用桶名，否则用显式区间
     const bucket = DIFF_BUCKETS.find((b) => b.min === (diffMin ?? null) && b.max === (diffMax ?? null))
-    if (diffMin === undefined && diffMax === undefined) {
+    if (diffUnknown) {
+      params.set('difficulty', '未知')
+    } else if (diffMin === undefined && diffMax === undefined) {
       /* 不限难度 */
     } else if (bucket) {
       params.set('difficulty', bucket.key)
@@ -212,21 +218,31 @@ export default function Problems() {
     // 标签多选按「或」：重复 tag 参数，服务端展开同义别名后取并集
     for (const t of tagFilters) params.append('tag', t)
     return params
-  }, [platform, q, includeBank, statusFilter, diffMin, diffMax, tagFilters])
+  }, [platform, q, includeBank, statusFilter, diffMin, diffMax, diffUnknown, tagFilters])
+
+  // 只允许「最新一次请求」落地：连点筛选/翻页时多个请求在途，晚到的旧响应若照常写回，
+  // 会把旧条件的行连同它的 total/page 一起盖上去，之后没有新请求来自愈（界面长期停在错数据上）
+  const reqSeq = useRef(0)
 
   const load = useCallback((nextPage: number) => {
+    const seq = (reqSeq.current += 1)
     setLoading(true)
     const params = buildFilterParams()
     params.set('page', String(nextPage))
     params.set('pageSize', String(PAGE_SIZE))
     get<ProblemsPage>(`/api/problems/page?${params.toString()}`)
       .then((res) => {
+        if (seq !== reqSeq.current) return
         setRows(res.items)
         setTotal(res.total)
         setPage(res.page)
       })
-      .catch((e: Error) => message.error(e.message))
-      .finally(() => setLoading(false))
+      .catch((e: Error) => {
+        if (seq === reqSeq.current) message.error(e.message)
+      })
+      .finally(() => {
+        if (seq === reqSeq.current) setLoading(false)
+      })
   }, [buildFilterParams, message])
 
   // 当前生效条件（翻页/变更都按它取数）；loadRef 让事件回调始终调用最新版本
@@ -455,7 +471,8 @@ export default function Problems() {
   const tagCounts = useMemo(() => tagCountEntries.slice(0, TAXONOMY_MAX), [tagCountEntries])
 
   // 已生效的面板条件数（用于面板收起时的角标提示）
-  const activeFilterCount = tagFilters.length + (diffMin != null || diffMax != null ? 1 : 0)
+  const activeFilterCount =
+    tagFilters.length + (diffUnknown || diffMin != null || diffMax != null ? 1 : 0)
 
   const toggleFilterPanel = () => {
     if (!filterOpen) {
@@ -470,6 +487,8 @@ export default function Problems() {
     setTagFilters(draftTags)
     setDiffMin(draftDiffMin)
     setDiffMax(draftDiffMax)
+    // 面板里的手动区间优先：显式区间与「未知」桶互斥
+    setDiffUnknown(false)
   }
 
   const clearPanelFilters = () => {
@@ -479,6 +498,7 @@ export default function Problems() {
     setTagFilters([])
     setDiffMin(undefined)
     setDiffMax(undefined)
+    setDiffUnknown(false)
   }
 
   // 侧边栏标签点击 = 加入 / 移出多选（再点一次取消）
@@ -510,15 +530,28 @@ export default function Problems() {
     [unfilteredFacets],
   )
 
+  /** 分桶是否选中（「未知」桶 min/max 均为 null，走 diffUnknown 状态） */
+  const isBucketActive = (b: DifficultyBucket) =>
+    b.min == null
+      ? diffUnknown
+      : !diffUnknown && diffMin === b.min && (diffMax ?? null) === b.max
+
   /** 点难度分桶 = 把该桶区间设为筛选条件（再点一次取消）；「未知」桶走难度未知分支 */
   const toggleDiffBucket = (b: DifficultyBucket) => {
-    const isActive = b.min == null ? false : diffMin === b.min && (diffMax ?? null) === b.max
-    if (isActive) {
+    if (isBucketActive(b)) {
+      setDiffMin(undefined)
+      setDiffMax(undefined)
+      setDiffUnknown(false)
+      return
+    }
+    if (b.min == null) {
+      setDiffUnknown(true)
       setDiffMin(undefined)
       setDiffMax(undefined)
       return
     }
-    setDiffMin(b.min ?? undefined)
+    setDiffUnknown(false)
+    setDiffMin(b.min)
     setDiffMax(b.max ?? undefined)
   }
 
@@ -528,6 +561,7 @@ export default function Problems() {
     setStatusFilter('all')
     setDiffMin(undefined)
     setDiffMax(undefined)
+    setDiffUnknown(false)
     setDraftTags([])
     setDraftDiffMin(undefined)
     setDraftDiffMax(undefined)
@@ -562,6 +596,18 @@ export default function Problems() {
     try {
       await post('/api/reviews', { platform: r.platform, problemKey: r.problem_key })
       message.success(`「${r.problem_key}」已加入复习队列，到期会出现在「复习库」与「今日训练」`)
+      loadRef.current()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  const removeFromReview = async (r: ProblemRow) => {
+    if (r.reviewItemId == null) return
+    try {
+      await del(`/api/reviews/${r.reviewItemId}`)
+      message.success(`「${r.problem_key}」已移出复习队列`)
+      loadRef.current()
     } catch (e) {
       message.error((e as Error).message)
     }
@@ -575,7 +621,7 @@ export default function Problems() {
       content: (
         <div style={{ fontSize: 13 }}>
           <p style={{ margin: '4px 0' }}>
-            将一并删除该题的提交记录（{r.attempts} 条）、复习条目、
+            将一并删除该题的提交记录（{r.attempts} 条）、复习条目（{r.reviewItemId != null ? 1 : 0} 条）、
             卡点与知识点标注，相关统计同步减少且<b>不可恢复</b>；训练计划里引用该题的任务仅解除关联。
           </p>
           <p style={{ margin: '4px 0', color: '#8993a2' }}>
@@ -683,10 +729,15 @@ export default function Problems() {
             okText: pv.invalid.length ? `仍要导入（${pv.valid} 条合法）` : '确认导入',
             cancelText: '取消',
             onOk: async () => {
-              await post(endpoint, body)
-              message.success('导入成功')
-              setImportOpen(false)
-              loadRef.current()
+              // 失败必须报出来：不 catch 时 antd 只把确认框留着，用户看到的是「点了没反应」
+              try {
+                await post(endpoint, body)
+                message.success('导入成功')
+                setImportOpen(false)
+                loadRef.current()
+              } catch (e) {
+                message.error((e as Error).message)
+              }
             },
           })
         } catch (e) {
@@ -763,9 +814,21 @@ export default function Problems() {
               标记 AC
             </Button>
           )}
-          <Tooltip title="加入复习队列（间隔复习）">
-            <Button size="small" type="text" icon={<ReadOutlined />} onClick={() => addToReview(r)} />
-          </Tooltip>
+          {r.reviewItemId != null ? (
+            <Tooltip title="已加入复习队列，点击移出">
+              <Button
+                size="small"
+                type="text"
+                className="review-added-btn"
+                icon={<CheckOutlined />}
+                onClick={() => removeFromReview(r)}
+              />
+            </Tooltip>
+          ) : (
+            <Tooltip title="加入复习队列（间隔复习）">
+              <Button size="small" type="text" icon={<ReadOutlined />} onClick={() => addToReview(r)} />
+            </Tooltip>
+          )}
           <Tooltip title="人工校正知识点（L3，重跑管线不覆盖）">
             <Button size="small" type="text" icon={<EditOutlined />} onClick={() => void openKpEditor(r)} />
           </Tooltip>
@@ -967,13 +1030,18 @@ export default function Problems() {
                 </button>
               ))}
             </div>
-            {(tagFilters.length > 0 || diffMin != null || diffMax != null) && (
+            {(tagFilters.length > 0 || diffUnknown || diffMin != null || diffMax != null) && (
               <div className="status-chips">
                 {tagFilters.map((t) => (
                   <Tag key={t} closable onClose={() => toggleSidebarTag(t)}>
                     {t}
                   </Tag>
                 ))}
+                {diffUnknown && (
+                  <Tag closable onClose={() => setDiffUnknown(false)}>
+                    难度未知
+                  </Tag>
+                )}
                 {(diffMin != null || diffMax != null) && (
                   <Tag
                     closable
@@ -1022,7 +1090,7 @@ export default function Problems() {
               {diffDist.map((d) => (
                 <button
                   type="button"
-                  className={`dist-row${diffMin === d.min && (diffMax ?? null) === d.max ? ' is-active' : ''}`}
+                  className={`dist-row${isBucketActive(d) ? ' is-active' : ''}`}
                   key={d.key}
                   onClick={() => toggleDiffBucket(d)}
                   title="点击按该难度区间筛选（再点一次取消）"

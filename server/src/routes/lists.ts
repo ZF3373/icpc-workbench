@@ -196,7 +196,7 @@ export function listsRoutes(
         `SELECT l.id, l.title, l.source_url, l.created_at,
                 (SELECT COUNT(*) FROM problem_list_items i WHERE i.list_id = l.id) AS item_count,
                 (SELECT COUNT(DISTINCT i.category) FROM problem_list_items i WHERE i.list_id = l.id) AS category_count,
-                (SELECT COUNT(*) FROM problem_list_items i
+                (SELECT COUNT(DISTINCT i.id) FROM problem_list_items i
                   JOIN problems p ON p.platform = i.platform AND p.problem_key = i.problem_key
                   JOIN submissions s ON s.problem_id = p.id AND s.user_id = ? AND s.verdict = 'AC'
                   WHERE i.list_id = l.id) AS solved_count

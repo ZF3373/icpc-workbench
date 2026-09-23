@@ -40,6 +40,8 @@ interface ProblemRow {
   attempts: number;
   ac_count: number;
   last_submitted_at: string;
+  /** 已在复习队列时为 review_items.id，否则 null */
+  review_item_id: number | null;
 }
 
 interface SubmissionRow {
@@ -51,6 +53,7 @@ interface SubmissionRow {
   language: string | null;
   submitted_at: string;
   url: string | null;
+  review_item_id: number | null;
 }
 
 const toProblemItem = (r: ProblemRow) => ({
@@ -63,6 +66,7 @@ const toProblemItem = (r: ProblemRow) => ({
   attempts: r.attempts,
   acCount: r.ac_count,
   lastSubmittedAt: r.last_submitted_at,
+  reviewItemId: r.review_item_id,
 });
 
 const toSubmissionItem = (r: SubmissionRow) => ({
@@ -74,6 +78,7 @@ const toSubmissionItem = (r: SubmissionRow) => ({
   language: r.language,
   submittedAt: r.submitted_at,
   url: r.url,
+  reviewItemId: r.review_item_id,
 });
 
 function clampInt(raw: unknown, fallback: number, min: number, max: number): number {
@@ -178,7 +183,9 @@ function problemGroupSql(where: string, having: string): string {
   return `SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
     COUNT(s.id) AS attempts,
     COALESCE(SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END), 0) AS ac_count,
-    MAX(s.submitted_at) AS last_submitted_at
+    MAX(s.submitted_at) AS last_submitted_at,
+    (SELECT ri.id FROM review_items ri
+      WHERE ri.problem_id = p.id AND ri.user_id = ${DEFAULT_USER_ID}) AS review_item_id
     FROM submissions s JOIN problems p ON p.id = s.problem_id${where}
     GROUP BY p.id${having}`;
 }
@@ -218,7 +225,9 @@ export function historyRoutes(db: Db): Router {
       const base = `FROM submissions s JOIN problems p ON p.id = s.problem_id${where}`;
       items = (db
         .prepare(
-          `SELECT s.id, s.platform, p.problem_key, p.title, s.verdict, s.language, s.submitted_at, p.url
+          `SELECT s.id, s.platform, p.problem_key, p.title, s.verdict, s.language, s.submitted_at, p.url,
+    (SELECT ri.id FROM review_items ri
+      WHERE ri.problem_id = p.id AND ri.user_id = ${DEFAULT_USER_ID}) AS review_item_id
     ${base} ORDER BY s.submitted_at DESC, s.id DESC LIMIT ? OFFSET ?`,
         )
         .all(...params, pageSize, offset) as unknown as SubmissionRow[]).map(toSubmissionItem);

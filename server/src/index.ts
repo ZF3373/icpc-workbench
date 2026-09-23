@@ -59,7 +59,9 @@ try {
 }
 
 const app = express();
-app.use(express.json({ limit: '2mb' }));
+// 12 MiB：/api/ai/chat 允许每条消息带 8 个附件、单个 textContent 上限 1 MiB（见 routes/ai.ts），
+// 加上对话历史整封上行。原来 2mb 会让这种合法请求在进入路由前就被 body-parser 拒掉
+app.use(express.json({ limit: '12mb' }));
 app.use(securityHeaders);
 
 app.use('/api/import', importRoutes(db));

@@ -15,7 +15,10 @@ const PAGE_SIZE = 10;
 const PER_SYNC_MAX_PAGES = 90;
 const PAGE_DELAY_MS = 500; // 牛客反爬较强：页间限速
 
-// 牛客提交结果（HTML 中文状态文本）→ 统一 Verdict；未知值落到 SKIPPED
+// 牛客提交结果（HTML 中文状态文本）→ 统一 Verdict；未知值落到 SKIPPED。
+// 瞬态/未终态结果不进表：按 pagination 契约由 normalize 返回 null（不计已知不计新增），
+// 终态（答案正确/答案错误…）出现后由后续同步正常导入——若按 SKIPPED 带真实提交号入库，
+// 该行下次同步即被判「已知」，终局判定永远补不回来（永久丢数据）。洛谷对 status 0/1/-1 同口径。
 const RESULT_MAP: Record<string, Verdict> = {
   答案正确: 'AC',
   答案错误: 'WA',
@@ -26,11 +29,10 @@ const RESULT_MAP: Record<string, Verdict> = {
   段错误: 'RE',
   内存超限: 'MLE',
   输出超限: 'RE',
-  系统错误: 'SKIPPED',
-  等待评测: 'SKIPPED',
-  运行中: 'SKIPPED',
-  未知错误: 'SKIPPED',
 };
+
+/** 瞬态/未终态结果：评测未完成或评测机异常（通常会重判出终态），不落库 */
+const PENDING_RESULTS = new Set(['等待评测', '运行中', '系统错误', '未知错误']);
 
 interface NcRow {
   submissionId: string;
@@ -94,6 +96,10 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
   const http = asHttpClient(fetchFn);
   return {
     platform: 'nowcoder',
+    // 声明支持按已知提交号早停：同步层只在 knownIdsFilter 为真时注入 knownExternalIds，
+    // 缺了它，下面的 knownExternalIds 恒为 undefined → 增量同步无从判重，
+    // 每次都从最新一页整段重拉、重复行还占用新增上限额度（永远报「仍有历史待补全」）
+    knownIdsFilter: true,
 
     async fetchUserSubmissions(
       handle: string,
@@ -119,10 +125,14 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
           const html = await res.text();
           const rows = parseRows(html);
           if (rows.length === 0 && page === 1) firstPageEmpty = true;
-          return rows;
+          // rawCount = 页内 <tr> 数据行数（含解析层丢弃的畸形/页脚行）：
+          // 「最后一页」按原始行数判，丢行不误判到底
+          const rawCount = (html.match(/<tr[\s>]/gi) ?? []).length;
+          return { rows, rawCount };
         },
         externalIdOf: (row) => row.submissionId,
         normalize: (row) => {
+          if (PENDING_RESULTS.has(row.result)) return null; // 瞬态：不落库不计已知
           const verdict = RESULT_MAP[row.result] ?? 'SKIPPED';
           const timeMs = parseTime(row.timeText);
           return {

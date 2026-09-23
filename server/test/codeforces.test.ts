@@ -56,6 +56,27 @@ test('maps non-AC verdicts and missing verdict', async () => {
   assert.deepEqual(rows.map((r) => r.verdict), ['WA', 'TLE', 'SKIPPED', 'SKIPPED']);
 });
 
+test('participantType maps to submission context (赛场/补题/虚拟赛)', async () => {
+  const adapter = createCodeforcesAdapter(async () =>
+    cfRes({
+      status: 'OK',
+      result: [
+        submission({ id: 10, participantType: 'CONTESTED' }),
+        submission({ id: 11, participantType: 'OUT_OF_COMPETITION' }),
+        submission({ id: 12, participantType: 'VIRTUAL' }),
+        submission({ id: 13, participantType: 'PRACTICE' }),
+        submission({ id: 14, participantType: 'UNKNOWN_TYPE' }),
+        submission({ id: 15 }),
+      ],
+    }),
+  );
+  const rows = await adapter.fetchUserSubmissions('u');
+  assert.deepEqual(
+    rows.map((r) => r.context ?? null),
+    ['contest', 'contest', 'virtual', 'practice', null, null],
+  );
+});
+
 test('gym contest uses gym link', async () => {
   const adapter = createCodeforcesAdapter(async () =>
     cfRes({ status: 'OK', result: [submission({ contestId: 100000, problem: { contestId: 100000, index: 'A', name: 'x' } })] }),
@@ -162,3 +183,26 @@ test('maxSubmissions: short page before cap does NOT truncate (natural end)', as
   assert.equal(opts.truncated, undefined); // 自然结束不截断
 });
 
+
+test('backfill: 整页已知不得当作补全到头（否则更早的历史永远拉不到）', async () => {
+  const known = new Set<string>();
+  for (let i = 0; i < 1000; i++) known.add(String(2_000_000 + i)); // 第 1 页整页已知
+  const pages = [
+    Array.from({ length: 1000 }, (_, i) => ({ id: 2_000_000 + i })),
+    [{ id: 30 }, { id: 29 }], // 更旧的历史：补全模式必须走到这一页
+  ];
+  const requested: number[] = [];
+  const adapter = createCodeforcesAdapter(async () => {
+    const page = pages[requested.length] ?? [];
+    requested.push(requested.length);
+    return cfRes({ status: 'OK', result: page.map((s) => submission(s)) });
+  });
+  const opts: { knownExternalIds?: Set<string>; backfill?: boolean; truncated?: boolean } = {
+    knownExternalIds: known,
+    backfill: true,
+  };
+  const rows = await adapter.fetchUserSubmissions('u', opts);
+  assert.equal(requested.length, 2, '补全模式要跳过整页已知的第 1 页继续向更旧');
+  assert.deepEqual(rows.map((r) => r.externalId).sort(), ['29', '30']);
+  assert.equal(opts.truncated, undefined, '走到最后一页（短页）= 自然结束，不该留补全标记');
+});

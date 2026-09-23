@@ -6,11 +6,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Button, DatePicker, Input, Select, Table, Tag, Tooltip, Typography, App as AntdApp } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { ClearOutlined, ReadOutlined } from '@ant-design/icons'
+import { ClearOutlined, CheckOutlined, ReadOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
 import { PLATFORMS } from '../../../shared/src/index.ts'
-import { get, post } from '../api'
+import { del, get, post } from '../api'
 import PlatformTag from './PlatformTag'
 import { difficultyColor } from '../ui'
 
@@ -27,6 +27,8 @@ interface ProblemItem {
   attempts: number
   acCount: number
   lastSubmittedAt: string
+  /** 已在复习队列时为复习条目 id（用于移出），旧服务端可能缺省 */
+  reviewItemId?: number | null
 }
 
 interface SubmissionItem {
@@ -38,6 +40,7 @@ interface SubmissionItem {
   language: string | null
   submittedAt: string
   url: string | null
+  reviewItemId?: number | null
 }
 
 /** 两种视图的行形状不同，按视图各自取字段 */
@@ -163,10 +166,40 @@ export default function HistoryPanel() {
     try {
       await post('/api/reviews', { platform: r.platform, problemKey: r.problemKey })
       message.success(`「${r.problemKey}」已加入复习队列`)
+      load(page)
     } catch (e) {
       message.error((e as Error).message)
     }
   }
+
+  const removeFromReview = async (r: HistoryItem) => {
+    if (r.reviewItemId == null) return
+    try {
+      await del(`/api/reviews/${r.reviewItemId}`)
+      message.success(`「${r.problemKey}」已移出复习队列`)
+      load(page)
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  /** 复习队列按钮：已在队列显示绿色对勾（点击移出），否则书本图标（点击加入） */
+  const reviewCell = (r: HistoryItem) =>
+    r.reviewItemId != null ? (
+      <Tooltip title="已加入复习队列，点击移出">
+        <Button
+          size="small"
+          type="text"
+          className="review-added-btn"
+          icon={<CheckOutlined />}
+          onClick={() => void removeFromReview(r)}
+        />
+      </Tooltip>
+    ) : (
+      <Tooltip title="加入复习队列（间隔复习）">
+        <Button size="small" type="text" icon={<ReadOutlined />} onClick={() => void addToReview(r)} />
+      </Tooltip>
+    )
 
   const keyCell = (r: HistoryItem) => (
     <span className="mono">
@@ -216,11 +249,7 @@ export default function HistoryPanel() {
       title: '操作',
       key: 'actions',
       width: 56,
-      render: (_v, r) => (
-        <Tooltip title="加入复习队列（间隔复习）">
-          <Button size="small" type="text" icon={<ReadOutlined />} onClick={() => void addToReview(r)} />
-        </Tooltip>
-      ),
+      render: (_v, r) => reviewCell(r),
     },
   ]
 
@@ -257,6 +286,12 @@ export default function HistoryPanel() {
         ) : (
           v
         ),
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 56,
+      render: (_v, r) => reviewCell(r),
     },
   ]
 
@@ -328,7 +363,8 @@ export default function HistoryPanel() {
         loading={loading}
         columns={view === 'problem' ? problemCols : submissionCols}
         dataSource={rows}
-        scroll={{ x: 760 }}
+        // 逐条提交视图列宽合计约 764px，略放宽避免最后一列出横向滚动抖动
+        scroll={{ x: view === 'problem' ? 760 : 820 }}
         pagination={{
           current: page,
           pageSize: PAGE_SIZE,

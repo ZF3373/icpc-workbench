@@ -569,3 +569,22 @@ test('POST /api/sync/auto-continue/cancel: 非法 platform → 400', async () =>
   });
   db.close();
 });
+
+// ---------- 关键词搜索：LIKE 通配符必须按字面量匹配 ----------
+
+test('GET /api/problems?q= 把 % 与 _ 当字面量，不当通配符', async () => {
+  const db = createDb(':memory:');
+  seedProblem(db, 'luogu', 'P1_0'); // 题号里就有下划线
+  seedProblem(db, 'luogu', 'P1X0');
+  seedProblem(db, 'luogu', 'P100');
+  await withApp(problemsApp(db), async (base) => {
+    const keys = async (q: string): Promise<string[]> => {
+      const rows = (await (await fetch(`${base}/api/problems?bank=1&q=${encodeURIComponent(q)}`)).json()) as Array<{
+        problem_key: string;
+      }>;
+      return rows.map((r) => r.problem_key).sort();
+    };
+    assert.deepEqual(await keys('P1_0'), ['P1_0'], "下划线不应当「任意一个字符」，否则 'P1X0' 会被误命中");
+    assert.deepEqual(await keys('%'), [], '% 不应当「任意串」，否则搜一个百分号等于不过滤');
+  });
+});

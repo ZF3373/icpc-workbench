@@ -570,3 +570,23 @@ test('backfill: no targets returns empty results without any fetch', async () =>
   assert.equal(results.length, 0);
   assert.equal(fetched, 0);
 });
+
+test('回填：题目在回填途中被删除 → 记为跳过而非整轮 502', async () => {
+  // before 快照按 problem_key 实时 .get()：详情请求返回后行已不存在（用户并发删除）时，
+  // row.title 直接 TypeError，整个 backfillDifficulties reject → 其余平台结果全丢
+  insertProblem('luogu', 'P7777', '将被删除', null, [], { source: 'sync' });
+  const fetchFn = router({
+    'problem/P7777': () => {
+      db.prepare("DELETE FROM problems WHERE platform = 'luogu' AND problem_key = 'P7777'").run();
+      return { data: { problem: { pid: 'P7777', name: '将被删除', difficulty: 3, tags: [] } } };
+    },
+  });
+  const results = await backfillDifficulties(db, fetchFn); // 不得抛错
+  const lg = results.find((r) => r.platform === 'luogu')!;
+  assert.equal(lg.filled, 0);
+  assert.equal(lg.failed, 0, '删除不是上游失败');
+  assert.ok(
+    lg.details.some((d) => d.problemKey === 'P7777' && d.action === 'skipped'),
+    '应有一条 skipped（题目已被删除）明细',
+  );
+});

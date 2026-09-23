@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  App as AntdApp,
   Button,
   Card,
   Col,
   Drawer,
   Empty,
   Input,
-  message,
   Progress,
   Row,
   Space,
@@ -85,6 +85,8 @@ function readJson<T>(key: string): T | null {
 }
 
 export default function Mastery() {
+  // React 19 下 antd 静态 message 静默失效，必须用 App 上下文实例
+  const { message } = AntdApp.useApp()
   const nav = useNavigate()
   const [report, setReport] = useState<MasteryReport | null>(null)
   const [loading, setLoading] = useState(true)
@@ -99,12 +101,21 @@ export default function Mastery() {
   const [newly, setNewly] = useState<Set<string>>(new Set())
 
   // 切换知识点时拉取该标签对应的题目（服务端含同义英文别名命中，bank=1 含题库未做题）
+  // 只认最后一次切换的结果：切走后旧请求返回不得再写 tagProblems（否则显示成上一个知识点的题）
   useEffect(() => {
     if (!active) return
+    let current = true
     setTagProblems(null)
     get<TagProblem[]>(`/api/problems?tag=${encodeURIComponent(active.tag)}&bank=1`)
-      .then((rows) => setTagProblems(rows.sort(byDifficultyAsc)))
-      .catch(() => setTagProblems([]))
+      .then((rows) => {
+        if (current) setTagProblems(rows.sort(byDifficultyAsc))
+      })
+      .catch(() => {
+        if (current) setTagProblems([])
+      })
+    return () => {
+      current = false
+    }
   }, [active])
 
   const load = useCallback(() => {

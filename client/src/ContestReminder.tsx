@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { notification } from 'antd'
+import { App as AntdApp } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import { get } from './api'
 import type { ContestInfo, ContestReminderConfig } from './types'
@@ -34,6 +34,8 @@ function saveFired(map: FiredMap): void {
  * 赛事接口失败静默跳过（下一轮重试）。
  */
 export default function ContestReminder() {
+  // React 19 下 antd 静态 notification 静默失效，必须用 App 上下文实例
+  const { notification } = AntdApp.useApp()
   const nav = useNavigate()
 
   useEffect(() => {
@@ -102,7 +104,7 @@ export default function ContestReminder() {
       stopped = true
       clearInterval(timer)
     }
-  }, [nav])
+  }, [nav, notification])
 
   return null
 }
