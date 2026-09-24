@@ -50,3 +50,27 @@ export function buildHeatmapGrid(days: HeatmapDay[]): HeatmapGrid {
 
   return { weeks, monthLabels }
 }
+
+/**
+ * 色阶分档阈值：取非零 AC 题数的四分位数（GitHub 同思路）。
+ * 固定阈值（1/2/3-4/5+）在「每天 1~3 题」这类集中分布下大部分格子落在同一档；
+ * 按实际数据分位数切档，色阶始终能拉开当前范围的刷题强度差异。
+ */
+export function solveLevelThresholds(days: HeatmapDay[]): [number, number, number] {
+  const values = days
+    .map((d) => d.solved)
+    .filter((v) => v > 0)
+    .sort((a, b) => a - b)
+  if (values.length === 0) return [1, 2, 3]
+  const q = (p: number) => values[Math.floor((values.length - 1) * p)]
+  return [q(0.25), q(0.5), q(0.75)]
+}
+
+/** 当天 AC 去重题数 → 色阶档位（0=空，1~4 递深），thresholds 需非降序 */
+export function levelFor(solved: number, thresholds: [number, number, number]): number {
+  if (solved <= 0) return 0
+  if (solved <= thresholds[0]) return 1
+  if (solved <= thresholds[1]) return 2
+  if (solved <= thresholds[2]) return 3
+  return 4
+}

@@ -6,7 +6,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import dayjs from 'dayjs'
-import { buildHeatmapGrid } from '../src/heatmapGrid.ts'
+import { buildHeatmapGrid, levelFor, solveLevelThresholds } from '../src/heatmapGrid.ts'
 import type { HeatmapDay } from '../src/types.ts'
 
 const day = (date: string, solved = 0): HeatmapDay => ({ date, attempts: solved + 1, ac: solved, solved })
@@ -59,5 +59,37 @@ describe('buildHeatmapGrid', () => {
     assert.equal(cell?.solved, 3)
     assert.equal(cell?.attempts, 4)
     assert.equal(cell?.ac, 3)
+  })
+})
+
+describe('solveLevelThresholds / levelFor', () => {
+  it('falls back to [1,2,3] when there is no active day', () => {
+    assert.deepEqual(solveLevelThresholds([]), [1, 2, 3])
+    assert.deepEqual(solveLevelThresholds([day('2026-09-24', 0)]), [1, 2, 3])
+    assert.equal(levelFor(0, [1, 2, 3]), 0)
+  })
+
+  it('quantiles split the actual distribution so levels stay distinguishable', () => {
+    // 集中分布 1~3 题（固定阈值下会挤在同一档）
+    const days = [1, 1, 1, 2, 2, 3].map((s, i) => day(`2026-09-1${i}`, s))
+    const t = solveLevelThresholds(days)
+    assert.deepEqual(t, [1, 1, 2])
+    assert.equal(levelFor(1, t), 1)
+    assert.equal(levelFor(2, t), 3)
+    assert.equal(levelFor(3, t), 4)
+  })
+
+  it('wider spread yields monotonic thresholds across all levels', () => {
+    const days = [1, 2, 3, 4, 5, 6, 7, 8].map((s, i) => day(`2026-09-1${i}`, s))
+    const t = solveLevelThresholds(days)
+    assert.deepEqual(t, [2, 4, 6])
+    // 阈值边界落在较浅一档（<= 分档）
+    assert.equal(levelFor(1, t), 1)
+    assert.equal(levelFor(2, t), 1)
+    assert.equal(levelFor(3, t), 2)
+    assert.equal(levelFor(4, t), 2)
+    assert.equal(levelFor(5, t), 3)
+    assert.equal(levelFor(6, t), 3)
+    assert.equal(levelFor(7, t), 4)
   })
 })

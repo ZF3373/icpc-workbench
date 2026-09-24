@@ -1,15 +1,18 @@
 /**
  * 刷题热力图（GitHub contributions 风格）：
- * 周列 × 7 行格子，格子深浅 = 当天 AC 去重题数（0/1/2/3-4/≥5 五档），
- * 悬停显示「日期 · AC N 题 / 提交 M 次」。纯 CSS grid 实现，零新依赖；
- * 色阶从主题 token（colorSuccess）生成，深浅色主题自动适配。
+ * 周列 × 7 行格子，格子深浅 = 当天 AC 去重题数。分档阈值取非零日四分位数
+ * （solveLevelThresholds），避免「每天 1~3 题」的集中分布挤在同一档；
+ * 实格用 GitHub 同款四档绿色板（深/浅主题各一套），相邻档可分辨。
+ * 格子尺寸随卡片宽度自适应（8~24px）尽量铺满，短范围整体居中。
+ * 纯 CSS grid 实现，零新依赖。
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Card, Empty, Segmented, Spin, Tooltip, theme } from 'antd'
 import dayjs from 'dayjs'
 import { get } from '../api'
+import { useTheme } from '../themeContext'
 import type { HeatmapResult } from '../types'
-import { buildHeatmapGrid, type HeatmapCell } from '../heatmapGrid'
+import { buildHeatmapGrid, levelFor, solveLevelThresholds, type HeatmapCell } from '../heatmapGrid'
 
 const RANGES = [
   { label: '近3月', days: 90 },
@@ -20,25 +23,17 @@ const RANGES = [
 const WEEKDAY_NAMES = ['日', '一', '二', '三', '四', '五', '六']
 /** 左侧星期标注：GitHub 同款只标一/三/五（行 0 = 周一） */
 const WEEKDAY_LABELS: Record<number, string> = { 0: '一', 2: '三', 4: '五' }
-const CELL = 12
+/** 星期标注列宽 26px + 右距 4px */
+const LABEL_COL = 30
 const GAP = 3
-const STEP = CELL + GAP
+const CELL_MIN = 8
+const CELL_MAX = 24
 
-function hexToRgba(hex: string, alpha: number): string {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex)
-  if (!m) return hex
-  const n = parseInt(m[1], 16)
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`
-}
-
-/** 色阶阈值（solved = 当天 AC 去重题数） */
-function levelOf(solved: number): number {
-  if (solved <= 0) return 0
-  if (solved === 1) return 1
-  if (solved === 2) return 2
-  if (solved <= 4) return 3
-  return 4
-}
+/** 实格四档配色（浅→深，GitHub 贡献图同款）；空格用主题 colorBorderSecondary */
+const LEVEL_COLORS = {
+  light: ['#9be9a8', '#40c463', '#30a14e', '#216e39'],
+  dark: ['#0e4429', '#006d32', '#26a641', '#39d353'],
+} as const
 
 function cellTitle(c: HeatmapCell): string {
   const wk = `周${WEEKDAY_NAMES[dayjs(c.date).day()]}`
@@ -50,6 +45,7 @@ export default function ActivityHeatmap({ refreshKey = 0 }: { refreshKey?: numbe
   const [days, setDays] = useState<number>(365)
   const [data, setData] = useState<HeatmapResult | null>(null)
   const [loading, setLoading] = useState(true)
+  const { resolved } = useTheme()
   const { token } = theme.useToken()
 
   useEffect(() => {
@@ -69,14 +65,36 @@ export default function ActivityHeatmap({ refreshKey = 0 }: { refreshKey?: numbe
   }, [days, refreshKey])
 
   const grid = useMemo(() => buildHeatmapGrid(data?.days ?? []), [data])
+  const thresholds = useMemo(() => solveLevelThresholds(data?.days ?? []), [data])
 
-  const levelColors = [
-    token.colorBorderSecondary,
-    hexToRgba(token.colorSuccess, 0.35),
-    hexToRgba(token.colorSuccess, 0.55),
-    hexToRgba(token.colorSuccess, 0.75),
-    token.colorSuccess,
-  ]
+  // 格子尺寸自适应：观察内容区宽度，列数铺满可用宽度；上限 CELL_MAX，
+  // 短范围（如近3月）算出的尺寸会顶到上限，由外层 fit-content + margin auto 居中。
+  // 用 callback ref：观察目标在 loading 结束后才挂载，effect 只跑一次会扑空
+  const [plotEl, setPlotEl] = useState<HTMLDivElement | null>(null)
+  const [plotWidth, setPlotWidth] = useState(0)
+  useEffect(() => {
+    if (!plotEl) return
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0
+      setPlotWidth(w)
+    })
+    ro.observe(plotEl)
+    return () => ro.disconnect()
+  }, [plotEl])
+
+  const cell = useMemo(() => {
+    const weeks = Math.max(grid.weeks.length, 1)
+    if (plotWidth <= LABEL_COL) return CELL_MIN
+    const avail = plotWidth - LABEL_COL - (weeks - 1) * GAP
+    return Math.max(CELL_MIN, Math.min(CELL_MAX, Math.floor(avail / weeks)))
+  }, [plotWidth, grid.weeks.length])
+
+  const step = cell + GAP
+  const radius = Math.max(3, Math.round(cell / 4))
+  const emptyColor = token.colorBorderSecondary
+  const filledColors = LEVEL_COLORS[resolved]
+  const cellColor = (solved: number) =>
+    solved <= 0 ? emptyColor : filledColors[levelFor(solved, thresholds) - 1]
 
   const rangeLabel = RANGES.find((r) => r.days === days)?.label ?? ''
 
@@ -106,16 +124,16 @@ export default function ActivityHeatmap({ refreshKey = 0 }: { refreshKey?: numbe
             AC <strong style={{ color: 'var(--green)' }}>{data.totalSolved}</strong> 题 · 提交{' '}
             <strong>{data.totalAttempts}</strong> 次
           </div>
-          <div style={{ overflowX: 'auto', paddingBottom: 4 }}>
-            <div style={{ display: 'inline-block' }}>
+          <div ref={setPlotEl} style={{ overflowX: 'auto', paddingBottom: 4 }}>
+            <div style={{ width: 'fit-content', margin: '0 auto' }}>
               {/* 月份标签行（绝对定位到对应周列上方） */}
-              <div style={{ position: 'relative', height: 16, marginLeft: 30 }}>
+              <div style={{ position: 'relative', height: 16, marginLeft: LABEL_COL }}>
                 {grid.monthLabels.map((m) => (
                   <span
                     key={`${m.col}-${m.label}`}
                     style={{
                       position: 'absolute',
-                      left: m.col * STEP,
+                      left: m.col * step,
                       top: 0,
                       fontSize: 11,
                       lineHeight: '16px',
@@ -132,7 +150,7 @@ export default function ActivityHeatmap({ refreshKey = 0 }: { refreshKey?: numbe
                   style={{
                     width: 26,
                     display: 'grid',
-                    gridTemplateRows: `repeat(7, ${CELL}px)`,
+                    gridTemplateRows: `repeat(7, ${cell}px)`,
                     gap: GAP,
                     marginRight: 4,
                   }}
@@ -140,7 +158,7 @@ export default function ActivityHeatmap({ refreshKey = 0 }: { refreshKey?: numbe
                   {Array.from({ length: 7 }).map((_, row) => (
                     <span
                       key={row}
-                      style={{ fontSize: 10, lineHeight: `${CELL}px`, color: 'var(--text-3)' }}
+                      style={{ fontSize: 10, lineHeight: `${cell}px`, color: 'var(--text-3)' }}
                     >
                       {WEEKDAY_LABELS[row] ?? ''}
                     </span>
@@ -150,22 +168,22 @@ export default function ActivityHeatmap({ refreshKey = 0 }: { refreshKey?: numbe
                 <div
                   style={{
                     display: 'inline-grid',
-                    gridTemplateRows: `repeat(7, ${CELL}px)`,
+                    gridTemplateRows: `repeat(7, ${cell}px)`,
                     gridAutoFlow: 'column',
-                    gridAutoColumns: `${CELL}px`,
+                    gridAutoColumns: `${cell}px`,
                     gap: GAP,
                   }}
                 >
                   {grid.weeks.flatMap((week, ci) =>
-                    week.map((cell, ri) =>
-                      cell ? (
-                        <Tooltip key={cell.date} title={cellTitle(cell)}>
+                    week.map((c, ri) =>
+                      c ? (
+                        <Tooltip key={c.date} title={cellTitle(c)}>
                           <div
                             style={{
-                              width: CELL,
-                              height: CELL,
-                              borderRadius: 3,
-                              background: levelColors[levelOf(cell.solved)],
+                              width: cell,
+                              height: cell,
+                              borderRadius: radius,
+                              background: cellColor(c.solved),
                             }}
                           />
                         </Tooltip>
@@ -189,11 +207,9 @@ export default function ActivityHeatmap({ refreshKey = 0 }: { refreshKey?: numbe
                 }}
               >
                 <span>少</span>
-                {levelColors.map((c) => (
-                  <span
-                    key={c}
-                    style={{ width: CELL, height: CELL, borderRadius: 3, background: c }}
-                  />
+                <span style={{ width: 12, height: 12, borderRadius: 3, background: emptyColor }} />
+                {filledColors.map((c) => (
+                  <span key={c} style={{ width: 12, height: 12, borderRadius: 3, background: c }} />
                 ))}
                 <span>多</span>
               </div>
