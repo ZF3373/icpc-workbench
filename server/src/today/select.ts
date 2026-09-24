@@ -83,8 +83,9 @@ function weakOverlap(tags: string[], weakTags: string[]): string[] {
  * 从候选中选出一档题单：
  * - 只保留难度落在 [min, max] 的题（null 难度视为不匹配，避免乱档）
  * - 弱项命中优先，其次离档心最近，最后按 id 稳定排序
- * - rotate 用于「换一批」：步长为 count（整批平移），点一次换掉的是全部 count 题，
- *   与上一批零重叠；平移回绕，因此 rotate 大到超过槽位数会重新回到首批
+ * - rotate 用于「换一批」：步长为 count（整批平移），点一次换掉的是全部 count 题；
+ *   池子长度是 count 整数倍时相邻两批零重叠，否则回绕的那一份会复现最早期批次的
+ *   1-2 题；rotate 大到超过槽位数会重新回到首批
  */
 export function pickBand(
   candidates: CandidateProblem[],

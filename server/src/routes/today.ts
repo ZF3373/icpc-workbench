@@ -42,7 +42,7 @@ function relaxNote(index: number, bandHasReviewCandidate: boolean): string | nul
   }
   return tier.cooldownDays > 0
     ? `近 ${tier.cooldownDays} 天内推荐过的题不足，冷却窗口放宽`
-    : '该难度段的题近 14 天都推荐过，本批允许重复';
+    : `该难度段的题近 ${BASE_COOLDOWN_DAYS} 天都推荐过，本批允许重复`;
 }
 
 export function todayRoutes(db: Db): Router {

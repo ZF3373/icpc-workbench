@@ -35,7 +35,7 @@ function readStoredRotate(): number {
     if (!raw) return 0
     const s = JSON.parse(raw) as { date?: unknown; rotate?: unknown }
     return s.date === utcToday() && Number.isInteger(s.rotate) && (s.rotate as number) > 0
-      ? (s.rotate as number)
+      ? Math.min(500, s.rotate as number) // 与服务端 rotate 上限一致，防止 localStorage 无界增长
       : 0
   } catch {
     return 0
