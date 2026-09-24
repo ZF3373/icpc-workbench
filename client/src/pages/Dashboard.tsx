@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { Button, Card, Col, Empty, Row, Spin, App as AntdApp, Tooltip as AntTooltip } from 'antd'
 import {
   CheckCircleOutlined,
@@ -30,6 +30,7 @@ import ActivityHeatmap from '../components/ActivityHeatmap'
 import SyncStatusCard from '../components/SyncStatusCard'
 import SyncProgressHint from '../components/SyncProgressHint'
 import { useSyncProgress } from '../syncProgressContext'
+import { applyModuleOrder, loadModuleOrder, saveModuleOrder, type ModuleId } from '../moduleOrder'
 import { platformName, rateColor } from '../ui'
 import { get, post } from '../api'
 import type { PlatformId, SyncResult } from '../../../shared/src/index.ts'
@@ -84,6 +85,45 @@ function gapColorHex(gap: number): string {
   if (gap > 5) return '#ffbd61'
   if (gap > 0) return '#f2c46d'
   return '#69d7a5'
+}
+
+/** 模块卡片在 xl 布局的宽度（24 = 整行）；拖拽只改顺序，不改宽度 */
+const MODULE_SPANS: Record<ModuleId, number> = {
+  heatmap: 24,
+  platforms: 10,
+  difficulty: 14,
+  weakness: 12,
+  trend: 12,
+  history: 24,
+}
+
+/** 模块卡片统一外壳：标题前放拖拽把手，卡片根上的 mousedown 由模块拖拽逻辑过滤（仅头部发起） */
+function ModuleCard({
+  title,
+  extra,
+  onHeadMouseDown,
+  children,
+}: {
+  title: ReactNode
+  extra?: ReactNode
+  onHeadMouseDown: (e: ReactMouseEvent<HTMLDivElement>) => void
+  children: ReactNode
+}) {
+  return (
+    <Card
+      size="small"
+      title={
+        <>
+          <HolderOutlined className="module-drag-handle" />
+          {title}
+        </>
+      }
+      extra={extra}
+      onMouseDown={onHeadMouseDown}
+    >
+      {children}
+    </Card>
+  )
 }
 
 export default function Dashboard() {
@@ -180,6 +220,57 @@ export default function Dashboard() {
     persistPlatformOrder()
     clearPlatformDrag()
   }
+
+  // ---------- 模块卡片拖拽排序（与平台卡片同款 mouse 方案，从卡片头部发起） ----------
+
+  const [moduleOrder, setModuleOrder] = useState<string[] | null>(loadModuleOrder)
+  const [dragModule, setDragModule] = useState<ModuleId | null>(null)
+  const dragModuleRef = useRef<ModuleId | null>(null)
+  const moduleOrderRef = useRef<string[] | null>(moduleOrder)
+
+  /** 当前渲染顺序：存档顺序 → 未知/重复 id 丢弃 → 缺失模块按默认序补尾 */
+  const orderedModules = useMemo(() => applyModuleOrder(moduleOrder), [moduleOrder])
+
+  const handleModuleMouseDown = (e: ReactMouseEvent<HTMLDivElement>, id: ModuleId) => {
+    const target = e.target as HTMLElement
+    // 只允许从卡片头部发起拖拽：图表/表格等卡片主体的交互不受影响
+    if (!target.closest('.ant-card-head')) return
+    // 头部内的控件（热力图范围切换等）照常点击
+    if (target.closest('input, button, a, label, .ant-segmented')) return
+    e.preventDefault() // 避免拖拽时选中标题文字
+    dragModuleRef.current = id
+    setDragModule(id)
+  }
+
+  /** 悬停到其他模块时实时交换位置（被拖模块移到目标位置，其余顺延） */
+  const handleModuleMouseEnter = (id: ModuleId) => {
+    const drag = dragModuleRef.current
+    if (drag === null || drag === id) return
+    const ids = orderedModules.slice()
+    const from = ids.indexOf(drag)
+    const to = ids.indexOf(id)
+    if (from === -1 || to === -1 || from === to) return
+    ids.splice(from, 1)
+    ids.splice(to, 0, drag)
+    moduleOrderRef.current = ids
+    setModuleOrder(ids)
+  }
+
+  const clearModuleDrag = () => {
+    dragModuleRef.current = null
+    setDragModule(null)
+  }
+
+  // 拖拽中松手（任意位置）落盘并清除状态
+  useEffect(() => {
+    if (dragModule === null) return
+    const onUp = () => {
+      if (moduleOrderRef.current) saveModuleOrder(moduleOrderRef.current)
+      clearModuleDrag()
+    }
+    document.addEventListener('mouseup', onUp)
+    return () => document.removeEventListener('mouseup', onUp)
+  }, [dragModule])
 
   // 一键同步所有已绑定账号（增量），完成后刷新概览数据
   const { refresh: refreshProgress } = useSyncProgress()
@@ -283,6 +374,168 @@ export default function Dashboard() {
     acRate: t.attempts ? Math.round((t.ac / t.attempts) * 1000) / 10 : 0,
   }))
 
+  const moduleNodes: Record<ModuleId, ReactNode> = {
+    heatmap: (
+      <ActivityHeatmap
+        refreshKey={syncTick}
+        draggable={{ onMouseDown: (e) => handleModuleMouseDown(e, 'heatmap') }}
+      />
+    ),
+    platforms: (
+      <ModuleCard
+        title="平台分布"
+        extra={<span style={{ fontSize: 12, color: 'var(--text-3)' }}>拖动卡片可排序</span>}
+        onHeadMouseDown={(e) => handleModuleMouseDown(e, 'platforms')}
+      >
+        <div className="platform-card-grid" style={{ userSelect: dragPlatform !== null ? 'none' : undefined }}>
+          {orderedPlatforms.map((p) => (
+            <div
+              key={p.platform}
+              className={`platform-stat-card${dragPlatform === p.platform ? ' is-dragging' : ''}`}
+              onMouseDown={(e) => handlePlatformMouseDown(e, p.platform)}
+              onMouseEnter={() => handlePlatformMouseEnter(p.platform)}
+              onMouseUp={handlePlatformMouseUp}
+            >
+              <div className="platform-stat-head">
+                <PlatformTag id={p.platform} />
+                <HolderOutlined className="platform-drag-handle" />
+              </div>
+              <div className="platform-stat-nums">
+                <span>
+                  <strong className="mono">{p.attempts}</strong> 提交
+                </span>
+                <span>
+                  <strong className="mono">{p.ac}</strong> AC
+                </span>
+                <span className="mono" style={{ color: rateColor(p.acRate), fontWeight: 600 }}>
+                  {p.acRate}%
+                </span>
+                <span>
+                  <strong className="mono" style={{ color: 'var(--green)' }}>
+                    {p.solved}
+                  </strong>{' '}
+                  已解
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </ModuleCard>
+    ),
+    difficulty: (
+      <ModuleCard
+        title="难度分布（提交数，按 AC / 未通过 堆叠）"
+        onHeadMouseDown={(e) => handleModuleMouseDown(e, 'difficulty')}
+      >
+        <ResponsiveContainer width="100%" height={280}>
+          <BarChart data={diffData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_STROKE} />
+            <XAxis dataKey="bucket" tick={AXIS_TICK} interval={0} axisLine={false} tickLine={false} />
+            <YAxis allowDecimals={false} tick={AXIS_TICK} axisLine={false} tickLine={false} />
+            <Tooltip {...TOOLTIP_STYLE} cursor={{ fill: 'rgba(134, 168, 255, 0.05)' }} />
+            <Legend {...LEGEND_STYLE} />
+            <Bar dataKey="AC" stackId="a" fill={CHART_COLORS.ac} radius={[0, 0, 0, 0]} maxBarSize={34} />
+            <Bar dataKey="未通过" stackId="a" fill={CHART_COLORS.failed} radius={[5, 5, 0, 0]} maxBarSize={34} />
+          </BarChart>
+        </ResponsiveContainer>
+      </ModuleCard>
+    ),
+    weakness: (
+      <ModuleCard
+        title="弱项标签（相对自身平均的 AC 率偏差，越大越弱）"
+        onHeadMouseDown={(e) => handleModuleMouseDown(e, 'weakness')}
+      >
+        {weakData.length > 0 ? (
+          <ResponsiveContainer width="100%" height={320}>
+            <BarChart data={weakData} layout="vertical" margin={{ top: 8, right: 24, left: 40, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={GRID_STROKE} />
+              <XAxis type="number" tick={AXIS_TICK} axisLine={false} tickLine={false} />
+              <YAxis
+                type="category"
+                dataKey="tag"
+                width={110}
+                tick={{ fontSize: 12, fill: '#6f6f85' }}
+                axisLine={false}
+                tickLine={false}
+                tickFormatter={(tag: string, index: number) => {
+                  const d = weakData[index];
+                  return d && d.attempts < 20 ? `${tag} ⚠️` : tag;
+                }}
+              />
+              <Tooltip
+                {...TOOLTIP_STYLE}
+                formatter={(v, name) =>
+                  name === 'gap'
+                    ? [`${Number(v) > 0 ? '+' : ''}${Number(v)}`, 'AC 率偏差']
+                    : [String(v), String(name)]
+                }
+                labelFormatter={(label: React.ReactNode) => {
+                  const d = weakData.find((x) => x.tag === label)
+                  return d ? `${String(label)}（样本 ${d.attempts}）` : label
+                }}
+                cursor={{ fill: 'rgba(134, 168, 255, 0.05)' }}
+              />
+              <Bar dataKey="gap" radius={[0, 5, 5, 0]} maxBarSize={16}>
+                {weakData.map((d) => (
+                  <Cell key={d.tag} fill={gapColorHex(d.gap)} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        ) : (
+          <Empty description="暂无足够样本（各标签至少 5 次提交）" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        )}
+      </ModuleCard>
+    ),
+    trend: (
+      <ModuleCard
+        title="近 12 周趋势（提交量与 AC 率）"
+        onHeadMouseDown={(e) => handleModuleMouseDown(e, 'trend')}
+      >
+        <ResponsiveContainer width="100%" height={320}>
+          <ComposedChart data={trendData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+            <defs>
+              <linearGradient id="rateArea" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.25} />
+                <stop offset="100%" stopColor="#f59e0b" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_STROKE} />
+            <XAxis
+              dataKey="week"
+              tick={AXIS_TICK}
+              tickFormatter={(w: string) => w.slice(5)}
+              interval={0}
+              axisLine={false}
+              tickLine={false}
+            />
+            <YAxis yAxisId="left" allowDecimals={false} tick={AXIS_TICK} axisLine={false} tickLine={false} />
+            <YAxis yAxisId="right" orientation="right" domain={[0, 100]} unit="%" tick={AXIS_TICK} axisLine={false} tickLine={false} />
+            <Tooltip {...TOOLTIP_STYLE} cursor={{ fill: 'rgba(134, 168, 255, 0.05)' }} />
+            <Legend {...LEGEND_STYLE} />
+            <Bar yAxisId="left" dataKey="attempts" name="提交" fill={CHART_COLORS.attempts} radius={[5, 5, 0, 0]} maxBarSize={16} />
+            <Bar yAxisId="left" dataKey="AC" name="AC" fill={CHART_COLORS.ac} radius={[5, 5, 0, 0]} maxBarSize={16} />
+            <Area
+              yAxisId="right"
+              type="monotone"
+              dataKey="acRate"
+              name="AC 率 %"
+              stroke={CHART_COLORS.rate}
+              strokeWidth={2}
+              fill="url(#rateArea)"
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </ModuleCard>
+    ),
+    history: (
+      <ModuleCard title="写题历史" onHeadMouseDown={(e) => handleModuleMouseDown(e, 'history')}>
+        {/* 写题历史查询（issue #19）：概览页内直接查「我在哪些平台写过哪些题」，不另开板块 */}
+        <HistoryPanel />
+      </ModuleCard>
+    ),
+  }
+
   return (
     <div>
       <PageHeader
@@ -322,157 +575,21 @@ export default function Dashboard() {
           },
         ]}
       />
-      {/* 近一年逐日刷题热力（GitHub contributions 风格），同步完成后随 syncTick 刷新 */}
-      <ActivityHeatmap refreshKey={syncTick} />
 
+      {/* 模块卡片：按住标题栏拖拽可排序，顺序持久化到 localStorage */}
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col xs={24} xl={10}>
-          <Card
-            title="平台分布"
-            size="small"
-            extra={<span style={{ fontSize: 12, color: 'var(--text-3)' }}>拖动卡片可排序</span>}
+        {orderedModules.map((id) => (
+          <Col
+            key={id}
+            xs={24}
+            xl={MODULE_SPANS[id]}
+            className={`dash-module${dragModule === id ? ' is-dragging' : ''}`}
+            onMouseEnter={() => handleModuleMouseEnter(id)}
           >
-            <div className="platform-card-grid" style={{ userSelect: dragPlatform !== null ? 'none' : undefined }}>
-              {orderedPlatforms.map((p) => (
-                <div
-                  key={p.platform}
-                  className={`platform-stat-card${dragPlatform === p.platform ? ' is-dragging' : ''}`}
-                  onMouseDown={(e) => handlePlatformMouseDown(e, p.platform)}
-                  onMouseEnter={() => handlePlatformMouseEnter(p.platform)}
-                  onMouseUp={handlePlatformMouseUp}
-                >
-                  <div className="platform-stat-head">
-                    <PlatformTag id={p.platform} />
-                    <HolderOutlined className="platform-drag-handle" />
-                  </div>
-                  <div className="platform-stat-nums">
-                    <span>
-                      <strong className="mono">{p.attempts}</strong> 提交
-                    </span>
-                    <span>
-                      <strong className="mono">{p.ac}</strong> AC
-                    </span>
-                    <span className="mono" style={{ color: rateColor(p.acRate), fontWeight: 600 }}>
-                      {p.acRate}%
-                    </span>
-                    <span>
-                      <strong className="mono" style={{ color: 'var(--green)' }}>
-                        {p.solved}
-                      </strong>{' '}
-                      已解
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-        </Col>
-        <Col xs={24} xl={14}>
-          <Card title="难度分布（提交数，按 AC / 未通过 堆叠）" size="small">
-            <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={diffData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_STROKE} />
-                <XAxis dataKey="bucket" tick={AXIS_TICK} interval={0} axisLine={false} tickLine={false} />
-                <YAxis allowDecimals={false} tick={AXIS_TICK} axisLine={false} tickLine={false} />
-                <Tooltip {...TOOLTIP_STYLE} cursor={{ fill: 'rgba(134, 168, 255, 0.05)' }} />
-                <Legend {...LEGEND_STYLE} />
-                <Bar dataKey="AC" stackId="a" fill={CHART_COLORS.ac} radius={[0, 0, 0, 0]} maxBarSize={34} />
-                <Bar dataKey="未通过" stackId="a" fill={CHART_COLORS.failed} radius={[5, 5, 0, 0]} maxBarSize={34} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Card>
-        </Col>
+            {moduleNodes[id]}
+          </Col>
+        ))}
       </Row>
-
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col xs={24} xl={12}>
-          <Card title="弱项标签（相对自身平均的 AC 率偏差，越大越弱）" size="small">
-            {weakData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={320}>
-                <BarChart data={weakData} layout="vertical" margin={{ top: 8, right: 24, left: 40, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={GRID_STROKE} />
-                  <XAxis type="number" tick={AXIS_TICK} axisLine={false} tickLine={false} />
-                  <YAxis
-                    type="category"
-                    dataKey="tag"
-                    width={110}
-                    tick={{ fontSize: 12, fill: '#6f6f85' }}
-                    axisLine={false}
-                    tickLine={false}
-                    tickFormatter={(tag: string, index: number) => {
-                      const d = weakData[index];
-                      return d && d.attempts < 20 ? `${tag} ⚠️` : tag;
-                    }}
-                  />
-                  <Tooltip
-                    {...TOOLTIP_STYLE}
-                    formatter={(v, name) =>
-                      name === 'gap'
-                        ? [`${Number(v) > 0 ? '+' : ''}${Number(v)}`, 'AC 率偏差']
-                        : [String(v), String(name)]
-                    }
-                    labelFormatter={(label: React.ReactNode) => {
-                      const d = weakData.find((x) => x.tag === label)
-                      return d ? `${String(label)}（样本 ${d.attempts}）` : label
-                    }}
-                    cursor={{ fill: 'rgba(134, 168, 255, 0.05)' }}
-                  />
-                  <Bar dataKey="gap" radius={[0, 5, 5, 0]} maxBarSize={16}>
-                    {weakData.map((d) => (
-                      <Cell key={d.tag} fill={gapColorHex(d.gap)} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <Empty description="暂无足够样本（各标签至少 5 次提交）" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-            )}
-          </Card>
-        </Col>
-        <Col xs={24} xl={12}>
-          <Card title="近 12 周趋势（提交量与 AC 率）" size="small">
-            <ResponsiveContainer width="100%" height={320}>
-              <ComposedChart data={trendData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="rateArea" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.25} />
-                    <stop offset="100%" stopColor="#f59e0b" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_STROKE} />
-                <XAxis
-                  dataKey="week"
-                  tick={AXIS_TICK}
-                  tickFormatter={(w: string) => w.slice(5)}
-                  interval={0}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis yAxisId="left" allowDecimals={false} tick={AXIS_TICK} axisLine={false} tickLine={false} />
-                <YAxis yAxisId="right" orientation="right" domain={[0, 100]} unit="%" tick={AXIS_TICK} axisLine={false} tickLine={false} />
-                <Tooltip {...TOOLTIP_STYLE} cursor={{ fill: 'rgba(134, 168, 255, 0.05)' }} />
-                <Legend {...LEGEND_STYLE} />
-                <Bar yAxisId="left" dataKey="attempts" name="提交" fill={CHART_COLORS.attempts} radius={[5, 5, 0, 0]} maxBarSize={16} />
-                <Bar yAxisId="left" dataKey="AC" name="AC" fill={CHART_COLORS.ac} radius={[5, 5, 0, 0]} maxBarSize={16} />
-                <Area
-                  yAxisId="right"
-                  type="monotone"
-                  dataKey="acRate"
-                  name="AC 率 %"
-                  stroke={CHART_COLORS.rate}
-                  strokeWidth={2}
-                  fill="url(#rateArea)"
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </Card>
-        </Col>
-      </Row>
-
-      {/* 写题历史查询（issue #19）：概览页内直接查「我在哪些平台写过哪些题」，不另开板块 */}
-      <Card title="写题历史" size="small" style={{ marginTop: 16 }}>
-        <HistoryPanel />
-      </Card>
     </div>
   )
 }
