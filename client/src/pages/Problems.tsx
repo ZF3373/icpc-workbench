@@ -19,7 +19,7 @@ import {
   Upload,
 } from 'antd'
 import type { TreeSelectProps } from 'antd'
-import { ApartmentOutlined, CheckOutlined, ClearOutlined, CloudDownloadOutlined, DeleteOutlined, EditOutlined, HistoryOutlined, InboxOutlined, PlusOutlined, ReadOutlined, RestOutlined, TagsOutlined } from '@ant-design/icons'
+import { ApartmentOutlined, CheckOutlined, ClearOutlined, CloudDownloadOutlined, DeleteOutlined, DownOutlined, EditOutlined, HistoryOutlined, InboxOutlined, PlusOutlined, ReadOutlined, RestOutlined, TagsOutlined, UpOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useSearchParams } from 'react-router-dom'
 import SyncProgressHint from '../components/SyncProgressHint'
@@ -169,6 +169,15 @@ export default function Problems() {
   const [diffUnknown, setDiffUnknown] = useState(false)
   // 「过滤问题」面板：编辑草稿，点「应用」才生效（展开时以已生效条件为初值）
   const [filterOpen, setFilterOpen] = useState(false)
+  // 顶部概览条（难度/平台分布）折叠：偏好写入 localStorage，收起后只留一行标签
+  const [distCollapsed, setDistCollapsed] = useState(
+    () => localStorage.getItem('problems.distCollapsed') === '1',
+  )
+  const toggleDistCollapsed = () =>
+    setDistCollapsed((c) => {
+      localStorage.setItem('problems.distCollapsed', c ? '0' : '1')
+      return !c
+    })
   const [draftTags, setDraftTags] = useState<string[]>([])
   const [draftDiffMin, setDraftDiffMin] = useState<number | undefined>()
   const [draftDiffMax, setDraftDiffMax] = useState<number | undefined>()
@@ -885,6 +894,61 @@ export default function Problems() {
         }
       />
 
+      {/* 顶部概览条：难度分布 + 平台分布（点击难度区间可筛选；右上角按钮可折叠成一行标签） */}
+      <aside className={`side-panel${distCollapsed ? ' is-collapsed' : ''}`}>
+        <button
+          type="button"
+          className="side-panel__toggle"
+          title={distCollapsed ? '展开分布概览' : '收起分布概览'}
+          onClick={toggleDistCollapsed}
+        >
+          {distCollapsed ? <DownOutlined /> : <UpOutlined />}
+        </button>
+        <div className="panel-block">
+          <div className="section-label">难度分布</div>
+          <div className="dist-list">
+            {diffDist.map((d) => (
+              <button
+                type="button"
+                className={`dist-row${isBucketActive(d) ? ' is-active' : ''}`}
+                key={d.key}
+                onClick={() => toggleDiffBucket(d)}
+                title="点击按该难度区间筛选（再点一次取消）"
+              >
+                <span className="dist-row__label mono">{d.key}</span>
+                <span className="dist-row__track">
+                  <i style={{ width: `${(d.count / diffDistMax) * 100}%`, background: d.color }} />
+                </span>
+                <span className="dist-row__count mono">{d.count}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="panel-block">
+          <div className="section-label">平台分布</div>
+          <div className="dist-list">
+            {platDist.map((p) => (
+              <div className="dist-row" key={p.id}>
+                <span className="dist-row__label">
+                  <i className="platform-dot" style={{ background: PLATFORM_COLOR[p.id] }} />
+                  {p.name}
+                </span>
+                <span className="dist-row__track">
+                  <i
+                    style={{
+                      width: `${(p.count / platMax) * 100}%`,
+                      background: PLATFORM_COLOR[p.id],
+                      opacity: 0.75,
+                    }}
+                  />
+                </span>
+                <span className="dist-row__count mono">{p.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </aside>
+
       <div className="workbench">
         {/* 左栏：标签分类 */}
         <aside className="taxonomy-panel">
@@ -1067,7 +1131,8 @@ export default function Problems() {
               loading={loading}
               columns={cols}
               dataSource={rows}
-              // 固定列宽合计 850px；容器更窄时出横向滚动条，操作列吸附右缘始终可见
+              // 固定列宽合计 850px；概览条已移到页顶不再占宽度，两栏布局下中栏
+              // 一般足够 970px，更窄的窗口才出横向滚动条，操作列吸附右缘始终可见
               scroll={{ x: 970 }}
               // 服务端分页：当前页 50 行由后端过滤 + LIMIT 得出，前端不再持有全量数据
               pagination={{
@@ -1081,53 +1146,6 @@ export default function Problems() {
             />
           </div>
         </section>
-
-        {/* 右栏：概览面板 */}
-        <aside className="side-panel">
-          <div className="panel-block">
-            <div className="section-label">难度分布</div>
-            <div className="dist-list">
-              {diffDist.map((d) => (
-                <button
-                  type="button"
-                  className={`dist-row${isBucketActive(d) ? ' is-active' : ''}`}
-                  key={d.key}
-                  onClick={() => toggleDiffBucket(d)}
-                  title="点击按该难度区间筛选（再点一次取消）"
-                >
-                  <span className="dist-row__label mono">{d.key}</span>
-                  <span className="dist-row__track">
-                    <i style={{ width: `${(d.count / diffDistMax) * 100}%`, background: d.color }} />
-                  </span>
-                  <span className="dist-row__count mono">{d.count}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="panel-block">
-            <div className="section-label">平台分布</div>
-            <div className="dist-list">
-              {platDist.map((p) => (
-                <div className="dist-row" key={p.id}>
-                  <span className="dist-row__label">
-                    <i className="platform-dot" style={{ background: PLATFORM_COLOR[p.id] }} />
-                    {p.name}
-                  </span>
-                  <span className="dist-row__track">
-                    <i
-                      style={{
-                        width: `${(p.count / platMax) * 100}%`,
-                        background: PLATFORM_COLOR[p.id],
-                        opacity: 0.75,
-                      }}
-                    />
-                  </span>
-                  <span className="dist-row__count mono">{p.count}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </aside>
       </div>
 
       <Modal title="导入刷题记录" open={importOpen} onCancel={() => setImportOpen(false)} footer={null} width={620}>

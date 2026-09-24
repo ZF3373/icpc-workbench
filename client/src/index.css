@@ -779,12 +779,12 @@ body {
 }
 
 /* ============================================================
-   题目工作台：标签分类栏 + 工作区 + 概览面板（cf-compass workbench）
+   题目工作台：顶部概览条 + 标签分类栏 + 工作区（cf-compass workbench）
    ============================================================ */
 
 .workbench {
   display: grid;
-  grid-template-columns: 208px minmax(0, 1fr) 232px;
+  grid-template-columns: 208px minmax(0, 1fr);
   gap: 14px;
   align-items: start;
 }
@@ -1139,14 +1139,65 @@ body {
   color: #48c774 !important;
 }
 
-/* ---------- 概览面板 ---------- */
+/* ---------- 顶部概览条：难度分布 + 平台分布 ---------- */
 
+/* 放在页头下方、表格上方横排铺开：不放右栏是因为内容区 1440 封顶时
+   右栏会把题目表格压到 970px 以下，难度 / 标签列被挤进横向滚动区；
+   也不放表格下方，吸顶的标签栏滑到页底时会盖住全宽的下方块 */
 .side-panel {
-  position: sticky;
-  top: 16px;
+  position: relative;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: stretch;
   gap: 14px;
+  margin-bottom: 14px;
+}
+
+.side-panel .panel-block {
+  flex: 1 1 340px;
+}
+
+/* 折叠按钮：悬浮在概览条右上角（展开时落在「平台分布」块标签行右侧的空白处） */
+.side-panel__toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--item-border);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: 10px;
+  cursor: pointer;
+  transition: 130ms ease;
+}
+
+.side-panel__toggle:hover {
+  color: var(--text);
+  border-color: var(--item-hover-border);
+  background: var(--surface-3);
+}
+
+/* 折叠态：条形图隐藏，两块退化为并排的一行标签 */
+.side-panel.is-collapsed {
+  align-items: center;
+  gap: 10px;
+}
+
+.side-panel.is-collapsed .panel-block {
+  flex: 0 0 auto;
+  padding: 7px 4px 1px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.side-panel.is-collapsed .dist-list {
+  display: none;
 }
 
 .panel-block {
@@ -1203,16 +1254,6 @@ body {
 }
 
 /* ---------- 响应式 ---------- */
-
-@media (max-width: 1280px) {
-  .workbench {
-    grid-template-columns: 190px minmax(0, 1fr);
-  }
-
-  .side-panel {
-    display: none;
-  }
-}
 
 @media (max-width: 920px) {
   .workbench {
