@@ -347,6 +347,8 @@ export interface TodayBand {
   problems: TodayProblem[];
   /** 该难度段的候选题总数（选题前，用于空态提示） */
   pool: number;
+  /** 候选题不足时放宽了哪条去重规则（冷却窗口/复习排除）；null 表示按标准规则出题 */
+  relaxed: string | null;
 }
 
 /** 能力值构成明细（透出给 UI / AI，便于理解计算值从哪来） */
@@ -372,6 +374,8 @@ export interface TodayPlan {
   level: number;
   /** 能力值构成明细（缺失时 UI 不展示构成） */
   levelDetail?: AbilityLevelDetail;
+  /** 标准冷却窗口：近 N 天推荐过的题不再出现 */
+  cooldownDays: number;
   bands: TodayBand[];
   /** 到期复习数（来自复习库） */
   dueReviews: number;

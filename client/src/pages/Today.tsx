@@ -24,11 +24,37 @@ const BAND_TONE: Record<TodayBandKey, string> = {
   challenge: '#ffbd61',
 }
 
+/** 换一批的进度按天存：刷新页面不该退回第一批，换日自动归零 */
+const ROTATE_KEY = 'today.rotate.v1'
+
+const utcToday = () => new Date().toISOString().slice(0, 10)
+
+function readStoredRotate(): number {
+  try {
+    const raw = localStorage.getItem(ROTATE_KEY)
+    if (!raw) return 0
+    const s = JSON.parse(raw) as { date?: unknown; rotate?: unknown }
+    return s.date === utcToday() && Number.isInteger(s.rotate) && (s.rotate as number) > 0
+      ? Math.min(500, s.rotate as number) // 与服务端 rotate 上限一致，防止 localStorage 无界增长
+      : 0
+  } catch {
+    return 0
+  }
+}
+
+function writeStoredRotate(rotate: number): void {
+  try {
+    localStorage.setItem(ROTATE_KEY, JSON.stringify({ date: utcToday(), rotate }))
+  } catch {
+    /* 隐私模式下写不了 localStorage，换一批照样能用 */
+  }
+}
+
 export default function Today() {
   const { message } = AntdApp.useApp()
   const [plan, setPlan] = useState<TodayPlan | null>(null)
   const [loading, setLoading] = useState(true)
-  const [rotate, setRotate] = useState(0)
+  const [rotate, setRotate] = useState<number>(readStoredRotate)
   const [streak, setStreak] = useState<StreakInfo | null>(null)
   /** 正在同步的平台集合（按 platform 维度去重，同一平台同时只同步一次） */
   const [syncingPlatforms, setSyncingPlatforms] = useState<Set<string>>(new Set())
@@ -130,7 +156,11 @@ export default function Today() {
   }
 
   const refreshBand = () => {
-    setRotate((r) => r + 1)
+    setRotate((r) => {
+      const next = r + 1
+      writeStoredRotate(next)
+      return next
+    })
   }
 
   return (
@@ -297,6 +327,11 @@ export default function Today() {
                       </Card>
                     ))
                   )}
+                  {band.relaxed && (
+                    <p className="band-desc" style={{ color: '#d29922' }}>
+                      {band.relaxed}
+                    </p>
+                  )}
                 </Card>
               </Col>
             ))}
@@ -312,7 +347,8 @@ export default function Today() {
                     : undefined
                 }
               >
-                <SendOutlined /> 能力值由解题难度与独立完成度加权估算：补题、看题解后的题降权，偶然题不抬基数，并按近期通过率缓慢校准；做完题同步数据，推荐会随之进化。
+                <SendOutlined />{' '}
+                {`能力值由解题难度与独立完成度加权估算；近 ${plan.cooldownDays} 天推荐过的题不再重复出现，做完题后同步数据，推荐会随之进化。`}
               </span>
               {plan.planProgress && (
                 <Progress
