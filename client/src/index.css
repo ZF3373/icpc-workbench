@@ -2912,3 +2912,29 @@ body {
 .history-panel .ant-table-wrapper {
   padding-inline: 12px;
 }
+
+/* ---------- 数据概览：模块卡片头部拖拽排序 ---------- */
+/* 仅卡片头部可抓取（cursor 提示），图表/表格主体交互不受影响 */
+.dash-module > .ant-card > .ant-card-head .ant-card-head-wrapper {
+  cursor: grab;
+  user-select: none;
+}
+
+.dash-module > .ant-card > .ant-card-head .ant-card-head-wrapper:active {
+  cursor: grabbing;
+}
+
+.dash-module .module-drag-handle {
+  color: var(--text-3);
+  font-size: 12px;
+  margin-right: 6px;
+}
+
+.dash-module.is-dragging {
+  opacity: 0.6;
+}
+
+.dash-module.is-dragging > .ant-card {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px var(--brand-soft);
+}
