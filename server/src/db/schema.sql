@@ -190,6 +190,20 @@ CREATE INDEX IF NOT EXISTS idx_submissions_problem ON submissions(problem_id);
 -- 按用户取时间窗提交（能力值近 60 天窗口 / 趋势图）与按时间排序：无此索引时万级提交全表扫
 CREATE INDEX IF NOT EXISTS idx_submissions_user_time ON submissions(user_id, submitted_at);
 
+-- 今日训练推荐冷却记录：每个题目一行，存最近一次被推荐进题单的日期与档位。
+-- 选题时排除「冷却窗口内往日推荐过」的题，否则排序是完全确定性的 ——
+-- 只要推荐的题没被 AC（还等同步拉回 AC 记录），每天打开「今日训练」都是同一批题。
+-- 只存最近一次（PK 为 user+problem）：判重只需要「距上次多少天」，历史无需保留。
+-- 当天的记录不参与排除：否则「换一批」刚写的记录会立刻把自己平移出的窗口吃掉。
+CREATE TABLE IF NOT EXISTS today_recommendations (
+  user_id        INTEGER NOT NULL REFERENCES users(id),
+  problem_id     INTEGER NOT NULL REFERENCES problems(id),
+  recommended_on TEXT NOT NULL,                 -- YYYY-MM-DD（本地日，与 review_items.next_due_on 同口径）
+  band           TEXT NOT NULL,                 -- consolidation / core / challenge
+  PRIMARY KEY (user_id, problem_id)
+);
+CREATE INDEX IF NOT EXISTS idx_today_reco_on ON today_recommendations(user_id, recommended_on);
+
 CREATE TABLE IF NOT EXISTS plans (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id     INTEGER NOT NULL REFERENCES users(id),
