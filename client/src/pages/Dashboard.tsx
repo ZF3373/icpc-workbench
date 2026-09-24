@@ -26,6 +26,7 @@ import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
 import HistoryPanel from '../components/HistoryPanel'
 import StatStrip from '../components/StatStrip'
+import ActivityHeatmap from '../components/ActivityHeatmap'
 import SyncStatusCard from '../components/SyncStatusCard'
 import SyncProgressHint from '../components/SyncProgressHint'
 import { useSyncProgress } from '../syncProgressContext'
@@ -94,6 +95,8 @@ export default function Dashboard() {
   const [syncing, setSyncing] = useState(false)
   const [platformOrder, setPlatformOrder] = useState<string[] | null>(getPlatformOrder)
   const [dragPlatform, setDragPlatform] = useState<PlatformId | null>(null)
+  /** 同步完成后自增，驱动热力图等自带请求的子卡片重新拉数 */
+  const [syncTick, setSyncTick] = useState(0)
   /** 拖拽源平台（ref 即时读写，不依赖 state 异步更新） */
   const dragPlatformRef = useRef<PlatformId | null>(null)
   /** 最新顺序镜像：mousemove 是连续事件，渲染会延迟一帧，mouseup 落盘必须读 ref 而非渲染闭包 */
@@ -214,6 +217,7 @@ export default function Dashboard() {
         )
       }
       load()
+      setSyncTick((t) => t + 1)
     } catch (e) {
       message.error((e as Error).message)
     } finally {
@@ -318,6 +322,8 @@ export default function Dashboard() {
           },
         ]}
       />
+      {/* 近一年逐日刷题热力（GitHub contributions 风格），同步完成后随 syncTick 刷新 */}
+      <ActivityHeatmap refreshKey={syncTick} />
 
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col xs={24} xl={10}>

@@ -4,6 +4,7 @@ import { PLATFORMS } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { computeOverall } from '../analysis/stats.ts';
 import { computeTrend } from '../analysis/trend.ts';
+import { computeHeatmap } from '../analysis/heatmap.ts';
 import { computeWeakness } from '../analysis/weakness.ts';
 import { computeMastery } from '../analysis/mastery.ts';
 import { buildPracticeSummary } from '../analysis/summary.ts';
@@ -38,6 +39,21 @@ export function statsRoutes(db: Db): Router {
   r.get('/trend', (req, res) => {
     const weeks = num(req.query.weeks, 12, 1, 52);
     res.json(computeTrend(db, DEFAULT_USER_ID, weeks));
+  });
+
+  // GET /api/stats/heatmap?days=&platform=  → 近 N 天逐日刷题热力（格子 = AC 去重题数）
+  r.get('/heatmap', (req, res) => {
+    const { platform } = req.query;
+    if (platform && !PLATFORMS.some((p) => p.id === platform)) {
+      return res.status(400).json({ error: `platform 非法: ${String(platform)}` });
+    }
+    const days = num(req.query.days, 365, 1, 3650);
+    res.json(
+      computeHeatmap(db, DEFAULT_USER_ID, {
+        days,
+        platform: platform as PlatformId | undefined,
+      }),
+    );
   });
 
   // GET /api/stats/mastery?minSolved=  → 知识点掌握度地图（刷题数据 × 模板课程联动）

@@ -39,6 +39,23 @@ export interface TrendPoint {
   difficultyDist: Record<string, number>
 }
 
+export interface HeatmapDay {
+  date: string
+  attempts: number
+  ac: number
+  /** 当天 AC 去重题数（格子深浅用） */
+  solved: number
+}
+
+export interface HeatmapResult {
+  from: string
+  to: string
+  totalAttempts: number
+  totalAc: number
+  totalSolved: number
+  days: HeatmapDay[]
+}
+
 export interface PlanListItem {
   id: number
   title: string
