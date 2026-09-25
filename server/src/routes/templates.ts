@@ -624,7 +624,7 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
     for (const platform of new Set(item.examples.map((ex) => ex.platform))) {
       const account = db
         .prepare(
-          'SELECT handle FROM platform_accounts WHERE user_id = ? AND platform = ? AND enabled = 1',
+          'SELECT handle FROM platform_accounts WHERE user_id = ? AND platform = ? AND enabled = 1 ORDER BY id LIMIT 1',
         )
         .get(DEFAULT_USER_ID, platform) as { handle: string } | undefined;
       if (!account) {

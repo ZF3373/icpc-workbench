@@ -117,21 +117,18 @@ export function scheduleAutoContinue(database: Db, platform: PlatformId, handle:
 }
 
 /**
- * 待执行的续拉是否仍对应当前绑定的账号（design §3.6 的前置条件「账号未变更」）。
+ * 待执行的续拉所绑定的账号是否仍存在且启用（多账号 v0.8：按 (platform, handle) 校验）。
  *
- * 为什么必须每轮复查：job 在注册时捕获 handle，而用户随时可能在设置页改绑
- * （routes/settings.ts 的 /accounts 会同时把 last_sync_at 置空）。若仍用旧 handle 跑一轮，
- * syncPlatform 的 handleChanged 判定为真 → 先建「重置前」备份、再把新账号该平台的提交全清空
- * 换成旧账号的数据，并在末尾把 platform_accounts.handle 改回旧 handle——用户刚做的改绑被静默回滚。
- * 因此 handle 不一致时直接丢弃该任务：不跑同步、不写游标、不写 sync_runs。
- *
- * 无账号记录时（假执行器注入的测试、数据库被重置等）不作废，交由 syncPlatform 自身处理。
+ * 为什么必须每轮复查：job 在注册时捕获 handle，而用户随时可能在设置页解绑/停用该账号。
+ * 若账号已被解绑（绑定行已删除）或停用后仍继续跑，syncPlatform 末尾的 upsert 会把
+ * 绑定行原样建回来/置回启用——用户刚做的解绑被静默回滚。因此账号不存在或已停用时
+ * 直接丢弃该任务：不跑同步、不写游标、不写 sync_runs。
  */
 function handleStillBound(database: Db, platform: PlatformId, handle: string): boolean {
   const row = database
-    .prepare('SELECT handle FROM platform_accounts WHERE user_id = ? AND platform = ?')
-    .get(DEFAULT_USER_ID, platform) as { handle: string } | undefined;
-  return row === undefined || row.handle === handle;
+    .prepare('SELECT enabled FROM platform_accounts WHERE user_id = ? AND platform = ? AND handle = ?')
+    .get(DEFAULT_USER_ID, platform, handle) as { enabled: number } | undefined;
+  return row !== undefined && row.enabled === 1;
 }
 
 async function runRound(platform: PlatformId): Promise<void> {

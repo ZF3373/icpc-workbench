@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Db } from '../db/index.ts';
 import { asyncHandler } from '../asyncHandler.ts';
-import { createBackup, listBackups, requestRestore } from '../backup.ts';
+import { createBackup, deleteBackup, listBackups, requestRestore } from '../backup.ts';
 
 export function backupsRoutes(db: Db): Router {
   const r = Router();
@@ -38,6 +38,18 @@ export function backupsRoutes(db: Db): Router {
       res.status(400).json({ error: (e as Error).message });
     }
   }));
+
+  // DELETE /api/backups/:name → 删除单个恢复点（连带其知识点伴生快照）。
+  // 已登记为待恢复目标的备份会被拒绝（避免重启后的恢复静默落空）。
+  r.delete('/:name', (req, res) => {
+    try {
+      deleteBackup(db, String(req.params.name));
+      res.json({ ok: true });
+    } catch (e) {
+      const msg = (e as Error).message;
+      res.status(msg.includes('不存在') ? 404 : 400).json({ error: msg });
+    }
+  });
 
   return r;
 }

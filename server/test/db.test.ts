@@ -50,12 +50,17 @@ test('seeds platforms and default user (me)', () => {
   assert.equal(user.username, 'me');
 });
 
-test('platform_accounts unique per (user, platform)', () => {
+test('platform_accounts unique per (user, platform, handle) — 多账号同平台可并存', () => {
   const ins = db.prepare(
     'INSERT INTO platform_accounts (user_id, platform, handle) VALUES (1, ?, ?)',
   );
   ins.run('codeforces', 'tourist');
-  assert.throws(() => ins.run('codeforces', 'another_handle'), /UNIQUE/);
+  ins.run('codeforces', 'another_handle'); // 同平台不同账号：允许多行（v0.8 多账号）
+  assert.throws(() => ins.run('codeforces', 'tourist'), /UNIQUE/); // 同平台同账号：拒绝
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS c FROM platform_accounts WHERE platform='codeforces'").get() as { c: number }).c,
+    2,
+  );
 });
 
 test('checkins references plan_tasks and cascades', () => {

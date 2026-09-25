@@ -19,7 +19,7 @@ import { localToday } from './dates.ts';
  *   audit.jsonl 有意不纳入：它是追加型审计日志而非状态，回滚它只会白丢排查线索。
  */
 
-export type BackupReason = 'manual' | 'daily' | 'pre-upgrade' | 'pre-import' | 'pre-reset';
+export type BackupReason = 'manual' | 'daily' | 'pre-upgrade' | 'pre-import' | 'pre-reset' | 'pre-account-delete';
 
 /** 各 reason 的保留份数：超出后从最旧开始清理 */
 const KEEP_PER_REASON: Record<BackupReason, number> = {
@@ -28,6 +28,7 @@ const KEEP_PER_REASON: Record<BackupReason, number> = {
   'pre-upgrade': 3,
   'pre-import': 3,
   'pre-reset': 3,
+  'pre-account-delete': 3,
 };
 /** 所有备份的总上限（兜底，防止磁盘无限膨胀） */
 const KEEP_TOTAL = 30;
@@ -156,6 +157,34 @@ export function listBackups(db: Db, dir?: string): BackupMeta[] {
 }
 
 const RESTORE_MARKER = 'restore-pending.json';
+
+/**
+ * 删除单个恢复点：删除备份文件本身并连带其知识点伴生快照（.knowledge.json）。
+ * FILE_RE 校验文件名（无路径分隔符，天然防目录穿越）；
+ * 已登记为待恢复目标的备份拒绝删除——否则重启后的恢复会静默落空。
+ */
+export function deleteBackup(db: Db, file: string, dir?: string): void {
+  const backupDir = backupDirFor(db, dir);
+  if (!FILE_RE.test(file)) throw new Error(`备份名称非法: ${file}`);
+  const target = path.join(backupDir, file);
+  if (!fs.existsSync(target)) throw new Error(`备份不存在: ${file}`);
+  const markerPath = path.join(path.dirname(backupDir), RESTORE_MARKER);
+  if (fs.existsSync(markerPath)) {
+    let pendingFile: string | null = null;
+    try {
+      const raw = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as { file?: string };
+      pendingFile = typeof raw.file === 'string' ? raw.file : null;
+    } catch {
+      // 标记损坏视为无待恢复目标（applyPendingRestore 也会忽略它）
+    }
+    if (pendingFile === file) {
+      throw new Error('该备份已登记为待恢复目标（重启后生效），不能删除；请先重启应用完成或取消恢复');
+    }
+  }
+  fs.rmSync(target, { force: true });
+  const snapshot = knowledgeSnapshotPath(backupDir, file);
+  if (fs.existsSync(snapshot)) fs.rmSync(snapshot, { force: true });
+}
 
 /**
  * 请求恢复：校验目标备份存在后写 restore-pending.json，重启时由

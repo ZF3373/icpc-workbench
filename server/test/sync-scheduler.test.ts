@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createDb } from '../src/db/index.ts';
+import { createDb, type Db } from '../src/db/index.ts';
 import { register } from '../src/adapters/registry.ts';
 import { syncPlatform } from '../src/adapters/sync.ts';
 import {
@@ -11,6 +11,11 @@ import {
   listAutoContinue,
   scheduleAutoContinue,
 } from '../src/adapters/syncScheduler.ts';
+
+/** 多账号 v0.8：调度器每轮校验绑定行存在且启用，测试先补绑定再注册续拉 */
+function bindAccount(db: Db, platform: string, handle: string): void {
+  db.prepare('INSERT INTO platform_accounts (user_id, platform, handle, enabled) VALUES (1, ?, ?, 1)').run(platform, handle);
+}
 
 function setup(runResults: boolean[]) {
   const db = createDb(':memory:');
@@ -36,6 +41,7 @@ test('续拉：默认 3 轮上限，按平台节奏排期，轮次耗尽后不�
   // （brief 原稿此处写 [true, true, false]，但原稿自身注释要求第 2 轮「自然结束」——第二轮取到的
   //   第二个 true 会继续排期，与断言的 listAutoContinue().length === 0 矛盾；按注释意图取 [true, false]。）
   const { db, timers, runs } = setup([true, false]);
+  bindAccount(db, 'luogu', '1892580');
   const st = scheduleAutoContinue(db, 'luogu', '1892580');
   assert.ok(st);
   assert.equal(st.maxRounds, 3);
@@ -75,6 +81,7 @@ test('续拉轮数设置与关闭（0 = 关）', () => {
 test('续拉：轮次耗尽（一直截断）后不再排期，共执行 maxRounds 轮', async () => {
   __resetSyncSchedulerForTest();
   const { db, timers, runs } = setup([true, true, true, true, true, true, true, true]);
+  bindAccount(db, 'codeforces', 'tourist');
   const st = scheduleAutoContinue(db, 'codeforces', 'tourist');
   assert.equal(st?.maxRounds, 3);
   assert.equal(timers[0].ms, 40_000); // CF 节奏
@@ -100,6 +107,7 @@ test('续拉：任一轮报错（鉴权/限流）立即停止，不再排期', a
       return { platform, handle, imported: 0, skipped: 0, errors: ['[jisuanke] 登录态已失效'], truncated: true };
     },
   });
+  bindAccount(db, 'jisuanke', 'u');
   scheduleAutoContinue(db, 'jisuanke', 'u');
   assert.equal(timers[0].ms, 180_000); // 计蒜客节奏
   await timers[0].fn();
@@ -392,6 +400,7 @@ test('sync 层：被互斥锁拒绝的重复触发不抢占待续拉队列（链
     run: (platform, handle) => syncPlatform(db, platform, handle, { triggeredBy: 'auto' }),
   });
 
+  bindAccount(db, 'codeforces', 'u');
   const st = scheduleAutoContinue(db, 'codeforces', 'u');
   assert.equal(listAutoContinue().length, 1);
   timers[0].fn(); // 第 1 轮开跑（内部持锁并卡在适配器；排期回调本身不返回 Promise）

@@ -11,6 +11,7 @@ import {
   InputNumber,
   List,
   Modal,
+  Popconfirm,
   Row,
   Col,
   Select,
@@ -24,7 +25,7 @@ import {
   Upload,
   App as AntdApp,
 } from 'antd'
-import { ApiOutlined, ImportOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, LinkOutlined, DatabaseOutlined } from '@ant-design/icons'
+import { ApiOutlined, DeleteOutlined, ImportOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, LinkOutlined, DatabaseOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
@@ -32,9 +33,10 @@ import { PLATFORMS, cookieFieldsOf } from '../../../shared/src/index.ts'
 import PageHeader from '../components/PageHeader'
 import { saveUrlAsFile } from '../download'
 import PlatformTag from '../components/PlatformTag'
-import { get, post } from '../api'
+import { del, get, post } from '../api'
 import { assembleCookie as assembleCookieHeader, buildCookieItem, extractCookieValue } from '../cookies'
 import { pct } from '../ui'
+import { relativeTimeText } from '../syncStatus'
 import { openExternal } from '../externalLinks'
 import { useTheme, type ThemePreference } from '../themeContext'
 import type { KnowledgeCompareReport, KnowledgeCoverage } from '../../../shared/src/index.ts'
@@ -118,9 +120,9 @@ export default function Settings() {
       .then((d) => {
         setData(d)
         aiForm.setFieldsValue({ ...d.ai, apiKey: '', timeoutMs: d.ai.timeoutMs ? d.ai.timeoutMs / 1000 : 120, maxTokens: Math.round((d.ai.maxTokens ?? 393216) / 1024), contextWindow: Math.round((d.ai.contextWindow ?? 1024000) / 1024), searchEngine: d.ai.searchEngine ?? 'tavily', searchApiKey: '' })
+        // 输入框只用于「添加新账号」，不回填已绑定 handle（多账号后一个平台可有多个绑定）
         const handles: Record<string, string> = {}
         const cookies: Record<string, Record<string, string>> = {}
-        for (const a of d.accounts) handles[a.platform] = a.handle
         // Cookie 不会回传到前端；保留空输入框，用户可显式更新或清除。
         setHandleInputs(handles)
         setCookieInputs(cookies)
@@ -207,6 +209,7 @@ export default function Settings() {
     }
   }
 
+  // 多账号：向平台追加绑定（同 handle 重复保存 = 重新启用，不影响其他账号与历史数据）
   const bindAccount = async (platform: PlatformId) => {
     const handle = handleInputs[platform]?.trim()
     if (!handle) {
@@ -215,7 +218,37 @@ export default function Settings() {
     }
     try {
       await post('/api/settings/accounts', { platform, handle })
-      message.success(`${PLATFORMS.find((p) => p.id === platform)?.name} 已绑定；请到「题目管理 → 导入 → 平台同步」填入同一用户名完成同步`)
+      message.success(`${PLATFORMS.find((p) => p.id === platform)?.name} 账号 ${handle} 已绑定；请到「题目管理 → 导入 → 平台同步」填入同一用户名完成同步`)
+      setHandleInputs((s) => ({ ...s, [platform]: '' }))
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  // 删除账号：连带删除该账号的全部提交记录；服务端删除前自动创建恢复点（备份），误删可找回
+  const removeAccount = async (platform: PlatformId, handle: string) => {
+    try {
+      const r = await post<{ deletedSubmissions: number; backupFile: string }>('/api/settings/accounts/remove', {
+        platform,
+        handle,
+      })
+      message.success(
+        r.deletedSubmissions > 0
+          ? `已删除账号 ${handle} 及其 ${r.deletedSubmissions} 条提交记录（恢复点已创建，可在「数据管理 → 备份与恢复」找回）`
+          : `账号 ${handle} 已删除`,
+        6,
+      )
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  // 单账号启停：停用后不参与同步，历史数据保留
+  const toggleAccountEnabled = async (platform: PlatformId, handle: string, enabled: boolean) => {
+    try {
+      await post('/api/settings/accounts/enabled', { platform, handle, enabled })
       load()
     } catch (e) {
       message.error((e as Error).message)
@@ -558,7 +591,8 @@ export default function Settings() {
             size="small"
             className="platform-collapse"
             items={data.platforms.map((p) => {
-              const account = data.accounts.find((a) => a.platform === p.id)
+              const platformAccounts = data.accounts.filter((a) => a.platform === p.id)
+              const account = platformAccounts.find((a) => a.enabled === 1) ?? platformAccounts[0]
               const enabled = data.adapterEnabled[p.id] !== false
               const syncNote =
                 p.sync === 'auto' ? '自动同步' : p.sync === 'cookie' ? '配置 Cookie 后自动同步' : '仅手动导入'
@@ -597,7 +631,12 @@ export default function Settings() {
                       <LinkOutlined className="platform-link-icon" />
                     </a>
                     <Tag color={SYNC_NOTE_COLOR[p.sync]}>{syncNote}</Tag>
-                    {account && <span className="bound-info">已绑定 {account.handle}</span>}
+                    {platformAccounts.length > 0 && (
+                      <span className="bound-info">
+                        已绑定 {platformAccounts.slice(0, 2).map((a) => a.handle).join('、')}
+                        {platformAccounts.length > 2 ? ` 等 ${platformAccounts.length} 个` : ''}
+                      </span>
+                    )}
                   </Space>
                 ),
                 extra: (
@@ -613,15 +652,62 @@ export default function Settings() {
                 ),
                 children: (
                   <>
+                    {/* 已绑定账号列表（多账号）：同平台可并存多个账号，各账号提交隔离保留 */}
+                    {platformAccounts.length > 0 && (
+                      <div style={{ marginBottom: 10 }}>
+                        {platformAccounts.map((a) => (
+                          <div
+                            key={a.handle}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 10,
+                              padding: '4px 0',
+                              opacity: a.enabled === 1 ? 1 : 0.55,
+                            }}
+                          >
+                            <b style={{ minWidth: 120 }}>{a.handle}</b>
+                            <span className="mono" style={{ fontSize: 12, color: '#8993a2' }}>
+                              {a.last_sync_at ? `上次同步 ${relativeTimeText(a.last_sync_at)}` : '从未同步'}
+                            </span>
+                            <span style={{ flex: 1 }} />
+                            <span style={{ fontSize: 12, color: '#8993a2' }}>参与同步</span>
+                            <Switch
+                              size="small"
+                              checked={a.enabled === 1}
+                              onChange={(v) => void toggleAccountEnabled(p.id, a.handle, v)}
+                            />
+                            <Popconfirm
+                              title={`删除账号 ${a.handle}`}
+                              description="将同时删除该账号的全部提交记录；删除前自动创建恢复点，误删可在「数据管理 → 备份与恢复」找回。"
+                              okText="删除"
+                              cancelText="取消"
+                              onConfirm={() => void removeAccount(p.id, a.handle)}
+                            >
+                              <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                            </Popconfirm>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <Space wrap>
                       <Input
                         placeholder={p.id === 'codeforces' ? 'CF handle' : '用户名 / uid'}
                         style={{ width: 200 }}
                         value={handleInputs[p.id] ?? ''}
+                        onPressEnter={() => void bindAccount(p.id)}
                         onChange={(e) => setHandleInputs((s) => ({ ...s, [p.id]: e.target.value }))}
                       />
-                      <Button onClick={() => bindAccount(p.id)}>保存</Button>
+                      <Button onClick={() => void bindAccount(p.id)}>
+                        {platformAccounts.length > 0 ? '添加账号' : '绑定'}
+                      </Button>
                     </Space>
+                    <p style={{ margin: '8px 0 0', color: '#8993a2', fontSize: 12 }}>
+                      同一平台可绑定多个账号（如大号 + 小号），各账号提交记录隔离保留、互不覆盖；
+                      删除账号会连带删除其提交记录，删除前自动创建恢复点，可在「数据管理 → 备份与恢复」找回。
+                      单次同步会依次拉取所有启用账号。
+                      {p.sync === 'cookie' && ' 需登录平台（Cookie 类）各账号共用平台级 Cookie，请以当前登录账号为准。'}
+                    </p>
                     {p.sync === 'cookie' && (
                       <div style={{ marginTop: 10 }}>
                         {/* Cookie 原文不回传前端，输入框恒为空；服务端只回传逐对打码版（masked），
@@ -1216,14 +1302,25 @@ function BackupCard() {
     })
   }
 
+  // 删除单个恢复点（连带其知识点伴生快照）：避免长期使用后备份堆积占用磁盘
+  const removeBackup = async (b: BackupItem) => {
+    try {
+      await del(`/api/backups/${encodeURIComponent(b.file)}`)
+      message.success(`已删除恢复点 ${b.file}`)
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
   return (
     <Card title={<span className="settings-section-title"><DatabaseOutlined />备份与恢复点</span>} size="small">
-      <Space style={{ marginBottom: 8 }}>
+      <Space style={{ marginBottom: 8 }} wrap>
         <Button onClick={() => void createNow()} loading={creating}>
           立即备份
         </Button>
         <span style={{ color: '#8993a2', fontSize: 12 }}>
-          自动备份时机：每日首次启动、应用升级前、大批量导入前、换账号重置前；恢复需重启应用生效。
+          自动备份时机：每日首次启动、应用升级前、大批量导入前、换账号重置前；恢复需重启应用生效；备份可手动删除。
         </span>
       </Space>
       <List
@@ -1234,9 +1331,19 @@ function BackupCard() {
         renderItem={(b) => (
           <List.Item
             actions={[
-              <Button key="restore" size="small" danger onClick={() => confirmRestore(b)}>
+              <Button key="restore" size="small" color="green" variant="outlined" onClick={() => confirmRestore(b)}>
                 恢复
               </Button>,
+              <Popconfirm
+                key="delete"
+                title="删除此备份？"
+                description="将删除备份文件及其知识点快照，删除后不可找回。"
+                okText="删除"
+                cancelText="取消"
+                onConfirm={() => void removeBackup(b)}
+              >
+                <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+              </Popconfirm>,
             ]}
           >
             <Space size={8} wrap>

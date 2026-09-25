@@ -26,13 +26,14 @@ export function normalizeLanguageCell(v: string | number | null | undefined): st
 /**
  * 将统一 Submission 结构写入数据库（单事务）：
  * - problems 按 (platform, problem_key) upsert（标题/难度/链接/tags 更新）
- * - submissions 按 (user_id, platform, external_id) INSERT OR IGNORE 去重
- * - opts.clearPlatform：先删除该平台旧提交再插入（换账号场景，保证原子性）
+ * - submissions 按 (user_id, platform, account, external_id) INSERT OR IGNORE 去重
+ * - opts.account：归属账号 handle（多账号隔离）；省略 = 手动导入等无账号来源（account NULL）
+ * - opts.clearPlatform：先删除该平台旧提交再插入（保留给显式重置场景；多账号同步不再清库）
  * 供平台同步与手动导入共用。
  *
  * 删除墓碑（deleted_problems，见 schema.sql）：同步来源命中墓碑 → 题目与提交一起跳过，
  * 被用户删掉的题不会被下次同步原样复活；手动导入（externalId manual:）视为显式找回，
- * 清墓碑后照常入库；clearPlatform 换账号重置连同该平台墓碑一起清空。
+ * 清墓碑后照常入库；clearPlatform 重置连同该平台墓碑一起清空。
  * 「命中」的口径（精确同键 / 等价类是否还剩活行）见 tombstones.ts，与题库入库共用一份。
  *
  * 难度与标签的统一策略见 problemWritePolicy.ts：
@@ -43,27 +44,29 @@ export function insertNormalized(
   db: Db,
   userId: number,
   subs: NormalizedSubmission[],
-  opts: { clearPlatform?: PlatformId } = {},
+  opts: { account?: string | null; clearPlatform?: PlatformId } = {},
 ): InsertResult {
   const upsertSync = db.prepare(problemUpsertSql('sync'));
   const upsertManual = db.prepare(problemUpsertSql('manual'));
+  // 空串 = 无账号来源（手动导入/本地）；不用 NULL——UNIQUE 约束视 NULL 互异，会破坏按键去重
+  const account = opts.account ?? '';
   const insertSub = db.prepare(
     `INSERT OR IGNORE INTO submissions
-       (user_id, platform, problem_id, verdict, language, submitted_at, external_id, context)
-     VALUES (?, ?, (SELECT id FROM problems WHERE platform = ? AND problem_key = ?), ?, ?, ?, ?, ?)`,
+       (user_id, platform, account, problem_id, verdict, language, submitted_at, external_id, context)
+     VALUES (?, ?, ?, (SELECT id FROM problems WHERE platform = ? AND problem_key = ?), ?, ?, ?, ?, ?)`,
   );
-  // 老行回填语境：INSERT OR IGNORE 会跳过已存在的外部提交号，而 context 列是后加的
+  // 老行回填语境：INSERT OR IGNORE 会跳过已存在的同账号提交号，而 context 列是后加的
   //（历史行全为 NULL）。同步数据天然重复出现，跳过插入时顺手把语境补上，下次同步即完成回填。
   const backfillContext = db.prepare(
     `UPDATE submissions SET context = ?
-       WHERE user_id = ? AND platform = ? AND external_id = ? AND context IS NULL`,
+       WHERE user_id = ? AND platform = ? AND account = ? AND external_id = ? AND context IS NULL`,
   );
-  // 平台侧改判刷新：同提交号再次同步时 verdict 若有变化（评测中→终态、平台重判等），
+  // 平台侧改判刷新：同账号同提交号再次同步时 verdict 若有变化（评测中→终态、平台重判等），
   // 更新既有行——verdict 以平台数据为准。没有这条路径，「评测中曾被落库为 WA/SKIPPED」的提交
   // 会被 INSERT OR IGNORE 永久冻结在旧判定上（该行的真实结果永远进不了库）。
   const refreshVerdict = db.prepare(
     `UPDATE submissions SET verdict = ?
-       WHERE user_id = ? AND platform = ? AND external_id = ? AND verdict IS NOT ?`,
+       WHERE user_id = ? AND platform = ? AND account = ? AND external_id = ? AND verdict IS NOT ?`,
   );
   const findProblem = db.prepare('SELECT id, title, tags FROM problems WHERE platform = ? AND problem_key = ?');
   // 墓碑匹配口径（含「等价类还有活行时只挡精确同键」）见 tombstones.ts：与题库入库共用一份
@@ -89,7 +92,7 @@ export function insertNormalized(
         userId,
         opts.clearPlatform,
       );
-      // 换账号是全平台重置：旧账号留下的删除墓碑一并清空，否则新账号的提交会被静默丢弃
+      // 全平台重置：旧数据留下的删除墓碑一并清空，否则后续提交会被静默丢弃
       db.prepare('DELETE FROM deleted_problems WHERE platform = ?').run(opts.clearPlatform);
       tombstones.forget(opts.clearPlatform);
     }
@@ -146,6 +149,7 @@ export function insertNormalized(
       const r = insertSub.run(
         userId,
         s.problem.platform,
+        account,
         s.problem.platform,
         s.problem.problemKey,
         s.verdict,
@@ -157,11 +161,11 @@ export function insertNormalized(
       if (r.changes > 0) imported += 1;
       else {
         skipped += 1;
-        // 已存在的外部提交号：补语境列（见 backfillContext 注释）并检测平台侧改判
-        if (s.context) backfillContext.run(s.context, userId, s.problem.platform, s.externalId);
+        // 已存在的同账号提交号：补语境列（见 backfillContext 注释）并检测平台侧改判
+        if (s.context) backfillContext.run(s.context, userId, s.problem.platform, account, s.externalId);
         if (
           refreshVerdict
-            .run(s.verdict, userId, s.problem.platform, s.externalId, s.verdict)
+            .run(s.verdict, userId, s.problem.platform, account, s.externalId, s.verdict)
             .changes > 0
         ) {
           // verdict 实际变化：计入 imported（一次有效写入），同步中心可见

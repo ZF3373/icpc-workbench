@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createDb, type Db } from '../src/db/index.ts';
 import { settingsRoutes } from '../src/routes/settings.ts';
 import { DEFAULT_CONFIG } from '../src/config.ts';
@@ -25,9 +28,9 @@ async function withServer(fn: (db: Db, base: string) => Promise<void>): Promise<
   }
 }
 
-test('rebinding account to a new handle resets last_sync_at (forces full re-sync)', async () => {
+test('binding a new handle on a bound platform adds a second account, existing data untouched', async () => {
   await withServer(async (db, base) => {
-    // 模拟旧账号已同步成功过
+    // 模拟旧账号已同步成功过（多账号 v0.8：新绑定不再替换/清空旧账号）
     db.prepare(
       `INSERT INTO platform_accounts (user_id, platform, handle, last_sync_at, enabled)
        VALUES (?, 'codeforces', 'alice', ?, 1)`,
@@ -40,19 +43,22 @@ test('rebinding account to a new handle resets last_sync_at (forces full re-sync
     });
     assert.equal(res.status, 200);
 
-    const acc = db
-      .prepare("SELECT handle, last_sync_at FROM platform_accounts WHERE platform = 'codeforces'")
-      .get() as { handle: string; last_sync_at: string | null };
-    assert.equal(acc.handle, 'bob');
-    assert.equal(acc.last_sync_at, null); // 重置 → 下次同步全量重拉并清空旧数据
+    const rows = db
+      .prepare('SELECT handle, last_sync_at, enabled FROM platform_accounts WHERE platform = ? ORDER BY id')
+      .all('codeforces') as Array<{ handle: string; last_sync_at: string | null; enabled: number }>;
+    assert.equal(rows.length, 2, '同平台两个账号并存');
+    assert.deepEqual(rows.map((r) => r.handle), ['alice', 'bob']);
+    assert.equal(rows[0]!.last_sync_at, '2026-01-01T00:00:00.000Z', '旧账号增量起点不动');
+    assert.equal(rows[1]!.last_sync_at, null, '新账号从未同步 → 下次全量');
+    assert.equal(rows[1]!.enabled, 1);
   });
 });
 
-test('rebinding the same handle keeps last_sync_at (no forced re-sync)', async () => {
+test('rebinding the same handle keeps last_sync_at (re-enables only)', async () => {
   await withServer(async (db, base) => {
     db.prepare(
       `INSERT INTO platform_accounts (user_id, platform, handle, last_sync_at, enabled)
-       VALUES (?, 'codeforces', 'alice', ?, 1)`,
+       VALUES (?, 'codeforces', 'alice', ?, 0)`,
     ).run(DEFAULT_USER_ID, '2026-01-01T00:00:00.000Z');
 
     const res = await fetch(`${base}/accounts`, {
@@ -63,9 +69,10 @@ test('rebinding the same handle keeps last_sync_at (no forced re-sync)', async (
     assert.equal(res.status, 200);
 
     const acc = db
-      .prepare("SELECT last_sync_at FROM platform_accounts WHERE platform = 'codeforces'")
-      .get() as { last_sync_at: string | null };
+      .prepare("SELECT last_sync_at, enabled FROM platform_accounts WHERE platform = 'codeforces'")
+      .get() as { last_sync_at: string | null; enabled: number };
     assert.equal(acc.last_sync_at, '2026-01-01T00:00:00.000Z'); // 增量起点保留
+    assert.equal(acc.enabled, 1); // 重复绑定 = 重新启用
   });
 });
 
@@ -83,6 +90,124 @@ test('first-time binding creates account with null last_sync_at', async () => {
     assert.equal(acc.handle, 'newbie');
     assert.equal(acc.last_sync_at, null);
   });
+});
+
+test('disable / re-enable an account', async () => {
+  await withServer(async (db, base) => {
+    await fetch(`${base}/accounts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'alice' }),
+    });
+
+    // 停用 → 不参与同步，但绑定行与历史都在
+    const off = await fetch(`${base}/accounts/enabled`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'alice', enabled: false }),
+    });
+    assert.equal(off.status, 200);
+    const acc = db
+      .prepare("SELECT enabled FROM platform_accounts WHERE platform = 'codeforces'")
+      .get() as { enabled: number };
+    assert.equal(acc.enabled, 0);
+
+    // 非法 body → 400
+    const bad = await fetch(`${base}/accounts/enabled`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'alice', enabled: 'yes' }),
+    });
+    assert.equal(bad.status, 400);
+
+    // 重新启用
+    const on = await fetch(`${base}/accounts/enabled`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'alice', enabled: true }),
+    });
+    assert.equal(on.status, 200);
+  });
+});
+
+test('remove account deletes its submissions, creates a restore point, other accounts untouched', async () => {
+  // 删除前要创建恢复点（VACUUM INTO 需要文件路径），用临时文件库
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'icpc-acct-'));
+  const db = createDb(path.join(dir, 'icpc.db'));
+  const app = express();
+  app.use(express.json());
+  app.use('/api/settings', settingsRoutes(db, DEFAULT_CONFIG));
+  const srv = app.listen(0);
+  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/settings`;
+  try {
+    await fetch(`${base}/accounts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'alice' }),
+    });
+    await fetch(`${base}/accounts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'bob' }),
+    });
+    db.prepare(
+      `INSERT INTO problems (platform, problem_key, title) VALUES ('codeforces', '1919A', 'T 1919A')`,
+    ).run();
+    const insSub = db.prepare(
+      `INSERT INTO submissions (user_id, platform, account, problem_id, verdict, submitted_at, external_id)
+       VALUES (?, 'codeforces', ?, (SELECT id FROM problems WHERE platform='codeforces' AND problem_key='1919A'), 'AC', '2026-01-01T00:00:00.000Z', ?)`,
+    );
+    insSub.run(DEFAULT_USER_ID, 'alice', 'e-alice-1');
+    insSub.run(DEFAULT_USER_ID, 'alice', 'e-alice-2');
+    insSub.run(DEFAULT_USER_ID, 'bob', 'e-bob-1');
+    insSub.run(DEFAULT_USER_ID, '', 'manual-1'); // 手动导入（无账号来源）
+
+    // 删除 alice：绑定行与 alice 的 2 条提交一起删除；bob 与手动导入保留
+    const rm = await fetch(`${base}/accounts/remove`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'alice' }),
+    });
+    assert.equal(rm.status, 200);
+    const body = (await rm.json()) as { ok: boolean; deletedSubmissions: number; backupFile: string };
+    assert.equal(body.ok, true);
+    assert.equal(body.deletedSubmissions, 2);
+    assert.ok(body.backupFile.includes('pre-account-delete'));
+    assert.ok(fs.existsSync(path.join(dir, 'backups', body.backupFile)), '恢复点文件应存在');
+
+    const handles = db
+      .prepare('SELECT handle FROM platform_accounts WHERE platform = ? ORDER BY id')
+      .all('codeforces') as Array<{ handle: string }>;
+    assert.deepEqual(handles.map((h) => h.handle), ['bob']);
+    assert.equal(
+      (db.prepare("SELECT COUNT(*) AS c FROM submissions WHERE account = 'alice'").get() as { c: number }).c,
+      0,
+      'alice 的提交记录已删除',
+    );
+    assert.equal(
+      (db.prepare("SELECT COUNT(*) AS c FROM submissions WHERE account = 'bob'").get() as { c: number }).c,
+      1,
+      'bob 的提交记录不受影响',
+    );
+    assert.equal(
+      (db.prepare("SELECT COUNT(*) AS c FROM submissions WHERE account = ''").get() as { c: number }).c,
+      1,
+      '手动导入（无账号来源）不受影响',
+    );
+
+    // 删除不存在的账号 → 404
+    const rm2 = await fetch(`${base}/accounts/remove`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'ghost' }),
+    });
+    assert.equal(rm2.status, 404);
+  } finally {
+    srv.close();
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ---------- Cookie 检测接口 ----------

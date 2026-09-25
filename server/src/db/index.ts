@@ -84,6 +84,13 @@ function migrate(db: Db): void {
   // 能力值算法据此区分赛场 AC 与赛后补题，补题/练习题降权
   const submissionCols = columnsOf('submissions');
   if (!submissionCols.has('context')) db.exec('ALTER TABLE submissions ADD COLUMN context TEXT');
+  // v0.8: 多账号支持——submissions 增加 account 列且唯一键扩为 (user_id, platform, account, external_id)；
+  // platform_accounts 唯一键从 (user_id, platform) 扩为 (user_id, platform, handle)。
+  // SQLite 无法修改约束，两表都需要重建（先补 context 列再重建，保证老库两步迁移一步到位）。
+  if (!submissionCols.has('account')) rebuildSubmissionsForMultiAccount(db);
+  rebuildAccountsForMultiAccount(db);
+  // 按账号增量过滤的索引：新库（schema 已有 account）与迁移后的老库都在这里补齐
+  db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_account ON submissions(user_id, platform, account)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_deleted_problems_norm ON deleted_problems(platform, normalized_key)');
   mergeSlashedCfKeys(db);
   // v0.4.5 数据修复：洛谷秒级时间戳曾被按毫秒解析（见 fixLuoguTimestamps）
@@ -214,6 +221,127 @@ function fixLuoguLanguageIds(db: Db): void {
     throw e;
   }
   if (fixed > 0) console.log(`[migrate] 已归一 ${fixed} 条洛谷 language（数字 langId 去掉 ".0" 尾巴）`);
+}
+
+/**
+ * v0.8 多账号迁移（一）：submissions 增加 account 列并把唯一键扩为
+ * (user_id, platform, account, external_id)——不同账号的平台侧提交号互不冲突，
+ * 各账号数据按账号隔离共存；老库的存量提交归属当时唯一绑定的账号（无绑定为 NULL）。
+ * SQLite 无法修改约束，按「建新表 → 迁数据 → 换名」重建；索引随旧表删除后重建。
+ */
+function rebuildSubmissionsForMultiAccount(db: Db): void {
+  db.exec(`
+    CREATE TABLE submissions_new (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id      INTEGER NOT NULL REFERENCES users(id),
+      platform     TEXT NOT NULL REFERENCES platforms(id),
+      account      TEXT NOT NULL DEFAULT '',
+      problem_id   INTEGER NOT NULL REFERENCES problems(id),
+      verdict      TEXT NOT NULL,
+      language     TEXT,
+      submitted_at TEXT NOT NULL,
+      external_id  TEXT,
+      context      TEXT,
+      UNIQUE (user_id, platform, account, external_id)
+    )`);
+  // 老数据的归属：该平台当前唯一绑定的 handle（多账号上线前每平台至多一个账号，
+  // 库中提交即它的数据）；平台从未绑定过账号（仅手动导入）则为空串 ''（无账号来源）。
+  const handleByPlatform = new Map<string, string>(
+    (
+      db.prepare('SELECT platform, handle FROM platform_accounts').all() as Array<{
+        platform: string;
+        handle: string;
+      }>
+    ).map((r) => [r.platform, r.handle]),
+  );
+  const rows = db
+    .prepare(
+      'SELECT id, user_id, platform, problem_id, verdict, language, submitted_at, external_id, context FROM submissions',
+    )
+    .all() as Array<{
+    id: number;
+    user_id: number;
+    platform: string;
+    problem_id: number;
+    verdict: string;
+    language: string | null;
+    submitted_at: string;
+    external_id: string | null;
+    context: string | null;
+  }>;
+  const ins = db.prepare(
+    `INSERT INTO submissions_new
+       (id, user_id, platform, account, problem_id, verdict, language, submitted_at, external_id, context)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) {
+      ins.run(
+        r.id,
+        r.user_id,
+        r.platform,
+        handleByPlatform.get(r.platform) ?? '',
+        r.problem_id,
+        r.verdict,
+        r.language,
+        r.submitted_at,
+        r.external_id,
+        r.context,
+      );
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  db.exec('DROP TABLE submissions');
+  db.exec('ALTER TABLE submissions_new RENAME TO submissions');
+  // 索引随旧表一起被 DROP，按新口径重建（与 schema.sql 保持一致）
+  db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_platform ON submissions(user_id, platform)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_problem ON submissions(problem_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_time ON submissions(user_id, submitted_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_account ON submissions(user_id, platform, account)');
+}
+
+/**
+ * v0.8 多账号迁移（二）：platform_accounts 唯一键从 (user_id, platform) 扩为
+ * (user_id, platform, handle)，同一平台可绑定多个账号。小表，直接整表重建。
+ */
+function rebuildAccountsForMultiAccount(db: Db): void {
+  // 仅老库需要重建：检查唯一索引的列组合（新库 schema.sql 已是新约束）
+  const indexes = db.prepare("PRAGMA index_list('platform_accounts')").all() as Array<{
+    name: string;
+    unique: number;
+    origin: string;
+  }>;
+  const isOldUnique = indexes.some((idx) => {
+    if (idx.unique !== 1 || idx.origin !== 'u') return false;
+    const cols = (
+      db.prepare(`PRAGMA index_info(${idx.name})`).all() as Array<{ name: string }>
+    ).map((c) => c.name);
+    return cols.length === 2 && cols.includes('user_id') && cols.includes('platform');
+  });
+  if (!isOldUnique) return;
+  db.exec(`
+    CREATE TABLE platform_accounts_new (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id         INTEGER NOT NULL REFERENCES users(id),
+      platform        TEXT NOT NULL REFERENCES platforms(id),
+      handle          TEXT NOT NULL,
+      last_sync_at    TEXT,
+      enabled         INTEGER NOT NULL DEFAULT 1,
+      sync_truncated  INTEGER NOT NULL DEFAULT 0,
+      backfill_page   INTEGER,
+      UNIQUE (user_id, platform, handle)
+    )`);
+  db.exec(`
+    INSERT INTO platform_accounts_new
+      (id, user_id, platform, handle, last_sync_at, enabled, sync_truncated, backfill_page)
+    SELECT id, user_id, platform, handle, last_sync_at, enabled, sync_truncated, backfill_page
+      FROM platform_accounts`);
+  db.exec('DROP TABLE platform_accounts');
+  db.exec('ALTER TABLE platform_accounts_new RENAME TO platform_accounts');
 }
 
 /**

@@ -91,7 +91,7 @@ test('manual-required error becomes guidance in errors, no account created', asy
   assert.equal(acc.c, 0);
 });
 
-test('switching handle clears old submissions and does full sync', async () => {
+test('second account sync coexists with the first (no clearing, full mode for new account)', async () => {
   makeFake([sub('1919A', 'e1'), sub('1919B', 'e2')]);
   await syncPlatform(db, 'codeforces', 'alice');
   const before = db.prepare('SELECT COUNT(*) AS c FROM submissions').get() as { c: number };
@@ -100,17 +100,22 @@ test('switching handle clears old submissions and does full sync', async () => {
   makeFake([sub('2048A', 'x1'), sub('2048B', 'x2')]);
   const result = await syncPlatform(db, 'codeforces', 'bob');
   assert.equal(result.imported, 2);
-  assert.equal(fakeCalls[0].since, undefined); // 换账号全量重拉
-  // 旧账号数据已清空，只剩新账号的 2 条
+  assert.equal(fakeCalls.at(-1)!.since, undefined); // 新账号从未同步 → 全量重拉
+  // 多账号（v0.8）：两个账号的数据按 account 隔离共存，不再有任何清库路径
   const rows = db
     .prepare(
-      `SELECT p.problem_key FROM submissions s JOIN problems p ON s.problem_id = p.id
-       ORDER BY p.problem_key`,
+      `SELECT s.account, p.problem_key FROM submissions s JOIN problems p ON s.problem_id = p.id
+       ORDER BY s.account, p.problem_key`,
     )
-    .all() as Array<{ problem_key: string }>;
-  assert.deepEqual(rows.map((r) => r.problem_key), ['2048A', '2048B']);
-  const acc = db.prepare("SELECT handle FROM platform_accounts WHERE platform='codeforces'").get() as { handle: string };
-  assert.equal(acc.handle, 'bob');
+    .all() as Array<{ account: string | null; problem_key: string }>;
+  assert.deepEqual(
+    rows.map((r) => `${r.account}:${r.problem_key}`),
+    ['alice:1919A', 'alice:1919B', 'bob:2048A', 'bob:2048B'],
+  );
+  const handles = db
+    .prepare("SELECT handle FROM platform_accounts WHERE platform='codeforces' ORDER BY id")
+    .all() as Array<{ handle: string }>;
+  assert.deepEqual(handles.map((h) => h.handle), ['alice', 'bob']);
 });
 
 test('sync injects cookie/csrf from settings into adapter', async () => {
@@ -122,18 +127,23 @@ test('sync injects cookie/csrf from settings into adapter', async () => {
   assert.equal(fakeCalls[0].csrf, 'tok123');
 });
 
-test('sync failure keeps old data when handle changed', async () => {
+test('sync failure keeps all accounts data intact', async () => {
   makeFake([sub('1919A', 'e1')]);
   await syncPlatform(db, 'codeforces', 'alice');
-  // 换账号但拉取失败：不得清空旧数据（原子性）
+  // 另一账号同步失败：不得影响任何已有数据（原子性）
   makeFake([], 'manual-required');
   const result = await syncPlatform(db, 'codeforces', 'bob');
   assert.equal(result.errors.length, 1);
   const c = db.prepare('SELECT COUNT(*) AS c FROM submissions').get() as { c: number };
   assert.equal(c.c, 1);
+  const accs = db
+    .prepare("SELECT handle FROM platform_accounts WHERE platform='codeforces' ORDER BY id")
+    .all() as Array<{ handle: string }>;
+  // bob 同步失败（manual-required）→ 不建绑定行；alice 绑定不受影响
+  assert.deepEqual(accs.map((h) => h.handle), ['alice']);
 });
 
-test('switching to account with zero submissions clears old data', async () => {
+test('new account with zero submissions binds without touching other accounts', async () => {
   makeFake([sub('1919A', 'e1')]);
   await syncPlatform(db, 'codeforces', 'alice');
   makeFake([]); // 新账号确实无提交（适配器正常返回空）
@@ -141,25 +151,33 @@ test('switching to account with zero submissions clears old data', async () => {
   assert.equal(result.imported, 0);
   assert.equal(result.errors.length, 0);
   const c = db.prepare('SELECT COUNT(*) AS c FROM submissions').get() as { c: number };
-  assert.equal(c.c, 0); // 旧账号数据被清空
+  assert.equal(c.c, 1, '其他账号数据保留');
+  const accs = db
+    .prepare("SELECT handle FROM platform_accounts WHERE platform='codeforces' ORDER BY id")
+    .all() as Array<{ handle: string }>;
+  assert.deepEqual(accs.map((h) => h.handle), ['alice', 'empty']);
 });
 
-test('rebound account (settings handle change, last_sync_at NULL) does full sync + clears old data', async () => {
+test('rebound account (fresh row, last_sync_at NULL) does full sync without clearing', async () => {
   makeFake([sub('1919A', 'e1')]);
   await syncPlatform(db, 'codeforces', 'alice');
-  // 模拟设置页改绑：handle 已更新但 last_sync_at 被重置为 NULL
-  db.prepare("UPDATE platform_accounts SET handle = 'alice2', last_sync_at = NULL WHERE platform = 'codeforces'").run();
+  // 模拟解绑后重绑：新绑定行 last_sync_at 为 NULL，但历史提交保留（account = alice）
+  db.prepare("DELETE FROM platform_accounts WHERE handle = 'alice'").run();
+  db.prepare(
+    "INSERT INTO platform_accounts (user_id, platform, handle, enabled) VALUES (1, 'codeforces', 'alice', 1)",
+  ).run();
   makeFake([sub('2048A', 'x1')]);
-  const result = await syncPlatform(db, 'codeforces', 'alice2');
+  const result = await syncPlatform(db, 'codeforces', 'alice');
   assert.equal(result.imported, 1);
-  assert.equal(fakeCalls[0].since, undefined); // 全量重拉而非沿用旧起点
+  assert.equal(fakeCalls.at(-1)!.since, undefined); // 全量重拉而非沿用旧起点
   const rows = db
     .prepare(
       `SELECT p.problem_key FROM submissions s JOIN problems p ON s.problem_id = p.id
        ORDER BY p.problem_key`,
     )
     .all() as Array<{ problem_key: string }>;
-  assert.deepEqual(rows.map((r) => r.problem_key), ['2048A']); // 旧账号数据被清空
+  // 旧账号历史保留（account 相同去重兜底），新拉数据照常入库
+  assert.deepEqual(rows.map((r) => r.problem_key), ['1919A', '2048A']);
 });
 
 test('disabled platform is skipped via settings', async () => {
@@ -318,16 +336,16 @@ test('sync.maxSubmissions above upper bound 1500 falls back to default 300', asy
   assert.equal(seenMax, 300);
 });
 
-test('switching handle resets backfill state (full sync, no backfill)', async () => {
+test('backfill state is per account: another account full sync does not resume or reset it', async () => {
   // 先建立一个截断状态
   makeTruncatingFake([sub('1919A', 'e1')], 1);
   await syncPlatform(db, 'codeforces', 'alice');
   const acc1 = db.prepare(
-    "SELECT sync_truncated FROM platform_accounts WHERE platform='codeforces'",
+    "SELECT sync_truncated FROM platform_accounts WHERE platform='codeforces' AND handle='alice'",
   ).get() as { sync_truncated: number };
   assert.equal(acc1.sync_truncated, 1);
 
-  // 换账号：应全量重拉，不注入 backfill
+  // 另一账号首次同步：全量重拉，不注入 backfill，也不动 alice 的补全游标
   let seenBackfill: boolean | undefined;
   const fake: PlatformAdapter = {
     platform: 'codeforces',
@@ -342,11 +360,15 @@ test('switching handle resets backfill state (full sync, no backfill)', async ()
   };
   register(fake);
   await syncPlatform(db, 'codeforces', 'bob');
-  assert.equal(seenBackfill, undefined); // 换账号不补全
-  const acc2 = db.prepare(
-    "SELECT sync_truncated FROM platform_accounts WHERE platform='codeforces'",
+  assert.equal(seenBackfill, undefined); // 新账号全量，不补全
+  const aliceTruncated = db.prepare(
+    "SELECT sync_truncated FROM platform_accounts WHERE platform='codeforces' AND handle='alice'",
   ).get() as { sync_truncated: number };
-  assert.equal(acc2.sync_truncated, 0); // 新账号全量完成，无截断
+  assert.equal(aliceTruncated.sync_truncated, 1, 'alice 的补全游标不受其他账号同步影响');
+  const acc2 = db.prepare(
+    "SELECT sync_truncated FROM platform_accounts WHERE platform='codeforces' AND handle='bob'",
+  ).get() as { sync_truncated: number };
+  assert.equal(acc2.sync_truncated, 0); // bob 全量完成，无截断
 });
 
 test('knownIdsFilter adapter receives known external ids and marks incremental', async () => {
@@ -431,7 +453,7 @@ test('POST /api/sync/all syncs every bound account and reports incremental', asy
     assert.deepEqual(body.results.map((r) => r.platform).sort(), ['atcoder', 'codeforces']);
     for (const r of body.results) {
       assert.equal(r.imported, 1);
-      assert.equal(r.incremental, undefined); // 首刷全量，不标增量
+      assert.ok(!r.incremental, '首刷全量，不标增量');
       assert.ok(typeof r.durationMs === 'number');
     }
   } finally {

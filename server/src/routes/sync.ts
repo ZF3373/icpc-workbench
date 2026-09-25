@@ -83,10 +83,12 @@ export function syncRoutes(db: Db): Router {
 
   // GET /api/sync/status → 每个绑定平台的健康状态、最近一次同步摘要与后台续拉状态
   // autoContinue：该平台的待执行续拉（round/maxRounds/nextAt/running），无排期时为 null
+  // 多账号（v0.8）：accounts 列出该平台全部绑定（handle/enabled/lastSyncAt）；
+  // handle/lastSyncAt 字段保留为第一个启用账号的值，兼容旧前端。
   r.get('/status', (_req, res) => {
     const accounts = db
       .prepare(
-        'SELECT platform, handle, last_sync_at, enabled FROM platform_accounts WHERE user_id = ? ORDER BY platform',
+        'SELECT platform, handle, last_sync_at, enabled FROM platform_accounts WHERE user_id = ? ORDER BY platform, id',
       )
       .all(DEFAULT_USER_ID) as Array<{ platform: string; handle: string; last_sync_at: string | null; enabled: number }>;
     const latestStmt = db.prepare(
@@ -100,12 +102,19 @@ export function syncRoutes(db: Db): Router {
         // 否则 toSyncRun(undefined) 直接抛异常 → 整个 /status 变成 500（前端同步中心白屏）
         const latestRow = latestStmt.get(DEFAULT_USER_ID, p.id) as unknown as SyncRunRow | undefined;
         const latest = latestRow === undefined ? null : toSyncRun(latestRow);
+        const platformAccounts = accounts.filter((a) => a.platform === p.id);
+        const primary = platformAccounts.find((a) => a.enabled === 1) ?? platformAccounts[0]!;
         return {
           platform: p.id,
           platformName: p.name,
-          enabled: accounts.find((a) => a.platform === p.id)?.enabled === 1,
-          handle: accounts.find((a) => a.platform === p.id)?.handle ?? '',
-          lastSyncAt: accounts.find((a) => a.platform === p.id)?.last_sync_at ?? null,
+          enabled: platformAccounts.some((a) => a.enabled === 1),
+          handle: primary.handle,
+          lastSyncAt: primary.last_sync_at ?? null,
+          accounts: platformAccounts.map((a) => ({
+            handle: a.handle,
+            enabled: a.enabled === 1,
+            lastSyncAt: a.last_sync_at,
+          })),
           status: deriveStatus(latest ?? undefined),
           latestRun: latest,
           autoContinue: autoContinues.find((s) => s.platform === p.id) ?? null,
@@ -158,28 +167,50 @@ export function syncRoutes(db: Db): Router {
   });
 
   // POST /api/sync/all → 一键同步所有已绑定的启用账号（顺序执行，避免同时打多个平台接口）。
-  // 每个平台沿用自身增量策略：AtCoder from_second / 牛客 since 截断 / CF·洛谷 已知提交号提前终止。
+  // 多账号（v0.8）：同一平台的多个启用账号依次同步（平台级互斥锁天然串行），
+  // 结果按平台聚合（imported/errors 求和合并），批量进度仍以平台为粒度。
+  // 每个账号沿用自身增量策略：AtCoder from_second / 牛客 since 截断 / CF·洛谷 已知提交号提前终止。
   // 未绑定账号的平台直接跳过；单平台失败不影响其余平台。
   r.post('/all', asyncHandler(async (_req, res) => {
     const accounts = db
       .prepare(
-        'SELECT platform, handle FROM platform_accounts WHERE user_id = ? AND enabled = 1 ORDER BY platform',
+        'SELECT platform, handle FROM platform_accounts WHERE user_id = ? AND enabled = 1 ORDER BY platform, id',
       )
       .all(DEFAULT_USER_ID) as Array<{ platform: PlatformId; handle: string }>;
+    const platforms = [...new Set(accounts.map((a) => a.platform))];
     const results = [];
     // 整批进度：前端据此画出「待同步 / 同步中 / 已完成 +N 条 / 失败」的完整队列，
     // 而不是只知道「当前是谁」。finally 里收尾，异常路径也不留幽灵批次。
-    beginBatch(accounts.map((a) => a.platform));
+    beginBatch(platforms);
     try {
-      for (const acc of accounts) {
+      for (const platform of platforms) {
         const started = Date.now();
-        const result = await syncPlatform(db, acc.platform, acc.handle, { triggeredBy: 'all' });
-        completeBatchItem(acc.platform, {
-          status: result.errors.length > 0 ? 'failed' : 'ok',
-          imported: result.imported,
-          ...(result.errors.length > 0 ? { error: result.errors[0]! } : {}),
+        const accountsOfPlatform = accounts.filter((a) => a.platform === platform);
+        const aggregate = {
+          platform,
+          handle: accountsOfPlatform.map((a) => a.handle).join(','),
+          imported: 0,
+          skipped: 0,
+          errors: [] as string[],
+          truncated: false,
+          incremental: false,
+          accounts: [] as Array<{ handle: string; imported: number; skipped: number; errors: string[] }>,
+        };
+        for (const acc of accountsOfPlatform) {
+          const result = await syncPlatform(db, platform, acc.handle, { triggeredBy: 'all' });
+          aggregate.imported += result.imported;
+          aggregate.skipped += result.skipped;
+          aggregate.truncated = aggregate.truncated || result.truncated === true;
+          aggregate.incremental = aggregate.incremental || result.incremental === true;
+          aggregate.errors.push(...result.errors);
+          aggregate.accounts.push({ handle: acc.handle, imported: result.imported, skipped: result.skipped, errors: result.errors });
+        }
+        completeBatchItem(platform, {
+          status: aggregate.errors.length > 0 ? 'failed' : 'ok',
+          imported: aggregate.imported,
+          ...(aggregate.errors.length > 0 ? { error: aggregate.errors[0]! } : {}),
         });
-        results.push({ ...result, durationMs: Date.now() - started });
+        results.push({ ...aggregate, durationMs: Date.now() - started });
       }
     } finally {
       endBatch();
@@ -198,7 +229,9 @@ export function syncRoutes(db: Db): Router {
     res.json({ ok: true, cancelled: cancelAutoContinue(platform as PlatformId) });
   });
 
-  // POST /api/sync/:platform  body: { handle, days?, retry? }
+  // POST /api/sync/:platform  body: { handle?, days?, retry? }
+  // handle 省略（多账号 v0.8）：顺序同步该平台**全部启用账号**，结果按平台聚合
+  // （imported/skipped/errors 求和合并，accounts 带每个账号的明细）。
   // days 为正整数时走「仅同步最近 N 天」窗口模式：补充拉取漏掉的历史，不改账号同步状态。
   // retry=true（同步中心/结果抽屉的「重试」按钮）：语义与手动同步相同，只把 triggered_by
   // 记为 retry，便于在历史里区分"用户主动重试失败平台"与"日常点同步"。
@@ -208,8 +241,8 @@ export function syncRoutes(db: Db): Router {
     if (!PLATFORMS.some((p) => p.id === platform)) {
       return res.status(400).json({ error: `platform 非法: ${platform}` });
     }
-    if (typeof handle !== 'string' || handle.trim() === '') {
-      return res.status(400).json({ error: 'handle 必填' });
+    if (handle !== undefined && (typeof handle !== 'string' || handle.trim() === '')) {
+      return res.status(400).json({ error: 'handle 需为非空字符串（省略则同步该平台全部启用账号）' });
     }
     if (retry !== undefined && typeof retry !== 'boolean') {
       return res.status(400).json({ error: 'retry 需为布尔值（省略即普通手动同步）' });
@@ -218,9 +251,32 @@ export function syncRoutes(db: Db): Router {
     const opts = Number.isInteger(daysN) && daysN > 0
       ? { days: Math.min(365, daysN), triggeredBy: 'days' as const }
       : { triggeredBy: retry === true ? ('retry' as const) : ('manual' as const) };
-    const result = await syncPlatform(db, platform as PlatformId, handle.trim(), opts);
+    // 指定 handle：只同步该账号；省略：该平台全部启用账号依次同步（平台级互斥锁保证串行）
+    const accounts = typeof handle === 'string'
+      ? [{ platform: platform as PlatformId, handle: handle.trim() }]
+      : (db
+          .prepare('SELECT platform, handle FROM platform_accounts WHERE user_id = ? AND platform = ? AND enabled = 1 ORDER BY id')
+          .all(DEFAULT_USER_ID, platform) as Array<{ platform: PlatformId; handle: string }>);
+    if (accounts.length === 0) {
+      return res.status(400).json({ error: '该平台没有已启用的账号绑定，请先到设置页绑定' });
+    }
+    const aggregate = {
+      platform,
+      handle: accounts.map((a) => a.handle).join(','),
+      imported: 0,
+      skipped: 0,
+      errors: [] as string[],
+      accounts: [] as Array<{ handle: string; imported: number; skipped: number; errors: string[] }>,
+    };
+    for (const acc of accounts) {
+      const result = await syncPlatform(db, acc.platform, acc.handle, opts);
+      aggregate.imported += result.imported;
+      aggregate.skipped += result.skipped;
+      aggregate.errors.push(...result.errors);
+      aggregate.accounts.push({ handle: acc.handle, imported: result.imported, skipped: result.skipped, errors: result.errors });
+    }
     // 平台无公开 API 等受限情况返回 200 + errors 引导（非致命）
-    res.json(result);
+    res.json(aggregate);
   }));
 
   return r;

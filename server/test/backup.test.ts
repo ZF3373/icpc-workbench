@@ -7,6 +7,7 @@ import { createDb, type Db } from '../src/db/index.ts';
 import {
   applyPendingRestore,
   createBackup,
+  deleteBackup,
   listBackups,
   maybeDailyBackup,
   requestRestore,
@@ -190,4 +191,35 @@ test('恢复升级前的旧备份（无伴生快照）：数据库回滚、JSONL
   assert.equal(restored.prepare("SELECT COUNT(*) AS c FROM settings WHERE key = 'after'").get()!.c, 0);
   restored.close();
   assert.ok(fs.readFileSync(ann, 'utf8').includes('P9'), '没有快照时不应动 JSONL');
+});
+
+// ---------- deleteBackup：手动删除恢复点 ----------
+
+test('deleteBackup：删除 .db 连带伴生快照，列表同步减少', () => {
+  const b1 = createBackup(db, 'manual', dir);
+  const b2 = createBackup(db, 'manual', dir);
+  fs.writeFileSync(path.join(dir, 'junk.txt'), 'x'); // 非备份文件不应被动到
+  deleteBackup(db, b1.file, dir);
+  assert.ok(!fs.existsSync(path.join(dir, b1.file)));
+  assert.ok(!fs.existsSync(path.join(dir, b1.file.replace(/\.db$/, '.knowledge.json'))), '伴生快照应连带删除');
+  assert.ok(fs.existsSync(path.join(dir, b2.file)), '其他备份不受影响');
+  assert.ok(fs.existsSync(path.join(dir, 'junk.txt')), '无关文件不受影响');
+  const list = listBackups(db, dir);
+  assert.deepEqual(list.map((x) => x.file), [b2.file]);
+});
+
+test('deleteBackup：非法名称与不存在的备份报错', () => {
+  createBackup(db, 'manual', dir);
+  assert.throws(() => deleteBackup(db, '../escape.db', dir), /名称非法/);
+  assert.throws(() => deleteBackup(db, 'icpc-20990101-000000-manual.db', dir), /不存在/);
+});
+
+test('deleteBackup：已登记为待恢复目标的备份拒绝删除', () => {
+  const b = createBackup(db, 'manual', dir);
+  requestRestore(db, b.file, dir);
+  assert.throws(() => deleteBackup(db, b.file, dir), /待恢复目标/);
+  // 其他备份仍可删除
+  const b2 = createBackup(db, 'manual', dir);
+  deleteBackup(db, b2.file, dir);
+  assert.ok(!fs.existsSync(path.join(dir, b2.file)));
 });

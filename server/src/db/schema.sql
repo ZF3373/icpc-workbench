@@ -25,13 +25,15 @@ CREATE TABLE IF NOT EXISTS platform_accounts (
   sync_truncated  INTEGER NOT NULL DEFAULT 0,
   -- 补全模式续拉游标（页码型平台用）：记录已拉到的最深页，下次从此处续拉更早历史，避免从头重扫已知页
   backfill_page   INTEGER,
-  UNIQUE (user_id, platform)
+  -- 多账号（v0.8）：同一平台可绑定多个账号，各账号的提交按 submissions.account 隔离共存，
+  -- 新增/删除账号不再清空任何提交数据
+  UNIQUE (user_id, platform, handle)
 );
 
 -- 同步任务历史：每次平台同步一行（成功与失败都记录），供同步中心展示与诊断导出。
 -- status: ok=全部成功 / partial=部分成功（预留）/ failed=失败；error_code 为可解释分类
 -- （auth_expired / rate_limited / schema_changed / manual_required / network / unknown）。
--- mode: full=换账号全量 / incremental=增量 / backfill=补全 / days=仅最近 N 天窗口。
+-- mode: full=账号首次全量 / incremental=增量 / backfill=补全 / days=仅最近 N 天窗口。
 CREATE TABLE IF NOT EXISTS sync_runs (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id       INTEGER NOT NULL REFERENCES users(id),
@@ -177,18 +179,21 @@ CREATE TABLE IF NOT EXISTS submissions (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id      INTEGER NOT NULL REFERENCES users(id),
   platform     TEXT NOT NULL REFERENCES platforms(id),
+  account      TEXT NOT NULL DEFAULT '',       -- 归属账号 handle（v0.8 多账号）；'' = 手动导入等无账号来源。
+                                               -- 不用 NULL：UNIQUE 约束把 NULL 视为互异值，会破坏按键去重
   problem_id   INTEGER NOT NULL REFERENCES problems(id),
   verdict      TEXT NOT NULL,                  -- AC / WA / TLE / RE / MLE / CE / SKIPPED
   language     TEXT,
   submitted_at TEXT NOT NULL,                  -- ISO8601 UTC
   external_id  TEXT,                           -- 平台侧提交号（去重用）
   context      TEXT,                           -- 提交语境：contest / virtual / practice；NULL = 平台不下发（能力值据此区分赛场 AC 与补题）
-  UNIQUE (user_id, platform, external_id)
+  UNIQUE (user_id, platform, account, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_submissions_user_platform ON submissions(user_id, platform);
 CREATE INDEX IF NOT EXISTS idx_submissions_problem ON submissions(problem_id);
--- 按用户取时间窗提交（能力值近 60 天窗口 / 趋势图）与按时间排序：无此索引时万级提交全表扫
 CREATE INDEX IF NOT EXISTS idx_submissions_user_time ON submissions(user_id, submitted_at);
+-- (user_id, platform, account) 索引由 db/index.ts migrate 创建：老库补 account 列之前，
+-- 在 schema 里建索引会因列不存在而启动报错（同 deleted_problems.normalized_key 的处理）。
 
 -- 今日训练推荐冷却记录：每个题目一行，存最近一次被推荐进题单的日期与档位。
 -- 选题时排除「冷却窗口内往日推荐过」的题，否则排序是完全确定性的 ——

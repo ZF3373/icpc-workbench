@@ -67,7 +67,7 @@ test('成功同步写入 sync_runs：mode/status/imported/下次推荐时间', a
   await syncPlatform(db, 'codeforces', 'tourist');
   const row = db.prepare('SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1').get() as Record<string, unknown>;
   assert.equal(row.status, 'ok');
-  assert.equal(row.mode, 'incremental'); // 首次同步账号行不存在 → 增量语义（与既有 handleChanged 判定一致）
+  assert.equal(row.mode, 'full'); // 首次同步账号从未成功同步 → 全量语义（多账号 v0.8 的 fullMode 判定）
   assert.equal(row.imported, 1);
   assert.equal(row.skipped, 0);
   assert.equal(row.triggered_by, 'manual');

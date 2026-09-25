@@ -7,7 +7,6 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { insertNormalized } from '../import/importService.ts';
 import { getAdapter } from './registry.ts';
-import { createBackup } from '../backup.ts';
 import { ManualImportRequiredError, SyncError, type FetchOptions, type SyncErrorCode } from './types.ts';
 import { cancelAutoContinue, scheduleAutoContinue } from './syncScheduler.ts';
 import { beginSync, endSync, jobSiteRequests, setSyncPhase } from './syncProgress.ts';
@@ -58,15 +57,18 @@ export const DEFAULT_SYNC_MAX_SUBMISSIONS = 300;
 export const MIN_SYNC_MAX_SUBMISSIONS = 100;
 export const MAX_SYNC_MAX_SUBMISSIONS = 1500;
 
-/** 库中该平台已有的平台侧提交号与当前 verdict（适配器提前终止分页 + 改判检测用） */
+/** 库中该账号已有的平台侧提交号与当前 verdict（适配器提前终止分页 + 改判检测用）。
+ *  多账号（v0.8）后按账号过滤：增量「整页已知提前终止」只看本账号的提交号，
+ *  否则 A 账号会把 B 账号已入库的页误判为已知而漏拉。 */
 function loadKnownSubmissions(
   db: Db,
   userId: number,
   platform: PlatformId,
+  account: string,
 ): { ids: Set<string>; verdicts: Map<string, Verdict> } {
   const rows = db
-    .prepare('SELECT external_id, verdict FROM submissions WHERE user_id = ? AND platform = ?')
-    .all(userId, platform) as Array<{ external_id: string; verdict: Verdict }>;
+    .prepare('SELECT external_id, verdict FROM submissions WHERE user_id = ? AND platform = ? AND account = ?')
+    .all(userId, platform, account) as Array<{ external_id: string; verdict: Verdict }>;
   const ids = new Set<string>();
   const verdicts = new Map<string, Verdict>();
   for (const r of rows) {
@@ -201,40 +203,31 @@ async function runSyncPlatform(
   const daysWindow = opts.days && opts.days > 0 ? opts.days : 0;
 
   const account = db
-    .prepare('SELECT handle, last_sync_at, sync_truncated, backfill_page FROM platform_accounts WHERE user_id = ? AND platform = ?')
-    .get(userId, platform) as { handle: string; last_sync_at: string | null; sync_truncated: number; backfill_page: number | null } | undefined;
-  // 换账号判定：handle 不同，或从未成功同步过（last_sync_at 为空，如设置页改绑后）。
-  // 两种情况都要求全量重拉 + 清空该平台旧数据，避免跨账号数据混入或增量起点错乱。
-  // 注意：同 handle 首次成功同步时也会清空该平台旧数据（含手动导入记录）——
-  // 语义是"同步以平台数据为准"，手动导入数据会被平台数据取代。
-  // days 窗口模式是补充拉取，不改账号状态、不触发清空。
-  const handleChanged =
+    .prepare('SELECT handle, last_sync_at, sync_truncated, backfill_page FROM platform_accounts WHERE user_id = ? AND platform = ? AND handle = ?')
+    .get(userId, platform, handle) as { handle: string; last_sync_at: string | null; sync_truncated: number; backfill_page: number | null } | undefined;
+  // 全量判定：该账号从未成功同步过（last_sync_at 为空，如新绑定/删除后重绑）。
+  // 多账号（v0.8）后同步按账号隔离：新增/删除账号**不再清空任何提交**——各账号数据以
+  // submissions.account 隔离共存，重复数据由 (user_id, platform, account, external_id) 唯一键去重兜底，
+  // 因此不再有「换账号先清库」的破坏性路径，重置前的备份也随之不需要。
+  // days 窗口模式是补充拉取，不触发全量。
+  const fullMode =
     !daysWindow &&
-    account !== undefined &&
-    (account.handle !== handle || !account.last_sync_at);
+    (account === undefined || account.last_sync_at === null);
 
   try {
-    // 换账号会清空该平台旧提交：先建「重置前」恢复点（失败只记日志，不阻塞同步）
-    if (handleChanged) {
-      try {
-        const b = createBackup(db, 'pre-reset');
-        console.log(`[backup] 换账号重置前备份已创建: ${b.file}`);
-      } catch (e) {
-        console.error(`[backup] 重置前备份失败（继续同步）: ${(e as Error).message}`);
-      }
-    }
-    // 换账号/未成功同步过：全量重拉（不沿用可能属于旧账号的增量起点）
+    // 全量重拉（不沿用可能属于其他账号/过期的增量起点）：last_sync_at 为空时 since 置空
     const since =
       daysWindow
         ? new Date(Date.now() - daysWindow * 86_400_000).toISOString()
-        : !handleChanged && account?.last_sync_at ? account.last_sync_at : undefined;
+        : !fullMode && account?.last_sync_at ? account.last_sync_at : undefined;
     // 声明支持已知提交号过滤的适配器（CF/洛谷/牛客，拉取按新到旧排序）：
-    // 注入库中已有提交号，适配器整页已知即提前终止分页，实现真实增量。
+    // 注入库中该账号已有提交号，适配器整页已知即提前终止分页，实现真实增量。
     // days 窗口模式不注入（否则整页已知会提前终止，覆盖不到窗口内漏拉的历史），
-    // 窗口终止由 since 早停承担，重复插入由唯一键去重兜底。
+    // 窗口终止由 since 早停承担，重复插入由唯一键去重兜底。全量模式同样注入：
+    // 重复绑定/重拉时已知页可直接跳过，唯一键保证不会漏插也不会重插。
     const knownSubs =
-      !daysWindow && !handleChanged && adapter.knownIdsFilter
-        ? loadKnownSubmissions(db, userId, platform)
+      !daysWindow && adapter.knownIdsFilter
+        ? loadKnownSubmissions(db, userId, platform, handle)
         : undefined;
     // 需登录平台：从 settings 读取 Cookie / CSRF 注入适配器
     const readSetting = (key: string): string | undefined => {
@@ -252,9 +245,9 @@ async function runSyncPlatform(
     const practiceSync = platform === 'jisuanke'
       ? readSetting('jisuanke.practiceSync') !== 'false'
       : undefined;
-    // 补全模式：上次同步被截断（仍有更早历史待拉），且非换账号全量重拉
-    const backfill = !daysWindow && !handleChanged && account?.sync_truncated === 1;
-    mode = daysWindow ? 'days' : handleChanged ? 'full' : backfill ? 'backfill' : 'incremental';
+    // 补全模式：上次同步被截断（仍有更早历史待拉），且非全量重拉
+    const backfill = !daysWindow && !fullMode && account?.sync_truncated === 1;
+    mode = daysWindow ? 'days' : fullMode ? 'full' : backfill ? 'backfill' : 'incremental';
 
     // 始终传入一个完整对象，便于适配器回写 truncated / backfillReachedPage / waitedMs out 字段。
     // windowSince 仅在 days 窗口模式注入：降序平台分页按窗口起点提前终止；
@@ -285,13 +278,11 @@ async function runSyncPlatform(
     waitedMs = fetchOpts.waitedMs ?? 0;
     const reachedPage = fetchOpts.backfillReachedPage;
 
-    // 换账号：全量重拉，并在同一事务内清空该平台旧提交再写入新数据
-    const r = insertNormalized(db, userId, rows, {
-      clearPlatform: handleChanged ? platform : undefined,
-    });
+    // 多账号按账号隔离入库：不同账号数据共存，重复由唯一键去重，不再有任何清库路径
+    const r = insertNormalized(db, userId, rows, { account: handle });
     result.imported = r.imported;
     result.skipped = r.skipped;
-    if (!daysWindow && !handleChanged && (since || (knownSubs && knownSubs.ids.size > 0))) {
+    if (!daysWindow && !fullMode && (since || (knownSubs && knownSubs.ids.size > 0))) {
       result.incremental = true;
     }
 
@@ -338,8 +329,7 @@ async function runSyncPlatform(
     db.prepare(
       `INSERT INTO platform_accounts (user_id, platform, handle, last_sync_at, enabled, sync_truncated, backfill_page)
        VALUES (?, ?, ?, ?, 1, ?, ?)
-       ON CONFLICT(user_id, platform) DO UPDATE SET
-         handle = excluded.handle,
+       ON CONFLICT(user_id, platform, handle) DO UPDATE SET
          last_sync_at = excluded.last_sync_at,
          enabled = 1,
          sync_truncated = excluded.sync_truncated,

@@ -12,6 +12,7 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { getAdapter } from '../adapters/registry.ts';
+import { createBackup } from '../backup.ts';
 import {
   DEFAULT_SYNC_MAX_SUBMISSIONS,
   MIN_SYNC_MAX_SUBMISSIONS,
@@ -441,6 +442,8 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
   }));
 
   // POST /api/settings/accounts  body: { platform, handle }
+  // 多账号（v0.8）：同一平台可绑定多个账号，各账号提交按 submissions.account 隔离共存。
+  // 新绑定不重置 last_sync_at、不清空任何数据（重复绑定同 handle 仅重新启用，保留增量起点）。
   r.post('/accounts', (req, res) => {
     const { platform, handle } = req.body ?? {};
     if (!isPlatform(platform)) {
@@ -449,20 +452,78 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     if (typeof handle !== 'string' || handle.trim() === '') {
       return res.status(400).json({ error: 'handle 必填' });
     }
-    // 换账号语义：handle 变化时重置 last_sync_at（NULL → 下次同步全量重拉并清空旧数据），
-    // 否则保留增量起点（同 handle 重新绑定不破坏增量）。
-    db.prepare(
-      `INSERT INTO platform_accounts (user_id, platform, handle, enabled)
-       VALUES (?, ?, ?, 1)
-       ON CONFLICT(user_id, platform) DO UPDATE SET
-         handle = excluded.handle,
-         enabled = 1,
-         last_sync_at = CASE
-           WHEN platform_accounts.handle = excluded.handle THEN platform_accounts.last_sync_at
-           ELSE NULL
-         END`,
-    ).run(DEFAULT_USER_ID, platform, handle.trim());
+    const r = db
+      .prepare(
+        `INSERT INTO platform_accounts (user_id, platform, handle, enabled)
+         VALUES (?, ?, ?, 1)
+         ON CONFLICT(user_id, platform, handle) DO UPDATE SET enabled = 1`,
+      )
+      .run(DEFAULT_USER_ID, platform, handle.trim());
+    res.json({ ok: true, id: Number(r.lastInsertRowid) });
+  });
+
+  // POST /api/settings/accounts/enabled  body: { platform, handle, enabled }
+  // 单账号启停：停用后不参与「一键同步」与该平台的手动同步，历史数据保留。
+  r.post('/accounts/enabled', (req, res) => {
+    const { platform, handle, enabled } = req.body ?? {};
+    if (!isPlatform(platform)) {
+      return res.status(400).json({ error: `platform 非法: ${String(platform)}` });
+    }
+    if (typeof handle !== 'string' || handle.trim() === '') {
+      return res.status(400).json({ error: 'handle 必填' });
+    }
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled 需为布尔值' });
+    }
+    const result = db
+      .prepare('UPDATE platform_accounts SET enabled = ? WHERE user_id = ? AND platform = ? AND handle = ?')
+      .run(enabled ? 1 : 0, DEFAULT_USER_ID, platform, handle.trim());
+    if (result.changes === 0) return res.status(404).json({ error: '账号绑定不存在' });
     res.json({ ok: true });
+  });
+
+  // POST /api/settings/accounts/remove  body: { platform, handle }
+  // 删除账号：移除绑定关系并**连带删除该账号的全部提交记录**（其他账号与手动导入不受影响）。
+  // 删除前自动创建「pre-account-delete」恢复点——误删可通过 设置 → 数据管理 → 备份与恢复 找回；
+  // 恢复点创建失败则中止删除（避免在安全网缺失时执行不可逆操作）。
+  r.post('/accounts/remove', (req, res) => {
+    const { platform, handle } = req.body ?? {};
+    if (!isPlatform(platform)) {
+      return res.status(400).json({ error: `platform 非法: ${String(platform)}` });
+    }
+    if (typeof handle !== 'string' || handle.trim() === '') {
+      return res.status(400).json({ error: 'handle 必填' });
+    }
+    const trimmed = handle.trim();
+    const binding = db
+      .prepare('SELECT id FROM platform_accounts WHERE user_id = ? AND platform = ? AND handle = ?')
+      .get(DEFAULT_USER_ID, platform, trimmed);
+    if (!binding) return res.status(404).json({ error: '账号绑定不存在' });
+
+    let backup: { file: string; size: number };
+    try {
+      backup = createBackup(db, 'pre-account-delete');
+    } catch (e) {
+      return res.status(500).json({
+        error: `删除前创建恢复点失败：${(e as Error).message}（已取消删除，请检查磁盘空间后重试）`,
+      });
+    }
+
+    const count = db
+      .prepare('SELECT COUNT(*) AS c FROM submissions WHERE user_id = ? AND platform = ? AND account = ?')
+      .get(DEFAULT_USER_ID, platform, trimmed) as { c: number };
+    try {
+      db.exec('BEGIN');
+      db.prepare('DELETE FROM platform_accounts WHERE user_id = ? AND platform = ? AND handle = ?')
+        .run(DEFAULT_USER_ID, platform, trimmed);
+      db.prepare('DELETE FROM submissions WHERE user_id = ? AND platform = ? AND account = ?')
+        .run(DEFAULT_USER_ID, platform, trimmed);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      return res.status(500).json({ error: `删除失败：${(e as Error).message}` });
+    }
+    res.json({ ok: true, deletedSubmissions: count.c, backupFile: backup.file });
   });
 
   // POST /api/settings/adapters  body: { platform, enabled }

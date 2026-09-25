@@ -12,12 +12,15 @@ import { platformName } from './ui.ts'
 export interface SyncPlatformStatusView {
   platform: PlatformId
   platformName: string
+  /** 兼容字段：第一个启用账号的 handle（多账号平台完整列表见 accounts） */
   handle: string
   enabled: boolean
   lastSyncAt: string | null
   status: PlatformSyncStatus
   latestRun: SyncRun | null
   autoContinue: { platform: PlatformId; handle: string; round: number; maxRounds: number; nextAt: string; running: boolean } | null
+  /** 多账号（v0.8）：该平台全部绑定账号；旧版服务端无此字段（undefined） */
+  accounts?: Array<{ handle: string; enabled: boolean; lastSyncAt: string | null }>
 }
 
 /** 相对时间：刚刚 / 12 分钟前 / 3 小时前 / 2 天前（无法解析时原样回显，不显示 Invalid Date） */
