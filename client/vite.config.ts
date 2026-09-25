@@ -1,10 +1,32 @@
 import net from 'node:net'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // 服务端端口可用 PORT 环境变量覆盖（dev:server 同读该变量）——
-// Windows 上 3000-3xxx 段被 Hyper-V/winnat 动态保留时（listen EACCES），换端口即可继续开发
-const apiPort = process.env.PORT ?? '3001'
+// Windows 上 3000-3xxx 段被 Hyper-V/winnat 动态保留时（listen EACCES），换端口即可继续开发。
+// 没设 PORT 时兜底链必须和后端 loadConfig 逐级一致：config.json 的 port → 3001。
+// 不能在这里单独硬编码：config.json 换端口绕保留段后两边就会分叉——后端监听 config 的
+// 端口，而闸门/代理仍探测旧端口，永远不就绪，/api 全部挂 20s 再 503（页面无限加载）。
+const SERVER_CONFIG_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../server/config.json',
+)
+
+function resolveApiPort(): number {
+  if (process.env.PORT) return Number(process.env.PORT)
+  try {
+    const file = JSON.parse(fs.readFileSync(SERVER_CONFIG_PATH, 'utf8')) as { port?: number }
+    if (file.port) return Number(file.port)
+  } catch {
+    /* 新克隆没有 config.json（可复制 config.example.json），落到默认 3001 */
+  }
+  return 3001
+}
+
+const apiPort = resolveApiPort()
 
 /**
  * 后端就绪前的请求闸门。
@@ -109,7 +131,7 @@ export function apiStartupGate(host: string, port: number, waitMs = 20000): Plug
 }
 
 export default defineConfig({
-  plugins: [react(), apiStartupGate('127.0.0.1', Number(apiPort))],
+  plugins: [react(), apiStartupGate('127.0.0.1', apiPort)],
   server: {
     port: 5173,
     proxy: {
