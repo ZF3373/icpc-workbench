@@ -258,6 +258,83 @@ export function listsRoutes(
     }
   });
 
+  // POST /api/lists/:id/items  body: { raw } → 向已有题单追加题目（解析与分类规则和导入一致）
+  // 题单已有的题按「候选身份」（含洛谷 CF/AtCoder 镜像回退）去重跳过——同一道题换个平台
+  // 粘贴不算新题；position 接在现有条目之后，不影响已有顺序与分类。
+  r.post('/:id/items', (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'id 非法' });
+    const raw = req.body?.raw;
+    if (typeof raw !== 'string' || !raw.trim()) {
+      return res.status(400).json({ error: 'raw 必填：粘贴题目列表文本（每行一题）' });
+    }
+    const list = db
+      .prepare('SELECT id FROM problem_lists WHERE id = ? AND user_id = ?')
+      .get(id, DEFAULT_USER_ID);
+    if (!list) return res.status(404).json({ error: '题单不存在' });
+    const parsed = parseProblemListText(raw);
+    if (parsed.length === 0) {
+      return res.status(400).json({ error: '未解析到任何题目：请确认每行包含题号或题目链接' });
+    }
+    const identitySet = (platform: string, key: string) =>
+      new Set(candidateIdentities(platform, key).map(([pf, k]) => `${pf}\u0000${k}`));
+    const intersects = (a: Set<string>, b: Set<string>): boolean => {
+      for (const x of a) if (b.has(x)) return true;
+      return false;
+    };
+    const existing = db
+      .prepare('SELECT platform, problem_key FROM problem_list_items WHERE list_id = ?')
+      .all(id) as Array<{ platform: string; problem_key: string }>;
+    const seen = existing.map((it) => identitySet(it.platform, it.problem_key));
+    const fresh: typeof parsed = [];
+    let duplicates = 0;
+    for (const it of parsed) {
+      const ids = identitySet(it.platform, it.problemKey);
+      if (seen.some((s) => intersects(ids, s))) {
+        duplicates += 1;
+        continue;
+      }
+      seen.push(ids); // 批内镜像重复（如同时粘贴洛谷镜像链接与原生题号）同样只保留一个
+      fresh.push(it);
+    }
+    if (fresh.length > 0) {
+      const insItem = db.prepare(
+        `INSERT INTO problem_list_items (list_id, platform, problem_key, title, url, category, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      try {
+        db.exec('BEGIN');
+        const maxPos = (
+          db
+            .prepare('SELECT COALESCE(MAX(position), -1) AS maxPos FROM problem_list_items WHERE list_id = ?')
+            .get(id) as { maxPos: number }
+        ).maxPos;
+        const classified = classifyItemsBatch(
+          db,
+          fresh.map((it) => ({ platform: it.platform, problemKey: it.problemKey })),
+        );
+        for (let i = 0; i < fresh.length; i += 1) {
+          const it = fresh[i]!;
+          const p = classified[i]!.lookup;
+          const finalUrl = it.url ?? p?.url ?? getAdapter(it.platform)?.problemUrl({ problemKey: it.problemKey }) ?? null;
+          const category = classified[i]!.category ?? '未分类';
+          insItem.run(id, it.platform, it.problemKey, it.title ?? p?.title ?? null, finalUrl, category, maxPos + 1 + i);
+        }
+        db.exec('COMMIT');
+      } catch (e) {
+        db.exec('ROLLBACK');
+        return res.status(400).json({ error: `追加失败：${(e as Error).message}` });
+      }
+    }
+    const totalLines = raw.split(/\r?\n/).filter((l) => l.trim()).length;
+    return res.json({
+      ok: true,
+      added: fresh.length,
+      duplicates,
+      unrecognized: Math.max(0, totalLines - parsed.length),
+    });
+  });
+
   // GET /api/lists/:id → 题单详情（含题目难度/标签/已 AC 状态 + AI 建议缓存）
   r.get('/:id', (req, res) => {
     const id = Number(req.params.id);

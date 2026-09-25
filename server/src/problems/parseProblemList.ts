@@ -103,8 +103,9 @@ function parseVJudgeUrl(line: string): { platform: PlatformId; problemKey: strin
   if (!platform) return null;
   // 还原完整 URL
   const urlsInLine = [...line.matchAll(/https?:\/\/[^\s，,；;]+/g)].map((x) => x[0]);
-  const url = urlsInLine.find((u) => u.includes(m![0])) ?? `https://${m[0]}`;
-  return { platform, problemKey, url, rest: line.replace(m[0], ' ') };
+  const url = urlsInLine.find((u) => u.includes(m[0])) ?? `https://${m[0]}`;
+  // rest 同样移除完整 URL，避免 scheme/www. 残留成假标题
+  return { platform, problemKey, url, rest: line.replace(url, ' ').replace(m[0], ' ') };
 }
 
 const CF_KEY_RE = /^(?:CF)?(\d{1,6}[A-Z][0-9]?)$/i;
@@ -137,6 +138,9 @@ const NOISE_RE = /[|·•\-–—\[\](){}]+|\d+[.:、)]?$/g;
 /** 清洗标题：去掉编号回显、行首序号、多余分隔符与空白 */
 function cleanTitle(raw: string): string | undefined {
   const t = raw
+    // URL 识别只吃掉域名路径段，scheme（"https://"）会残留在 rest 里——纯 URL 行会把它
+    // 当成题名入库，前端整列显示为 https://。这里统一剥掉。
+    .replace(/https?:\/\//gi, ' ')
     .replace(NOISE_RE, ' ')
     .replace(/^\s*\d+[.、)]\s*/, '') // 行首序号（"1. 两遍"）
     .replace(/\s+/g, ' ')
@@ -159,7 +163,8 @@ export function parseProblemListText(raw: string): ParsedProblemLine[] {
         // 还原带 scheme 的完整链接（题单粘贴时常带 https:// 前缀）
         const urlsInLine = [...line.matchAll(/https?:\/\/[^\s，,；;]+/g)].map((x) => x[0]);
         const url = urlsInLine.find((u) => u.includes(m[0])) ?? (m[0].startsWith('http') ? m[0] : `https://${m[0]}`);
-        hit = { platform: p.platform, problemKey: p.key(m), url, rest: line.replace(m[0], ' ') };
+        // rest 从行中移除**完整 URL**：只移除匹配段会把 scheme/www. 残留成假标题
+        hit = { platform: p.platform, problemKey: p.key(m), url, rest: line.replace(url, ' ').replace(m[0], ' ') };
         break;
       }
     }

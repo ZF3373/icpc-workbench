@@ -84,7 +84,9 @@ export default function Lists() {
   const [busy, setBusy] = useState<string | null>(null) // 正在进行的操作（classify/ai-classify/ai-suggest）
   const [suggest, setSuggest] = useState<string | null>(null) // AI 建议内容
   const [suggestOpen, setSuggestOpen] = useState(false)
+  const [addItemOpen, setAddItemOpen] = useState(false) // 向已有题单追加题目
   const [importForm] = Form.useForm()
+  const [addItemForm] = Form.useForm()
 
   const load = useCallback(() => {
     setLoading(true)
@@ -142,8 +144,34 @@ export default function Lists() {
     }
   }
 
-  const runClassify = async (mode: 'rule' | 'ai') => {
+  // 向已有题单追加题目：与导入同格式（每行一题），服务端按身份去重跳过已存在的题
+  const submitAddItems = async () => {
     if (!detail) return
+    const v = (await addItemForm.validateFields().catch(() => null)) as unknown as { raw: string } | null
+    if (!v) return
+    setBusy('add-items')
+    try {
+      const r = await post<{ added: number; duplicates: number; unrecognized: number }>(
+        `/api/lists/${detail.id}/items`,
+        { raw: v.raw },
+      )
+      const extra: string[] = []
+      if (r.duplicates > 0) extra.push(`${r.duplicates} 道已在题单中`)
+      if (r.unrecognized > 0) extra.push(`${r.unrecognized} 行未识别`)
+      const tail = extra.length > 0 ? `（${extra.join('，')}）` : ''
+      if (r.added > 0) message.success(`已添加 ${r.added} 道题${tail}`)
+      else message.info(`没有新题目${tail || '：题目均已存在'}`)
+      addItemForm.resetFields()
+      setAddItemOpen(false)
+      reloadDetail()
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const runClassify = async (mode: 'rule' | 'ai') => {    if (!detail) return
     setBusy(mode === 'rule' ? 'classify' : 'ai-classify')
     try {
       const r = await post<{ updated: number; total: number }>(`/api/lists/${detail.id}/${mode === 'rule' ? 'classify' : 'ai-classify'}`, {})
@@ -359,6 +387,9 @@ export default function Lists() {
         width={720}
         extra={
           <Space wrap>
+            <Button size="small" icon={<PlusOutlined />} loading={busy === 'add-items'} onClick={() => setAddItemOpen(true)}>
+              添加题目
+            </Button>
             <Button size="small" icon={<TagsOutlined />} loading={busy === 'classify'} onClick={() => void runClassify('rule')}>
               按题库分类
             </Button>
@@ -376,7 +407,7 @@ export default function Lists() {
           <>
             <p style={{ color: '#8993a2', fontSize: 12, marginBottom: 12 }}>
               共 {detail.items.length} 题 · 已完成 {detail.items.filter((i) => i.solved).length} 题；同分类合并成组（按首次出现排序），组内保持导入原顺序；
-              「按题库分类」依据已同步题库的标签，覆盖不到的用「AI 分类」或手动调整。拖动行首手柄可调整做题顺序。
+              「按题库分类」依据已同步题库的标签，覆盖不到的用「AI 分类」或手动调整。拖动行首手柄可调整做题顺序，「添加题目」可向题单追加新题。
             </p>
             <div style={{ userSelect: dragItemId !== null ? 'none' : undefined }}>
             {groups.map((g) => (
@@ -387,6 +418,11 @@ export default function Lists() {
                 </div>
                 {g.items.map((it) => {
                   const link = it.url
+                  // 无题名（或历史数据里解析残留的 "https://" 假题名）时直接显示题号，
+                  // 此时旁边不再重复展示小字题号
+                  const rawTitle = it.title?.trim()
+                  const hasTitle = !!rawTitle && !/^https?:\/\//i.test(rawTitle)
+                  const name = hasTitle ? rawTitle : it.problem_key
                   const isDragging = dragItemId === it.id
                   const isDropTarget = dragOver?.id === it.id && dragItemId !== null && dragItemId !== it.id
                   const rowClass = [
@@ -416,14 +452,16 @@ export default function Lists() {
                         <PlatformTag id={it.platform as PlatformId} />
                         {link ? (
                           <a href={link} target="_blank" rel="noreferrer">
-                            <b>{it.title ?? it.problem_key}</b>
+                            <b>{name}</b>
                           </a>
                         ) : (
-                          <b>{it.title ?? it.problem_key}</b>
+                          <b>{name}</b>
                         )}
-                        <span className="mono" style={{ fontSize: 12, color: '#8993a2' }}>
-                          {it.problem_key}
-                        </span>
+                        {hasTitle && rawTitle !== it.problem_key && (
+                          <span className="mono" style={{ fontSize: 12, color: '#8993a2' }}>
+                            {it.problem_key}
+                          </span>
+                        )}
                         {it.difficulty !== null && (
                           <span className="mono" style={{ fontSize: 12, color: difficultyColor(it.difficulty) }}>
                             {it.difficulty}
@@ -489,6 +527,37 @@ export default function Lists() {
             message="从平台题单页全选复制粘贴即可；无法识别的行会自动跳过并在导入结果中提示。"
           />
         </Form>
+      </Modal>
+
+      <Modal
+        title={detail ? `添加题目到「${detail.title}」` : '添加题目'}
+        open={addItemOpen}
+        onCancel={() => setAddItemOpen(false)}
+        onOk={submitAddItems}
+        okText="添加"
+        cancelText="取消"
+        confirmLoading={busy === 'add-items'}
+        width={640}
+      >
+        <Form form={addItemForm} layout="vertical">
+          <Form.Item
+            name="raw"
+            label="题目列表（每行一题）"
+            rules={[{ required: true, message: '请粘贴题目列表' }]}
+          >
+            <Input.TextArea
+              rows={6}
+              placeholder={
+                '与导入题单相同的格式，支持题号或链接：\nCF1234A\nhttps://www.luogu.com.cn/problem/P1001\nabc300_a\nhttps://bs.daimayuan.top/p/7'
+              }
+            />
+          </Form.Item>
+        </Form>
+        <Alert
+          type="info"
+          showIcon
+          message="新题目会追加到题单末尾并自动分类；已在题单中的题（含镜像同题）会自动跳过。"
+        />
       </Modal>
 
       <Modal

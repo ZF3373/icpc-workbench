@@ -81,6 +81,30 @@ test('parseProblemList: unrecognized lines skipped, blank lines ok', () => {
   assert.equal(rows.length, 0);
 });
 
+test('parseProblemList: 纯 URL 行不产生 "https://" 假标题', () => {
+  // 之前 rest 残留 scheme 前缀，cleanTitle 把 "https://" 当题名入库，前端整列显示为 https://
+  const rows = parseProblemListText(
+    [
+      'https://codeforces.com/problemset/problem/1100/A',
+      'https://www.luogu.com.cn/problem/P1001',
+      'https://vjudge.net/problem/CF-1234A',
+      '1101B https://', // 复制粘贴把 scheme 拆到行尾的形态
+    ].join('\n'),
+  );
+  assert.deepEqual(
+    rows.map((r) => `${r.platform}:${r.problemKey}`),
+    ['codeforces:1100A', 'luogu:P1001', 'codeforces:1234A', 'codeforces:1101B'],
+  );
+  assert.deepEqual(rows.map((r) => r.title ?? null), [null, null, null, null]);
+  assert.equal(rows[0]!.url, 'https://codeforces.com/problemset/problem/1100/A');
+});
+
+test('parseProblemList: URL + 题名 → 题名不带 scheme 残留', () => {
+  const rows = parseProblemListText('https://www.luogu.com.cn/problem/P1001 A+B Problem');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.title, 'A+B Problem');
+});
+
 // ---------- 路由 ----------
 
 interface TestServer {
@@ -310,6 +334,89 @@ test('lists: ai-classify updates categories via mock provider; ai-suggest return
     // 建议上下文应包含题单内容与用户数据
     assert.match(providerChats[1]!, /混合题单/);
     assert.match(providerChats[1]!, /练习数据汇总/);
+  });
+});
+
+test('lists: append items to existing list, dedupe by identity, 404/400 paths', async () => {
+  await withServer(async ({ base, db }) => {
+    seedProblems(db);
+    await fetch(`${base}/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: '追加题单', raw: 'P1001' }),
+    });
+    const listId = (db.prepare('SELECT id FROM problem_lists').get() as { id: number }).id;
+
+    // 追加两道新题：CF1234A 命中题库 tags → 贪心；代码源 7 无题库 → 未分类
+    const res = await fetch(`${base}/${listId}/items`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ raw: 'CF1234A\nhttps://bs.daimayuan.top/p/7' }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { ok: boolean; added: number; duplicates: number; unrecognized: number };
+    assert.deepEqual(body, { ok: true, added: 2, duplicates: 0, unrecognized: 0 });
+    const keys = db
+      .prepare('SELECT platform, problem_key FROM problem_list_items ORDER BY position')
+      .all()
+      .map((r) => `${(r as { platform: string }).platform}:${(r as { problem_key: string }).problem_key}`);
+    assert.deepEqual(keys, ['luogu:P1001', 'codeforces:1234A', 'daimayuan:7']);
+    const cats = db
+      .prepare('SELECT problem_key, category FROM problem_list_items ORDER BY position')
+      .all() as Array<{ problem_key: string; category: string }>;
+    assert.equal(cats[1]!.category, '贪心');
+    assert.equal(cats[2]!.category, '未分类');
+
+    // 再追加：已有题（P1001）跳过，新题（CF351E、P1002）入库
+    insertNormalized(db, DEFAULT_USER_ID, [
+      {
+        problem: { platform: 'codeforces', problemKey: '351E', title: 'T351E', tags: ['dp'], url: 'https://example.com/351E' },
+        verdict: 'WA',
+        submittedAt: '2026-08-01T00:00:00.000Z',
+        externalId: '351E-WA',
+      } as unknown as NormalizedSubmission,
+    ]);
+    const res2 = await fetch(`${base}/${listId}/items`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ raw: 'P1001\nCF351E\nP1002' }),
+    });
+    assert.equal(res2.status, 200);
+    const body2 = (await res2.json()) as { added: number; duplicates: number };
+    assert.equal(body2.added, 2);
+    assert.equal(body2.duplicates, 1);
+
+    // 洛谷镜像链接（CF351E ≙ 已在题单里的 codeforces/351E）按镜像身份去重，不再入库
+    const res3 = await fetch(`${base}/${listId}/items`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ raw: 'https://www.luogu.com.cn/problem/CF351E' }),
+    });
+    assert.equal(res3.status, 200);
+    const body3 = (await res3.json()) as { added: number; duplicates: number };
+    assert.equal(body3.added, 0);
+    assert.equal(body3.duplicates, 1);
+    const keysAfter = db
+      .prepare('SELECT platform, problem_key FROM problem_list_items ORDER BY position')
+      .all()
+      .map((r) => `${(r as { platform: string }).platform}:${(r as { problem_key: string }).problem_key}`);
+    assert.equal(keysAfter.length, 5);
+    assert.equal(keysAfter[3], 'codeforces:351E');
+    assert.equal(keysAfter[4], 'luogu:P1002');
+
+    // 失败路径：题单不存在 404；无可解析行 400
+    const bad404 = await fetch(`${base}/999999/items`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ raw: 'P1001' }),
+    });
+    assert.equal(bad404.status, 404);
+    const bad400 = await fetch(`${base}/${listId}/items`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ raw: '没有题目' }),
+    });
+    assert.equal(bad400.status, 400);
   });
 });
 
