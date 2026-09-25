@@ -1503,6 +1503,9 @@ export default function Assistant() {
                   {m.reasoning && (
                     <details
                       className="ai-reasoning"
+                      // 思考进行中（本条消息还在推流且正文未开始）自动展开，思维链实时可见；
+                      // 正文一开始或流结束后改为非受控，用户可自由开合（issue #27）
+                      open={sending && i === messages.length - 1 && !text.trim() ? true : undefined}
                       style={{
                         marginBottom: 8,
                         padding: '6px 12px',
