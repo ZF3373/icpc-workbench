@@ -30,6 +30,7 @@
   - **联网搜索**：到「设置 → AI 配置」配置搜索引擎（Tavily / Brave，均有免费额度）+ API Key 后，AI 需要时会自动搜索互联网获取最新信息（近期赛事、最新文档等），回复末尾附搜索来源链接；留空则不启用
   - **工具调用（function calling）**：AI 可抓取给定网址内容（fetch-url）与解析 PDF 文件（pdf-parse），支持「帮我把这个题单链接的题目导入题单整理」等场景；需模型支持 function calling（DeepSeek / GPT / 智谱等均支持）
   - **多格式文档附件**：除图片外，消息可附带 PDF / Word / Excel / PPT / HTML / CSV / JSON / XML / EPub 文档（PDF ≤10 MiB、其余 ≤20 MiB），服务端本地提取文本注入对话（不依赖 Files API，兼容所有模型）；附件内容按会话级缓存，后续任意轮次 AI 都能引用已上传文件（不会"忘记"）
+  - **赛后复盘**：左栏「对话上下文」可关联一场参加过的比赛——列表 = 本地提交推导 + 平台参赛记录双通道：Codeforces/AtCoder 官方 API（user.rating / history）补齐 rated 场次并带排名与 Rating 变化；洛谷拉「参加过的比赛」（含团队赛/重现赛，按官方窗口归因 T 号比赛题提交）；牛客拉参赛历史（带排名/AC 数；比赛内提交本就随练习同步入库，按参赛窗口归因到场次）；本地推导兜底（CF 参赛信号与 gym ≥3 题集中作答、AtCoder 日历时间窗、计蒜客/QOJ 比赛题键）；代码源/LeetCode 暂不支持。参赛记录**落库持久化、增量拉取**：首次全量（单次翻页上限 30 页，触顶下次续拉），之后每 30 分钟过期、后台静默只拉新增（通常 1 页），打开页签直接读库秒出，牛客 Rating 未结算/不计分时不再显示平台占位值。选中后预填复盘请求，发送时注入比赛链接与该场逐题提交（时间线相对开赛、赛时/补题标注、难度与标签），AI 结构化点评（整体发挥 → 逐题卡点 → 联动弱项画像 → 补题建议）
   - **多会话并行**：每个会话独立标记生成状态，会话 A 回复中切到会话 B 照常输入发送，两个会话并行流式输出互不阻塞；生成中发送按钮变红色「停止」可中止（已收到部分保留并标注「已停止生成」）
   - 多会话管理：侧边栏会话记录，支持新建 / 切换 / 删除 / 置顶 / 双击重命名 / 拖拽排序，会话记录保存在浏览器本地
   - 切换模块再回来不丢会话；生成中切走，回来后回复自动出现
@@ -41,7 +42,7 @@
 - **复习库**：题目复评与遗忘曲线调度（到期数量提醒、正/负反馈调节复习间隔）
 - **模板库**：114 节内置算法模板课程（分 10 大类），学习状态/笔记/进度追踪；支持自建分类归类整理，整套模板可一键导出 Markdown / PDF 存档分享；自建模板支持 Tab 缩进的代码编辑框（Tab 缩进、Shift+Tab 反缩进、回车自动缩进，保留撤销栈）；思路备注配备 Markdown 编辑器（格式工具栏、粘贴图片、实时预览），支持完整 Markdown 渲染（GFM 表格/删除线/代码块 + 数学公式，行内 `$...$` 与块级 `$$...$$`，兼容 Obsidian 语法）；页头可切换缩进空格数（2/4，本地持久化）
 - **写题历史**：数据概览页一键查询「我在哪些平台写过哪些题」——按题目汇总（提交/AC 次数）或逐条提交两种视图，平台筛选、全部 AC / 未通过过滤，直达原题链接
-- **赛事中心**：Codeforces / AtCoder / 洛谷 / 牛客 / 计蒜客 五平台场次聚合（即将开始 / 已结束，单源失败自动降级），赛前选场、赛后补题
+- **赛事中心**：Codeforces / AtCoder / 洛谷 / 牛客 / 计蒜客 五平台场次聚合（即将开始 / 进行中 / 最近结束，单源失败自动降级），赛前选场、赛后补题；「我参加的」页签汇总各平台参赛记录（本地提交推导 + CF/AtCoder/洛谷/牛客参赛历史，带排名与 Rating 变化），一键跳转 AI 助手复盘该场
 - **日历打卡**：月历查看每天训练任务、跳转做题链接、逐任务打卡；打卡数据与计划页联动；连续打卡统计
 - **打卡提醒**：设置页配置每日提醒时间，应用打开期间到点若当天仍有未打卡任务，弹浏览器系统通知 + 页面内通知，点击直达日历；赛前提醒可配置开赛前 N 分钟通知（每场一次，点击直达赛事中心）
 - **软件更新**：双通道检测（正式版 + GitHub 最新提交构建）+ 应用内一键自更新（更新驱动挂在全局 Provider，发起更新后切到别的模块也不会中断下载/替换流程；刷新页面自动恢复更新进度）
@@ -238,14 +239,15 @@ GET  /api/reviews                 # 复习队列 | POST /api/reviews 新建复�
 GET  /api/reviews/due-count       # 到期复习数量
 POST /api/reviews/:id/feedback    # 复习反馈（记住/遗忘 → 调度下次复习）
 GET  /api/contests                # 五平台赛事聚合（CF/AtCoder/洛谷/牛客/计蒜客；?type=upcoming|finished&platform=&limit=）
+GET  /api/contests/participated   # 赛后复盘「我参加的」：读库秒出（落库持久化），过期平台触发后台增量刷新
+POST /api/contests/participated/refresh  # 强制同步拉取参赛记录（增量游标生效，单次翻页上限 30 页）
 GET  /api/plans | POST /api/plans/generate | POST /api/plans/import | GET /api/plans/:id | DELETE /api/plans/:id
                                    # generate body: { days?, startDate?, dailyTasks?, requirements? } ← requirements 为用户手写训练要求，注入 AI 提示词优先满足
                                    # import body: { raw, startDate?, days? } ← 任意 AI 返回的计划 JSON 文本
 PATCH /api/plans/tasks/:taskId    # 编辑单条任务（taskDate/title/kind/url/note，仅更新提交字段）
 DELETE /api/plans/tasks/:taskId   # 删除单条任务（打卡记录级联删除）
 POST /api/plans/:id/apply         # 应用 AI 计划修改（body: { raw }；按「日期+标题」匹配保留打卡）
-POST /api/ai/chat                # 全局 AI 助手对话（body: { messages, planId? }；注入练习汇总/弱项画像/能力值/赛事日历，planId 给定可改计划；user 消息可带 attachments: [{ fileId, filename? }]，≤8 个；支持 function calling 工具：联网搜索 / fetch-url 抓取网页 / pdf-parse 解析 PDF）
-POST /api/ai/chat                # 全局 AI 助手对话（body: { messages, planId? }；注入练习汇总/弱项画像/能力值/赛事日历/当前日期，planId 给定可改计划、无 planId 时可生成新计划；user 消息可带 attachments: [{ fileId, filename? }]，≤8 个，支持图片/PDF/多格式文档/文本代码；支持 function calling 工具：联网搜索 / fetch-url 抓取网页 / pdf-parse 解析 PDF）
+POST /api/ai/chat                # 全局 AI 助手对话（body: { messages, planId?, listId?, contestKey? }；注入练习汇总/弱项画像/能力值/赛事日历/当前日期，planId 给定可改计划、无 planId 时可生成新计划，listId 关联题单，contestKey 关联参加过的比赛做赛后复盘；user 消息可带 attachments: [{ fileId, filename? }]，≤8 个，支持图片/PDF/多格式文档/文本代码；支持 function calling 工具：联网搜索 / fetch-url 抓取网页 / pdf-parse 解析 PDF）
 POST /api/ai/extract-text         # 本地提取文档文本（原始字节流，header: content-type + x-file-name；PDF 用 unpdf ≤10MiB，Word/Excel/PPT/HTML/CSV/JSON/XML/EPub 用 docConverter ≤20MiB；返回 { text, pages?, warning? }）
 POST /api/ai/files               # 上传文件到 AI Files API（原始字节流直传，header: x-file-name / x-expires-seconds?；服务端转 multipart 转发上游，purpose=user_data，≤64MiB）
 GET  /api/ai/files               # 列出文件（?after=&limit=1-1000&order=asc|desc，游标分页）
@@ -294,7 +296,7 @@ npm test            # server 单元测试（schema/配置/适配器/导入/同�
 npm run typecheck   # 双端类型检查
 ```
 
-测试覆盖：数据库 schema 与约束、配置校验、CF/AtCoder/牛客赛事适配器归一化（mock + 真实网络验证）、CSV 解析、导入去重、增量同步、统计/弱项/趋势与手工计算一致性、AI 生成三路径（成功/失败/未配置）、更新双通道判定与 SHA256 校验解析、文档转换器（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）、Markdown 数学公式预处理管线、会话级附件内容缓存。
+测试覆盖：数据库 schema 与约束、配置校验、CF/AtCoder/牛客赛事适配器归一化（mock + 真实网络验证）、CSV 解析、导入去重、增量同步、统计/弱项/趋势与手工计算一致性、AI 生成三路径（成功/失败/未配置）、赛后复盘参赛推导（各平台判定信号/时间窗匹配/复盘上下文渲染）、更新双通道判定与 SHA256 校验解析、文档转换器（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）、Markdown 数学公式预处理管线、会话级附件内容缓存。
 
 ## 赞助
 

@@ -80,7 +80,12 @@ function migrate(db: Db): void {
     db.exec('ALTER TABLE deleted_problems ADD COLUMN normalized_key TEXT');
     db.exec("UPDATE deleted_problems SET normalized_key = LOWER(REPLACE(problem_key, ' ', '')) WHERE normalized_key IS NULL");
   }
-  // v0.7: submissions 增加提交语境列（contest/virtual/practice，目前仅 Codeforces 下发）：
+  // 赛后复盘·参赛记录的题目集列（JSON 数组）：归因排歧——窗口内的非本场题目（日常练习）不归因
+  const participatedCols = columnsOf('participated_contests');
+  if (participatedCols.size > 0 && !participatedCols.has('problem_ids')) {
+    db.exec('ALTER TABLE participated_contests ADD COLUMN problem_ids TEXT');
+  }
+    // v0.7: submissions 增加提交语境列（contest/virtual/practice，目前仅 Codeforces 下发）：
   // 能力值算法据此区分赛场 AC 与赛后补题，补题/练习题降权
   const submissionCols = columnsOf('submissions');
   if (!submissionCols.has('context')) db.exec('ALTER TABLE submissions ADD COLUMN context TEXT');

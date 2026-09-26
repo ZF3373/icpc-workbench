@@ -180,6 +180,7 @@ export interface UpdateProgress {
 // ---------- 复习库 / 今日训练 / 赛事中心（与 shared 类型对齐） ----------
 export type {
   ContestInfo,
+  ParticipatedContest,
   ReviewFeedback,
   ReviewItem,
   TodayBand,

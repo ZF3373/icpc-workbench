@@ -400,6 +400,44 @@ export interface ContestInfo {
   url: string;
 }
 
+// ---------- 赛后复盘（从提交记录推导「参加过的比赛」） ----------
+
+/**
+ * 一场从用户提交记录推导出的比赛。数据库没有比赛实体，比赛归属由
+ * problemKey / url 的结构（或与赛事日历的时间窗匹配）反解而来，
+ * evidence 说明该场是凭哪种信号判定为「参加过」。
+ */
+export interface ParticipatedContest {
+  /** 复盘关联键：`{platform}:{contestId}`（洛谷无比赛号时为日历场次 id） */
+  key: string;
+  platform: PlatformId;
+  /** 平台内比赛标识（CF: 1877 / AtCoder: abc380 / 计蒜客·QOJ: 数字 id）；洛谷为比赛 id */
+  contestId: string;
+  /** 赛名（与赛事日历匹配；匹配不到为 null，展示端回退「平台名 · contestId」） */
+  name: string | null;
+  url: string;
+  /** 官方开始时间（日历匹配到时），否则用首条提交时间近似 */
+  startTimeIso: string | null;
+  /** 官方结束时间（日历匹配到时），否则用末条提交时间近似 */
+  endTimeIso: string | null;
+  submissionCount: number;
+  problemCount: number;
+  /** 窗口内出现过 AC 的题数（首 AC 口径，与提交次数无关） */
+  acProblemCount: number;
+  /** 本场最后一次提交时间（列表按它倒序 = 最近复盘优先）；无提交时用官方结束时间 */
+  lastSubmittedAt: string;
+  /** 参赛判定依据：contest（现场）/ virtual / gym / key-pattern（计蒜客·QOJ 比赛题键）/ calendar-window / heuristic / joined-list（平台参赛记录） */
+  evidence: string;
+  /** 平台参赛记录携带的成绩（user.rating / AtCoder history / 牛客参赛历史等来源；本地推导为 null） */
+  source: {
+    rank: number | null;
+    rating: number | null;
+    ratingChange: number | null;
+    problemCount: number | null;
+    acceptedCount: number | null;
+  } | null;
+}
+
 // ---------- 知识点掌握度地图（刷题数据 × 模板课程联动） ----------
 
 /**

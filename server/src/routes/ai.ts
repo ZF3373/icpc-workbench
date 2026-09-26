@@ -22,7 +22,10 @@ import { effectiveAbility, renderAbilityEvidence, setAbilityOverride } from '../
 import { renderPlanContext, renderTemplate, today } from '../plans/planService.ts';
 import { CURRICULUM } from '../templates/curriculum.ts';
 import { fetchAllContests, selectContests } from '../contests/index.ts';
+import { renderContestContext, resolveContestGroup } from '../contests/participated.ts';
+import { loadParticipationSources, type ParticipationSources } from '../contests/participationSources.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
+import type { ContestInfo } from '../../../shared/src/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -86,6 +89,14 @@ export function aiRoutes(
      * 让测试不再依赖外网；生产不传，行为不变。
      */
     fetchContests?: typeof fetchAllContests;
+    /**
+     * 平台参赛记录源（可选注入，赛后复盘用）。默认实现会按绑定账号实时访问
+     * CF/AtCoder/洛谷/牛客（60min 进程内缓存），单测注入桩避免外网依赖。
+     */
+    fetchParticipationSources?: (
+      db: Db,
+      calendar: ContestInfo[] | undefined,
+    ) => Promise<ParticipationSources>;
   } = {},
 ): Router {
   const r = Router();
@@ -293,14 +304,16 @@ export function aiRoutes(
     }),
   );
 
-  // POST /api/ai/chat  body: { messages, planId?, listId? }
+  // POST /api/ai/chat  body: { messages, planId?, listId?, contestKey? }
   // 通用 AI 助手：注入练习数据汇总（含问题分布统计）+ 弱项画像 + 能力值；
   // planId 给定时附带计划上下文（支持 plan-modify 修改计划）；
-  // listId 给定时附带题单上下文（AI 可基于题单内容分析、建议练习）。
+  // listId 给定时附带题单上下文（AI 可基于题单内容分析、建议练习）；
+  // contestKey 给定时附带该场比赛链接与全部提交记录（赛后复盘，key 来自
+  // GET /api/contests/participated 的 ParticipatedContest.key）。
   // user 消息可携带 attachments（Files API 上传后的 file_id 列表），服务端转换为
   // OpenAI 多模态内容块（file 引用 + 文本）后调用上游。
   r.post('/chat', asyncHandler(async (req, res) => {
-    const { messages, planId, listId } = req.body ?? {};
+    const { messages, planId, listId, contestKey } = req.body ?? {};
     const turns = Array.isArray(messages) ? (messages as IncomingTurn[]) : [];
     const BAD_MSGS = 'messages 必填：1-60 条 {role: user|assistant, content} 轮次';
     if (turns.length === 0 || turns.length > 60) {
@@ -403,6 +416,12 @@ export function aiRoutes(
     if (!provider.enabled) {
       return res.status(400).json({ error: 'AI 未配置：请到「设置 → AI 配置」填写 OpenAI 兼容接口后使用', needConfig: true });
     }
+    // contestKey 可选：`{platform}:{contestId}` 复合键，取值来自
+    // GET /api/contests/participated（ParticipatedContest.key），非法格式直接 400
+    const CONTEST_KEY_RE = /^([a-z]+):[\w.-]{1,120}$/;
+    if (contestKey !== undefined && (typeof contestKey !== 'string' || !CONTEST_KEY_RE.test(contestKey))) {
+      return res.status(400).json({ error: 'contestKey 需为 `{platform}:{contestId}` 形式的字符串（来自 /api/contests/participated）' });
+    }
 
     const summary = buildPracticeSummary(db, DEFAULT_USER_ID);
     const summaryPrompt = renderSummaryForPrompt(summary);
@@ -430,10 +449,13 @@ export function aiRoutes(
       }
     }
 
-    // 近 14 天赛事日历（赛事源各自有 30/60 分钟缓存，失败降级为空，不阻断对话）
+    // 近 14 天赛事日历（赛事源各自有 30/60 分钟缓存，失败降级为空，不阻断对话）；
+    // 日历同时作为赛后复盘的赛名/时间窗来源（contestSection），一次拉取两处复用
+    let calendar: ContestInfo[] | undefined;
     let upcomingContests = '（赛事数据暂不可用）';
     try {
       const { contests: all } = await (opts.fetchContests ?? fetchAllContests)();
+      calendar = all;
       const upcoming = selectContests(all, { type: 'upcoming', limit: 10 })
         .filter((c) => {
           if (!c.startTimeIso) return false;
@@ -453,6 +475,21 @@ export function aiRoutes(
       // 赛事拉取失败不阻断 AI 对话
     }
 
+    // 赛后复盘：contestKey 给定时渲染该场比赛链接 + 全部逐题提交记录。
+    // 解析时合并平台侧参赛记录（user.rating / joinedContests 等，60min 缓存）——
+    // 推导不到（数据清理/换账号）降级为提示文案，不阻断对话
+    let contestSection = '（未关联比赛：赛后复盘能力不可用；用户想复盘某场比赛时请引导其先在本页左栏「赛后复盘」下拉选择参加过的比赛）';
+    if (typeof contestKey === 'string' && contestKey.trim() !== '') {
+      const loadedSources = await (opts.fetchParticipationSources ?? loadParticipationSources)(db, calendar);
+      const review = resolveContestGroup(db, contestKey.trim(), {
+        calendar,
+        sources: loadedSources.byPlatform,
+      });
+      contestSection = review
+        ? `## 关联的比赛（赛后复盘）\n${renderContestContext(review)}`
+        : '（关联的比赛不存在或暂无提交记录，可能数据已被清理或账号已换绑）';
+    }
+
     const system = renderTemplate(ASSISTANT_PROMPT_TEMPLATE(), {
       summary: summaryPrompt,
       currentDate: today(),
@@ -463,6 +500,7 @@ export function aiRoutes(
       abilityEvidence: renderAbilityEvidence(db, DEFAULT_USER_ID, summary),
       planSection,
       listSection,
+      contestSection,
       upcomingContests,
       // 模板库写入（template-add 块）可选的课程分类清单，跟内置课程大纲保持同步
       templateCategories: CURRICULUM.map((c) => `${c.key}（${c.name}）`).join('、'),

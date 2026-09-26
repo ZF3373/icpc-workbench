@@ -105,8 +105,9 @@ export interface PlanApplyResult {
 export const applyPlanModification = <T>(planId: number, raw: string): Promise<T> =>
   post<T>(`/api/plans/${planId}/apply`, { raw })
 
-export const chatWithAssistant = <T>(body: { messages: PlanChatTurn[]; planId?: number }): Promise<T> =>
-  post<T>('/api/ai/chat', body)
+export const chatWithAssistant = <T>(
+  body: { messages: PlanChatTurn[]; planId?: number; listId?: number; contestKey?: string },
+): Promise<T> => post<T>('/api/ai/chat', body)
 
 /** token 用量信息（服务端 SSE usage 事件） */
 export interface TokenUsage {
@@ -125,7 +126,7 @@ export interface TokenUsage {
  * @param signal AbortSignal，用户停止生成时中断
  */
 export async function chatWithAssistantStream(
-  body: { messages: PlanChatTurn[]; planId?: number },
+  body: { messages: PlanChatTurn[]; planId?: number; listId?: number; contestKey?: string },
   onDelta: (chunk: string) => void,
   signal?: AbortSignal,
   onReasoning?: (chunk: string) => void,

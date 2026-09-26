@@ -79,7 +79,7 @@ app.use('/api/reviews', reviewsRoutes(db));
 app.use('/api/uploads', uploadsRoutes({ uploadsDir: path.join(config.dataDir, 'uploads') }));
 app.use('/api/today', todayRoutes(db));
 app.use('/api/templates', templatesRoutes(db, { dataDir: config.dataDir }));
-app.use('/api/contests', contestsRoutes());
+app.use('/api/contests', contestsRoutes(db));
 app.use('/api/checkins', checkinsRoutes(db));
 app.use('/api/settings', settingsRoutes(db, config));
 app.use('/api/backups', backupsRoutes(db));

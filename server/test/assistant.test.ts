@@ -534,3 +534,68 @@ test('assistant: chat injects optional list context, nonexistent list falls back
     { enabled: true, reply: 'ok' },
   );
 });
+
+test('assistant: chat injects contest review context via contestKey, invalid key rejected', async () => {
+  await withServer(
+    async ({ db, aiBase, providerChats }) => {
+      // 一场 CF 比赛的提交（context=contest 触发参赛判定）
+      insertNormalized(db, DEFAULT_USER_ID, [
+        {
+          problem: { platform: 'codeforces', problemKey: '1877A', title: 'Rabbits', tags: [], difficulty: 800 },
+          verdict: 'WA',
+          submittedAt: '2026-09-20T14:10:00.000Z',
+          externalId: 'cf-1',
+          context: 'contest',
+        },
+        {
+          problem: { platform: 'codeforces', problemKey: '1877A', title: 'Rabbits', tags: [], difficulty: 800 },
+          verdict: 'AC',
+          submittedAt: '2026-09-20T14:20:00.000Z',
+          externalId: 'cf-2',
+          context: 'contest',
+        },
+      ]);
+
+      const res = await fetch(`${aiBase}/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: '请复盘这场比赛' }],
+          contestKey: 'codeforces:1877',
+        }),
+      });
+      assert.equal(res.status, 200);
+      await readSseReply(res);
+      const system = providerChats[0]!.system;
+      assert.match(system, /关联的比赛（赛后复盘）/);
+      assert.match(system, /codeforces:1877|1877A/);
+      assert.match(system, /出现 AC 1 题/);
+      assert.match(system, /赛后复盘（仅当上下文包含/, '提示词需带复盘职责说明');
+
+      // 推导不到的比赛 → 回退为提示文案，不阻断对话
+      const missing = await fetch(`${aiBase}/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'hi' }],
+          contestKey: 'codeforces:9999',
+        }),
+      });
+      assert.equal(missing.status, 200);
+      await readSseReply(missing);
+      assert.match(providerChats[1]!.system, /关联的比赛不存在或暂无提交记录/);
+
+      // 非法 key 格式 → 400
+      const bad = await fetch(`${aiBase}/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'hi' }],
+          contestKey: 'not-a-valid-key!!',
+        }),
+      });
+      assert.equal(bad.status, 400);
+    },
+    { enabled: true, reply: 'ok' },
+  );
+});

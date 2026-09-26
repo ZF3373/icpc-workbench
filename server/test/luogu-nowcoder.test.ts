@@ -733,3 +733,4 @@ test('luogu: 题目详情风控失败 → 退避后重试补全，而非进程�
   assert.equal(second[0].problem.difficulty, 800, '重试成功 → 难度随提交补全（洛谷 1 档 → CF800）');
   assert.equal(second[0].problem.title, 'A+B Problem');
 });
+

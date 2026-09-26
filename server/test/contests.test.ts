@@ -226,7 +226,8 @@ test('contests route: type=running 只返回进行中的比赛（express 路由�
     return new Response('', { status: 404 }); // 其余数据源失败 → 降级跳过
   }) as typeof fetch;
   const app = express();
-  app.use('/api/contests', contestsRoutes(fetchStub));
+  const { createDb } = await import('../src/db/index.ts');
+  app.use('/api/contests', contestsRoutes(createDb(':memory:'), fetchStub));
   const srv = app.listen(0);
   const port = (srv.address() as import('node:net').AddressInfo).port;
   const base = `http://127.0.0.1:${port}/api/contests`;

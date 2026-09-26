@@ -33,9 +33,10 @@ import {
   type PlanChatTurn,
   type TokenUsage,
 } from '../api'
-import type { PlanListItem } from '../types'
+import type { ParticipatedContest, PlanListItem } from '../types'
 import Markdown from '../components/Markdown'
 import PageHeader from '../components/PageHeader'
+import { platformName } from '../ui'
 import { createStreamBuffer } from '../streamBuffer'
 import { rememberSessionFiles, getSessionFileText, forgetSessionFiles } from './sessionFiles'
 import {
@@ -88,6 +89,8 @@ interface ChatSession {
   messages: ChatMsg[]
   planId: number | undefined
   listId: number | undefined
+  /** 赛后复盘关联的比赛（ParticipatedContest.key，如 codeforces:1877），持久化在会话上 */
+  contestKey?: string
   createdAt: number
   updatedAt: number
   pinned: boolean
@@ -123,6 +126,7 @@ function loadFromStorage(): ChatSession[] {
         messages: s.messages,
         planId: typeof s.planId === 'number' ? s.planId : undefined,
         listId: typeof s.listId === 'number' ? s.listId : undefined,
+        contestKey: typeof s.contestKey === 'string' && s.contestKey !== '' ? s.contestKey : undefined,
         createdAt: s.createdAt,
         updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : s.createdAt,
         pinned: !!s.pinned,
@@ -147,7 +151,7 @@ function newSessionId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
 }
 
-function createSession(planId?: number, listId?: number): ChatSession {
+function createSession(planId?: number, listId?: number, contestKey?: string): ChatSession {
   const now = Date.now()
   return {
     id: newSessionId(),
@@ -155,6 +159,7 @@ function createSession(planId?: number, listId?: number): ChatSession {
     messages: [],
     planId,
     listId,
+    contestKey,
     createdAt: now,
     updatedAt: now,
     pinned: false,
@@ -260,6 +265,17 @@ function updateActiveSessionListId(listId: number | undefined): void {
   }))
 }
 
+function updateActiveSessionContestKey(contestKey: string | undefined): void {
+  setChatState((prev) => ({
+    ...prev,
+    sessions: prev.sessions.map((s) => (s.id === prev.activeId ? { ...s, contestKey } : s)),
+  }))
+}
+
+/** 选中比赛后预填的复盘请求（输入框已有内容时不覆盖，用户可自行增删要求再发送） */
+const REVIEW_REQUEST_TEXT =
+  '请复盘这场比赛：结合我的提交记录点评整体发挥与逐题表现，指出卡点与改进方向，并给出补题建议。'
+
 /** 更新当前会话的消息列表（async 回调安全：直接写 store，不依赖组件挂载） */
 function patchActiveSessionMessages(
   sessionId: string,
@@ -360,11 +376,14 @@ export default function Assistant() {
   const messages = activeSession?.messages ?? []
   const planId = activeSession?.planId
   const listId = activeSession?.listId
+  const contestKey = activeSession?.contestKey
   const sending = sendingIds.has(activeId)
 
   const [plans, setPlans] = useState<PlanListItem[]>([])
   /** 题单列表（关联上下文下拉用，只要 id/标题/题数） */
   const [problemLists, setProblemLists] = useState<Array<{ id: number; title: string; item_count: number }>>([])
+  /** 参加过的比赛（赛后复盘下拉用）：从提交记录推导，加载失败时静默为空列表 */
+  const [contests, setContests] = useState<ParticipatedContest[]>([])
   const [ability, setAbility] = useState<AbilityInfo | null>(null)
   const [abilityError, setAbilityError] = useState(false)
   const [needConfig, setNeedConfig] = useState(false)
@@ -677,6 +696,39 @@ export default function Assistant() {
         })
       })
       .catch(() => {})
+    // 参加过的比赛（赛后复盘）：加载失败静默为空。?contest=<key> 从赛事中心
+    // 「去 AI 复盘」跳转而来：新建专属会话（不占用当前会话）并预填复盘请求；
+    // 悬空 contestKey（数据清理/换账号后推导不出该场）同样清理，避免失效关联
+    get<{ contests: ParticipatedContest[] }>('/api/contests/participated')
+      .then(({ contests: list }) => {
+        setContests(list)
+        const urlContest = searchParams.get('contest')
+        if (urlContest !== null) setSearchParams({}, { replace: true })
+        const valid = urlContest && list.some((c) => c.key === urlContest) ? urlContest : undefined
+        if (valid) {
+          const session = createSession(undefined, undefined, valid)
+          setChatState((prev) => ({
+            ...prev,
+            sessions: [session, ...prev.sessions],
+            activeId: session.id,
+            input: REVIEW_REQUEST_TEXT,
+          }))
+          return
+        }
+        setChatState((prev) => {
+          const active = prev.sessions.find((s) => s.id === prev.activeId)
+          if (active?.contestKey !== undefined && !list.some((c) => c.key === active.contestKey)) {
+            return {
+              ...prev,
+              sessions: prev.sessions.map((s) =>
+                s.id === prev.activeId ? { ...s, contestKey: undefined } : s,
+              ),
+            }
+          }
+          return prev
+        })
+      })
+      .catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -736,6 +788,7 @@ export default function Assistant() {
     const nextMessages: ChatMsg[] = [...session.messages, userMsg]
     const sendPlanId = session.planId
     const sendListId = session.listId
+    const sendContestKey = session.contestKey
 
     // 写入用户消息 + 进入 sending 态（标题取首条消息前 30 字）
     setChatState((prev) => ({
@@ -814,6 +867,7 @@ export default function Assistant() {
           })),
           ...(sendPlanId !== undefined ? { planId: sendPlanId } : {}),
           ...(sendListId !== undefined ? { listId: sendListId } : {}),
+          ...(sendContestKey !== undefined ? { contestKey: sendContestKey } : {}),
         },
         (delta) => buf.pushDelta(delta),
         ac.signal,
@@ -1367,6 +1421,43 @@ export default function Assistant() {
             />
             <p style={{ fontSize: 12, color: '#8993a2', margin: '8px 0 0' }}>
               关联后 AI 可基于题单内容分析分类、推荐优先刷哪些题。
+            </p>
+            <Select
+              style={{ width: '100%', marginTop: 8 }}
+              placeholder="赛后复盘：选择参加过的比赛（可选）"
+              value={contestKey}
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              onClear={() => updateActiveSessionContestKey(undefined)}
+              onChange={(v) => {
+                updateActiveSessionContestKey(v)
+                // 选中即预填复盘请求（输入框已有草稿时不覆盖），用户可补充要求再发送
+                if (v && !input.trim()) {
+                  setChatState((prev) => ({ ...prev, input: REVIEW_REQUEST_TEXT }))
+                }
+              }}
+              options={contests.map((c) => {
+                const label = c.name ?? `${platformName(c.platform)} · ${c.contestId}`
+                const d = new Date(c.startTimeIso ?? c.lastSubmittedAt)
+                const date = Number.isFinite(d.getTime()) ? ` · ${d.getMonth() + 1}/${d.getDate()}` : ''
+                const counts =
+                  c.submissionCount === 0 ? '未同步提交' : `${c.problemCount} 题 AC ${c.acProblemCount}`
+                return {
+                  value: c.key,
+                  label: `${label}（${platformName(c.platform)}${date} · ${counts}）`,
+                }
+              })}
+              notFoundContent={
+                <span style={{ fontSize: 12, color: '#8993a2' }}>
+                  暂无可复盘的比赛——先到「题目管理」同步各平台提交记录
+                </span>
+              }
+            />
+            <p style={{ fontSize: 12, color: '#8993a2', margin: '8px 0 0' }}>
+              选中后 AI 会拿到比赛链接与该场提交记录进行复盘。列表来自你的提交记录与各平台参赛记录
+              （CF / AtCoder / 洛谷 / 牛客 / 计蒜客 / QOJ）；代码源、LeetCode 暂不支持；标注「未同步提交」的场次
+              AI 会结合平台排名成绩与比赛链接点评。
             </p>
           </Card>
 

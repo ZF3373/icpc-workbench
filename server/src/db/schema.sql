@@ -328,3 +328,41 @@ CREATE TABLE IF NOT EXISTS problem_list_items (
   UNIQUE (list_id, platform, problem_key)
 );
 CREATE INDEX IF NOT EXISTS idx_problem_list_items_list ON problem_list_items(list_id, category, position);
+
+
+-- 赛后复盘·平台参赛记录（contests/participationSources.ts 增量拉取入库；
+-- 账号换绑后旧账号的记录保留，复盘列表合并展示各账号的参赛历史）
+CREATE TABLE IF NOT EXISTS participated_contests (
+  user_id     INTEGER NOT NULL,
+  platform    TEXT NOT NULL,
+  account     TEXT NOT NULL,
+  contest_id  TEXT NOT NULL,
+  name        TEXT,
+  url         TEXT,
+  start_ms    INTEGER,
+  end_ms      INTEGER,
+  contest_rank INTEGER,
+  rating      INTEGER,
+  rating_change INTEGER,
+  problem_count INTEGER,
+  accepted_count INTEGER,
+  problem_ids  TEXT,
+  fetched_at  TEXT NOT NULL,
+  PRIMARY KEY (user_id, platform, account, contest_id)
+);
+CREATE INDEX IF NOT EXISTS idx_participated_platform ON participated_contests(user_id, platform);
+
+-- 参赛记录拉取状态（增量游标）：
+-- backlog_done=已完整翻到列表末尾（此后才允许「整页无新内容即提前终止」）；
+-- oldest_ms=已覆盖到的最旧比赛时间；truncated=上次触及单次上限仍有更早历史
+CREATE TABLE IF NOT EXISTS participation_sync (
+  user_id     INTEGER NOT NULL,
+  platform    TEXT NOT NULL,
+  account     TEXT NOT NULL,
+  last_sync_at TEXT,
+  backlog_done INTEGER NOT NULL DEFAULT 0,
+  oldest_ms   INTEGER,
+  truncated   INTEGER NOT NULL DEFAULT 0,
+  last_error  TEXT,
+  PRIMARY KEY (user_id, platform, account)
+);
