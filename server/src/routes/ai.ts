@@ -22,6 +22,7 @@ import { effectiveAbility, renderAbilityEvidence, setAbilityOverride } from '../
 import { renderPlanContext, renderTemplate, today } from '../plans/planService.ts';
 import { CURRICULUM } from '../templates/curriculum.ts';
 import { fetchAllContests, selectContests } from '../contests/index.ts';
+import { calendarCache } from '../contests/calendarCache.ts';
 import { renderContestContext, resolveContestGroup } from '../contests/participated.ts';
 import { loadParticipationSources, type ParticipationSources } from '../contests/participationSources.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
@@ -450,11 +451,16 @@ export function aiRoutes(
     }
 
     // 近 14 天赛事日历（赛事源各自有 30/60 分钟缓存，失败降级为空，不阻断对话）；
-    // 日历同时作为赛后复盘的赛名/时间窗来源（contestSection），一次拉取两处复用
+    // 日历同时作为赛后复盘的赛名/时间窗来源（contestSection），一次拉取两处复用。
+    // 默认走持久化缓存（SWR）：重启后首次对话不再等 5 个平台源的网络拉取；
+    // 测试注入 fetchContests 时维持原样直连（不经缓存，避免跨用例串数据）
     let calendar: ContestInfo[] | undefined;
     let upcomingContests = '（赛事数据暂不可用）';
     try {
-      const { contests: all } = await (opts.fetchContests ?? fetchAllContests)();
+      const all = opts.fetchContests
+        ? (await opts.fetchContests()).contests
+        : await calendarCache.load(db);
+      if (!all) throw new Error('赛事日历不可用');
       calendar = all;
       const upcoming = selectContests(all, { type: 'upcoming', limit: 10 })
         .filter((c) => {

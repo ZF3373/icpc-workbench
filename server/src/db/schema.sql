@@ -366,3 +366,13 @@ CREATE TABLE IF NOT EXISTS participation_sync (
   last_error  TEXT,
   PRIMARY KEY (user_id, platform, account)
 );
+
+-- 赛事日历聚合缓存（单行；contests/calendarCache.ts 读写）：
+-- 日历的进程内缓存重启后清空，而「我参加的」列表要靠日历给本地推导的比赛
+-- 补赛名/时间窗 —— 不落库的话每次重开软件首屏都要等 5 个平台源的网络请求。
+-- 日历是公开慢变数据，落库后重启即恢复：新鲜直用，过期先回旧值再后台刷新。
+CREATE TABLE IF NOT EXISTS calendar_cache (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  fetched_at TEXT NOT NULL,
+  contests   TEXT NOT NULL
+);
