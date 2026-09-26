@@ -783,6 +783,68 @@ check('\\boxed 的容器 class 在自带样式表里有布局规则（不会塌�
   )
 })
 
+/* ---------------------------- [9] 表格/段落里的 <br>（用户反馈） ---------------------------- */
+
+console.log('\n[9] AI 输出里的 <br>：放行这一个标签，其余 HTML 仍转义')
+
+/**
+ * GFM 表格单元格内换行只有 `<br>` 一种惯用写法（真实换行符会截断表格行），
+ * 而 react-markdown 默认把原始 HTML 转义成字面文本 —— AI 一在单元格里换行，
+ * 用户就看见一串 `<br>`。修复后：raw 阶段白名单放行无属性无内容的 `<br>`。
+ */
+
+/** 用户反馈的原型场景：单元格里「公式 + <br> + 公式 + <br> + 说明」 */
+const BR_TABLE = [
+  '| 问题 | 修正 |',
+  '| --- | --- |',
+  '| 使用公式：<br>$z = x + y$<br>若 $z = 0$ 则计数++ | 改为 long long |',
+].join('\n')
+
+const brElementCount = (html) => (html.match(/<br\s*\/?>/g) ?? []).length
+
+check('表格单元格里的 <br> 渲染成真正的换行，表格结构不破坏', () => {
+  const html = render(BR_TABLE, false)
+  const text = visibleText(html)
+  assert.ok(brElementCount(html) >= 2, `单元格内没有 br 元素: ${html.slice(0, 300)}`)
+  assert.ok(!text.includes('<br'), `<br> 仍是字面文本: ${text}`)
+  assert.ok(html.includes('<table>'), '表格结构被破坏')
+  assert.equal(tableHeaderCount(html), 2, '表头数不对')
+  assert.ok(html.includes('class="katex"'), '单元格里的公式没有渲染成 KaTeX')
+})
+
+check('流式路径同样放行 <br>', () => {
+  const html = render(BR_TABLE, true)
+  assert.ok(brElementCount(html) >= 2, `流式渲染没有 br 元素: ${html.slice(0, 300)}`)
+  assert.ok(!visibleText(html).includes('<br'), visibleText(html))
+  assert.ok(html.includes('<table>'), '流式下表格结构被破坏')
+})
+
+check('段落里的 <br> 也换行（含连续两个）', () => {
+  const html = render('第一行<br>第二行<br><br>第四行', false)
+  assert.ok(brElementCount(html) >= 3, `段落里没有 br 元素: ${html.slice(0, 300)}`)
+  assert.ok(!visibleText(html).includes('<br'), visibleText(html))
+})
+
+check('红线：其余 HTML 仍按纯文本转义（安全姿态不变）', () => {
+  const html = render('普通 <b>加粗</b>，以及 <img src=x onerror=alert(1)>，还有 <script>alert(1)</script>', false)
+  assert.ok(html.includes('&lt;b&gt;'), `<b> 没有被转义: ${html.slice(0, 300)}`)
+  assert.ok(!/<b[ >]/.test(html), '放行了 <b>')
+  assert.ok(!html.includes('<img'), '放行了 <img>')
+  assert.ok(!html.includes('<script'), '放行了 <script>')
+  // 转义后的纯文本仍可见（内容不丢、只是惰性）
+  assert.ok(visibleText(html).includes('onerror=alert(1)'), 'onerror 文本被丢掉')
+})
+
+check('代码里的 <br> 保持字面（那是代码内容，不是换行）', () => {
+  const html = render('行内 `<br>`，以及：\n\n```html\n<div><br></div>\n```', false)
+  assert.ok(html.includes('<code>&lt;br&gt;</code>'), `行内代码里的 <br> 没有保持字面: ${html.slice(0, 300)}`)
+  const cardStart = html.indexOf('md-code-card')
+  const card = html.slice(cardStart, html.indexOf('</pre>', cardStart) + 6)
+  // 高亮会把代码切成 span，解码后比对内容：br 仍是字面字符，而不是元素
+  assert.ok(!/<br\s*\/?>/.test(card), '代码块里出现了真 br 元素')
+  assert.ok(visibleText(card).includes('<div><br></div>'), `代码块里的 <br> 没有保持字面: ${visibleText(card)}`)
+})
+
 /* ---------------------------- 收尾 ---------------------------- */
 
 console.log(`\n${failures === 0 ? '全部通过' : '存在失败'}：${checks - failures}/${checks} 项断言组通过\n`)

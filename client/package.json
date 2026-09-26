@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
     "lint": "oxlint",
     "test": "tsx --test test/**/*.test.ts",
-    "test:strip": "node --experimental-strip-types test/markdownMath.test.ts && node --experimental-strip-types test/markdownStream.test.ts",
+    "test:strip": "node --experimental-strip-types test/markdownMath.test.ts && node --experimental-strip-types test/markdownStream.test.ts && node --experimental-strip-types test/markdownBr.test.ts",
     "check:render": "node test/renderCheck.mjs",
     "check:gate": "node --experimental-transform-types test/apiGate.check.mjs",
     "preview": "vite preview"

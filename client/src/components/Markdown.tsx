@@ -12,6 +12,7 @@ import { preprocessMath } from './markdownMath.ts'
 import { normalizeLang } from './markdownCode.ts'
 import { repairStreamingMarkdown, findStableBlockSplit } from './markdownStream.ts'
 import { reportMathIssues } from './markdownDiag.ts'
+import { rehypeBrAllowlist } from './markdownBr.ts'
 
 /**
  * Markdown 渲染（AI 回复 / 模板思路 / 笔记 / 题单描述）：
@@ -31,8 +32,9 @@ import { reportMathIssues } from './markdownDiag.ts'
  *      前段字符串没变化就被 memo 整段跳过，只有尾段每帧重解析 ——
  *      这是长回复流式输出时避免重复渲染与抖动的关键。
  *
- * 安全：不引入 rehype-raw，AI 输出里的 HTML 一律按纯文本转义；链接再经
- * urlTransform 过滤协议；KaTeX 关闭 trust（禁掉 \href 等可跳转命令）。
+ * 安全：不引入 rehype-raw，AI 输出里的 HTML 一律按纯文本转义 —— 唯一例外是
+ * 无属性无内容的 `<br>`（GFM 表格单元格内换行的唯一写法，见 markdownBr.ts）；
+ * 链接再经 urlTransform 过滤协议；KaTeX 关闭 trust（禁掉 \href 等可跳转命令）。
  */
 
 /** 代码卡内超过该行数时折叠，避免 AI 贴几百行代码把消息撑爆 */
@@ -232,6 +234,9 @@ function MarkdownBody({ text, streaming = false }: MarkdownProps) {
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[
+          // `<br>` 白名单：GFM 表格单元格内换行的唯一写法，零注入面（见 markdownBr）；
+          // 必须在任何 rehype 插件里跑在 react-markdown 的 raw→文本转义之前，放最前
+          rehypeBrAllowlist,
           // KaTeX：
           // - `throwOnError: false` —— 公式写错时退回源码文本，不整段崩掉；
           // - `trust: false` —— 禁掉 `\href`/`\url`/`\includegraphics` 等可跳转/外链命令；
