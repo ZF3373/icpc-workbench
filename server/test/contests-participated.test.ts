@@ -324,7 +324,7 @@ test('renderContestContext：元信息 + 时间线偏移 + 赛时/补题标注',
     assert.match(md, /- 比赛：Codeforces Round 900 \(Div\. 2\)（Codeforces）/);
     assert.match(md, /- 比赛链接：https:\/\/codeforces\.com\/contest\/1877/);
     assert.match(md, /概况：3 题中出现 AC 2 题，共 4 次提交（现场参赛）/);
-    assert.match(md, /#### 1877A Rabbits（难度 800｜tags: math）/);
+    assert.match(md, /#### 1877A Rabbits（难度 800｜官方 tags: math（Codeforces 官方标注））/);
     assert.match(md, /\+10:00 WA（赛时） → \+20:00 AC（赛时）/);
     assert.match(md, /\+12:00:00 AC（补题）/, '相对官方开始时间的偏移跨天也能算');
     assert.match(md, /#### 1877B[\s\S]*?- 结果：未通过/);
@@ -346,7 +346,7 @@ test('renderContestContext：题目数与单题时间线超限截断', () => {
     submittedAt,
     context: 'contest',
   });
-  // 45 题 × 1 发 → 题目数上限 40 截断
+  // 45 题 × 1 发 → 题目数上限 24 截断（24 已覆盖 CF/ABC/ICPC 单场实际规模的上限）
   const manyProblems: ContestReviewData = {
     contest: {
       key: 'codeforces:1',
@@ -364,9 +364,11 @@ test('renderContestContext：题目数与单题时间线超限截断', () => {
       source: null,
     },
     submissions: Array.from({ length: 45 }, (_, i) => row(i, new Date(Date.parse('2026-09-20T14:00:00.000Z') + i * 60_000).toISOString())),
+    problemSetKnown: false,
+    unsubmittedProblems: [],
   };
   const md = renderContestContext(manyProblems);
-  assert.match(md, /明细已截断：仅渲染前 40 题 \/ 40 次提交/);
+  assert.match(md, /明细已截断：仅渲染前 24 题 \/ 24 次提交/);
 
   // 单题 15 发 → 保留首尾各 5 条，中间省略
   const single: ContestReviewData = {
@@ -375,11 +377,62 @@ test('renderContestContext：题目数与单题时间线超限截断', () => {
       ...row(0, new Date(Date.parse('2026-09-20T14:00:00.000Z') + i * 60_000).toISOString()),
       verdict: i === 14 ? 'AC' : 'WA',
     })),
+    problemSetKnown: false,
+    unsubmittedProblems: [],
   };
   const md2 = renderContestContext(single);
   assert.match(md2, /中间省略 5 次/);
   assert.match(md2, /\+00:00 WA（赛时）/, '开头的时间线保留');
   assert.match(md2, /\+14:00 AC（赛时）/, '最终的 AC 保留在末尾');
+});
+
+test('renderContestContext：总量预算耗尽也不让后段题只剩空时间线（每题至少一条）', () => {
+  const base = Date.parse('2026-09-20T14:00:00.000Z');
+  const rowsOf = (key: string, n: number, verdict: string): ContestReviewData['submissions'] =>
+    Array.from({ length: n }, (_, i) => ({
+      platform: 'codeforces',
+      problemKey: key,
+      title: `T ${key}`,
+      url: null,
+      difficulty: 1800,
+      tags: [],
+      verdict,
+      submittedAt: new Date(base + i * 60_000).toISOString(),
+      context: 'contest',
+    }));
+  // 第一题 500 次 WA 吃满总量：预算是按渲染顺序消耗的，若不预留，
+  // 后两题（往往是最该复盘的难题）会连一条时间线都分不到
+  const data: ContestReviewData = {
+    contest: {
+      key: 'codeforces:1900',
+      platform: 'codeforces',
+      contestId: '1900',
+      name: null,
+      url: '',
+      startTimeIso: '2026-09-20T14:00:00.000Z',
+      endTimeIso: '2026-09-20T20:00:00.000Z',
+      submissionCount: 502,
+      problemCount: 3,
+      acProblemCount: 0,
+      lastSubmittedAt: '2026-09-20T20:00:00.000Z',
+      evidence: 'contest',
+      source: null,
+    },
+    submissions: [...rowsOf('500A', 500, 'WA'), ...rowsOf('501A', 1, 'WA'), ...rowsOf('502A', 1, 'WA')],
+    problemSetKnown: false,
+    unsubmittedProblems: [],
+  };
+  const md = renderContestContext(data);
+  for (const key of ['500A', '501A', '502A']) {
+    assert.match(md, new RegExp(`#### ${key} `), `${key} 必须仍有明细行`);
+  }
+  assert.match(md, /- 提交 500 次：/, '第一题给出总提交次数');
+  assert.match(md, /其余因总量截断省略/, '被总量截断要注明');
+  assert.equal(
+    (md.match(/- 提交 1 次：\+00:00 WA（赛时）/g) ?? []).length,
+    2,
+    '后段两题各保留一条时间线，而不是空时间线',
+  );
 });
 
 // ---------- 平台参赛记录（权威数据源）合并 ----------
@@ -388,9 +441,11 @@ import type { AuthoritativeContest, FetchParticipationOptions } from '../src/con
 import {
   fetchAtcoderParticipation,
   fetchCodeforcesParticipation,
+  fetchContestProblemSet,
   fetchLuoguJoinedContests,
   fetchNowcoderJoinedContests,
   loadParticipationSources,
+  readParticipationSnapshot,
 } from '../src/contests/participationSources.ts';
 
 function srcEntry(
@@ -519,7 +574,7 @@ test('牛客合成组：练习页已含比赛提交（context=null），按权�
           ratingChange: 59,
           problemCount: 6,
           acceptedCount: 4,
-          problemIds: ['323650', '323656'],
+          problems: [{ id: '323650' }, { id: '323656' }],
         }),
       ],
     };
@@ -543,7 +598,7 @@ test('牛客合成组：练习页已含比赛提交（context=null），按权�
           srcEntry('nowcoder', '140489', {
             startTimeMs: Date.parse('2026-09-20T11:00:00.000Z'),
             endTimeMs: Date.parse('2026-09-20T13:00:00.000Z'),
-            problemIds: null,
+            problems: null,
           }),
         ],
       },
@@ -753,4 +808,213 @@ test('拉取落库与增量：fresh 状态不发请求，过期平台重拉并�
     db.close();
   }
 });
+
+// ---------- 赛时未提交的题（题目集 − 本地提交） ----------
+
+test('复盘上下文列出「赛时未提交的题」：题目集已知但本地无提交的题带题号/题名/链接', () => {
+  const db = createDb(':memory:');
+  try {
+    seedAll(db, [
+      { platform: 'nowcoder', problemKey: '323650', title: '小月的贴纸', verdict: 'AC', submittedAt: '2026-09-20T11:10:10.000Z', externalId: '84759685', context: null },
+      { platform: 'nowcoder', problemKey: '323656', title: '小月的字带', verdict: 'AC', submittedAt: '2026-09-20T12:13:07.000Z', externalId: '84764578', context: null },
+    ]);
+    const sources = {
+      nowcoder: [
+        srcEntry('nowcoder', '140489', {
+          name: '牛客周赛 Round 162',
+          startTimeMs: Date.parse('2026-09-20T11:00:00.000Z'),
+          endTimeMs: Date.parse('2026-09-20T13:00:00.000Z'),
+          problemCount: 4,
+          acceptedCount: 2,
+          problems: [
+            { id: '323650', index: 'A', title: '小月的贴纸' },
+            { id: '323656', index: 'B', title: '小月的字带' },
+            { id: '323662', index: 'C', title: '小月的项链' },
+            { id: '323670', index: 'D', title: '小月的棋盘' },
+          ],
+        }),
+      ],
+    };
+    const review = resolveContestGroup(db, 'nowcoder:140489', { sources })!;
+    assert.equal(review.problemSetKnown, true);
+    assert.deepEqual(
+      review.unsubmittedProblems.map((p) => `${p.index} ${p.title}`),
+      ['C 小月的项链', 'D 小月的棋盘'],
+      '未提交题 = 题目集 − 本地提交',
+    );
+
+    const md = renderContestContext(review);
+    assert.match(md, /概况：全场 4 题中 AC 2 题、未提交 2 题，共 2 次提交/, '概况按题目集全集口径');
+    assert.match(md, /### 未提交的题（题目集已知但本地无任何提交，共 2 题）/);
+    assert.match(md, /- C 小月的项链/);
+    assert.match(md, /- D 小月的棋盘，题目链接：https:\/\/ac\.nowcoder\.com\/acm\/problem\/323670/);
+  } finally {
+    db.close();
+  }
+});
+
+test('零提交场次：题目集已知时全部题目以「未提交的题」呈现', () => {
+  const db = createDb(':memory:');
+  try {
+    const sources = {
+      nowcoder: [
+        srcEntry('nowcoder', '140237', {
+          name: '牛客挑战赛 92',
+          rank: 371,
+          problems: [
+            { id: '320779', index: 'A', title: '无理无智' },
+            { id: '320781', index: 'B', title: '绝体绝命' },
+          ],
+        }),
+      ],
+    };
+    const review = resolveContestGroup(db, 'nowcoder:140237', { sources })!;
+    assert.equal(review.submissions.length, 0);
+    assert.equal(review.unsubmittedProblems.length, 2);
+    const md = renderContestContext(review);
+    assert.match(md, /### 未提交的题（题目集已知但本地无任何提交，共 2 题）/);
+    assert.match(md, /- A 无理无智/);
+    assert.match(md, /逐条提交记录尚未同步到本地/, '缺提交的降级说明保留');
+  } finally {
+    db.close();
+  }
+});
+
+test('旧格式 problem_ids（纯 id 字符串数组）兼容解析：归因与题目集判定不受影响', () => {
+  const db = createDb(':memory:');
+  try {
+    seedAll(db, [
+      { platform: 'nowcoder', problemKey: '323650', title: '小月的贴纸', verdict: 'AC', submittedAt: '2026-09-20T11:10:10.000Z', externalId: '84759685', context: null },
+      // 窗口内但不在题目集里的题库题 → 不归因
+      { platform: 'nowcoder', problemKey: '320640', title: '小月的立方体', verdict: 'AC', submittedAt: '2026-09-20T11:04:31.000Z', externalId: '84576646', context: null },
+    ]);
+    // 直接以旧格式（string[]）写入 problem_ids 列，模拟升级前的存量数据
+    db.prepare(
+      `INSERT INTO participated_contests
+         (user_id, platform, account, contest_id, name, url, start_ms, end_ms,
+          contest_rank, rating, rating_change, problem_count, accepted_count, problem_ids, fetched_at)
+       VALUES (1, 'nowcoder', 'nc-uid', '140489', '牛客周赛 Round 162', 'https://ac.nowcoder.com/acm/contest/140489',
+               ?, ?, 371, 876, 59, 6, 4, ?, ?)`,
+    ).run(
+      String(Date.parse('2026-09-20T11:00:00.000Z')),
+      String(Date.parse('2026-09-20T13:00:00.000Z')),
+      JSON.stringify(['323650', '323656']),
+      new Date().toISOString(),
+    );
+    db.prepare("UPDATE submissions SET account = 'nc-uid' WHERE platform = 'nowcoder'").run();
+
+    const snapshot = readParticipationSnapshot(db);
+    assert.ok(snapshot.byPlatform.nowcoder, '存量行应读出参赛记录');
+    const review = resolveContestGroup(db, 'nowcoder:140489', { sources: snapshot.byPlatform })!;
+    assert.equal(review.problemSetKnown, true, '旧格式解析后题目集视为已知');
+    assert.equal(review.submissions.length, 1, '归因仍按旧题目集排歧：窗口内的题库练习题不归因');
+    assert.deepEqual(
+      review.unsubmittedProblems.map((p) => p.id),
+      ['323656'],
+    );
+  } finally {
+    db.close();
+  }
+});
+
+// ---------- 复盘时的题目集按需补拉（fetchContestProblemSet） ----------
+
+function jsonFetch(routes: Record<string, unknown>): { fetchFn: typeof fetch; calls: () => number } {
+  const calls: string[] = [];
+  const fetchFn = (async (input: string | URL | Request) => {
+    const u = String(input);
+    calls.push(u);
+    for (const [needle, body] of Object.entries(routes)) {
+      if (u.includes(needle)) return new Response(JSON.stringify(body), { status: 200 });
+    }
+    return new Response(JSON.stringify({ message: 'not found' }), { status: 404 });
+  }) as unknown as typeof fetch;
+  return { fetchFn, calls: () => calls.length };
+}
+
+function seedAuthoritativeRow(db: Db, platform: string, contestId: string): void {
+  db.prepare(
+    `INSERT INTO participated_contests
+       (user_id, platform, account, contest_id, name, url, start_ms, end_ms,
+        contest_rank, rating, rating_change, problem_count, accepted_count, problem_ids, fetched_at)
+     VALUES (1, ?, 'acc', ?, ?, '', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?)`,
+  ).run(platform, contestId, `${platform} 比赛 ${contestId}`, new Date().toISOString());
+}
+
+test('fetchContestProblemSet：CF contest.standings 解析 index/title/rating 并落库，退避期内不重拉', async () => {
+  const db = createDb(':memory:');
+  try {
+    seedAuthoritativeRow(db, 'codeforces', '990001');
+    const { fetchFn, calls } = jsonFetch({
+      'contest.standings': {
+        status: 'OK',
+        result: {
+          problems: [
+            { index: 'A', name: 'Water Problem', rating: 800 },
+            { index: 'B', name: 'Hard Problem' },
+          ],
+        },
+      },
+      // CF 分支会再查题目集全集缓存补官方 tags（空集 = 拿不到就不写）
+      'problemset.problems': { status: 'OK', result: { problems: [] } },
+    });
+    const result = await fetchContestProblemSet(db, 'codeforces', '990001', fetchFn);
+    const expectedRefs = [
+      { id: '990001A', index: 'A', title: 'Water Problem', rating: 800 },
+      { id: '990001B', index: 'B', title: 'Hard Problem', rating: null },
+    ];
+    assert.deepEqual(result, { status: 'ok', refs: expectedRefs });
+    const row = db
+      .prepare("SELECT problem_ids, problem_set_state FROM participated_contests WHERE platform='codeforces' AND contest_id='990001'")
+      .get() as { problem_ids: string; problem_set_state: string };
+    assert.deepEqual(JSON.parse(row.problem_ids), expectedRefs, '拉到的题目集应持久缓存');
+    assert.equal(row.problem_set_state, 'ok', '题目集状态应持久缓存为 ok');
+
+    // 退避期内：不再发请求、返回 unavailable（调用方沿用库内/既有数据）
+    const backoffResult = await fetchContestProblemSet(db, 'codeforces', '990001', fetchFn);
+    assert.equal(backoffResult.status, 'unavailable');
+    assert.equal(calls(), 2, '题目集两个外网请求（standings + problemset 全集），退避期内不重复');
+  } finally {
+    db.close();
+  }
+});
+
+test('fetchContestProblemSet：牛客 problem-list 解析 index/title；失败返回 unavailable（不落库）', async () => {
+  const db = createDb(':memory:');
+  try {
+    seedAuthoritativeRow(db, 'nowcoder', '990002');
+    const { fetchFn } = jsonFetch({
+      'problem-list': {
+        msg: 'OK',
+        code: 0,
+        data: {
+          data: [
+            { problemId: 320779, index: 'A', title: '无理无智' },
+            { problemId: 320781, index: 'B', title: '绝体绝命' },
+          ],
+        },
+      },
+    });
+    const result = await fetchContestProblemSet(db, 'nowcoder', '990002', fetchFn);
+    assert.deepEqual(result, {
+      status: 'ok',
+      refs: [
+        { id: '320779', index: 'A', title: '无理无智' },
+        { id: '320781', index: 'B', title: '绝体绝命' },
+      ],
+    });
+
+    // 失败路径：接口 500 → unavailable，且不落库（用另一场比赛 id 避开退避键）
+    const broken = (async () => new Response('server error', { status: 500 })) as unknown as typeof fetch;
+    const failResult = await fetchContestProblemSet(db, 'nowcoder', '990003', broken);
+    assert.equal(failResult.status, 'unavailable');
+    const n = db
+      .prepare("SELECT COUNT(*) AS n FROM participated_contests WHERE contest_id='990003'")
+      .get() as { n: number };
+    assert.equal(n.n, 0, '失败不落库');
+  } finally {
+    db.close();
+  }
+});
+
 

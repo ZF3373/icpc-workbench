@@ -2,7 +2,8 @@ import type { ContestInfo, ParticipatedContest, PlatformId } from '../../../shar
 import { PLATFORMS } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
-import type { AuthoritativeContest, ParticipationSources } from './participationSources.ts';
+import type { AuthoritativeContest, ContestProblemRef, ParticipationSources } from './participationSources.ts';
+import { renderStatementSection } from './problemStatements.ts';
 
 /**
  * 赛后复盘：从提交记录推导「参加过的比赛」（只读，不改 schema）。
@@ -58,12 +59,18 @@ export interface ContestSubmissionRow {
   submittedAt: string;
   /** 提交语境（仅 CF 下发）：contest / virtual / practice；其余平台为 null */
   context: string | null;
+  /** 提交语言（如 C++/Python；来自 submissions.language，用于复盘点评工具链顺手度） */
+  language?: string | null;
 }
 
 /** 复盘注入用的单场比赛数据：比赛元数据 + 全部相关提交（按提交时间升序） */
 export interface ContestReviewData {
   contest: ParticipatedContest;
   submissions: ContestSubmissionRow[];
+  /** 平台题目集是否已知（拉到过 problem-list / contest.standings）——false 时未提交题无从列出 */
+  problemSetKnown: boolean;
+  /** 题目集里本地无任何提交的题（赛时未开题、赛后也未补的）；题目集未知时为空 */
+  unsubmittedProblems: ContestProblemRef[];
 }
 
 /** 参加过的比赛列表上限（下拉不需要更久远的场次） */
@@ -148,23 +155,36 @@ function parseTags(raw: string | null): string[] {
   if (!raw) return [];
   try {
     const arr = JSON.parse(raw) as unknown;
-    return Array.isArray(arr) ? arr.filter((t): t is string => typeof t === 'string').slice(0, 5) : [];
+    // 放宽到 8：CF 难题常有 4-6 个官方 tags，截断到 5 会丢掉区分性标签
+    return Array.isArray(arr) ? arr.filter((t): t is string => typeof t === 'string').slice(0, 8) : [];
   } catch {
     return [];
   }
 }
 
-function fetchContestableRows(db: Db): ContestSubmissionRow[] {
+/**
+ * 查询全部参赛平台提交 JOIN problems。targetPlatform 给定时按 s.platform = ? 过滤，
+ * 避免复盘单场时全量 JOIN（长对话每轮重跑随刷题量线性增长）。
+ */
+function fetchContestableRows(db: Db, targetPlatform?: PlatformId): ContestSubmissionRow[] {
   const rows = db
     .prepare(
-      `SELECT s.platform AS platform, p.problem_key AS problemKey, p.title AS title,
-              p.url AS url, p.difficulty AS difficulty, p.tags AS tags,
-              s.verdict AS verdict, s.submitted_at AS submittedAt, s.context AS context
-       FROM submissions s JOIN problems p ON p.id = s.problem_id
-       WHERE s.user_id = ?
-         AND s.platform IN ('codeforces','atcoder','luogu','jisuanke','qoj','nowcoder')`,
+      targetPlatform
+        ? `SELECT s.platform AS platform, p.problem_key AS problemKey, p.title AS title,
+                  p.url AS url, p.difficulty AS difficulty, p.tags AS tags,
+                  s.verdict AS verdict, s.submitted_at AS submittedAt, s.context AS context,
+                  s.language AS language
+           FROM submissions s JOIN problems p ON p.id = s.problem_id
+           WHERE s.user_id = ? AND s.platform = ?`
+        : `SELECT s.platform AS platform, p.problem_key AS problemKey, p.title AS title,
+                  p.url AS url, p.difficulty AS difficulty, p.tags AS tags,
+                  s.verdict AS verdict, s.submitted_at AS submittedAt, s.context AS context,
+                  s.language AS language
+           FROM submissions s JOIN problems p ON p.id = s.problem_id
+           WHERE s.user_id = ?
+             AND s.platform IN ('codeforces','atcoder','luogu','jisuanke','qoj','nowcoder')`,
     )
-    .all(DEFAULT_USER_ID) as Array<{
+    .all(...(targetPlatform ? [DEFAULT_USER_ID, targetPlatform] : [DEFAULT_USER_ID])) as Array<{
     platform: PlatformId;
     problemKey: string;
     title: string;
@@ -174,6 +194,7 @@ function fetchContestableRows(db: Db): ContestSubmissionRow[] {
     verdict: string;
     submittedAt: string;
     context: string | null;
+    language: string | null;
   }>;
   return rows.map((r) => ({ ...r, tags: parseTags(r.tags) }));
 }
@@ -182,7 +203,10 @@ function fetchContestableRows(db: Db): ContestSubmissionRow[] {
  * AtCoder 等平台结束后人人可补题，「刚结束就提交」不能证明参加过 */
 const WINDOW_BEFORE_MS = 5 * 60_000;
 
-/** 一次集中作答的判定口径：gym / AtCoder 启发式共用（≥N 题在 6 小时内） */
+/** 一次集中作答的判定口径：gym / AtCoder 启发式共用（≥N 题在 6 小时内）。
+ * 注意：6h 跨度对 2h ABC 与 5h ICPC 同口径，对短赛偏松；AtCoder 以日历匹配为主路径
+ * （风险可控），gym 场景通常 ≥3h。如需更精确可按日历 durationMinutes 联动：
+ *   span = min(SITTING_SPAN_MS, durationMinutes * 60_000 * 1.5) */
 const SITTING_SPAN_MS = 6 * 3_600_000;
 /** gym 训练赛与 AtCoder 启发式要求的最少不同题数（≥2 太易误伤散做练习） */
 const SITTING_MIN_PROBLEMS = 3;
@@ -366,14 +390,18 @@ function qualifyGroup(platform: PlatformId, g: ContestGroup): ParticipatedContes
  * 权威记录对已有组补名称/时间/成绩；本地没有提交的场次（牛客不同步比赛提交、
  * 洛谷重现赛题目已转正等）生成零提交的合成组——列表照常展示，注入时说明缺提交。
  * 洛谷的合成组把权威窗口内的 T 号比赛题提交归因到场（团队赛题目赛前是 T 号）。
+ *
+ * targetPlatform：仅推导该平台的比赛时传入（复盘单场用），SQL 按 s.platform = ? 过滤，
+ * 避免全平台全量提交 JOIN 在长对话中每轮重跑。列表推导（deriveParticipatedContests）
+ * 不传，走全量。
  */
 function buildContestIndex(
   db: Db,
-  opts?: { calendar?: ContestInfo[]; sources?: ParticipationSources['byPlatform'] },
+  opts?: { calendar?: ContestInfo[]; sources?: ParticipationSources['byPlatform']; targetPlatform?: PlatformId },
 ): Map<string, { platform: PlatformId; group: ContestGroup }> {
   const cal = calendarIndex(opts?.calendar);
   const sources = opts?.sources ?? {};
-  const rows = fetchContestableRows(db);
+  const rows = fetchContestableRows(db, opts?.targetPlatform);
   const byPlatform = new Map<PlatformId, ContestSubmissionRow[]>();
   for (const row of rows) {
     const list = byPlatform.get(row.platform);
@@ -381,7 +409,11 @@ function buildContestIndex(
     else byPlatform.set(row.platform, [row]);
   }
   const index = new Map<string, { platform: PlatformId; group: ContestGroup }>();
-  for (const platform of PARTICIPATED_PLATFORMS) {
+  // 单平台模式只处理该平台；全量模式遍历所有参赛平台
+  const platforms = opts?.targetPlatform
+    ? [opts.targetPlatform]
+    : [...PARTICIPATED_PLATFORMS];
+  for (const platform of platforms) {
     const platformRows = byPlatform.get(platform) ?? [];
     const platformSources = sources[platform];
     for (const g of contestGroups(platformRows, platform, cal, Array.isArray(platformSources)).values()) {
@@ -407,7 +439,7 @@ function buildContestIndex(
       ) {
         attributed = platformRows.filter((r) => {
           if (platform === 'luogu' && !isLuoguContestProblem(r.problemKey)) return false;
-          if (platform === 'nowcoder' && src.problemIds && !src.problemIds.includes(r.problemKey)) {
+          if (platform === 'nowcoder' && src.problems && !src.problems.some((p) => p.id === r.problemKey)) {
             return false;
           }
           const t = Date.parse(r.submittedAt);
@@ -462,18 +494,42 @@ export function resolveContestGroup(
   if (!m) return null;
   const platform = m[1] as PlatformId;
   if (!PARTICIPATED_PLATFORMS.has(platform)) return null;
-  const group = buildContestIndex(db, opts).get(key)?.group;
+  const group = buildContestIndex(db, { ...opts, targetPlatform: platform }).get(key)?.group;
   if (!group) return null;
   const contest = qualifyGroup(platform, group);
   if (!contest) return null;
   const submissions = [...group.rows].sort((a, b) => (a.submittedAt < b.submittedAt ? -1 : 1));
-  return { contest, submissions };
+  const problems = group.authoritative?.problems ?? null;
+  const problemSetState = group.authoritative?.problemSetState ?? 'unknown';
+  // problemSetKnown 三态：state 为 ok/empty 即已知（含确认无题）；unknown 即未拉取
+  const problemSetKnown = problems !== null || problemSetState === 'ok' || problemSetState === 'empty';
+  const submittedKeys = new Set(group.rows.map((r) => r.problemKey));
+  return {
+    contest,
+    submissions,
+    problemSetKnown,
+    // 补题提交（CF practice）也计入「已提交」：有本地明细的题不再列为未提交
+    unsubmittedProblems: problems ? problems.filter((p) => !submittedKeys.has(p.id)) : [],
+  };
 }
 
 // ---------- 复盘上下文渲染（注入 AI system prompt） ----------
 
-const MAX_RENDER_PROBLEMS = 40;
-const MAX_RENDER_SUBMISSIONS = 200;
+/**
+ * 渲染上限按**真实比赛规模**定，而不是拍脑袋的整数（docs/ai-review-plan.md 阶段 4）：
+ * - 题目数：CF Div1/Div2 6–9 题、AtCoder ABC 7–8 题、ICPC 区域赛/gym 10–13 题，
+ *   单场实际上限约 13 → 24 已含近一倍余量（原 40 从未用满）。
+ * - 提交数：真正的约束在这里。5 小时 ICPC/gym 反复 WA 时单场提交轻易超过 200，
+ *   而预算是**按渲染顺序**消耗的 —— 上限太小会让后段（往往是最该复盘的难题）
+ *   连一条时间线都分不到。配合「未通过题保完整时间线、AC 题裁剪」的信息量分配，
+ *   把预算花在卡点上。
+ * 注：本机真实库仅 4 场可推导比赛（≤8 次提交/场），样本不足以做统计校准，
+ * 以上取值依据平台赛事结构而非本地样本。
+ */
+const MAX_RENDER_PROBLEMS = 24;
+const MAX_RENDER_SUBMISSIONS = 400;
+/** 给后续尚未渲染的题各预留的最少时间线行数（保证「每题至少一条摘要行」） */
+const RESERVED_LINES_PER_PROBLEM = 1;
 /** 单题时间线超过 10 条时保留首尾各 5 条（开头暴露思路方向，结尾是最终结果） */
 const ATTEMPT_HEAD = 5;
 const ATTEMPT_TAIL = 5;
@@ -516,9 +572,12 @@ function renderAttempts(rows: ContestSubmissionRow[], startMs: number, isCf: boo
 /**
  * 渲染单场比赛的复盘上下文（Markdown，注入 system prompt 的 {contestSection}）。
  * 结构：比赛元信息 → 逐题明细（按首提交顺序：难度/tags/链接/提交时间线/结果）。
- * 上限 40 题 / 200 条提交，超出截断并注明，防止超长比赛挤占上下文窗口。
+ * 上限 24 题 / 400 条提交（按真实比赛规模定，见上方常量注释），超出截断并列出被截断题号，
+ * 防止超长比赛挤占上下文窗口。
+ * 题面注入：db 给定时从 problem_statements 读库拼题面（纯读库、零网络），
+ * 只注入未通过+未提交的题，受每场 ≤20K 字符预算约束。
  */
-export function renderContestContext(data: ContestReviewData): string {
+export function renderContestContext(data: ContestReviewData, opts?: { db?: Db }): string {
   const { contest, submissions } = data;
   const isCf = contest.platform === 'codeforces';
   const startMs = contest.startTimeIso ? Date.parse(contest.startTimeIso) : NaN;
@@ -555,15 +614,35 @@ export function renderContestContext(data: ContestReviewData): string {
     heuristic: '按提交聚集推断（未必是正式参赛）',
     'joined-list': '平台参赛记录',
   };
-  lines.push(
-    `- 概况：${contest.problemCount} 题中出现 AC ${contest.acProblemCount} 题，共 ${contest.submissionCount} 次提交（${evidenceLabel[contest.evidence as ParticipationSignal] ?? contest.evidence}）`,
-  );
+  const submittedCount = new Set(submissions.map((s) => s.problemKey)).size;
+  const summary =
+    data.problemSetKnown && submissions.length > 0
+      ? `全场 ${submittedCount + data.unsubmittedProblems.length} 题中 AC ${contest.acProblemCount} 题、未提交 ${data.unsubmittedProblems.length} 题，共 ${contest.submissionCount} 次提交`
+      : `${contest.problemCount} 题中出现 AC ${contest.acProblemCount} 题，共 ${contest.submissionCount} 次提交`;
+  lines.push(`- 概况：${summary}（${evidenceLabel[contest.evidence as ParticipationSignal] ?? contest.evidence}）`);
 
   if (submissions.length === 0) {
     lines.push('');
-    lines.push(
-      '（该场比赛的逐条提交记录尚未同步到本地，无法给出逐题时间线。可结合上方排名/Rating 与比赛链接做整体点评；需要逐题分析时请用户先到「题目管理」同步该平台，或直接粘贴提交记录。）',
-    );
+    const noTimelineMsg =
+      '（该场比赛的逐条提交记录尚未同步到本地，无法给出逐题时间线。可结合上方排名/Rating 与比赛链接做整体点评；需要逐题分析时请用户先到「题目管理」同步该平台，或直接粘贴提交记录。）';
+    if (!data.problemSetKnown) {
+      lines.push(
+        '### 未提交的题\n（该场比赛的题目集尚未拉取，且本地无任何提交记录。' +
+        '可结合上方排名/Rating 与比赛链接做整体点评；需要逐题分析时请用户先到「题目管理」同步该平台，或直接粘贴提交记录。）',
+      );
+      lines.push('');
+      lines.push(noTimelineMsg);
+    } else if (data.unsubmittedProblems.length > 0) {
+      // 零提交场次（如「参加了但一题没交」）：题目集就是全部未提交题，先列出让 AI 有话可说
+      lines.push(`### 未提交的题（题目集已知但本地无任何提交，共 ${data.unsubmittedProblems.length} 题）`);
+      for (const p of data.unsubmittedProblems.slice(0, MAX_RENDER_PROBLEMS)) {
+        lines.push(`- ${renderUnsubmittedProblem(p, contest)}`);
+      }
+      lines.push('');
+      lines.push(noTimelineMsg);
+    } else {
+      lines.push(noTimelineMsg);
+    }
     return lines.join('\n');
   }
 
@@ -576,34 +655,163 @@ export function renderContestContext(data: ContestReviewData): string {
   }
   lines.push('');
   lines.push('### 逐题提交明细（按首提交顺序）');
+
+  const tagLabel = tagSourceLabel(contest.platform);
   let renderedSubmissions = 0;
   let renderedProblems = 0;
-  let truncated = false;
-  for (const [problemKey, rows] of byProblem) {
-    if (renderedProblems >= MAX_RENDER_PROBLEMS || renderedSubmissions >= MAX_RENDER_SUBMISSIONS) {
-      truncated = true;
-      break;
+  const truncatedProblems: string[] = [];
+  const allProblems = [...byProblem.entries()];
+
+  // 渲染预算按信息量分配：优先保证未通过的题完整渲染（含完整时间线），
+  // AC 的题在预算紧张时裁剪时间线（仅保留首尾各 1 条）。避免后段难题被整块丢弃。
+  const isTightBudget = allProblems.length > MAX_RENDER_PROBLEMS
+    || submissions.length > MAX_RENDER_SUBMISSIONS;
+
+  for (const [i, [problemKey, rows]] of allProblems.entries()) {
+    if (renderedProblems >= MAX_RENDER_PROBLEMS) {
+      truncatedProblems.push(problemKey);
+      continue;
     }
-    renderedProblems += 1;
     const first = rows[0];
     const acCount = rows.filter((r) => r.verdict === 'AC').length;
     const solved = acCount > 0;
     const difficulty = first.difficulty !== null ? String(first.difficulty) : '未知';
-    const tags = first.tags.length > 0 ? `｜tags: ${first.tags.join(', ')}` : '';
+    const tags = first.tags.length > 0
+      ? `｜官方 tags: ${first.tags.join(', ')}${tagLabel}`
+      : '';
+    // AC 语言：该题所有 AC 提交用过的语言去重（用户切换语言的信号）
+    const acLangs = [...new Set(
+      rows.filter((r) => r.verdict === 'AC' && r.language).map((r) => r.language!),
+    )];
+    const langLabel = acLangs.length > 0 ? `｜AC 语言: ${acLangs.join(', ')}` : '';
+    renderedProblems += 1;
     lines.push('');
-    lines.push(`#### ${problemKey} ${first.title}（难度 ${difficulty}${tags}）`);
+    lines.push(`#### ${problemKey} ${first.title}（难度 ${difficulty}${tags}${langLabel}）`);
     if (first.url) lines.push(`- 题目链接：${first.url}`);
-    const budget = MAX_RENDER_SUBMISSIONS - renderedSubmissions;
-    const shown = rows.slice(0, budget);
+
+    // 预算紧张时：AC 题只保留首尾各 1 条（保留思路方向与最终结果）；
+    // 未通过的题保留完整时间线（卡点分析的核心证据）
+    let shown = rows;
+    if (solved && isTightBudget) {
+      shown = rows.length > 2 ? [rows[0], rows[rows.length - 1]] : rows;
+    }
+    const budget = Math.max(
+      1,
+      MAX_RENDER_SUBMISSIONS -
+        renderedSubmissions -
+        Math.min(allProblems.length - i - 1, MAX_RENDER_PROBLEMS - renderedProblems) *
+          RESERVED_LINES_PER_PROBLEM,
+    );
+    if (shown.length > budget) shown = shown.slice(0, budget);
     renderedSubmissions += shown.length;
-    lines.push(`- 提交 ${rows.length} 次：${renderAttempts(shown, startMs, isCf)}${shown.length < rows.length ? ' →（其余因总量截断省略）' : ''}`);
+    const trimmed = shown.length < rows.length;
+    const trimNote = solved && isTightBudget && rows.length > 2 && trimmed
+      ? `（AC 题预算紧张，仅保留首尾）`
+      : '';
+    const attempts = shown.length > 0
+      ? renderAttempts(shown, startMs, isCf)
+      : '（明细因总量截断省略）';
+    const suffix = trimNote
+      ? ` ${trimNote}`
+      : trimmed && shown.length > 0
+        ? ' →（其余因总量截断省略）'
+        : '';
+    lines.push(`- 提交 ${rows.length} 次：${attempts}${suffix}`);
     lines.push(`- 结果：${solved ? `AC${acCount > 1 ? `（${acCount} 次 AC）` : ''}` : '未通过'}`);
   }
-  if (truncated) {
+  if (truncatedProblems.length > 0) {
     lines.push('');
     lines.push(
-      `（明细已截断：仅渲染前 ${renderedProblems} 题 / ${renderedSubmissions} 次提交，比赛规模超出注入上限）`,
+      `（明细已截断：仅渲染前 ${renderedProblems} 题 / ${renderedSubmissions} 次提交。` +
+      `以下题号因渲染上限被截断：${truncatedProblems.join(', ')}。` +
+      `复盘场景里这些往往是后段难题，建议按需追问。）`,
     );
   }
+  // 空态区分：题目集未知 vs 已知且全部提交过 vs 已知且有未提交题
+  // 避免两种空态混淆导致 AI 顺着「未提交的题」编出不存在的题
+  if (!data.problemSetKnown) {
+    lines.push('');
+    lines.push(
+      '### 未提交的题\n（该场比赛的题目集尚未拉取，无法列出赛时未开过的题。' +
+      '若需要点评未提交的题，可先调用 `fetch_url` 读取比赛页获取题目列表，或请用户同步该平台提交记录。）',
+    );
+  } else if (data.unsubmittedProblems.length > 0) {
+    lines.push('');
+    lines.push(
+      `### 未提交的题（题目集已知但本地无任何提交，共 ${data.unsubmittedProblems.length} 题）`,
+    );
+    for (const p of data.unsubmittedProblems.slice(0, MAX_RENDER_PROBLEMS)) {
+      lines.push(`- ${renderUnsubmittedProblem(p, contest)}`);
+    }
+  } else if (submissions.length > 0) {
+    lines.push('');
+    lines.push(
+      '### 未提交的题\n（题目集已知，且本场所有题均有提交记录——赛时已全部开过题，无遗漏。）',
+    );
+  }
+  // 题面注入（纯读库、零网络）：只注入未通过+未提交的题，受每场 ≤20K 字符预算约束。
+  // 题面是把所有其他证据锚定到现实的那根桩——有了它 AI 才不会凭题名猜错题意。
+  if (opts?.db) {
+    const statementLines = renderStatementSection(opts.db, data);
+    if (statementLines.length > 0) {
+      lines.push('');
+      lines.push('### 题面（已缓存，AI 据此锚定题意，无需重复调用 fetch_url）');
+      lines.push(...statementLines);
+    }
+  }
   return lines.join('\n');
+}
+
+/** 官方 tags 来源标注：让 AI 区分官方标注与本地推断（提示词「以官方 tags 为准」有确切所指） */
+function tagSourceLabel(platform: PlatformId): string {
+  switch (platform) {
+    case 'codeforces':
+      return '（Codeforces 官方标注）';
+    case 'luogu':
+      return '（洛谷官方标注）';
+    default:
+      return '';
+  }
+}
+
+/** 未提交题的一行：题号 + 题名 + 官方难度/知识点 + 题目链接 + 题解入口（AI 可用 fetch_url 读题面） */
+function renderUnsubmittedProblem(p: ContestProblemRef, contest: ParticipatedContest): string {
+  const idx = p.index ? `${p.index} ` : '';
+  const title = p.title ?? p.id;
+  const tagLabel = tagSourceLabel(contest.platform);
+  const meta: string[] = [];
+  if (p.rating != null) meta.push(`难度 ${p.rating}`);
+  if (p.tags && p.tags.length > 0) meta.push(`官方 tags: ${p.tags.join(', ')}${tagLabel}`);
+  const metaLabel = meta.length > 0 ? `（${meta.join('｜')}）` : '';
+  let url: string | null = null;
+  if (contest.platform === 'codeforces' && p.index) {
+    url = `${contest.url}/problem/${p.index}`;
+  } else if (contest.platform === 'nowcoder') {
+    url = `https://ac.nowcoder.com/acm/problem/${p.id}`;
+  }
+  // 题解入口（纯字符串，无网络）：把 URL/搜索词直接摆在模型面前，调用成本从"判断+构造"降到"照抄"
+  const editorialHint = editorialEntryPoint(contest, p);
+  return `${idx}${title}${metaLabel}${url ? `，题目链接：${url}` : ''}${editorialHint ? `，题解入口：${editorialHint}` : ''}`;
+}
+
+/**
+ * 按平台拼接题解入口（纯字符串，无网络调用）。
+ * 有稳定 URL 的平台直接给 URL；无稳定源的给搜索关键词。
+ */
+function editorialEntryPoint(
+  contest: ParticipatedContest,
+  p: ContestProblemRef,
+): string | null {
+  switch (contest.platform) {
+    case 'atcoder':
+      return `https://atcoder.jp/contests/${contest.contestId}/editorial（官方题解页）`;
+    case 'luogu':
+      return `https://www.luogu.com.cn/problem/solution/${p.id}（题解区，需洛谷 Cookie）`;
+    case 'codeforces':
+      return `web_search 搜「Codeforces ${contest.contestId} editorial」或「${contest.name ?? '该场比赛'} 题解」`;
+    case 'nowcoder':
+      return `web_search 搜「${contest.name ?? '该场比赛'} 题解」，或 fetch_editorial 读比赛页`;
+    default:
+      return null;
+  }
 }

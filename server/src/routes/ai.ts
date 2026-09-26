@@ -12,6 +12,8 @@ import { estimateTokens, trimContext, summarizeContext, SUMMARIZE_THRESHOLD } fr
 import '../ai/search.ts';
 // 导入 fetch-url.ts 触发 fetch_url 工具注册（副作用导入）
 import '../ai/fetch-url.ts';
+// 导入 fetch-editorial.ts 触发 fetch_editorial 工具注册（副作用导入）
+import '../ai/fetch-editorial.ts';
 import { extractPdfText, truncatePdfText, isPdfContentType, isPdfFilename } from '../ai/pdf.ts';
 import { convertDocument, isDocumentFile } from '../ai/docConverter.ts';
 import { getToolDefinitions, executeToolCall, type ToolContext, type PlatformCookies } from '../ai/tools/registry.ts';
@@ -24,7 +26,16 @@ import { CURRICULUM } from '../templates/curriculum.ts';
 import { fetchAllContests, selectContests } from '../contests/index.ts';
 import { calendarCache } from '../contests/calendarCache.ts';
 import { renderContestContext, resolveContestGroup } from '../contests/participated.ts';
-import { loadParticipationSources, type ParticipationSources } from '../contests/participationSources.ts';
+import { prefetchProblemStatementsBackground } from '../contests/problemStatements.ts';
+import {
+  kickBackgroundRefresh,
+  loadParticipationSources,
+  readParticipationSnapshot,
+  fetchContestProblemSet,
+  problemsAreRich,
+  type ParticipationSources,
+  type ProblemSetResult,
+} from '../contests/participationSources.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
 import type { ContestInfo } from '../../../shared/src/index.ts';
 
@@ -486,13 +497,58 @@ export function aiRoutes(
     // 推导不到（数据清理/换账号）降级为提示文案，不阻断对话
     let contestSection = '（未关联比赛：赛后复盘能力不可用；用户想复盘某场比赛时请引导其先在本页左栏「赛后复盘」下拉选择参加过的比赛）';
     if (typeof contestKey === 'string' && contestKey.trim() !== '') {
-      const loadedSources = await (opts.fetchParticipationSources ?? loadParticipationSources)(db, calendar);
-      const review = resolveContestGroup(db, contestKey.trim(), {
-        calendar,
-        sources: loadedSources.byPlatform,
-      });
+      // chat 路径复用读库快照（与 GET /participated 同口径），不再每条消息同步打外网。
+      // 参赛记录陈旧 ≤30 分钟完全可接受（复盘归因的是历史比赛），且与列表的新鲜度一致。
+      // 测试注入 fetchParticipationSources 时维持原样直连（不经快照，避免跨用例串数据）。
+      let sourcesByPlatform: ParticipationSources['byPlatform'];
+      if (opts.fetchParticipationSources) {
+        const loaded = await opts.fetchParticipationSources(db, calendar);
+        sourcesByPlatform = loaded.byPlatform;
+      } else {
+        const snapshot = readParticipationSnapshot(db);
+        if (snapshot.stalePlatforms.length > 0) kickBackgroundRefresh(db, calendar);
+        sourcesByPlatform = snapshot.byPlatform;
+      }
+      const resolveOpts = { calendar, sources: sourcesByPlatform };
+      let review = resolveContestGroup(db, contestKey.trim(), resolveOpts);
+      // 题目集缺失（或只有旧格式的纯 id 集）时按需补拉（CF: contest.standings；
+      // 牛客: problem-list，均公开接口）——否则「赛时未提交的题」没有题号/题名，
+      // 复盘点评缺一角。拉到即持久缓存到 participated_contests（含三态 state），
+      // 之后复盘零请求；失败静默退避 5 分钟，不阻断对话。
+      // 三态：ok/empty 不重拉（empty = 确认无题已缓存），只有 unknown 才触发补拉。
+      if (
+        review &&
+        (!review.problemSetKnown ||
+          (review.unsubmittedProblems.length > 0 && !problemsAreRich(review.unsubmittedProblems)))
+      ) {
+        const result: ProblemSetResult = await fetchContestProblemSet(
+          db, review.contest.platform, review.contest.contestId,
+        );
+        if (result.status === 'ok') {
+          const refs = result.refs;
+          const submitted = new Set(review.submissions.map((s) => s.problemKey));
+          review = {
+            ...review,
+            problemSetKnown: true,
+            unsubmittedProblems: refs.filter((p) => !submitted.has(p.id)),
+          };
+        } else if (result.status === 'empty') {
+          // 确认无题：problemSetKnown 设为 true，unsubmittedProblems 为空（已持久化 state）
+          review = { ...review, problemSetKnown: true, unsubmittedProblems: [] };
+        }
+        // 'unavailable' = 退避期内或拉取失败，保持原样（下次复盘再试）
+      }
+      if (review) {
+        // 后台预取题面（非阻塞）：只对未通过+未提交的题抓取，落库后下次复盘即有题面注入。
+        // 不在 chat 同步路径里阻塞——注入是纯读库（renderContestContext 读 problem_statements）。
+        // 首次打开时题面可能尚未落库，AI 仍可按提示词调 fetch_url 自行读取。
+        const reviewCookies: Record<string, { cookie?: string }> = {};
+        const luoguCookieRow = db.prepare("SELECT value FROM settings WHERE key = 'cookie.luogu'").get() as { value: string } | undefined;
+        if (luoguCookieRow?.value) reviewCookies.luogu = { cookie: luoguCookieRow.value };
+        prefetchProblemStatementsBackground(db, review, undefined, reviewCookies);
+      }
       contestSection = review
-        ? `## 关联的比赛（赛后复盘）\n${renderContestContext(review)}`
+        ? `## 关联的比赛（赛后复盘）\n${renderContestContext(review, { db })}`
         : '（关联的比赛不存在或暂无提交记录，可能数据已被清理或账号已换绑）';
     }
 

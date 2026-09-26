@@ -40,6 +40,11 @@ import { platformName } from '../ui'
 import { createStreamBuffer } from '../streamBuffer'
 import { rememberSessionFiles, getSessionFileText, forgetSessionFiles } from './sessionFiles'
 import {
+  REVIEW_REQUEST_TEXT,
+  contestJumpWarning,
+  reviewRequestText,
+} from './assistantContest'
+import {
   extractAbilityUpdate,
   extractModifyBlock,
   extractTemplateAdd,
@@ -271,10 +276,6 @@ function updateActiveSessionContestKey(contestKey: string | undefined): void {
     sessions: prev.sessions.map((s) => (s.id === prev.activeId ? { ...s, contestKey } : s)),
   }))
 }
-
-/** 选中比赛后预填的复盘请求（输入框已有内容时不覆盖，用户可自行增删要求再发送） */
-const REVIEW_REQUEST_TEXT =
-  '请复盘这场比赛：结合我的提交记录点评整体发挥与逐题表现，指出卡点与改进方向，并给出补题建议。'
 
 /** 更新当前会话的消息列表（async 回调安全：直接写 store，不依赖组件挂载） */
 function patchActiveSessionMessages(
@@ -698,22 +699,28 @@ export default function Assistant() {
       .catch(() => {})
     // 参加过的比赛（赛后复盘）：加载失败静默为空。?contest=<key> 从赛事中心
     // 「去 AI 复盘」跳转而来：新建专属会话（不占用当前会话）并预填复盘请求；
+    // 推导不出该场时**不静默丢弃**——明确提示原因并保留预填文本（用户可手动选场）；
     // 悬空 contestKey（数据清理/换账号后推导不出该场）同样清理，避免失效关联
     get<{ contests: ParticipatedContest[] }>('/api/contests/participated')
       .then(({ contests: list }) => {
         setContests(list)
         const urlContest = searchParams.get('contest')
         if (urlContest !== null) setSearchParams({}, { replace: true })
-        const valid = urlContest && list.some((c) => c.key === urlContest) ? urlContest : undefined
-        if (valid) {
-          const session = createSession(undefined, undefined, valid)
+        const jumped = urlContest ? list.find((c) => c.key === urlContest) : undefined
+        if (jumped) {
+          const session = createSession(undefined, undefined, jumped.key)
           setChatState((prev) => ({
             ...prev,
             sessions: [session, ...prev.sessions],
             activeId: session.id,
-            input: REVIEW_REQUEST_TEXT,
+            input: reviewRequestText(jumped),
           }))
           return
+        }
+        if (urlContest) {
+          message.warning(contestJumpWarning(urlContest))
+          // 保留预填文本：跳转意图不落空，用户选好场次即可直接发送
+          setChatState((prev) => (prev.input.trim() ? prev : { ...prev, input: REVIEW_REQUEST_TEXT }))
         }
         setChatState((prev) => {
           const active = prev.sessions.find((s) => s.id === prev.activeId)
@@ -1432,9 +1439,14 @@ export default function Assistant() {
               onClear={() => updateActiveSessionContestKey(undefined)}
               onChange={(v) => {
                 updateActiveSessionContestKey(v)
-                // 选中即预填复盘请求（输入框已有草稿时不覆盖），用户可补充要求再发送
+                // 选中即预填复盘请求（输入框已有草稿时不覆盖）：带上本场关键事实，
+                // 省去 AI 反问「哪一场、做了几题」
                 if (v && !input.trim()) {
-                  setChatState((prev) => ({ ...prev, input: REVIEW_REQUEST_TEXT }))
+                  const picked = contests.find((c) => c.key === v)
+                  setChatState((prev) => ({
+                    ...prev,
+                    input: picked ? reviewRequestText(picked) : REVIEW_REQUEST_TEXT,
+                  }))
                 }
               }}
               options={contests.map((c) => {

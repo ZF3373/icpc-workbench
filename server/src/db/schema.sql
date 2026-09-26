@@ -347,6 +347,10 @@ CREATE TABLE IF NOT EXISTS participated_contests (
   problem_count INTEGER,
   accepted_count INTEGER,
   problem_ids  TEXT,
+  -- 题目集拉取状态（三态）：NULL/'unknown'=未拉取；'ok'=已拉取有题；'empty'=已拉取确认无题；
+  -- 'unavailable'=拉取失败（暂不持久化，靠退避时间戳控制重试）。区分「空」与「未拉取」
+  -- 避免空题目集场次被每条消息无限重复拉取（parseProblems 把空数组也视作未拉取）。
+  problem_set_state TEXT,
   fetched_at  TEXT NOT NULL,
   PRIMARY KEY (user_id, platform, account, contest_id)
 );
@@ -375,4 +379,27 @@ CREATE TABLE IF NOT EXISTS calendar_cache (
   id         INTEGER PRIMARY KEY CHECK (id = 1),
   fetched_at TEXT NOT NULL,
   contests   TEXT NOT NULL
+);
+
+-- CF 题目集官方标签缓存（单行；contests/cfProblemset.ts 读写）：
+-- problemset.problems 一次返回全量题目的官方 tags/rating/solvedCount，
+-- 复盘「未提交的题」据此补官方知识点（standings 只有题号/题名/难度）。
+-- 落库后复盘零请求；新题未入缓存时查缺强刷（1h 退避）。
+CREATE TABLE IF NOT EXISTS cf_problemset_cache (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  fetched_at TEXT NOT NULL,
+  payload    TEXT NOT NULL
+);
+
+-- 题面缓存（单题一行；contests/problemStatements.ts 读写）：
+-- 复盘时 AI 需要题面锚定题意，避免凭题名猜错。题面是公开 SSR 静态页面，
+-- 抓取一次落库后全对话复用（题面几乎不变，缓存永久有效，仅 404/改版时失效重取）。
+-- 只对「未通过 + 未提交」的题注入（已 1A 的简单题按需追问时再抓），受预算约束（每场 ≤20K 字符）。
+CREATE TABLE IF NOT EXISTS problem_statements (
+  platform    TEXT NOT NULL,
+  problem_key TEXT NOT NULL,
+  text        TEXT NOT NULL,      -- 抽取后的题面正文（含题意/输入输出格式/关键样例）
+  source_url  TEXT,
+  fetched_at  TEXT NOT NULL,
+  PRIMARY KEY (platform, problem_key)
 );

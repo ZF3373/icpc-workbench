@@ -85,6 +85,10 @@ function migrate(db: Db): void {
   if (participatedCols.size > 0 && !participatedCols.has('problem_ids')) {
     db.exec('ALTER TABLE participated_contests ADD COLUMN problem_ids TEXT');
   }
+  // v0.9: 题目集三态——区分「已拉取确认无题」与「未拉取」，避免空题目集场次被无限重复拉取
+  if (participatedCols.size > 0 && !participatedCols.has('problem_set_state')) {
+    db.exec('ALTER TABLE participated_contests ADD COLUMN problem_set_state TEXT');
+  }
     // v0.7: submissions 增加提交语境列（contest/virtual/practice，目前仅 Codeforces 下发）：
   // 能力值算法据此区分赛场 AC 与赛后补题，补题/练习题降权
   const submissionCols = columnsOf('submissions');

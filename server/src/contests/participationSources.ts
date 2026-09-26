@@ -1,5 +1,6 @@
 import type { ContestInfo, PlatformId } from '../../../shared/src/index.ts';
 import { fetchParticipatedContests } from '../adapters/jisuanke.ts';
+import { lookupCfProblems } from './cfProblemset.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import type { Db } from '../db/index.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
@@ -40,10 +41,29 @@ export interface AuthoritativeContest {
   problemCount: number | null;
   acceptedCount: number | null;
   /**
-   * 该场比赛的题目 ID 集（nowcoder 专用：problem-list 拉取后持久化）。
+   * 该场比赛的题目集（nowcoder: problem-list；CF: contest.standings，复盘时按需补拉）。
+   * 归因排歧（窗口内的非本场题目是日常练习）+「赛时未提交的题」渲染共用。
    * null/undefined = 尚未拉取（归因退化为整窗）；空数组按未拉取处理。
    */
-  problemIds?: string[] | null;
+  problems?: ContestProblemRef[] | null;
+  /**
+   * 题目集拉取状态（三态）：'ok'=已拉取有题；'empty'=已拉取确认无题；'unknown'/缺省=未拉取。
+   * 区分「空」与「未拉取」避免空题目集场次被每条消息无限重复拉取。
+   */
+  problemSetState?: 'ok' | 'empty' | 'unknown';
+}
+
+/** 题目集单题。id 与本地 problems.problem_key 同构（nowcoder 为题目数字 id，CF 为 {contestId}{index}） */
+export interface ContestProblemRef {
+  id: string;
+  /** 比赛内题号（A/B/C…） */
+  index?: string;
+  /** 题名 */
+  title?: string;
+  /** 官方难度（CF 题目 rating；其余平台暂无） */
+  rating?: number | null;
+  /** 官方知识点标签（CF 来自 problemset.problems 全集缓存；拿不到就不写，不编造） */
+  tags?: string[];
 }
 
 export interface ParticipationSources {
@@ -297,13 +317,13 @@ export async function fetchNowcoderJoinedContests(
 }
 
 /**
- * GET /acm/contest/problem-list —— 该场比赛的题目 ID 集（归因排歧用：
- * 窗口内的非本场题目是日常练习，不能归因到比赛）。
+ * GET /acm/contest/problem-list —— 该场比赛的题目集（归因排歧 +「未提交的题」渲染；
+ * 无需登录）。同一次响应里带 index（A/B/C…）与 title，未提交的题也能给出完整身份。
  */
-async function fetchNowcoderProblemIds(
+async function fetchNowcoderProblems(
   contestId: string,
   fetchFn: typeof fetch,
-): Promise<string[] | null> {
+): Promise<ContestProblemRef[] | null> {
   try {
     const body = (await fetchJson(
       `${NC_API}/acm/contest/problem-list?token=&id=${encodeURIComponent(contestId)}`,
@@ -312,10 +332,16 @@ async function fetchNowcoderProblemIds(
     )) as { data?: { data?: Array<Record<string, unknown>> } };
     const rows = body.data?.data;
     if (!Array.isArray(rows)) return null;
-    const ids = rows
-      .map((r) => (typeof r.problemId === 'number' ? String(r.problemId) : null))
-      .filter((v): v is string => v !== null);
-    return ids.length > 0 ? ids : null;
+    const refs: ContestProblemRef[] = [];
+    for (const r of rows) {
+      if (typeof r.problemId !== 'number') continue;
+      refs.push({
+        id: String(r.problemId),
+        index: typeof r.index === 'string' ? r.index : undefined,
+        title: typeof r.title === 'string' ? r.title : undefined,
+      });
+    }
+    return refs.length > 0 ? refs : null;
   } catch {
     return null; // 题目集拉取失败 → 归因退化为整窗（不阻断）
   }
@@ -385,7 +411,7 @@ function readStoredContests(db: Db, platform: PlatformId): AuthoritativeContest[
   const rows = db
     .prepare(
       `SELECT contest_id, name, url, start_ms, end_ms, contest_rank, rating, rating_change,
-              problem_count, accepted_count, problem_ids
+              problem_count, accepted_count, problem_ids, problem_set_state
        FROM participated_contests WHERE user_id = ? AND platform = ?`,
     )
     .all(DEFAULT_USER_ID, platform) as Array<{
@@ -400,33 +426,44 @@ function readStoredContests(db: Db, platform: PlatformId): AuthoritativeContest[
     problem_count: number | null;
     accepted_count: number | null;
     problem_ids: string | null;
+    problem_set_state: string | null;
   }>;
   return rows
-    .map((r) => ({
-      platform,
-      contestId: r.contest_id,
-      name: r.name ?? `${platform} 比赛 ${r.contest_id}`,
-      url: r.url ?? contestUrl(platform, r.contest_id),
-      startTimeMs: r.start_ms,
-      endTimeMs: r.end_ms,
-      rank: r.contest_rank,
-      rating: r.rating,
-      ratingChange: r.rating_change,
-      problemCount: r.problem_count,
-      acceptedCount: r.accepted_count,
-      problemIds: parseProblemIds(r.problem_ids),
-    }))
+    .map((r) => {
+      const problems = parseProblems(r.problem_ids);
+      const rawState = r.problem_set_state;
+      const state: 'ok' | 'empty' | 'unknown' =
+        rawState === 'ok' ? 'ok' : rawState === 'empty' ? 'empty' : 'unknown';
+      return {
+        platform,
+        contestId: r.contest_id,
+        name: r.name ?? `${platform} 比赛 ${r.contest_id}`,
+        url: r.url ?? contestUrl(platform, r.contest_id),
+        startTimeMs: r.start_ms,
+        endTimeMs: r.end_ms,
+        rank: r.contest_rank,
+        rating: r.rating,
+        ratingChange: r.rating_change,
+        problemCount: r.problem_count,
+        acceptedCount: r.accepted_count,
+        problems,
+        // 有题目集即 ok；状态为 empty 即 empty；其余 unknown
+        problemSetState: (state === 'unknown' && problems !== null ? 'ok' : state) as 'ok' | 'empty' | 'unknown',
+      };
+    })
     .sort((a, b) => (b.startTimeMs ?? 0) - (a.startTimeMs ?? 0));
 }
 
-/** problem_ids JSON → 数组；空数组视为未拉取（归因退化为整窗） */
-function parseProblemIds(raw: string | null): string[] | null {
+/** problem_ids JSON → 题目集引用；兼容旧格式（纯 id 字符串数组）；空数组视为未拉取 */
+function parseProblems(raw: string | null): ContestProblemRef[] | null {
   if (!raw) return null;
   try {
     const arr = JSON.parse(raw) as unknown;
     if (!Array.isArray(arr)) return null;
-    const ids = arr.filter((v): v is string => typeof v === 'string');
-    return ids.length > 0 ? ids : null;
+    const refs = arr
+      .map((v) => (typeof v === 'string' ? { id: v } : (v as ContestProblemRef)))
+      .filter((v): v is ContestProblemRef => typeof v?.id === 'string');
+    return refs.length > 0 ? refs : null;
   } catch {
     return null;
   }
@@ -468,7 +505,7 @@ function upsertContests(
       item.ratingChange,
       item.problemCount,
       item.acceptedCount,
-      item.problemIds ? JSON.stringify(item.problemIds) : null,
+      item.problems ? JSON.stringify(item.problems) : null,
       now,
     );
     if (item.startTimeMs !== null && (oldestMs === null || item.startTimeMs < oldestMs)) {
@@ -530,18 +567,24 @@ function readSetting(db: Db, key: string): string {
 /** 同一平台的拉取进行中时复用（GET 后台刷新与 chat 同步刷新不会重复打外网） */
 const inFlight = new Map<PlatformId, Promise<void>>();
 
+/** 题目集是否为富引用（带比赛内题号）——旧格式纯 id 集合需要重新拉取升级 */
+export function problemsAreRich(refs: ContestProblemRef[] | null | undefined): boolean {
+  return !!refs && refs.some((r) => r.index !== undefined);
+}
+
 /**
- * 牛客题目集按需补齐：仅对「窗口内确有本平台提交、且还没有题目集」的场次发请求
- * （有窗口内提交才存在归因歧义；题目集取到一次即随参赛记录持久化，不再重取）。
+ * 牛客题目集按需补齐：仅对「窗口内确有本平台提交、且还没有**富**题目集」的场次发请求
+ * （有窗口内提交才存在归因歧义；题目集取到一次即随参赛记录持久化，不再重取；
+ * 旧格式纯 id 集合视为未拉取，借下一次同步升级出题号/题名）。
  */
-async function enrichProblemIds(
+async function enrichProblems(
   db: Db,
   items: AuthoritativeContest[],
-  storedById: Map<string, string[] | null>,
+  storedById: Map<string, ContestProblemRef[] | null>,
   fetchFn: typeof fetch,
 ): Promise<void> {
   for (const item of items) {
-    if (item.problemIds || storedById.get(item.contestId)) continue;
+    if (item.problems || problemsAreRich(storedById.get(item.contestId))) continue;
     if (item.startTimeMs === null || item.endTimeMs === null) continue;
     const candidate = db
       .prepare(
@@ -554,7 +597,7 @@ async function enrichProblemIds(
         new Date(item.endTimeMs).toISOString(),
       );
     if (!candidate) continue;
-    item.problemIds = await fetchNowcoderProblemIds(item.contestId, fetchFn);
+    item.problems = await fetchNowcoderProblems(item.contestId, fetchFn);
   }
 }
 
@@ -630,10 +673,17 @@ export async function loadParticipationSources(
 
   await Promise.all(
     tasks.map(async ({ platform, account, fetcher }) => {
-      const inflight = inFlight.get(platform);
+      // force=true 时不复用 in-flight：用户点「刷新」期望强制重拉，不该被后台刷新
+      // 的 in-flight 吞掉而看到旧数据。force 请求自己建 in-flight，后续非 force 请求
+      // 仍会等它完成（避免同一平台并发两请求打外网）。
+      const inflight = opts?.force ? undefined : inFlight.get(platform);
       if (inflight) {
         await inflight.catch(() => {});
         byPlatform[platform] = readStoredContests(db, platform);
+        // 补上 in-flight 分支的 failures 读取：原实现只读 byPlatform 不读 failures，
+        // 导致在 in-flight 期间发生的失败对调用方不可见
+        const inflightState = readSyncState(db, platform, account);
+        if (inflightState?.lastError) failures[platform] = inflightState.lastError;
         return;
       }
       const task = (async () => {
@@ -651,10 +701,10 @@ export async function loadParticipationSources(
             knownOldestMs: state?.oldestMs ?? null,
             backlogDone: state?.backlogDone ?? false,
           });
-          await enrichProblemIds(
+          await enrichProblems(
             db,
             result.items,
-            new Map(stored.map((r) => [r.contestId, r.problemIds ?? null])),
+            new Map(stored.map((r) => [r.contestId, r.problems ?? null])),
             fetchFn,
           );
           const oldestMs = upsertContests(db, platform, account, result.items);
@@ -726,4 +776,100 @@ export function kickBackgroundRefresh(db: Db, calendar: ContestInfo[] | undefine
       backgroundRefresh = null;
     });
   return true;
+}
+
+// ---------- 复盘时的题目集补拉（CF contest.standings / 牛客 problem-list） ----------
+
+/** 复盘注入需要「未提交的题」，但同步阶段只对有窗口提交的牛客场次拉过题目集；
+ * CF 从不拉（每场一次 standings 太贵）。这里在**复盘时**按需补拉单场，
+ * 成功即写回 participated_contests.problem_ids 持久缓存，之后零请求。 */
+const problemSetBackoff = new Map<string, number>();
+const PROBLEM_SET_BACKOFF_MS = 5 * 60_000;
+
+/** 题目集拉取的三态结果：区分「已拉取确认无题」与「未拉取/失败」 */
+export type ProblemSetResult =
+  | { status: 'ok'; refs: ContestProblemRef[] }
+  | { status: 'empty' }
+  | { status: 'unavailable' };
+
+/**
+ * 按平台拉取单场比赛的题目集并落库（行不存在 = 虚拟赛/gym 等无参赛记录，只返回不落库）。
+ * 成功时（含确认无题）写回 problem_set_state；失败返回 unavailable 并退避 5 分钟 ——
+ * 每条对话消息都会渲染复盘上下文，不能逐请求重试网络。三态区分避免空题目集被无限重拉。
+ */
+export async function fetchContestProblemSet(
+  db: Db,
+  platform: PlatformId,
+  contestId: string,
+  fetchFn: typeof fetch = throttledFetch,
+): Promise<ProblemSetResult> {
+  const cacheKey = `${platform}:${contestId}`;
+  if (Date.now() - (problemSetBackoff.get(cacheKey) ?? 0) < PROBLEM_SET_BACKOFF_MS) {
+    return { status: 'unavailable' };
+  }
+  problemSetBackoff.set(cacheKey, Date.now());
+
+  let refs: ContestProblemRef[] | null = null;
+  try {
+    if (platform === 'codeforces') {
+      // 官方公开 API；count=1 只取排行榜首行（题目列表不受分页影响，始终全量返回）
+      const body = (await fetchJson(
+        `https://codeforces.com/api/contest.standings?contestId=${encodeURIComponent(contestId)}&from=1&count=1`,
+        fetchFn,
+      )) as { status?: string; result?: { problems?: Array<Record<string, unknown>> } };
+      const rows = body.status === 'OK' ? body.result?.problems : undefined;
+      if (Array.isArray(rows)) {
+        const list = rows.flatMap((p) => {
+          const index = typeof p.index === 'string' ? p.index : null;
+          if (index === null) return [];
+          return [
+            {
+              id: `${contestId}${index}`,
+              index,
+              title: typeof p.name === 'string' ? p.name : undefined,
+              rating: typeof p.rating === 'number' ? p.rating : null,
+            } satisfies ContestProblemRef,
+          ];
+        });
+        refs = list;
+      }
+    } else if (platform === 'nowcoder') {
+      refs = await fetchNowcoderProblems(contestId, fetchFn);
+    }
+
+    // CF 未提交题的官方 tags/rating 来自题目集全集缓存（standings 不带 tags）；
+    // 拿不到的题保持缺省——宁可空着，不编标签
+    if (platform === 'codeforces' && refs && refs.length > 0) {
+      const metas = await lookupCfProblems(
+        db,
+        refs.map((r) => r.id),
+        fetchFn,
+      );
+      for (const ref of refs) {
+        const meta = metas.get(ref.id);
+        if (!meta) continue;
+        ref.tags = meta.tags;
+        if (ref.rating == null && meta.rating != null) ref.rating = meta.rating;
+      }
+    }
+  } catch {
+    refs = null;
+  }
+
+  // 成功拉取（含确认无题）即持久缓存 state；失败不写 state（保持 unknown，下次仍会重试）
+  if (refs !== null) {
+    const state = refs.length > 0 ? 'ok' : 'empty';
+    db.prepare(
+      `UPDATE participated_contests SET problem_ids = ?, problem_set_state = ?
+       WHERE user_id = ? AND platform = ? AND contest_id = ?`,
+    ).run(
+      refs.length > 0 ? JSON.stringify(refs) : null,
+      state,
+      DEFAULT_USER_ID,
+      platform,
+      contestId,
+    );
+    return refs.length > 0 ? { status: 'ok', refs } : { status: 'empty' };
+  }
+  return { status: 'unavailable' };
 }
