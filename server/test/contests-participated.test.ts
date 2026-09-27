@@ -979,6 +979,77 @@ test('fetchContestProblemSet：CF contest.standings 解析 index/title/rating �
   }
 });
 
+test('fetchContestProblemSet：AtCoder /contests/{slug}/tasks 解析题目集并修正串号题名', async () => {
+  const db = createDb(':memory:');
+  try {
+    // 真实页面结构：每道题有「题号格 + 题名格」两个锚点（题名格文本更长，取它）
+    const html = `<table><tbody>
+      <tr><td><a href="/contests/abc454/tasks/abc454_a">A</a></td><td><a href="/contests/abc454/tasks/abc454_a">Closed interval</a></td></tr>
+      <tr><td><a href="/contests/abc454/tasks/abc454_b">B</a></td><td><a href="/contests/abc454/tasks/abc454_b">Mapping</a></td></tr>
+      <tr><td><a href="/contests/abc454/tasks/abc454_g?lang=en">G</a></td><td><a href="/contests/abc454/tasks/abc454_g?lang=en">Mode in the Subtree</a></td></tr>
+      <tr><td><a href="/contests/other/tasks/other_a">X</a></td><td><a href="/contests/other/tasks/other_a">别的场次</a></td></tr>
+      <tr><td><a href="/contests/abc454/tasks_print">一括表示</a></td></tr>
+    </tbody></table>`;
+    const fetchFn = (async () => new Response(html, { status: 200 })) as unknown as typeof fetch;
+    const result = await fetchContestProblemSet(db, 'atcoder', 'abc454', fetchFn);
+    assert.deepEqual(result, {
+      status: 'ok',
+      refs: [
+        { id: 'abc454_a', index: 'A', title: 'Closed interval' },
+        { id: 'abc454_b', index: 'B', title: 'Mapping' },
+        { id: 'abc454_g', index: 'G', title: 'Mode in the Subtree' },
+      ],
+    });
+
+    // 失败路径：题目列表拿不到 → unavailable，不编造题目集
+    const broken = (async () => new Response('nope', { status: 503 })) as unknown as typeof fetch;
+    assert.equal((await fetchContestProblemSet(db, 'atcoder', 'abc455', broken)).status, 'unavailable');
+  } finally {
+    db.close();
+  }
+});
+
+test('fetchContestProblemSet：AtCoder 用官方题名修正库内被社区数据串号的 title', async () => {
+  const db = createDb(':memory:');
+  try {
+    // 库内是 kenkoooo 社区数据：题名文字对、字母前缀错（实测 abc454_b → 「C. Mapping」）
+    // 注意用独立场次 id：fetchContestProblemSet 有 5 分钟进程内退避（同 id 第二次直接 unavailable）
+    for (const [key, title] of [
+      ['abc456_a', 'A. Closed interval'],
+      ['abc456_b', 'C. Mapping'],
+      ['abc456_c', 'F. Straw Millionaire'],
+    ] as const) {
+      db.prepare('INSERT INTO problems (platform, problem_key, title, tags) VALUES (?, ?, ?, ?)').run(
+        'atcoder',
+        key,
+        title,
+        '[]',
+      );
+    }
+    const html = `<tbody>
+      <tr><td><a href="/contests/abc456/tasks/abc456_a">A</a></td><td><a href="/contests/abc456/tasks/abc456_a">Closed interval</a></td></tr>
+      <tr><td><a href="/contests/abc456/tasks/abc456_b">B</a></td><td><a href="/contests/abc456/tasks/abc456_b">Mapping</a></td></tr>
+      <tr><td><a href="/contests/abc456/tasks/abc456_c">C</a></td><td><a href="/contests/abc456/tasks/abc456_c">Straw Millionaire</a></td></tr>
+    </tbody>`;
+    const fetchFn = (async () => new Response(html, { status: 200 })) as unknown as typeof fetch;
+    const result = await fetchContestProblemSet(db, 'atcoder', 'abc456', fetchFn);
+    assert.equal(result.status, 'ok', '题目集应抓到（否则修正不会发生）');
+
+    const rows = db
+      .prepare("SELECT problem_key, title FROM problems WHERE platform = 'atcoder' ORDER BY problem_key")
+      .all() as Array<{ problem_key: string; title: string }>;
+    // node:sqlite 返回 null 原型对象：转成普通对象再做严格深比较
+    const titles = rows.map((r) => ({ problem_key: r.problem_key, title: r.title }));
+    assert.deepEqual(titles, [
+      { problem_key: 'abc456_a', title: 'A. Closed interval' },
+      { problem_key: 'abc456_b', title: 'B. Mapping' },
+      { problem_key: 'abc456_c', title: 'C. Straw Millionaire' },
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
 test('fetchContestProblemSet：牛客 problem-list 解析 index/title；失败返回 unavailable（不落库）', async () => {
   const db = createDb(':memory:');
   try {

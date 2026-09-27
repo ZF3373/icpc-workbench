@@ -537,6 +537,18 @@ export function aiRoutes(
           review = { ...review, problemSetKnown: true, unsubmittedProblems: [] };
         }
         // 'unavailable' = 退避期内或拉取失败，保持原样（下次复盘再试）
+        // AtCoder 的题目集来自官方 tasks 页，抓取时已顺手修正库内被社区数据串号的标题
+        // （实测 abc454_b 库内为「C. Mapping」、官方为「B. Mapping」）。重解析一次，
+        // 让本轮的「逐题明细」与题面标签立刻用上正确题名（一次索引查询，代价可忽略）。
+        if (
+          review.contest.platform === 'atcoder' &&
+          (result.status === 'ok' || result.status === 'empty')
+        ) {
+          const refreshed = resolveContestGroup(db, contestKey.trim(), resolveOpts);
+          if (refreshed) {
+            review = { ...refreshed, problemSetKnown: true, unsubmittedProblems: review.unsubmittedProblems };
+          }
+        }
       }
       if (review) {
         // 后台预取题面（非阻塞）：覆盖该场所有能拿到 URL 的题（未通过 → 未提交 → **已 AC**），

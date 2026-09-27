@@ -316,6 +316,78 @@ export async function fetchNowcoderJoinedContests(
   return { items, truncated };
 }
 
+/** 抓 HTML 页用的浏览器 UA（AtCoder 对默认 Node UA 不友好） */
+const BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+/**
+ * AtCoder 比赛题目集：`/contests/{slug}/tasks` 是公开 SSR 页（实测 abc454 → 7 题 A-G）。
+ * 拿到题目集后「赛时未提交的题」才有题号/题名，**这些题的题面也才进得了预取范围**
+ * （否则 AI 既看不到未开的题，也不可能拿到它们的题面）。
+ *
+ * 页面上每道题有两个锚点（题号格 + 题名格），题名格文本更长 → 取**最长**文本作题名。
+ * 本页同时是**题名的权威来源**：适配器用的 kenkoooo 社区 problems.json 会串号
+ * （实测 abc454_b 的题名被写成「C. Mapping」，题名文字对但字母前缀错），
+ * 见 repairAtcoderTitles。
+ */
+async function fetchAtcoderProblemSet(
+  contestId: string,
+  fetchFn: typeof fetch,
+): Promise<ContestProblemRef[] | null> {
+  try {
+    const slug = contestId;
+    const res = await fetchFn(`https://atcoder.jp/contests/${encodeURIComponent(slug)}/tasks`, {
+      headers: { 'User-Agent': BROWSER_UA, Accept: 'text/html' },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!okStatus(res)) return null;
+    const html = await res.text();
+    const titleById = new Map<string, string>();
+    const indexById = new Map<string, string>();
+    const order: string[] = [];
+    const re = /<a[^>]*href="\/contests\/[^"/]+\/tasks\/([a-z0-9_]+)(?:\?[^"]*)?"[^>]*>([\s\S]*?)<\/a>/gi;
+    for (const m of html.matchAll(re)) {
+      const id = m[1]!;
+      if (!id.startsWith(`${slug}_`)) continue; // 页面可能挂别的场次链接
+      const suffix = id.slice(slug.length + 1);
+      if (!/^[a-z0-9]+$/.test(suffix)) continue;
+      if (!indexById.has(id)) {
+        indexById.set(id, suffix.toUpperCase());
+        order.push(id);
+      }
+      const text = m[2]!.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      const prev = titleById.get(id);
+      if (!prev || text.length > prev.length) titleById.set(id, text); // 题名格比题号格长
+    }
+    const refs = order.map((id) => ({
+      id,
+      index: indexById.get(id),
+      title: titleById.get(id)?.replace(/^[A-Za-z0-9]{1,2}\s*[-–]\s*/, '').trim() || undefined,
+    }));
+    return refs.length > 0 ? refs : null;
+  } catch {
+    return null; // 拉取失败 → 题目集保持未知（下次复盘再试）
+  }
+}
+
+/**
+ * 用官方 tasks 页题名修正库内标题（**回复正文，写 problems.title**）。
+ * 依据：适配器的题名来自 kenkoooo 社区 problems.json，会串号（实测 abc454_b 为
+ * 「C. Mapping」，官方为「B. Mapping」）；官方 tasks 页才是权威。
+ * 只修本场（key 前缀匹配）且只在与官方不一致时写，避免无谓写入。
+ */
+function repairAtcoderTitles(db: Db, refs: ContestProblemRef[]): void {
+  const update = db.prepare(
+    'UPDATE problems SET title = ? WHERE platform = ? AND problem_key = ? AND title != ?',
+  );
+  for (const ref of refs) {
+    if (!ref.title || !ref.index) continue;
+    const fixed = `${ref.index}. ${ref.title}`;
+    update.run(fixed, 'atcoder', ref.id, fixed);
+  }
+}
+
 /**
  * GET /acm/contest/problem-list —— 该场比赛的题目集（归因排歧 +「未提交的题」渲染；
  * 无需登录）。同一次响应里带 index（A/B/C…）与 title，未提交的题也能给出完整身份。
@@ -835,6 +907,15 @@ export async function fetchContestProblemSet(
       }
     } else if (platform === 'nowcoder') {
       refs = await fetchNowcoderProblems(contestId, fetchFn);
+    } else if (platform === 'atcoder') {
+      // 公开 SSR 题目列表：未提交的题也就能拿到题号/题名与题面
+      refs = await fetchAtcoderProblemSet(contestId, fetchFn);
+    }
+
+    // AtCoder：官方 tasks 页的题名顺手修正库内被社区数据串号的标题
+    // （kenkoooo problems.json 实测把 abc454_b 写成「C. Mapping」）
+    if (platform === 'atcoder' && refs && refs.length > 0) {
+      repairAtcoderTitles(db, refs);
     }
 
     // CF 未提交题的官方 tags/rating 来自题目集全集缓存（standings 不带 tags）；

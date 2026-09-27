@@ -2,10 +2,11 @@
 
 > 本文合并了此前的实现审查与证据增强两份文档，是**唯一权威版本**。所有需求与优化点均已完整保留。
 >
-> **实施状态（2026-09-26 更新）**：阶段 0–6 已全部落地，`npm test`（server 897 + client 332，0 失败）、
+> **实施状态（2026-09-26 更新）**：阶段 0–6 已全部落地，`npm test`（server 905 + client 332，0 失败）、
 > `npm run typecheck`、`npm run lint`（0 error）、`npm run build` 全绿，详见文末「七、实施状态」。
-> 上线后修掉一个真实缺陷：**已 AC 的题没有题面 → AI 编造题意**（见 7.1）。
-> 仍未做的只有一件事：**真实联网抓取题面/题解的实测**（见第六节第 2 条）。
+> 上线后修掉两个真实缺陷：**已 AC 的题没有题面 → AI 编造题意**（见 7.1）；
+> **题面覆盖与抽取质量**（AtCoder 旧实现只抽到 68 字符、牛客导航被当题面、题名串号，见 7.2）。
+> 唯一剩下的平台边界：**Codeforces 的 HTML 页被 Cloudflare 拦死，服务端拿不到 CF 题面**（7.2 有实测依据）。
 
 ## 目标与需求（完整保留）
 
@@ -336,3 +337,39 @@ CREATE TABLE IF NOT EXISTS problem_statements (
 - 测试：改掉固化了 bug 的两条断言，新增 4 条（含 `prefetchProblemStatementsBackground` 必须抓取已 AC 题的回归用例）；`assistant.test.ts` 增加"chat 注入的 system 必须带「未取到题面」声明"的端到端断言。
 
 **本轮验证**：`npm test` server 897 / client 332 全通过，typecheck 无错，lint 0 error；真实库**迁移副本**冒烟：题面表为空时 4 题全部列入「未取到题面」，灌入 3 道已 AC 题的题面后它们被正常注入、只剩未提交/未通过的那题留在清单里。
+
+### 7.2 覆盖与质量：尽量抓取所有能找到的题面（2026-09-26 真实联网实测）
+
+用户要求「尽量抓取所有能找到的题目题面，确保分析准确」。本轮**真的连网实测**了各平台，
+结论与据此做的改动如下（全部有实测依据，不再是推断）：
+
+| 平台 | 实测结论 | 依据 |
+| --- | --- | --- |
+| **AtCoder** | ✅ 题面 + **题目列表**都能抓 | 题目页 `#task-statement` 内含 `lang-en`/`lang-ja` 两份；`/contests/{slug}/tasks` 实测列出 abc454 A–G 共 7 题 |
+| **洛谷** | ✅ 匿名可抓（需过 C3VK 反爬） | 直连 `problem/P1001` 抛 `fetch failed`（302 循环）；改 `redirect:'manual'` + 取新 C3VK 重试 → 200，抽到 1537 字符题面 |
+| **牛客** | ⚠️ 题目页需登录 | 匿名题库页只剩 457 字符站点导航（含「没有查看题目的权限哦」） |
+| **Codeforces** | ❌ HTML 页全被拦 | `/contest/1877/problem/A`、`/problemset/problem/1877/A` 均 403 "Just a moment..."；官方镜像 m1 返回 JS 机器人校验页、m2 403、mirror 连不上；`codeforces.com/api/*` 正常但**不含题面** |
+| 计蒜客 / QOJ / 代码源 / 力扣 | ❌ 无公开可抓来源 | QOJ `/problem/*` 403 challenge；计蒜客题目页是 SPA（1472B 空壳） |
+
+**据此做的四件事**
+
+1. **AtCoder 抽取修好了（原本是坏的）**：旧实现 `([\s\S]*?)<\/div|span>` 懒匹配到第一个 `</span>` 就收工，
+   实测**只抽到 68 字符**（一句「問題文」，丢掉约束/输入输出/全部样例）→ AI 拿半截题面照样出错。
+   现按「语言 span + 外层 `class="lang"` 的连续两个 `</span>`」定界、优先英文块，
+   实测 7 题得 670 / 1263 / 998 / 1896 / 2147 / 1479 / 3027 字符。
+2. **题目集覆盖扩到 AtCoder**：`fetchContestProblemSet` 新增 `atcoder` 分支（`/contests/{slug}/tasks`），
+   于是「赛时未提交的题」有题号/题名，**它们的题面也进得了预取范围**——实测 abc454 的 E/F/G 三题
+   （本地从未提交）题面全部抓到并注入。
+3. **噪声一律拒收 + 平台矩阵**：新增 `statementSupport()`（ok / gated / blocked / unsupported）与
+   `statementLooksValid()`（权限墙/挑战页/站点导航 → 不落库）。不支持的平台**直接不发请求**，
+   并在上下文里写明原因 + 可执行替代路径（请用户粘贴题面），提示词同步改成"取不到就先请用户贴，
+   不许凭题名硬讲"。CF 也据此明确告知用户（这是平台边界，服务端无解）。
+4. **顺手修掉一个题名串号的数据缺陷**：`problems.title` 来自 kenkoooo 社区 `problems.json`，
+   实测字母前缀错位（`abc454_b` → 「C. Mapping」、`abc454_c` → 「F. Straw Millionaire」、
+   `abc454_d` → 「G. (xx)」）；官方 tasks 页才是权威。现在抓题目集时**顺手修正库内 title**
+   （写 `problems.title`，仅在本场且不一致时写），并在同一条消息内重解析一次，让本轮「逐题明细」
+   与题面标签立刻一致（实测修复后：`abc454_b B. Mapping`）。
+
+**本轮验证（真实联网，非 stub）**：`npm test` server 905 / client 332 全通过、typecheck 无错、lint 0 error；
+真实库迁移副本跑完整链路（解析单场 → 补拉题目集 → 后台预取 → 渲染）：AtCoder abc454 七题题面全部落库并注入，
+未提交题 E/F/G 也带上了官方题名与题解入口；洛谷 P1001 匿名取到 1537 字符题面；CF 返回 null 且上下文如实说明原因。
