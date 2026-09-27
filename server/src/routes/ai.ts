@@ -555,9 +555,15 @@ export function aiRoutes(
         // 落库后下次复盘即有题面注入。曾只抓「未通过+未提交」，导致 AI 对已 AC 的题编造题意。
         // 不在 chat 同步路径里阻塞——注入是纯读库（renderContestContext 读 problem_statements）。
         // 首次打开时题面可能尚未落库：上下文会显式列出「未取到题面」的题号，提示词禁止对其推断题意。
+        // 题面预取要用的平台 Cookie：全部平台通用（blocked/gated 平台只有带 Cookie 才尝试，
+        // 例如 CF 的 cf_clearance、牛客登录态）。洛谷也要（C3VK 之外仍可用登录态）。
         const reviewCookies: Record<string, { cookie?: string }> = {};
-        const luoguCookieRow = db.prepare("SELECT value FROM settings WHERE key = 'cookie.luogu'").get() as { value: string } | undefined;
-        if (luoguCookieRow?.value) reviewCookies.luogu = { cookie: luoguCookieRow.value };
+        for (const row of db
+          .prepare("SELECT key, value FROM settings WHERE key LIKE 'cookie.%'")
+          .all() as Array<{ key: string; value: string }>) {
+          const platform = row.key.slice('cookie.'.length);
+          if (row.value?.trim()) reviewCookies[platform] = { cookie: row.value };
+        }
         prefetchProblemStatementsBackground(db, review, undefined, reviewCookies);
       }
       contestSection = review

@@ -348,7 +348,7 @@ CREATE TABLE IF NOT EXISTS problem_statements (
 | **AtCoder** | ✅ 题面 + **题目列表**都能抓 | 题目页 `#task-statement` 内含 `lang-en`/`lang-ja` 两份；`/contests/{slug}/tasks` 实测列出 abc454 A–G 共 7 题 |
 | **洛谷** | ✅ 匿名可抓（需过 C3VK 反爬） | 直连 `problem/P1001` 抛 `fetch failed`（302 循环）；改 `redirect:'manual'` + 取新 C3VK 重试 → 200，抽到 1537 字符题面 |
 | **牛客** | ⚠️ 题目页需登录 | 匿名题库页只剩 457 字符站点导航（含「没有查看题目的权限哦」） |
-| **Codeforces** | ❌ HTML 页全被拦 | `/contest/1877/problem/A`、`/problemset/problem/1877/A` 均 403 "Just a moment..."；官方镜像 m1 返回 JS 机器人校验页、m2 403、mirror 连不上；`codeforces.com/api/*` 正常但**不含题面** |
+| **Codeforces** | ❌ HTML 页全被拦（**但配了 Cookie 会尝试**） | `/contest/1877/problem/A`、`/problemset/problem/1877/A` 均 403 "Just a moment..."；官方镜像 m1 返回 JS 机器人校验页、m2 403、mirror 连不上；`codeforces.com/api/*` 正常但**不含题面**。已留出口：`fetchProblemStatement` 对 blocked 平台在**存在该平台 Cookie** 时仍会尝试（CF 的 `cf_clearance` 可过挑战，同 QOJ 做法），抓回内容仍过噪声校验 |
 | 计蒜客 / QOJ / 代码源 / 力扣 | ❌ 无公开可抓来源 | QOJ `/problem/*` 403 challenge；计蒜客题目页是 SPA（1472B 空壳） |
 
 **据此做的四件事**
@@ -369,6 +369,12 @@ CREATE TABLE IF NOT EXISTS problem_statements (
    `abc454_d` → 「G. (xx)」）；官方 tasks 页才是权威。现在抓题目集时**顺手修正库内 title**
    （写 `problems.title`，仅在本场且不一致时写），并在同一条消息内重解析一次，让本轮「逐题明细」
    与题面标签立刻一致（实测修复后：`abc454_b B. Mapping`）。
+
+**CF 还差半步（未做，需用户决定）**：`fetchProblemStatement` 已支持"blocked 平台带 Cookie 就试一次"，
+但**设置页目前没有 CF 的 Cookie 输入框**（CF 在 `PLATFORMS` 里是 `sync: 'auto'`，UI 只对 `sync: 'cookie'`
+的平台渲染 Cookie 字段）。要真正解锁 CF 题面，需要：给 CF 加 `cf_clearance` + 匹配 UA 两个配置项
+（`cf_clearance` 与浏览器 UA 绑定）并放开 UI 条件；本轮没做，因为**没有真实 `cf_clearance` 就无法验证**，
+不想留一条假装能用的路径。
 
 **本轮验证（真实联网，非 stub）**：`npm test` server 905 / client 332 全通过、typecheck 无错、lint 0 error；
 真实库迁移副本跑完整链路（解析单场 → 补拉题目集 → 后台预取 → 渲染）：AtCoder abc454 七题题面全部落库并注入，

@@ -234,7 +234,41 @@ test('fetchProblemStatement：洛谷走 C3VK 反爬重试（302 下发新 cookie
   }
 });
 
-test('fetchProblemStatement：抓取失败返回 null 不落库', async () => {
+test('fetchProblemStatement：blocked 平台配了 Cookie 才尝试（CF + cf_clearance）', async () => {
+  __resetProblemStatementsForTest();
+  const db = createDb(':memory:');
+  try {
+    let calls = 0;
+    const html = `<div class="problem-statement"><div class="content"><p>${'Given n, print YES. ' +
+      'Input: n (1 <= n <= 100). Output: YES or NO. '.repeat(5)}</p></div></div></div>`;
+    const spyFetch = (async () => {
+      calls += 1;
+      return new Response(html, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    // 无 Cookie：直接拦截，不发请求
+    assert.equal(
+      await fetchProblemStatement(db, 'codeforces', '700A', 'https://codeforces.com/contest/700/problem/A', spyFetch),
+      null,
+    );
+    assert.equal(calls, 0, '没配 Cookie 时不应试 CF（Cloudflare 必拦）');
+
+    // 带 Cookie（cf_clearance）：尝试抓取，成功即落库
+    const text = await fetchProblemStatement(
+      db, 'codeforces', '700A', 'https://codeforces.com/contest/700/problem/A', spyFetch,
+      'cf_clearance=abc; __cf_bm=x',
+    );
+    assert.equal(calls, 1, '配了 Cookie 就值得试一次');
+    assert.ok(text && text.includes('Given n'), 'CF 题面抽取应生效');
+    const cached = readProblemStatements(db, [{ platform: 'codeforces', problemKey: '700A' }]);
+    assert.equal(cached.size, 1, '带 Cookie 抓到的题面应落库');
+  } finally {
+    __resetProblemStatementsForTest();
+    db.close();
+  }
+});
+
+test('fetchProblemStatement：失败返回 null 不落库', async () => {
   __resetProblemStatementsForTest();
   const db = createDb(':memory:');
   try {

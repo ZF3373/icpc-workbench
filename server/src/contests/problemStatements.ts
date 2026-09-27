@@ -309,7 +309,11 @@ export async function fetchProblemStatement(
   fetchFn: typeof fetch = throttledFetch,
   cookie?: string,
 ): Promise<string | null> {
-  if (statementSupport(platform) !== 'ok') return null;
+  // 默认只抓「公开可抓」的平台；但 blocked/gated 平台在**用户配置了该平台 Cookie** 时值得一试：
+  // CF 的 Cloudflare 挑战可用浏览器里带出来的 cf_clearance 通过（同 QOJ 的做法），
+  // 牛客登录态也可能解锁题目页。抓回来仍要过 statementLooksValid —— 挑战页/权限墙一律不落库，
+  // 所以"试一次"没有副作用（最坏就是又一条「未取到题面」）。
+  if (statementSupport(platform) !== 'ok' && !cookie?.trim()) return null;
 
   const cacheKey = `${platform}:${problemKey}`;
   if (Date.now() - (fetchBackoff.get(cacheKey) ?? 0) < FETCH_BACKOFF_MS) return null;
