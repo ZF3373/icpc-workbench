@@ -8,6 +8,7 @@ import {
   pickBackfillTargets,
 } from '../src/analysis/difficultyBackfill.ts';
 import { parseNcBankRows } from '../src/adapters/problemBank.ts';
+import { HOST_MIN_INTERVAL_MS } from '../src/net/hostThrottle.ts';
 
 let db: Db;
 beforeEach(() => {
@@ -786,4 +787,40 @@ test('回填：题目在回填途中被删除 → 记为跳过而非整轮 502',
     lg.details.some((d) => d.problemKey === 'P7777' && d.action === 'skipped'),
     '应有一条 skipped（题目已被删除）明细',
   );
+});
+
+// ---------- 处理顺序与节奏（2026-09-27 用户反馈：跑完回填 QOJ 仍无难度标签） ----------
+
+test('回填顺序：按实测成本升序 —— qoj/atcoder 先完成，牛客整表扫描垫底', async () => {
+  // 起因：默认按 platform 字母序处理 → qoj 排最后（第 8），而牛客整表扫描要 ~400s、洛谷逐题十几分钟。
+  // 用户等到最后仍看不到 qoj 标签；中途放弃 / 开发期 `tsx watch` 因文件变更重启时，
+  // 排在后面的平台一行都不会写（实测被打断的一轮只写完 atcoder + CF）。
+  insertProblem('nowcoder', '90001', 'NC', null, []);
+  insertProblem('luogu', 'P1001', 'LG', null, []);
+  insertProblem('codeforces', '1001A', 'CF', null, []);
+  insertProblem('atcoder', 'abc321_a', 'AT', null, []);
+  insertProblem('qoj', '4071-20016', 'QOJ', null, []);
+  // 全部上游 404 → 每平台都记 failed，但**处理顺序**仍如实反映在 results 里
+  const fetchFn = router({});
+  const results = await backfillDifficulties(db, fetchFn);
+  assert.deepEqual(
+    results.map((r) => r.platform),
+    ['qoj', 'atcoder', 'codeforces', 'luogu', 'nowcoder'],
+    '便宜的先做、长扫描垫底（见 difficultyBackfill.ts 的 PLATFORM_ORDER）',
+  );
+});
+
+test('回填节奏：洛谷逐题间隔不得快于主机安全下限（防退回 0.3 秒/题连发）', async () => {
+  // 适配器自带的 300ms/题 远快于 www.luogu.com.cn 的安全下限；一旦某条路径没挂全局节流层
+  // （脚本 / 单测 / 未来重构遗漏），它就变成实际节奏 → 招风控。这里把下限钉成可断言的不变量。
+  insertProblem('luogu', 'P1001', 'A+B', null, ['dp']);
+  const fetchFn = router({
+    '_lfe/tags': () => ({ tags: [] }),
+    'problem/P1001': () => luoguProblemJson('P1001', 1, 'A+B', []),
+  });
+  const floor = HOST_MIN_INTERVAL_MS['www.luogu.com.cn'];
+  const t0 = Date.now();
+  await backfillDifficulties(db, fetchFn);
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed >= floor, `逐题间隔 ${elapsed}ms 必须 ≥ 主机安全下限 ${floor}ms`);
 });

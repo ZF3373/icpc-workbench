@@ -211,6 +211,22 @@ function ncFullPage(extra: Array<[string, string, string]>, offset: number): str
   return ncBankPage(rows, 14317);
 }
 
+test('nowcoder bank: pageDelayMs 覆盖页间间隔（回填把兜底抬到主机安全下限）', async () => {
+  // 页间 sleep 是「不走全局节流层时的最后一道防线」：适配器自带的 500ms/页 远快于
+  // ac.nowcoder.com 的安全下限，回填因此显式传入 FLOOR。这里断言该选项真的生效。
+  const fetchFn = router({
+    'acm/problem/list': (url) => (new URL(url).searchParams.get('page') === '1' ? ncFullPage([], 0) : ncFullPage([], 100)),
+  });
+  const fast0 = Date.now();
+  await fetchNowcoderBank(fetchFn, { max: 100, pageDelayMs: 0 });
+  const fast = Date.now() - fast0;
+  const slow0 = Date.now();
+  await fetchNowcoderBank(fetchFn, { max: 100, pageDelayMs: 2000 });
+  const slow = Date.now() - slow0;
+  assert.ok(fast < 2000, `pageDelayMs=0 不应等待（实测 ${fast}ms）`);
+  assert.ok(slow >= 2000, `pageDelayMs=2000 必须等到 2000ms（实测 ${slow}ms）`);
+});
+
 test('nowcoder bank: wantKeys 全部命中即停（回填只为库里几道题，不必扫完整表）', async () => {
   const pages: string[] = [];
   const fetchFn = router({
