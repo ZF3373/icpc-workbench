@@ -571,6 +571,10 @@ test('assistant: chat injects contest review context via contestKey, invalid key
       assert.match(system, /codeforces:1877|1877A/);
       assert.match(system, /出现 AC 1 题/);
       assert.match(system, /赛后复盘（仅当上下文包含/, '提示词需带复盘职责说明');
+      // 题面一节必须显式声明「未取到题面」的题号（本 bug：已 AC 的题没题面 → AI 编造题意）
+      assert.match(system, /### 题面/);
+      assert.match(system, /未取到题面/);
+      assert.match(system, /禁止凭题名概括题意/);
 
       // 推导不到的比赛 → 回退为提示文案，不阻断对话
       const missing = await fetch(`${aiBase}/chat`, {

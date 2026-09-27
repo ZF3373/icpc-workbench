@@ -539,9 +539,10 @@ export function aiRoutes(
         // 'unavailable' = 退避期内或拉取失败，保持原样（下次复盘再试）
       }
       if (review) {
-        // 后台预取题面（非阻塞）：只对未通过+未提交的题抓取，落库后下次复盘即有题面注入。
+        // 后台预取题面（非阻塞）：覆盖该场所有能拿到 URL 的题（未通过 → 未提交 → **已 AC**），
+        // 落库后下次复盘即有题面注入。曾只抓「未通过+未提交」，导致 AI 对已 AC 的题编造题意。
         // 不在 chat 同步路径里阻塞——注入是纯读库（renderContestContext 读 problem_statements）。
-        // 首次打开时题面可能尚未落库，AI 仍可按提示词调 fetch_url 自行读取。
+        // 首次打开时题面可能尚未落库：上下文会显式列出「未取到题面」的题号，提示词禁止对其推断题意。
         const reviewCookies: Record<string, { cookie?: string }> = {};
         const luoguCookieRow = db.prepare("SELECT value FROM settings WHERE key = 'cookie.luogu'").get() as { value: string } | undefined;
         if (luoguCookieRow?.value) reviewCookies.luogu = { cookie: luoguCookieRow.value };

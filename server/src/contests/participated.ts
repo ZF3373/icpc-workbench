@@ -575,7 +575,7 @@ function renderAttempts(rows: ContestSubmissionRow[], startMs: number, isCf: boo
  * 上限 24 题 / 400 条提交（按真实比赛规模定，见上方常量注释），超出截断并列出被截断题号，
  * 防止超长比赛挤占上下文窗口。
  * 题面注入：db 给定时从 problem_statements 读库拼题面（纯读库、零网络），
- * 只注入未通过+未提交的题，受每场 ≤20K 字符预算约束。
+ * 覆盖所有题（含已 AC 的题），未取到题面的题会被显式列名。
  */
 export function renderContestContext(data: ContestReviewData, opts?: { db?: Db }): string {
   const { contest, submissions } = data;
@@ -749,13 +749,13 @@ export function renderContestContext(data: ContestReviewData, opts?: { db?: Db }
       '### 未提交的题\n（题目集已知，且本场所有题均有提交记录——赛时已全部开过题，无遗漏。）',
     );
   }
-  // 题面注入（纯读库、零网络）：只注入未通过+未提交的题，受每场 ≤20K 字符预算约束。
-  // 题面是把所有其他证据锚定到现实的那根桩——有了它 AI 才不会凭题名猜错题意。
+  // 题面注入（纯读库、零网络）：覆盖**所有题含已 AC 的题**，按优先级与预算裁剪，
+  // 并在上下文里显式声明「未取到题面」的题号——题面是把其他证据锚定到现实的桩，
+  // 缺了它 AI 会凭题名编造题意（尤其赛时已 AC 的题）。空态声明由 problemStatements 负责。
   if (opts?.db) {
     const statementLines = renderStatementSection(opts.db, data);
     if (statementLines.length > 0) {
       lines.push('');
-      lines.push('### 题面（已缓存，AI 据此锚定题意，无需重复调用 fetch_url）');
       lines.push(...statementLines);
     }
   }
