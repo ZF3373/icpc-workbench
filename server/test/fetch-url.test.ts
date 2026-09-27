@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  FETCH_URL_TRANSPORT,
   executeFetchUrl,
   htmlToText,
   extractTitle,
@@ -9,6 +10,7 @@ import {
   resolveAndValidateHost,
   setDnsLookupForTest,
 } from '../src/ai/fetch-url.ts';
+import { throttledFetch } from '../src/net/hostThrottle.ts';
 // 静态导入触发 fetch_url 注册副作用（registerTool 在模块顶层执行）
 import '../src/ai/fetch-url.ts';
 import { executeToolCall, getRegisteredToolNames } from '../src/ai/tools/registry.ts';
@@ -24,15 +26,24 @@ const CFG_NO_KEY: AiConfig = {
 };
 const CTX_NO_KEY: ToolContext = { cfg: CFG_NO_KEY };
 
-/** 临时替换 globalThis.fetch，返回后用 restore 恢复（记录请求 URL 与 headers） */
+/**
+ * 临时替换 globalThis.fetch，返回后用 restore 恢复（记录请求 URL 与 headers）。
+ * 同时把 mock 作为 `fetchFn` 暴露给被测代码 —— 生产默认传输层是全局节流
+ * （见 FETCH_URL_TRANSPORT），单测必须显式注入，否则会真的打网络。
+ */
 function mockGlobalFetch(
   responses: Array<{ status?: number; body?: string; headers?: Record<string, string> }>,
-): { restore: () => void; calls: string[]; headerCalls: Array<Record<string, string>> } {
+): {
+  restore: () => void;
+  calls: string[];
+  headerCalls: Array<Record<string, string>>;
+  fetchFn: typeof fetch;
+} {
   const original = globalThis.fetch;
   let idx = 0;
   const calls: string[] = [];
   const headerCalls: Array<Record<string, string>> = [];
-  globalThis.fetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
+  const mock = (async (input: URL | RequestInfo, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     calls.push(url);
     headerCalls.push((init?.headers ?? {}) as Record<string, string>);
@@ -43,12 +54,14 @@ function mockGlobalFetch(
       headers: r.headers ?? {},
     });
   }) as typeof fetch;
+  globalThis.fetch = mock;
   return {
     restore: () => {
       globalThis.fetch = original;
     },
     calls,
     headerCalls,
+    fetchFn: mock,
   };
 }
 
@@ -204,13 +217,17 @@ describe('executeFetchUrl fallback (direct fetch)', () => {
   beforeEach(() => stubPublicDns());
   afterEach(() => setDnsLookupForTest(null));
 
+  it('默认传输层 = 全局节流 throttledFetch（防风控：AI 工具不得绕过平台节奏）', () => {
+    assert.equal(FETCH_URL_TRANSPORT, throttledFetch);
+  });
+
   it('成功读取 HTML 正文并返回 title', async () => {
     const html = '<html><head><title>测试页面</title></head><body><p>你好世界</p></body></html>';
     const mock = mockGlobalFetch([
       { status: 200, body: html, headers: { 'Content-Type': 'text/html; charset=utf-8' } },
     ]);
     try {
-      const r = await executeFetchUrl('https://example.com/page', CFG_NO_KEY);
+      const r = await executeFetchUrl('https://example.com/page', CFG_NO_KEY, undefined, mock.fetchFn);
       assert.equal(r.title, '测试页面');
       assert.match(r.content, /你好世界/);
       assert.equal(r.error, undefined);
@@ -224,7 +241,7 @@ describe('executeFetchUrl fallback (direct fetch)', () => {
       { status: 404, body: 'Not Found', headers: { 'Content-Type': 'text/html' } },
     ]);
     try {
-      const r = await executeFetchUrl('https://example.com/missing', CFG_NO_KEY);
+      const r = await executeFetchUrl('https://example.com/missing', CFG_NO_KEY, undefined, mock.fetchFn);
       assert.equal(r.content, '');
       assert.match(r.error ?? '', /404/);
     } finally {
@@ -237,7 +254,7 @@ describe('executeFetchUrl fallback (direct fetch)', () => {
       { status: 200, body: '', headers: { 'Content-Type': 'image/png' } },
     ]);
     try {
-      const r = await executeFetchUrl('https://example.com/img.png', CFG_NO_KEY);
+      const r = await executeFetchUrl('https://example.com/img.png', CFG_NO_KEY, undefined, mock.fetchFn);
       assert.equal(r.content, '');
       assert.match(r.error ?? '', /非文本/);
     } finally {
@@ -259,7 +276,7 @@ describe('directFetch redirect hop validation', () => {
       { status: 200, body: html, headers: { 'Content-Type': 'text/html' } },
     ]);
     try {
-      const r = await executeFetchUrl('https://example.com/start', CFG_NO_KEY);
+      const r = await executeFetchUrl('https://example.com/start', CFG_NO_KEY, undefined, mock.fetchFn);
       assert.equal(r.error, undefined);
       assert.match(r.content, /重定向后内容/);
       assert.deepEqual(mock.calls, ['https://example.com/start', 'https://example.com/final']);
@@ -273,7 +290,7 @@ describe('directFetch redirect hop validation', () => {
       { status: 302, headers: { Location: 'http://10.0.0.5/admin' } },
     ]);
     try {
-      const r = await executeFetchUrl('https://example.com/redirect', CFG_NO_KEY);
+      const r = await executeFetchUrl('https://example.com/redirect', CFG_NO_KEY, undefined, mock.fetchFn);
       assert.match(r.error ?? '', /内网/);
       assert.equal(mock.calls.length, 1, '第二跳应在 fetch 前被拦截');
     } finally {
@@ -289,7 +306,7 @@ describe('directFetch redirect hop validation', () => {
       { address: host === 'example.com' ? '93.184.216.34' : '127.0.0.1' },
     ]);
     try {
-      const r = await executeFetchUrl('https://example.com/redirect', CFG_NO_KEY);
+      const r = await executeFetchUrl('https://example.com/redirect', CFG_NO_KEY, undefined, mock.fetchFn);
       assert.match(r.error ?? '', /内网/);
       assert.equal(mock.calls.length, 1);
     } finally {
@@ -304,7 +321,7 @@ describe('directFetch redirect hop validation', () => {
     }));
     const mock = mockGlobalFetch(responses);
     try {
-      const r = await executeFetchUrl('https://example.com/hop0', CFG_NO_KEY);
+      const r = await executeFetchUrl('https://example.com/hop0', CFG_NO_KEY, undefined, mock.fetchFn);
       assert.match(r.error ?? '', /重定向次数过多/);
       assert.equal(mock.calls.length, 6);
     } finally {
@@ -318,7 +335,7 @@ describe('directFetch redirect hop validation', () => {
       { status: 200, body: '<p>ok</p>', headers: { 'Content-Type': 'text/html' } },
     ]);
     try {
-      await executeFetchUrl('https://www.luogu.com.cn/record/1', CFG_NO_KEY, { luogu: { cookie: '_uid=1; __gid=2' } });
+      await executeFetchUrl('https://www.luogu.com.cn/record/1', CFG_NO_KEY, { luogu: { cookie: '_uid=1; __gid=2' } }, mock.fetchFn);
       assert.equal(mock.headerCalls[0]['Cookie'], '_uid=1; __gid=2', '首跳应带平台 Cookie');
       assert.equal(mock.headerCalls[1]['Cookie'], undefined, '跨主机第二跳不得携带 Cookie');
     } finally {
@@ -332,7 +349,7 @@ describe('directFetch redirect hop validation', () => {
       { status: 200, body: '<p>ok</p>', headers: { 'Content-Type': 'text/html' } },
     ]);
     try {
-      await executeFetchUrl('https://www.luogu.com.cn/record/1', CFG_NO_KEY, { luogu: { cookie: '_uid=1' } });
+      await executeFetchUrl('https://www.luogu.com.cn/record/1', CFG_NO_KEY, { luogu: { cookie: '_uid=1' } }, mock.fetchFn);
       assert.equal(mock.headerCalls[1]['Cookie'], '_uid=1');
     } finally {
       mock.restore();
@@ -373,7 +390,11 @@ describe('fetch_url registration & execute', () => {
       { status: 200, body: html, headers: { 'Content-Type': 'text/html' } },
     ]);
     try {
-      const result = await executeToolCall('fetch_url', { url: 'https://qoj.ac/problem/1' }, CTX_NO_KEY);
+      const result = await executeToolCall(
+        'fetch_url',
+        { url: 'https://qoj.ac/problem/1' },
+        { ...CTX_NO_KEY, fetchFn: mock.fetchFn },
+      );
       assert.match(result.content, /求最短路径/);
       assert.match(result.content, /https:\/\/qoj\.ac\/problem\/1/);
       assert.ok(Array.isArray(result.metadata));
@@ -389,7 +410,11 @@ describe('fetch_url registration & execute', () => {
       { status: 403, body: 'Forbidden', headers: { 'Content-Type': 'text/html' } },
     ]);
     try {
-      const result = await executeToolCall('fetch_url', { url: 'https://example.com/private' }, CTX_NO_KEY);
+      const result = await executeToolCall(
+        'fetch_url',
+        { url: 'https://example.com/private' },
+        { ...CTX_NO_KEY, fetchFn: mock.fetchFn },
+      );
       assert.match(result.content, /读取 https:\/\/example\.com\/private 失败/);
       assert.match(result.content, /403/);
       assert.equal(result.metadata, undefined);

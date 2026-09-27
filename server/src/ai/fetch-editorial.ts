@@ -2,6 +2,7 @@ import type { ToolDefinition } from './provider.ts';
 import type { ToolResult, ToolContext } from './tools/registry.ts';
 import { registerTool, type PlatformCookies } from './tools/registry.ts';
 import { htmlToText, validatePublicFetchUrl } from './fetch-url.ts';
+import { throttledFetch } from '../net/hostThrottle.ts';
 
 /**
  * fetch_editorial 工具：读取一场比赛/一道题目的题解（editorial）。
@@ -180,13 +181,19 @@ function truncate(text: string): string {
 }
 
 /**
+ * 工具默认传输层：**必须**走全局按域名节流（见 net/hostThrottle.ts）——
+ * 否则 AI 可以在一轮对话里连发多次题解抓取，绕过所有平台的风控节奏。
+ */
+export const EDITORIAL_TRANSPORT: typeof fetch = throttledFetch;
+
+/**
  * 按平台派发读取题解。失败一律返回 error 文案（对齐 fetch_url：不抛错），
  * 拿不到题解时明确说明原因，AI 据此降级为「未经验证的推断」而不是硬编。
  */
 export async function executeFetchEditorial(
   url: string,
   cookies?: PlatformCookies,
-  fetchFn: typeof fetch = fetch,
+  fetchFn: typeof fetch = EDITORIAL_TRANSPORT,
 ): Promise<EditorialResult> {
   let parsed: URL;
   try {
@@ -319,7 +326,11 @@ registerTool({
     if (invalid) {
       return { content: `无法读取该网址：${invalid}` };
     }
-    const { content, sourceUrl, error } = await executeFetchEditorial(url, ctx.cookies);
+    const { content, sourceUrl, error } = await executeFetchEditorial(
+      url,
+      ctx.cookies,
+      ctx.fetchFn ?? EDITORIAL_TRANSPORT,
+    );
     if (error || !content?.trim()) {
       return { content: `读取题解失败：${error ?? '未获取到题解内容'}。没有题解佐证时，请不要给出看似确定的完整解法，明确标注哪些是推断。` };
     }

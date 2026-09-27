@@ -3,7 +3,15 @@ import type { ToolDefinition } from './provider.ts';
 import { registerTool, type ToolResult, type ToolContext, type PlatformCookies } from './tools/registry.ts';
 import type { SearchConfig } from './search.ts';
 import { extractPdfText, truncatePdfText, isPdfContentType } from './pdf.ts';
+import { throttledFetch } from '../net/hostThrottle.ts';
 import dns from 'node:dns/promises';
+
+/**
+ * 工具默认传输层：**必须**走全局按域名节流（见 net/hostThrottle.ts）。
+ * 直连抓取会逐跳跟随重定向（≤5 跳）并在 C3VK 挑战时原地重试 —— 不加节流的话
+ * AI 一次调用就可能对同一站点连发近十次请求，而且绕过所有平台的风控节奏。
+ */
+export const FETCH_URL_TRANSPORT: typeof fetch = throttledFetch;
 
 /** fetch_url 工具定义：AI 可在回复中调用以读取指定网址的网页正文 */
 export const FETCH_URL_TOOL: ToolDefinition = {
@@ -145,7 +153,12 @@ export function validatePublicFetchUrl(raw: string): string | null {
  * 失败不抛错（对齐 web_search），返回 content 为空 + error 说明。
  * cookies 可选：对已配置 Cookie 的平台（如洛谷）携带认证信息以读取需登录的页面。
  */
-export async function executeFetchUrl(url: string, cfg: SearchConfig, cookies?: PlatformCookies): Promise<FetchResult> {
+export async function executeFetchUrl(
+  url: string,
+  cfg: SearchConfig,
+  cookies?: PlatformCookies,
+  fetchFn: typeof fetch = FETCH_URL_TRANSPORT,
+): Promise<FetchResult> {
   const invalid = validatePublicFetchUrl(url);
   if (invalid) return { content: '', title: url, error: invalid };
   const engine = cfg.searchEngine ?? 'tavily';
@@ -157,8 +170,8 @@ export async function executeFetchUrl(url: string, cfg: SearchConfig, cookies?: 
     if (r.content.trim()) return r;
   }
 
-  // 兜底路径：直接 fetch + HTML 转文本（对服务端渲染页面有效）
-  const r = await directFetch(url, cookies);
+  // 兜底路径：直接 fetch + HTML 转文本（对服务端渲染页面有效），走全局节流
+  const r = await directFetch(url, cookies, fetchFn);
   return r;
 }
 
@@ -226,7 +239,11 @@ function findCookie(url: string, cookies?: PlatformCookies): { cookie?: string; 
 const MAX_REDIRECT_HOPS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
-async function directFetch(url: string, cookies?: PlatformCookies): Promise<FetchResult> {
+async function directFetch(
+  url: string,
+  cookies?: PlatformCookies,
+  fetchFn: typeof fetch = FETCH_URL_TRANSPORT,
+): Promise<FetchResult> {
   const initialPlatCreds = findCookie(url, cookies);
   const cookieStr = initialPlatCreds?.cookie?.trim() || '';
   const initialHost = new URL(url).hostname.toLowerCase();
@@ -248,7 +265,7 @@ async function directFetch(url: string, cookies?: PlatformCookies): Promise<Fetc
         headers['Cookie'] = cookie;
       }
 
-      const res = await fetch(currentUrl, {
+      const res = await fetchFn(currentUrl, {
         headers,
         redirect: 'manual',
         signal: AbortSignal.timeout(20_000),
@@ -380,7 +397,12 @@ registerTool({
     if (invalid) {
       return { content: `无法读取该网址：${invalid}` };
     }
-    const { content, title, error } = await executeFetchUrl(url, ctx.cfg, ctx.cookies);
+    const { content, title, error } = await executeFetchUrl(
+      url,
+      ctx.cfg,
+      ctx.cookies,
+      ctx.fetchFn ?? FETCH_URL_TRANSPORT,
+    );
     if (!content.trim()) {
       return {
         content: `读取 ${url} 失败：${error ?? '无法获取该网址内容'}。可能原因：页面需登录、依赖 JS 渲染、或网络不通。请确认网址可公开访问，或将网页正文直接粘贴给我。`,

@@ -29,6 +29,11 @@ export interface ToolContext {
   cfg: AiConfig;
   /** 用户已保存的平台 Cookie（来自 settings 表），fetch_url 等工具用于认证抓取 */
   cookies?: PlatformCookies;
+  /**
+   * 可选传输层注入（测试/自定义用）。生产缺省走**全局按域名节流**的 throttledFetch，
+   * 保证 AI 工具抓取与同步管道共享同一份平台节奏，不会绕过风控限速。
+   */
+  fetchFn?: typeof fetch;
 }
 
 /** 工具接口：定义 + 执行函数 */

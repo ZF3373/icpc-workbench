@@ -8,6 +8,7 @@ import {
   readProblemStatements,
   renderStatementSection,
   statementLooksValid,
+  statementRetryDelayMs,
   statementSupport,
   statementUnavailableReason,
   __resetProblemStatementsForTest,
@@ -275,6 +276,45 @@ test('fetchProblemStatement：blocked 平台配了 Cookie 才尝试（CF + cf_cl
     assert.ok(text && text.includes('Given n'), 'CF 题面抽取应生效');
     const cached = readProblemStatements(db, [{ platform: 'codeforces', problemKey: '700A' }]);
     assert.equal(cached.size, 1, '带 Cookie 抓到的题面应落库');
+  } finally {
+    __resetProblemStatementsForTest();
+    db.close();
+  }
+});
+
+test('statementRetryDelayMs：指数退避 5→10→20→40→60 分钟封顶，±20% 抖动且同 key 可复现', () => {
+  const MIN = 5 * 60_000;
+  const d = (n: number, key = 'atcoder:abc800_a'): number => statementRetryDelayMs(n, key);
+  for (const [attempts, expected] of [[1, 1], [2, 2], [3, 4], [4, 8], [5, 12], [8, 12]] as const) {
+    const got = d(attempts) / MIN;
+    assert.ok(
+      Math.abs(got - expected) <= expected * 0.2 + 0.01,
+      `第 ${attempts} 次失败后应≈${expected}×5min，实际 ${got.toFixed(2)}×5min`,
+    );
+  }
+  assert.equal(d(3), d(3), '同一 key 的抖动可复现（排查/测试友好）');
+  assert.notEqual(
+    d(3, 'atcoder:aaa_a'),
+    d(3, 'luogu:P1001'),
+    '不同题的抖动不同：避免一场比赛里十几道题在同一秒齐发',
+  );
+});
+
+test('fetchProblemStatement：失败后进入退避，退避窗口内不再请求（防风控）', async () => {
+  __resetProblemStatementsForTest();
+  const db = createDb(':memory:');
+  try {
+    let calls = 0;
+    const failFetch = (async () => {
+      calls += 1;
+      return new Response('boom', { status: 500 });
+    }) as unknown as typeof fetch;
+    const url = 'https://atcoder.jp/contests/abc800/tasks/abc800_a';
+    assert.equal(await fetchProblemStatement(db, 'atcoder', 'abc800_a', url, failFetch), null);
+    assert.equal(calls, 1, '第一次失败：发 1 次请求');
+    // 复盘场景里每条对话消息都会触发预取：退避必须挡住重复请求，否则请求量被对话轮次放大
+    assert.equal(await fetchProblemStatement(db, 'atcoder', 'abc800_a', url, failFetch), null);
+    assert.equal(calls, 1, '退避窗口内不再打网络');
   } finally {
     __resetProblemStatementsForTest();
     db.close();

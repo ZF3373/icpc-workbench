@@ -1,12 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  EDITORIAL_TRANSPORT,
   classifyNowcoderEditorial,
   executeFetchEditorial,
   extractLuoguSolutions,
   findNowcoderEditorialLink,
   findNowcoderTutorialsEntries,
 } from '../src/ai/fetch-editorial.ts';
+import { throttledFetch } from '../src/net/hostThrottle.ts';
+
+/**
+ * 防风控回归：工具默认传输层必须是全局按域名节流单例 —— 否则 AI 在一轮对话里
+ * 连发多次题解抓取就能绕过所有平台的风控节奏。
+ */
+test('fetch_editorial 默认传输层 = 全局节流 throttledFetch', () => {
+  assert.equal(EDITORIAL_TRANSPORT, throttledFetch);
+});
 
 /**
  * fetch_editorial 工具：按平台派发读取题解（fetch-editorial.ts）。

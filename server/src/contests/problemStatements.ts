@@ -44,8 +44,28 @@ const ACCEPTED_PROBLEM_BUDGET = 1600;
 const PER_CONTEST_BUDGET = 30000;
 /** 单轮后台预取的题目数上限（一场比赛实际 ≤13 题，留余量；其余下轮补） */
 const MAX_FETCH_PER_RUN = 26;
-/** 题面抓取退避（与 fetchContestProblemSet 同口径）：失败 5 分钟内不重试 */
+/** 题面抓取首次失败后的退避（指数增长，见 statementRetryDelayMs）：与 fetchContestProblemSet 同口径起步 */
 const FETCH_BACKOFF_MS = 5 * 60_000;
+/** 退避上限：持续失败（登录墙/平台改版）时降到每小时最多试一次，避免长期"每 5 分钟重试一遍" */
+const FETCH_BACKOFF_MAX_MS = 60 * 60_000;
+
+const fetchBackoff = new Map<string, { attempts: number; nextAt: number }>();
+
+/**
+ * 失败重试间隔：5min → 10min → 20min → 40min → 60min（上限），并按题目 key 做 **±20% 确定性抖动**。
+ *
+ * 为什么不是固定 5 分钟：一场比赛最多十几道题，若这批题因结构性原因（登录墙、平台改版、
+ * Cloudflare 类拦截）**全部失败**，固定退避会在用户持续对话时以「每 5 分钟重试全部十几题」
+ * 的节奏长期打同一站点 —— 这正是会被风控盯上的形态。指数退避 + 抖动让稳态请求量降到
+ * 约 1/12，并避免同一批题在同一秒齐发。
+ * 抖动用 key 哈希而非随机数：同一题的间隔可复现，便于测试与排查。
+ */
+export function statementRetryDelayMs(attempts: number, key: string): number {
+  const base = Math.min(FETCH_BACKOFF_MAX_MS, FETCH_BACKOFF_MS * 2 ** Math.max(0, attempts - 1));
+  let h = 0;
+  for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) % 997;
+  return Math.round(base * (0.8 + (h / 997) * 0.4)); // ±20%
+}
 /** 题面正文的最小体量：站点导航/权限提示通常在 100-500 字符区间，低于此一律当噪声 */
 const MIN_STATEMENT_CHARS = 120;
 
@@ -127,8 +147,6 @@ export function statementLooksValid(text: string): boolean {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-const fetchBackoff = new Map<string, number>();
 
 export interface StatementEntry {
   platform: PlatformId;
@@ -320,8 +338,15 @@ export async function fetchProblemStatement(
   if (support !== 'ok' && support !== 'gated' && !cookie?.trim()) return null;
 
   const cacheKey = `${platform}:${problemKey}`;
-  if (Date.now() - (fetchBackoff.get(cacheKey) ?? 0) < FETCH_BACKOFF_MS) return null;
-  fetchBackoff.set(cacheKey, Date.now());
+  const backoff = fetchBackoff.get(cacheKey);
+  if (backoff && Date.now() < backoff.nextAt) return null;
+  // 先占位再请求：同一题在退避窗口内不会被重复请求（复用/并发都挡住）。
+  // 失败次数累加 → 指数退避；成功则落库并清掉退避记录（此后由缓存命中挡住，不再发请求）。
+  const attempts = (backoff?.attempts ?? 0) + 1;
+  fetchBackoff.set(cacheKey, {
+    attempts,
+    nextAt: Date.now() + statementRetryDelayMs(attempts, cacheKey),
+  });
 
   const invalid = validatePublicFetchUrl(url);
   if (invalid) return null;
@@ -339,6 +364,7 @@ export async function fetchProblemStatement(
        ON CONFLICT (platform, problem_key) DO UPDATE SET
          text = excluded.text, source_url = excluded.source_url, fetched_at = excluded.fetched_at`,
     ).run(platform, problemKey, truncated, url, new Date().toISOString());
+    fetchBackoff.delete(cacheKey); // 成功即清退避记录：此后由缓存命中挡住，不会再发请求
     return truncated;
   } catch {
     return null; // 失败静默：退避控制重试频率，不阻断对话
