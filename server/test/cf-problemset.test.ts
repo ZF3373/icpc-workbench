@@ -1,7 +1,11 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDb } from '../src/db/index.ts';
-import { lookupCfProblems, __resetCfProblemsetForTest } from '../src/contests/cfProblemset.ts';
+import {
+  cfContestProblems,
+  lookupCfProblems,
+  __resetCfProblemsetForTest,
+} from '../src/contests/cfProblemset.ts';
 
 /**
  * CF 题目集官方标签缓存（cfProblemset.ts）。
@@ -99,3 +103,37 @@ test('拉取失败静默（旧缓存照常可用）且 1h 退避，不逐请求�
   const again = await lookupCfProblems(db, ["2100A"], fetchFn);
   assert.equal(again.size, 0);
   assert.equal(calls(), 1);});
+
+test('cfContestProblems：从题目集全集缓存反查某场题目（零额外请求），含题号/题名/难度', async () => {
+  const db = createDb(':memory:');
+  const { fetchFn, calls } = jsonFetch({ 'problemset.problems': PROBLEMSET_BODY });
+
+  const refs = await cfContestProblems(db, '1877', fetchFn);
+  assert.equal(calls(), 1, '首次需要拉一次全集（此后 24h 内复用）');
+  assert.deepEqual(refs, [
+    { id: '1877A', index: 'A', title: 'Rabbits', rating: 800 },
+    { id: '1877B', index: 'B', title: 'Imbalanced Arrays', rating: 1600 },
+  ]);
+
+  // 命中缓存：再查零请求（这正是「CF 题目集不再依赖 contest.standings」的关键）
+  const again = await cfContestProblems(db, '1877', fetchFn);
+  assert.equal(calls(), 1, '命中缓存不发请求');
+  assert.equal(again?.length, 2);
+
+  // 题目集里没有的场次 → null，由调用方决定是否退化到 standings
+  assert.equal(await cfContestProblems(db, '99999', fetchFn), null);
+  assert.equal(await cfContestProblems(db, 'abc', fetchFn), null, '非数字 contestId 直接返回 null');
+});
+
+test('cfContestProblems：老格式缓存（缺 contestId 字段）触发一次强刷后即可用', async () => {
+  const db = createDb(':memory:');
+  db.prepare('INSERT INTO cf_problemset_cache (id, fetched_at, payload) VALUES (1, ?, ?)').run(
+    new Date().toISOString(),
+    JSON.stringify({ '1877A': { tags: ['math'], rating: 800, solvedCount: 21000 } }),
+  );
+  const { fetchFn, calls } = jsonFetch({ 'problemset.problems': PROBLEMSET_BODY });
+
+  const refs = await cfContestProblems(db, '1877', fetchFn);
+  assert.equal(calls(), 1, '老缓存没有比赛号字段，需要升级一次');
+  assert.deepEqual(refs?.map((r) => r.id), ['1877A', '1877B']);
+});

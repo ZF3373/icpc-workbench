@@ -4,6 +4,7 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import type { AuthoritativeContest, ContestProblemRef, ParticipationSources } from './participationSources.ts';
 import { renderStatementSection } from './problemStatements.ts';
+import { isCfGymContestId } from './problemSetShape.ts';
 
 /**
  * 赛后复盘：从提交记录推导「参加过的比赛」（只读，不改 schema）。
@@ -110,7 +111,7 @@ export function contestIdOf(platform: PlatformId, problemKey: string, url: strin
 export function contestUrl(platform: PlatformId, contestId: string): string {
   switch (platform) {
     case 'codeforces':
-      return isCfGym(contestId)
+      return isCfGymContestId(contestId)
         ? `https://codeforces.com/gym/${contestId}`
         : `https://codeforces.com/contest/${contestId}`;
     case 'atcoder':
@@ -124,10 +125,7 @@ export function contestUrl(platform: PlatformId, contestId: string): string {
   }
 }
 
-/** CF gym 判据：contestId 为纯数字且 ≥ 100000 */
-function isCfGym(contestId: string): boolean {
-  return /^\d+$/.test(contestId) && Number(contestId) >= 100000;
-}
+/** CF gym 判据见 problemSetShape.ts（与 CF API 的 gym 参数限制共用同一份口径） */
 
 /**
  * 赛事日历 → 匹配索引。ContestInfo.id 形如 cf-2259 / at-abc380 / lg-353129 / jsk-xxx，
@@ -263,7 +261,7 @@ function groupByStructuralKey(
     // 平时散做 gym 题（单题、或多题跨越数天）不是一场比赛，不列入
     for (const g of groups.values()) {
       if (g.signals.has('contest') || g.signals.has('virtual')) continue;
-      if (isCfGym(g.contestId) && isOneSitting(g.rows, SITTING_MIN_PROBLEMS)) g.signals.add('gym');
+      if (isCfGymContestId(g.contestId) && isOneSitting(g.rows, SITTING_MIN_PROBLEMS)) g.signals.add('gym');
     }
   } else if (platform === 'atcoder') {
     // AtCoder 启发式兜底：仅当日历里没有该场时，一次集中作答（≥3 题、跨度 ≤ 6 小时）

@@ -1,4 +1,5 @@
 import type { Db } from '../db/index.ts';
+import type { ContestProblemRef } from './participationSources.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
 
 /**
@@ -21,6 +22,11 @@ export interface CfProblemMeta {
   tags: string[];
   rating?: number | null;
   solvedCount?: number | null;
+  /** 题名（复盘「未提交的题」展示用；老缓存可能没有） */
+  name?: string;
+  /** 所属比赛号与题号（用于按比赛反查题目集；老缓存可能没有） */
+  contestId?: number;
+  index?: string;
 }
 
 let memory: { at: number; byKey: Map<string, CfProblemMeta> } | null = null;
@@ -96,6 +102,9 @@ async function refresh(db: Db, fetchFn: typeof fetch): Promise<void> {
         tags: Array.isArray(p.tags) ? p.tags.filter((t): t is string => typeof t === 'string') : [],
         rating: typeof p.rating === 'number' ? p.rating : null,
         solvedCount: solved.get(`${p.contestId}${p.index}`) ?? null,
+        name: typeof p.name === 'string' ? p.name : undefined,
+        contestId: p.contestId,
+        index: p.index,
       });
     }
     persist(db, byKey);
@@ -136,6 +145,51 @@ function pick(byKey: Map<string, CfProblemMeta>, keys: string[]): Map<string, Cf
     if (meta) out.set(key, meta);
   }
   return out;
+}
+
+/**
+ * 取某场 CF 比赛的题目集（**送分项**：题目集全集 API 已按标签用途缓存，这里零额外请求）。
+ *
+ * 为什么需要它：CF 的 `contest.standings` 对**非 gym** 场次禁止携带 `from`/`count`
+ * （实测 HTTP 400："Non-gym contest standings for non-admin users are available only via
+ * anonymous GET requests with no extra parameters"），而不带参数就会拉回整场排行榜
+ * （动辄数 MB）。problemset.problems 本来就为标签拉取，顺带就给出了每场的题目集。
+ *
+ * 缓存里没有这场（很新的比赛 / 首次使用 / 老格式缓存缺 contestId 字段）时，最多强刷一次
+ * （1h 退避兜底，失败静默）；仍拿不到返回 null，由调用方决定是否退化到 standings。
+ */
+export async function cfContestProblems(
+  db: Db,
+  contestId: string,
+  fetchFn: typeof fetch = throttledFetch,
+): Promise<ContestProblemRef[] | null> {
+  const id = Number(contestId);
+  if (!Number.isInteger(id)) return null;
+  let list = pickContest(hydrate(db), id);
+  if (list.length === 0 && Date.now() - lastAttemptAt > REFRESH_BACKOFF_MS) {
+    try {
+      await refresh(db, fetchFn);
+    } catch {
+      // refresh 内部已吞掉异常，这里兜底
+    }
+    list = pickContest(hydrate(db), id);
+  }
+  return list.length > 0 ? list : null;
+}
+
+/** 缓存里属于该比赛的题目，按题号排序（老格式缓存没有 contestId → 返回空，触发一次强刷升级） */
+function pickContest(byKey: Map<string, CfProblemMeta>, contestId: number): ContestProblemRef[] {
+  const refs: ContestProblemRef[] = [];
+  for (const [key, meta] of byKey) {
+    if (meta.contestId !== contestId || typeof meta.index !== 'string') continue;
+    refs.push({
+      id: key,
+      index: meta.index,
+      title: meta.name,
+      rating: meta.rating ?? null,
+    });
+  }
+  return refs.sort((a, b) => (a.index ?? '').localeCompare(b.index ?? ''));
 }
 
 /** 仅供单测：清空进程内缓存状态（模块级 memory/backoff 会跨用例串数据） */

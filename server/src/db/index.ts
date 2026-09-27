@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PLATFORMS } from '../../../shared/src/index.ts';
+import { PLATFORMS, type PlatformId } from '../../../shared/src/index.ts';
+import { problemSetMatchesContest } from '../contests/problemSetShape.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
@@ -89,6 +90,8 @@ function migrate(db: Db): void {
   if (participatedCols.size > 0 && !participatedCols.has('problem_set_state')) {
     db.exec('ALTER TABLE participated_contests ADD COLUMN problem_set_state TEXT');
   }
+  // v0.9.1 数据修复：参赛记录题目集「串台」清理（见下）
+  clearForeignProblemSets(db);
     // v0.7: submissions 增加提交语境列（contest/virtual/practice，目前仅 Codeforces 下发）：
   // 能力值算法据此区分赛场 AC 与赛后补题，补题/练习题降权
   const submissionCols = columnsOf('submissions');
@@ -110,6 +113,48 @@ function migrate(db: Db): void {
   // 老库残留过同一 (user_id, problem_id) 的多行。schema 的 UNIQUE 保证新库不会产生重复，但已存在的
   // 重复不会被自动清除，而「是否在复习队列」的标量子查询只取第一行，会让另一条永久无法移出。这里补齐唯一性。
   dedupeReviewItems(db);
+}
+
+/**
+ * v0.9.1 数据修复：参赛记录题目集「串台」清理。
+ *
+ * 事故：`enrichProblems` 同步参赛记录时无条件调用**牛客**题目集接口，而它被所有平台共用，
+ * 于是数字型 contestId 的 Codeforces 场次（2266/2244/2241/2231/2227/2218）把「牛客同号比赛」
+ * 的题目集写了进去（CF 2241 存进 20 道牛客「小乐乐」系列题）。表现为赛事中心显示「20 题」、
+ * 复盘列出并不存在于该场的未提交题，且该集合被判为"富题目集"后永不重拉。
+ *
+ * 这里把**明显不属于该场**的存储题目集清空（problem_ids = NULL、problem_set_state = NULL），
+ * 下一次复盘就会用正确的平台接口重拉。判定只做「按 key 前缀」这一条 —— 宁可放过，不可误删；
+ * 空 id / 解析失败的行保持原样（另有读取期校验兜底）。迁移幂等：清空后再跑不再产生变化。
+ */
+function clearForeignProblemSets(db: Db): void {
+  const rows = db
+    .prepare(
+      `SELECT platform, contest_id, problem_ids FROM participated_contests
+       WHERE problem_ids IS NOT NULL AND platform IN ('codeforces','atcoder')`,
+    )
+    .all() as unknown as Array<{ platform: PlatformId; contest_id: string; problem_ids: string }>;
+  if (rows.length === 0) return;
+
+  const clear = db.prepare(
+    'UPDATE participated_contests SET problem_ids = NULL, problem_set_state = NULL WHERE platform = ? AND contest_id = ?',
+  );
+  for (const row of rows) {
+    let refs: Array<{ id: string }>;
+    try {
+      const parsed = JSON.parse(row.problem_ids) as unknown;
+      if (!Array.isArray(parsed)) continue;
+      refs = parsed
+        .map((v) => (typeof v === 'string' ? { id: v } : (v as { id?: unknown })))
+        .filter((v): v is { id: string } => typeof v?.id === 'string');
+    } catch {
+      continue; // 脏 JSON 交给读取期校验处理，迁移不猜
+    }
+    if (refs.length === 0) continue;
+    if (!problemSetMatchesContest(row.platform, row.contest_id, refs)) {
+      clear.run(row.platform, row.contest_id);
+    }
+  }
 }
 
 /**

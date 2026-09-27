@@ -7,6 +7,7 @@ import { insertNormalized } from '../src/import/importService.ts';
 import { aiRoutes } from '../src/routes/ai.ts';
 import { todayRoutes } from '../src/routes/today.ts';
 import { DEFAULT_USER_ID } from '../src/constants.ts';
+import { __resetCfProblemsetForTest } from '../src/contests/cfProblemset.ts';
 import type { AiConfig } from '../src/config.ts';
 
 const AI_DISABLED: AiConfig = { enabled: false, baseURL: 'https://x/v1', apiKey: '', model: 'm' };
@@ -538,6 +539,23 @@ test('assistant: chat injects optional list context, nonexistent list falls back
 test('assistant: chat injects contest review context via contestKey, invalid key rejected', async () => {
   await withServer(
     async ({ db, aiBase, providerChats }) => {
+      // CF 题目集全集缓存预热：题目集/标签走零请求路径。
+      // （单测绝不能打真实网络；不打桩的话这里会去拉 problemset.problems 全量）
+      __resetCfProblemsetForTest();
+      db.prepare('INSERT INTO cf_problemset_cache (id, fetched_at, payload) VALUES (1, ?, ?)').run(
+        new Date().toISOString(),
+        JSON.stringify({
+          '1877A': { tags: [], rating: 800, solvedCount: 100, name: 'Rabbits', contestId: 1877, index: 'A' },
+          '1877C': {
+            tags: ['math', 'number theory'],
+            rating: 1200,
+            solvedCount: 50,
+            name: 'Joyboard',
+            contestId: 1877,
+            index: 'C',
+          },
+        }),
+      );
       // 一场 CF 比赛的提交（context=contest 触发参赛判定）
       insertNormalized(db, DEFAULT_USER_ID, [
         {
@@ -569,7 +587,7 @@ test('assistant: chat injects contest review context via contestKey, invalid key
       const system = providerChats[0]!.system;
       assert.match(system, /关联的比赛（赛后复盘）/);
       assert.match(system, /codeforces:1877|1877A/);
-      assert.match(system, /出现 AC 1 题/);
+      assert.match(system, /全场 2 题中 AC 1 题、未提交 1 题/, '题目集与未提交题按 CF 缓存口径注入');
       assert.match(system, /赛后复盘（仅当上下文包含/, '提示词需带复盘职责说明');
       // 题面一节必须显式声明「未取到题面」的题号（本 bug：已 AC 的题没题面 → AI 编造题意）
       assert.match(system, /### 题面/);

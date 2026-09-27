@@ -1,6 +1,7 @@
 import type { ContestInfo, PlatformId } from '../../../shared/src/index.ts';
 import { fetchParticipatedContests } from '../adapters/jisuanke.ts';
-import { lookupCfProblems } from './cfProblemset.ts';
+import { lookupCfProblems, cfContestProblems } from './cfProblemset.ts';
+import { isCfGymContestId, problemSetMatchesContest } from './problemSetShape.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import type { Db } from '../db/index.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
@@ -502,7 +503,11 @@ function readStoredContests(db: Db, platform: PlatformId): AuthoritativeContest[
   }>;
   return rows
     .map((r) => {
-      const problems = parseProblems(r.problem_ids);
+      const parsed = parseProblems(r.problem_ids);
+      // 归属校验：题目集必须属于这场比赛（CF/AtCoder 按 key 前缀判定）。
+      // 不匹配 = 历史串台数据（见 problemSetShape.ts 的事故说明）→ 当作未拉取处理，
+      // 状态退回 unknown，下一次复盘会用正确的平台接口重拉（自愈）。
+      const problems = problemSetMatchesContest(platform, r.contest_id, parsed) ? parsed : null;
       const rawState = r.problem_set_state;
       const state: 'ok' | 'empty' | 'unknown' =
         rawState === 'ok' ? 'ok' : rawState === 'empty' ? 'empty' : 'unknown';
@@ -520,6 +525,7 @@ function readStoredContests(db: Db, platform: PlatformId): AuthoritativeContest[
         acceptedCount: r.accepted_count,
         problems,
         // 有题目集即 ok；状态为 empty 即 empty；其余 unknown
+        // 注意：problems 已被归属校验过 —— 串台数据在这里变成 null，状态随之退回 unknown
         problemSetState: (state === 'unknown' && problems !== null ? 'ok' : state) as 'ok' | 'empty' | 'unknown',
       };
     })
@@ -648,6 +654,11 @@ export function problemsAreRich(refs: ContestProblemRef[] | null | undefined): b
  * 牛客题目集按需补齐：仅对「窗口内确有本平台提交、且还没有**富**题目集」的场次发请求
  * （有窗口内提交才存在归因歧义；题目集取到一次即随参赛记录持久化，不再重取；
  * 旧格式纯 id 集合视为未拉取，借下一次同步升级出题号/题名）。
+ *
+ * **只处理牛客**：本函数抓的是牛客题目集接口。历史上这里漏了平台判断，
+ * 而它被每个平台的同步流程共用 —— 于是 Codeforces 的数字 contestId 被拿去查
+ * 「牛客同号比赛」，把牛客题目集写进了 CF 场次（真实事故：CF 2241 存进 20 道
+ * 牛客「小乐乐」题，导致赛事中心显示 20 题、复盘列出并不存在的未提交题）。
  */
 async function enrichProblems(
   db: Db,
@@ -656,6 +667,7 @@ async function enrichProblems(
   fetchFn: typeof fetch,
 ): Promise<void> {
   for (const item of items) {
+    if (item.platform !== 'nowcoder') continue; // 牛客题目集接口不得用于其它平台
     if (item.problems || problemsAreRich(storedById.get(item.contestId))) continue;
     if (item.startTimeMs === null || item.endTimeMs === null) continue;
     const candidate = db
@@ -884,26 +896,33 @@ export async function fetchContestProblemSet(
   let refs: ContestProblemRef[] | null = null;
   try {
     if (platform === 'codeforces') {
-      // 官方公开 API；count=1 只取排行榜首行（题目列表不受分页影响，始终全量返回）
-      const body = (await fetchJson(
-        `https://codeforces.com/api/contest.standings?contestId=${encodeURIComponent(contestId)}&from=1&count=1`,
-        fetchFn,
-      )) as { status?: string; result?: { problems?: Array<Record<string, unknown>> } };
-      const rows = body.status === 'OK' ? body.result?.problems : undefined;
-      if (Array.isArray(rows)) {
-        const list = rows.flatMap((p) => {
-          const index = typeof p.index === 'string' ? p.index : null;
-          if (index === null) return [];
-          return [
-            {
-              id: `${contestId}${index}`,
-              index,
-              title: typeof p.name === 'string' ? p.name : undefined,
-              rating: typeof p.rating === 'number' ? p.rating : null,
-            } satisfies ContestProblemRef,
-          ];
-        });
-        refs = list;
+      // ① 首选 problemset 全集缓存（零额外请求）：它本来就是为标签抓的，顺带给出每场的题目集
+      refs = await cfContestProblems(db, contestId, fetchFn);
+      if (refs === null) {
+        // ② 退化到 contest.standings。注意 CF 的硬限制（实测 HTTP 400）：
+        //    非 gym 场次的匿名请求**不允许**携带 from/count —— 只有 gym 能带（保持在 1 行）。
+        //    不带参数会拉回整场排行榜（数 MB），因此只在上面的零请求路径拿不到时才走。
+        const params = isCfGymContestId(contestId) ? '&from=1&count=1' : '';
+        const body = (await fetchJson(
+          `https://codeforces.com/api/contest.standings?contestId=${encodeURIComponent(contestId)}${params}`,
+          fetchFn,
+        )) as { status?: string; result?: { problems?: Array<Record<string, unknown>> } };
+        const rows = body.status === 'OK' ? body.result?.problems : undefined;
+        if (Array.isArray(rows)) {
+          refs = rows.flatMap((p) => {
+            const index = typeof p.index === 'string' ? p.index : null;
+            if (index === null) return [];
+            const rating = p.rating;
+            return [
+              {
+                id: `${contestId}${index}`,
+                index,
+                title: typeof p.name === 'string' ? p.name : undefined,
+                rating: typeof rating === 'number' ? rating : null,
+              } satisfies ContestProblemRef,
+            ];
+          });
+        }
       }
     } else if (platform === 'nowcoder') {
       refs = await fetchNowcoderProblems(contestId, fetchFn);

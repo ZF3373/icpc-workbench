@@ -964,6 +964,131 @@ test('旧格式 problem_ids（纯 id 字符串数组）兼容解析：归因与�
 
 // ---------- 复盘时的题目集按需补拉（fetchContestProblemSet） ----------
 
+test('同步参赛记录：非牛客平台绝不调用牛客题目集接口（CF 2241 串台事故回归）', async () => {
+  const db = createDb(':memory:');
+  try {
+    // 一个有参赛账号的 CF 场次：窗口内有提交（这正是历史上触发补题的入口条件）
+    seedAll(db, [
+      { platform: 'codeforces', problemKey: '2241A', title: 'Divide and Conquer', verdict: 'AC', submittedAt: '2026-06-30T15:25:32.000Z', externalId: 'cf1', context: 'contest' },
+    ]);
+    db.prepare('UPDATE submissions SET account = ? WHERE external_id = ?').run('hieZF123', 'cf1');
+
+    const requested: string[] = [];
+    const fetchFn = (async (input: string | URL | Request) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.includes('user.rating')) {
+        return new Response(
+          JSON.stringify({
+            status: 'OK',
+            result: [
+              {
+                contestId: 2241,
+                contestName: 'Codeforces Round 1107 (Div. 3)',
+                rank: 9729,
+                oldRating: 779,
+                newRating: 923,
+                ratingUpdateTimeSeconds: Date.parse('2026-06-30T14:35:00.000Z') / 1000,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      // 牛客题目集接口（历史 bug 就是拿 CF 的 contestId 来打这个接口）
+      return new Response(
+        JSON.stringify({
+          msg: 'OK',
+          code: 0,
+          data: { data: [{ problemId: 54536, index: 'A', title: '小乐乐学编程' }] },
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    await loadParticipationSources(db, undefined, { fetchFn });
+
+    assert.ok(
+      requested.some((u) => u.includes('user.rating')),
+      'CF 参赛记录应被正常拉取',
+    );
+    assert.equal(
+      requested.filter((u) => u.includes('ac.nowcoder.com/acm/contest/problem-list')).length,
+      0,
+      'CF 同步绝不能去打牛客题目集接口——这正是把牛客题目集写进 CF 场次的根因',
+    );
+
+    // 库里该 CF 场次不得出现被别人塞进来的题目集
+    const row = db
+      .prepare("SELECT problem_ids FROM participated_contests WHERE platform='codeforces' AND contest_id='2241'")
+      .get() as { problem_ids: string | null } | undefined;
+    assert.equal(row?.problem_ids ?? null, null, 'CF 行不应带任何题目集');
+  } finally {
+    db.close();
+  }
+});
+
+test('fetchContestProblemSet：CF 优先走题目集缓存（零请求）；非 gym 的 standings 不得带 from/count', async () => {
+  const db = createDb(':memory:');
+  try {
+    // ① problemset 缓存命中：完全不发请求
+    db.prepare('INSERT INTO cf_problemset_cache (id, fetched_at, payload) VALUES (1, ?, ?)').run(
+      new Date().toISOString(),
+      JSON.stringify({
+        '1877A': { tags: [], rating: 800, name: 'Rabbits', contestId: 1877, index: 'A' },
+        '1877B': { tags: [], rating: 1600, name: 'Imbalanced Arrays', contestId: 1877, index: 'B' },
+      }),
+    );
+    const warm = jsonFetch({});
+    const fromCache = await fetchContestProblemSet(db, 'codeforces', '1877', warm.fetchFn);
+    assert.equal(warm.calls(), 0, '题目集缓存命中时零请求');
+    assert.deepEqual(
+      fromCache.status === 'ok' ? fromCache.refs.map((r) => r.id) : null,
+      ['1877A', '1877B'],
+    );
+
+    // ② 缓存里没有这场（新比赛）→ 退化到 standings：**非 gym 不能带 from/count**（CF 会 400）
+    const urls: string[] = [];
+    const standingsFetch = (async (input: string | URL | Request) => {
+      const u = String(input);
+      urls.push(u);
+      if (u.includes('problemset.problems')) return new Response('not found', { status: 404 });
+      return new Response(
+        JSON.stringify({
+          status: 'OK',
+          result: { problems: [{ index: 'A', name: 'Rabbits', rating: 800 }, { index: 'B', name: 'Imbalanced Arrays' }] },
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const nonGym = await fetchContestProblemSet(db, 'codeforces', '2241', standingsFetch);
+    const standingsUrl = urls.find((u) => u.includes('contest.standings')) ?? '';
+    assert.ok(standingsUrl, '应退化到 contest.standings');
+    assert.doesNotMatch(standingsUrl, /from=|count=/, '非 gym 场次带分页参数会被 CF 拒绝（实测 HTTP 400）');
+    assert.deepEqual(
+      nonGym.status === 'ok' ? nonGym.refs.map((r) => r.id) : null,
+      ['2241A', '2241B'],
+    );
+
+    // ③ gym 场次才带分页参数（只取排行榜首行，避免整场数 MB）
+    const urls2: string[] = [];
+    const gymFetch = (async (input: string | URL | Request) => {
+      const u = String(input);
+      urls2.push(u);
+      if (u.includes('problemset.problems')) return new Response('not found', { status: 404 });
+      return new Response(
+        JSON.stringify({ status: 'OK', result: { problems: [{ index: 'A', name: 'Gym A' }] } }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    await fetchContestProblemSet(db, 'codeforces', '105001', gymFetch);
+    const gymUrl = urls2.find((u) => u.includes('contest.standings')) ?? '';
+    assert.match(gymUrl, /from=1&count=1/, 'gym 允许分页参数，保持只取 1 行');
+  } finally {
+    db.close();
+  }
+});
+
 function jsonFetch(routes: Record<string, unknown>): { fetchFn: typeof fetch; calls: () => number } {
   const calls: string[] = [];
   const fetchFn = (async (input: string | URL | Request) => {
@@ -1016,9 +1141,10 @@ test('fetchContestProblemSet：CF contest.standings 解析 index/title/rating �
     assert.equal(row.problem_set_state, 'ok', '题目集状态应持久缓存为 ok');
 
     // 退避期内：不再发请求、返回 unavailable（调用方沿用库内/既有数据）
+    const beforeBackoff = calls();
     const backoffResult = await fetchContestProblemSet(db, 'codeforces', '990001', fetchFn);
     assert.equal(backoffResult.status, 'unavailable');
-    assert.equal(calls(), 2, '题目集两个外网请求（standings + problemset 全集），退避期内不重复');
+    assert.equal(calls(), beforeBackoff, '退避期内不重复任何外网请求');
   } finally {
     db.close();
   }

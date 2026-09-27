@@ -451,3 +451,48 @@ nowcoder 140489 | 牛客周赛 Round 162 | problem_count=6 accepted_count=4 prob
 **测试**：新增 4 条——`statementRetryDelayMs` 指数/封顶/抖动可复现、失败后窗口内不再请求（请求量
 不被对话轮次放大）、`FETCH_URL_TRANSPORT === throttledFetch`、`EDITORIAL_TRANSPORT === throttledFetch`；
 `fetch-url.test.ts` 改为显式注入 mock 传输层（不再依赖 `globalThis.fetch` 补丁，测试仍封闭且不触发真实网络）。
+
+### 7.5 修复：参赛记录「题目集串台」与 CF 题目集根本拉不到（2026-09-26）
+
+**用户反馈**：赛事中心里 `Codeforces Round 1107 (Div. 3)` 显示「**20 题** · AC 4 · 6 次提交」——**这场数据有明显问题**。
+Div.3 不可能有 20 题，而且那是一串中文题名。
+
+**根因（两个独立缺陷叠加）**
+
+1. **题目集串台（数据污染，主因）**：[participationSources.ts](server/src/contests/participationSources.ts) 的
+   `enrichProblems` 是「牛客题目集按需补齐」，却**被所有平台的同步流程共用**，函数体内**没有平台判断**，
+   无条件用 `item.contestId` 去打**牛客**的 `acm/contest/problem-list`。于是数字型 contestId 的 CF 场次
+   （2266/2244/2241/2231/2227/2218）把「牛客同号比赛」的题目集当成了自己的：实测 CF 2241 存进了
+   20 道牛客「小乐乐」系列题（id 54536…）。危害不止显示 20 题——「赛时未提交的题」会列出并不存在于该场的题、
+   题面预取会去抓这些题，而且集合被判定为"富题目集"（有 index）后**永不重拉**，无法自愈。
+2. **CF 题目集本来也拉不到**：`fetchContestProblemSet` 用
+   `contest.standings?contestId=X&from=1&count=1`，而 CF 实测返回 **HTTP 400**：
+   "Non-gym contest standings for non-admin users are available only via anonymous GET requests with
+   **no extra parameters**"。于是 CF 场次的合法题目集从未成功过——这才是 CF 行只剩串台数据的空间。
+
+**修复**
+
+1. **根因**：`enrichProblems` 首行加 `if (item.platform !== 'nowcoder') continue;`（函数注释里本来就写着"牛客"）。
+2. **归属校验**（新增 [problemSetShape.ts](server/src/contests/problemSetShape.ts)，纯函数）：
+   CF 的题目 key 必须是 `${contestId}${index}`、AtCoder 必须是 `${contestId}_…`；
+   **读取期**（`readStoredContests`）遇到不匹配就当作未拉取、状态退回 unknown（下一次复盘用正确接口重拉 → 自愈）；
+   **迁移期**（新增 `clearForeignProblemSets`，v0.9.1，幂等）清掉库里已有的串台数据。
+   其余平台 id 无前缀约定 → 一律放行（宁可放过，不可误删）。
+3. **CF 题目集改走「零请求」路径**：`cfContestProblems()` 从**已缓存**的 `problemset.problems`
+   全集反查某场的题目（题号/题名/难度齐全）——这份全集本来就是为官方 tags 抓的，24h 复用。
+   只有它拿不到时才退化到 `contest.standings`，且**仅 gym 带 `from/count`**（非 gym 带参数必 400）。
+4. `isCfGym` 收敛到 `problemSetShape.isCfGymContestId`，两处共用同一口径。
+
+**验证**（用户实际库的临时副本，真实网络）
+
+```
+迁移后：CF 2241 problem_ids=NULL、state=NULL            ← 串台数据已清
+赛事中心：4 题 · AC 4 · 6 次提交                          ← 不再是「20 题」
+复盘补拉：ok → 2241A…2241G（全部以 2241 开头）            ← 自动换成正确的 CF 题目集
+补拉后：7 题 · AC 4                                      ← Div.3 真实题数，E/F/G 进「未提交的题」
+```
+
+**测试**：新增 5 条 —— `problemSetMatchesContest` 前缀判定（含真实事故数据 54536×）、
+迁移清理（文件库、跑两轮验证幂等）、**非牛客平台同步绝不请求牛客题目集接口**（根因回归，断言请求 URL）、
+`cfContestProblems` 缓存反查零请求 / 老格式缓存升级、CF 非 gym 不得带 `from/count` 而 gym 必须带。
+另把 `assistant.test.ts` 的 CF 链路改为预热题目集缓存，避免单测去打真实 `problemset.problems` 全量。
