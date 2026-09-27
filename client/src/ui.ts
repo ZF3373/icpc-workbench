@@ -42,6 +42,7 @@ const SCALE_PLATFORM_NAME: Record<string, string> = {
   'hydro-1-10': '代码源',
   'atcoder-kenkoooo-irt': 'AtCoder',
   'nowcoder-score': '牛客',
+  'icpc-tier': 'ICPC 榜单', // QOJ 题的难度来自 ICPC/CCPC 公开榜单档位（金/银/铜/铁）
 }
 
 /**

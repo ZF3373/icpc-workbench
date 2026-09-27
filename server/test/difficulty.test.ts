@@ -5,6 +5,7 @@ import {
   cfRatingTitle,
   difficultyFields,
   nativeDifficultyLabel,
+  parseIcpcTier,
   parseNativeDifficulty,
   parseNowcoderScore,
   toCfRating,
@@ -80,12 +81,41 @@ test('difficulty: 牛客难度分原文校验（两个读取方共用的唯一�
   assert.equal(parseNowcoderScore('1500'), 1500);
   assert.equal(parseNowcoderScore(700), 700);
   assert.equal(parseNowcoderScore(' 1200 '), 1200);
-  assert.equal(parseNowcoderScore('1049'), null); // 离网值（通过数列）
+  // 老题真实难度存在非整百分值（2026-09-27 逐题实测）：NC16640=1049、NC22014=623、
+  // NC22158=726、NC24739=972。旧规则的「100 的倍数」把这些真值判成未知 → 已改为只做值域校验，
+  // 防串列交给解析层的列结构校验（见 adapters/problemBank.ts 的 parseNcRowCells）。
+  assert.equal(parseNowcoderScore('1049'), 1049);
+  assert.equal(parseNowcoderScore('623'), 623);
+  assert.equal(parseNowcoderScore('972'), 972);
   assert.equal(parseNowcoderScore('100'), null); // 低于域下界（通过数 100）
   assert.equal(parseNowcoderScore('5000'), null); // 越界
   assert.equal(parseNowcoderScore(''), null);
   assert.equal(parseNowcoderScore('abc'), null);
   assert.equal(parseNowcoderScore(null), null);
+});
+
+test('difficulty: ICPC/CCPC 公开榜单档位（QOJ 难度来源）解析与映射', () => {
+  // 档位原文：`gold` 或带占比的 `gold:704/2535`（原生落库用后者，便于口径变化时重算）
+  assert.equal(parseIcpcTier('gold'), 'gold');
+  assert.equal(parseIcpcTier('BRONZE:120/2535'), 'bronze');
+  assert.equal(parseIcpcTier('  silver '), 'silver');
+  assert.equal(parseIcpcTier('platinum'), null); // 未知档位不猜
+  assert.equal(parseIcpcTier(null), null);
+
+  const gold = parseNativeDifficulty('qoj', 'gold:704/2535');
+  assert.equal(gold.rating, 2600);
+  assert.equal(gold.scale, 'icpc-tier');
+  assert.equal(gold.native, 'gold:704/2535'); // 原生原文（含占比）如实保留
+  assert.equal(gold.label, '金（难）');
+  assert.deepEqual(difficultyFields('qoj', 'iron:2419/2535'), {
+    difficulty: 1000,
+    nativeDifficulty: 'iron:2419/2535',
+    difficultyScale: 'icpc-tier',
+  });
+  // 没有公开榜单数据时保持「平台不提供难度」的既有语义
+  assert.equal(parseNativeDifficulty('qoj', null).rating, null);
+  assert.equal(parseNativeDifficulty('qoj', null).scale, 'none');
+  assert.equal('difficulty' in difficultyFields('qoj', null), false);
 });
 
 test('difficulty: cfRatingTitle 边界', () => {

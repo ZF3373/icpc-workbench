@@ -41,19 +41,23 @@ function router(
 
 // ---------- 回填目标选择（Task 5：全平台） ----------
 
-test('回填目标选择：未知难度/无原生值/无标签，且排除 QOJ', () => {
+test('回填目标选择：未知难度/无原生值/无标签，QOJ 也纳入，且按缺口优先级排序', () => {
   const db = createDb(':memory:');
   const ins = db.prepare(`INSERT INTO problems (platform, problem_key, title, difficulty, url, tags, difficulty_source, native_difficulty, difficulty_scale)
     VALUES (?, ?, ?, ?, NULL, ?, 'sync', ?, ?)`);
   ins.run('luogu', 'P1', 'A', 1800, '["dp"]', '4', 'luogu-2026-06'); // 完整 → 不入选
   ins.run('luogu', 'P2', 'B', null, '["dp"]', null, null); // 无难度 → 入选
-  ins.run('nowcoder', 'NC1', 'C', 1500, '[]', '1500', 'nowcoder-score'); // 无标签 → 入选（覆盖 NC 标签缺失）
-  ins.run('qoj', 'Q1', 'D', null, '[]', null, null); // QOJ 无数据来源 → 排除
+  ins.run('nowcoder', 'NC1', 'C', 1500, '[]', '1500', 'nowcoder-score'); // 无标签 → 入选
+  ins.run('qoj', 'Q1', 'D', null, '[]', null, null); // QOJ：由公开榜单推导难度 → 也入选
   const targets = pickBackfillTargets(db);
   assert.deepEqual(
     targets.map((t) => `${t.platform}:${t.problemKey}`).sort(),
-    ['luogu:P2', 'nowcoder:NC1'],
+    ['luogu:P2', 'nowcoder:NC1', 'qoj:Q1'],
   );
+  // 缺口分类：QOJ/P2 真缺难度；NC1 缺标签
+  assert.equal(targets.find((t) => t.problemKey === 'Q1')!.gap, 'difficulty');
+  assert.equal(targets.find((t) => t.problemKey === 'P2')!.gap, 'difficulty');
+  assert.equal(targets.find((t) => t.problemKey === 'NC1')!.gap, 'tags');
   assert.deepEqual(targets.find((t) => t.problemKey === 'P2'), {
     platform: 'luogu',
     problemKey: 'P2',
@@ -61,8 +65,112 @@ test('回填目标选择：未知难度/无原生值/无标签，且排除 QOJ',
     difficulty: null,
     nativeDifficulty: null,
     tags: ['dp'],
+    gap: 'difficulty',
   });
   db.close();
+});
+
+test('回填目标排序：真缺难度的题排在「只缺原生值」的历史行之前（每轮上限先打真缺口）', () => {
+  const db = createDb(':memory:');
+  const ins = db.prepare(`INSERT INTO problems (platform, problem_key, title, difficulty, url, tags, difficulty_source, native_difficulty, difficulty_scale)
+    VALUES (?, ?, ?, ?, NULL, ?, 'sync', NULL, NULL)`);
+  // 字母序上 'P01' < 'P99'：不排序时每轮上限会被「只缺原生值」的行吃满，真缺口永远排不到
+  ins.run('luogu', 'P01', '仅缺原生值', 1800, '["dp"]');
+  ins.run('luogu', 'P02', '仅缺原生值二', 1900, '["dp"]');
+  ins.run('luogu', 'P99', '真缺难度', null, '["dp"]');
+  const targets = pickBackfillTargets(db).filter((t) => t.platform === 'luogu');
+  assert.deepEqual(targets.map((t) => t.problemKey), ['P99', 'P01', 'P02']);
+  assert.equal(targets[0].gap, 'difficulty');
+  assert.equal(targets[1].gap, 'native');
+  db.close();
+});
+
+test('回填：逐题平台的「仅缺原生值」默认跳过并计入 deferred，includeNativeOnly 才逐题重查', async () => {
+  // 老库动辄上千行「难度已有、只缺原生原文」：逐题平台每行一次请求，默认跳过
+  insertProblem('luogu', 'P01', '仅缺原生值', 1800, ['dp'], { source: 'sync' });
+  insertProblem('luogu', 'P99', '真缺难度', null, ['dp'], { source: 'sync' });
+  let requests = 0;
+  const fetchFn = router({
+    '_lfe/tags': () => ({ tags: [] }),
+    'problem/': (url) => {
+      requests += 1;
+      const pid = /problem\/(P\d+)/.exec(url)?.[1] ?? 'P99';
+      return { data: { problem: { pid, name: 'X', difficulty: 4, tags: [] } } };
+    },
+  });
+
+  const first = await backfillDifficulties(db, fetchFn);
+  const lg1 = first.find((r) => r.platform === 'luogu')!;
+  assert.equal(lg1.scanned, 1, '本轮只处理真缺难度的那道');
+  assert.equal(lg1.filled, 1);
+  assert.equal(lg1.deferred, 1, '仅缺原生值的题计入 deferred');
+  assert.equal(requests, 1, '不得为「仅缺原生值」的行发请求');
+  const kept = db.prepare("SELECT native_difficulty FROM problems WHERE problem_key='P01'").get() as any;
+  assert.equal(kept.native_difficulty, null, 'deferred 的行本轮不动');
+
+  // 显式开启后才逐题重查（运维口子）
+  const second = await backfillDifficulties(db, fetchFn, { includeNativeOnly: true });
+  const lg2 = second.find((r) => r.platform === 'luogu')!;
+  assert.equal(lg2.scanned, 1);
+  assert.equal(lg2.deferred, 0);
+  assert.equal(requests, 2);
+  const filledNative = db.prepare("SELECT native_difficulty, difficulty_scale FROM problems WHERE problem_key='P01'").get() as any;
+  assert.equal(filledNative.native_difficulty, '4');
+  assert.equal(filledNative.difficulty_scale, 'luogu-2026-06');
+});
+
+test('回填：牛客「难度已有、原生值缺失」—— 可推导的零请求本地推导，其余走题库整表扫描', async () => {
+  // 牛客原生分与 CF 分值同量纲且未触发钳位 → 与原始映射严格同源，可本地推导（零请求）
+  insertProblem('nowcoder', '100', '题一', 1800, ['dp'], { source: 'sync' });
+  // 钳位边界（800）：无法区分原值本身与被钳上来的值 → 不本地推导，交给题库整表扫描
+  insertProblem('nowcoder', '200', '题二', 800, ['dp'], { source: 'sync' });
+  let listRequests = 0;
+  const fetchFn = router({
+    'acm/problem/list': (url) => {
+      listRequests += 1;
+      const page = new URL(url).searchParams.get('page');
+      // 整表扫描：难度 800 的题在页面上原生分是 700（钳位前）
+      return page === '1' ? ncBankPage([{ id: '200', title: '题二', diff: '700' }]) : ncBankPage([]);
+    },
+  });
+  const results = await backfillDifficulties(db, fetchFn);
+  const nc = results.find((r) => r.platform === 'nowcoder')!;
+  const derived = db.prepare("SELECT native_difficulty, difficulty_scale FROM problems WHERE problem_key='100'").get() as any;
+  assert.equal(derived.native_difficulty, '1800', '同量纲同值 → 零请求推导');
+  assert.equal(derived.difficulty_scale, 'nowcoder-score');
+  const swept = db.prepare("SELECT difficulty, native_difficulty FROM problems WHERE problem_key='200'").get() as any;
+  assert.equal(swept.native_difficulty, '700', '边界值由整表扫描给出真实的原生分原文');
+  assert.equal(swept.difficulty, 800);
+  assert.equal(nc.deferred, 0, '牛客已改为整表扫描，不再有 deferred 的「仅缺原生值」行');
+  assert.equal(nc.nativeFilled, 1, '整表扫描补上的那一道');
+  assert.ok(listRequests >= 1, '必须走题库整表接口');
+});
+
+test('回填：牛客整表扫描修正旧钳位留下的过时难度值（700 → 800），并计入 repaired', async () => {
+  // 老库常见：旧版本把低于 CF 下限的原生分直接当难度写库（700），当前标尺应钳到 800
+  insertProblem('nowcoder', '249983', '小红的权值', 700, ['dp'], { source: 'sync' });
+  const seen: string[] = [];
+  const fetchFn = router({
+    'acm/problem/list': (url) => {
+      seen.push(new URL(url).searchParams.get('page') ?? '');
+      const page = new URL(url).searchParams.get('page');
+      return page === '1' ? ncBankPage([{ id: '249983', title: '小红的权值', diff: '700' }]) : ncBankPage([]);
+    },
+  });
+  const results = await backfillDifficulties(db, fetchFn);
+  const nc = results.find((r) => r.platform === 'nowcoder')!;
+  const row = db.prepare("SELECT difficulty, native_difficulty FROM problems WHERE problem_key='249983'").get() as any;
+  assert.equal(row.difficulty, 800, '过时难度值被上游值修正');
+  assert.equal(row.native_difficulty, '700', '原生分原文照落库（钳位前的站点值）');
+  assert.equal(nc.repaired, 1, '难度值被修正计入 repaired');
+  assert.equal(nc.filled, 0, '难度并非从无到有 → 不计入 filled');
+  assert.match(
+    nc.details.find((d) => d.problemKey === '249983')!.note ?? '',
+    /修正难度 700→800/,
+    'details 明确给出难度值修正',
+  );
+  // 目标题已齐 → 单页即停（wantKeys 早停，不为一道题扫完整表）
+  assert.deepEqual(seen, ['1']);
 });
 
 // ---------- 全平台元数据回填 ----------
@@ -151,12 +259,20 @@ test('回填：leetcode 走 problemsetQuestionList 分页扫描（一次扫描�
   assert.deepEqual(JSON.parse(row.tags), ['DFS 与回溯']); // 中文标签优先（回溯 → 规范名 DFS 与回溯）
 });
 
-test('回填：代码源逐题 JSON（/p/{docId}），难度按 Hydro 算法复算', async () => {
+test('回填：代码源走题库整表分页扫描（/p?page=N），难度按 Hydro 算法复算', async () => {
   insertProblem('daimayuan', '1', '[R1A]最大奇数', null, []);
+  const seenPages: string[] = [];
   const fetchFn = router({
-    'bs.daimayuan.top/p/1': () => ({
-      pdoc: { docId: 1, title: '[R1A]最大奇数', tag: ['模拟'], nSubmit: 2136, nAccept: 947, difficulty: 0 },
-    }),
+    'bs.daimayuan.top/p?page': (url) => {
+      const page = new URL(url).searchParams.get('page');
+      seenPages.push(page ?? '');
+      if (page !== '1') return { pcount: 1, ppcount: 1, pdocs: [] };
+      return {
+        pcount: 1,
+        ppcount: 1,
+        pdocs: [{ docId: 1, title: '[R1A]最大奇数', tag: ['模拟'], nSubmit: 2136, nAccept: 947, difficulty: 0 }],
+      };
+    },
   });
   const results = await backfillDifficulties(db, fetchFn);
   const dmy = results.find((r) => r.platform === 'daimayuan')!;
@@ -168,6 +284,33 @@ test('回填：代码源逐题 JSON（/p/{docId}），难度按 Hydro 算法复�
   assert.equal(row.native_difficulty, '4');
   assert.equal(row.difficulty_scale, 'hydro-1-10');
   assert.deepEqual(JSON.parse(row.tags), ['模拟']);
+  assert.deepEqual(seenPages, ['1'], '目标题已齐 → wantKeys 早停，不继续翻页');
+});
+
+test('回填：代码源整表扫描修正旧映射留下的过时难度值（2500 → 2200），并计入 repaired', async () => {
+  // 本机实测 459 行里 411 行的难度与上游不一致（旧版复算/映射留下的值）
+  const seenPages: string[] = [];
+  const fetchFn = router({
+    'bs.daimayuan.top/p?page': (url) => {
+      seenPages.push(new URL(url).searchParams.get('page') ?? '');
+      if (seenPages.length > 1) return { pcount: 1, ppcount: 1, pdocs: [] };
+      return {
+        pcount: 1,
+        ppcount: 1,
+        // 站点手工档位 9 档 → CF 2200；库内过时值 2500
+        pdocs: [{ docId: 101, title: '旧值题', tag: [], nSubmit: 10, nAccept: 10, difficulty: 9 }],
+      };
+    },
+  });
+  insertProblem('daimayuan', '101', '旧值题', 2500, ['dp'], { source: 'sync' });
+  const results = await backfillDifficulties(db, fetchFn);
+  const dmy = results.find((r) => r.platform === 'daimayuan')!;
+  const row = db.prepare("SELECT difficulty, native_difficulty FROM problems WHERE problem_key='101'").get() as any;
+  assert.equal(row.difficulty, 2200, '过时难度值被上游值修正');
+  assert.equal(row.native_difficulty, '9');
+  assert.equal(dmy.filled, 0);
+  assert.equal(dmy.repaired, 1);
+  assert.deepEqual(seenPages, ['1']);
 });
 
 test('回填：计蒜客题库批量一次扫描（problemTags 提供难度与知识点）', async () => {
@@ -251,13 +394,14 @@ const NC_ROW_HTML = `
     <a href="javascript:void(0);" class="tag-label js-tag" data-id="1">构造</a>
     <a href="javascript:void(0);" class="tag-label js-tag" data-id="2">贪心</a>
   </td>
-  <td> 1500 </td><td>100</td><td></td>
+  <td> 1500 </td><td>100</td>
+  <td><a href="javascript:void(0);" data-id="16640" class="js-collect-question"></a></td>
 </tr>`;
 
 test('parseNcSearchRow: separates title/tags/difficulty', () => {
   const info = parseNcSearchRow(NC_ROW_HTML, '16640');
   assert.ok(info);
-  assert.equal(info!.difficulty, 1500); // 站点难度分网格值（200..4000、100 的倍数）
+  assert.equal(info!.difficulty, 1500); // 站点难度列的真实值（紧随标题单元格）
   assert.equal(info!.nativeDifficulty, '1500');
   assert.equal(info!.title, '[NOIP2007]纪念品分组');
   assert.deepEqual(info!.tags, ['构造', '贪心']);
@@ -271,10 +415,14 @@ test('parseNcSearchRow: no hit returns null; no-difficulty row returns null diff
   assert.equal(info!.difficulty, null);
 });
 
-test('parseNcSearchRow: 离网/越界难度分一律未知（与题库读取方共用同一校验器）', () => {
-  // 通过数列的 1049 这类离网值过去会被本读取方当成有效难度（题库读取方却当未知），
-  // 而 backfill(3) 又会覆盖 bank(1) → 同一行两套结论。统一校验器后两边一致为「未知」。
-  for (const diff of ['1049', '100', '5000']) {
+test('parseNcSearchRow: 非整百分值的真实难度被采纳，越界/非数字仍未知（两个读取方共用同一校验器）', () => {
+  // 2026-09-27 逐题实测：老题真实难度存在非整百分值（NC16640=1049、NC22014=623、NC24739=972）。
+  // 旧校验器要求「100 的倍数」把这些真值判成未知；现改为值域校验 + 结构化防串列。
+  const accepted = parseNcSearchRow(NC_ROW_HTML.replace('<td> 1500 </td>', '<td> 1049 </td>'), '16640');
+  assert.ok(accepted);
+  assert.equal(accepted!.difficulty, 1049);
+  assert.equal(accepted!.nativeDifficulty, '1049');
+  for (const diff of ['100', '5000', 'abc']) {
     const info = parseNcSearchRow(NC_ROW_HTML.replace('<td> 1500 </td>', `<td> ${diff} </td>`), '16640');
     assert.ok(info);
     assert.equal(info!.difficulty, null, `难度分 ${diff} 应为未知`);
@@ -290,7 +438,8 @@ test('parseNcSearchRow: 与题库路径共用同一套「标题锚点 + 后一�
     <td class="text-center"><input type="checkbox"/></td>
     <td><a href="/acm/problem/16640">NC16640</a></td>
     <td class="fn-right" colspan="2"><a class="title" href="/acm/problem/16640">纪念品分组</a></td>
-    <td> 1500 </td><td>1049</td><td></td>
+    <td> 1500 </td><td>1049</td>
+    <td><a href="javascript:void(0);" data-id="16640" class="js-collect-question"></a></td>
   </tr>`;
   const info = parseNcSearchRow(shifted, '16640');
   assert.ok(info);
@@ -304,12 +453,13 @@ test('parseNcSearchRow: 与题库路径共用同一套「标题锚点 + 后一�
 });
 
 test('parseNcSearchRow: 难度单元格为空时取未知，不得顺延到相邻的通过数（不得臆造难度）', () => {
-  // 通过数恰为难度网格值（1500）：若向后扫描找数字，就会把通过数当成难度，
+  // 通过数恰为难度域内的整数（1500）：若向后扫描找数字，就会把通过数当成难度，
   // 并以 backfill(3) 覆盖 bank(1)/sync(2) 已落定的正确难度。
   const html = `<tr data-problemId="50039">
     <td><a href="/acm/problem/50039">NC50039</a></td>
     <td class="fn-right" colspan="2"><a class="title" href="/acm/problem/50039">kotori和气球</a></td>
-    <td> </td><td>1500</td><td></td>
+    <td> </td><td>1500</td>
+    <td><a href="javascript:void(0);" data-id="50039" class="js-collect-question"></a></td>
   </tr>`;
   const info = parseNcSearchRow(html, '50039');
   assert.ok(info);
@@ -351,17 +501,27 @@ function insertProblem(
   );
 }
 
-function ncListPage(info: { id: string; title: string; diff: string; tags: string[] }): string {
-  const tagLinks = info.tags
-    .map((t) => `<a href="javascript:void(0);" class="tag-label js-tag">${t}</a>`)
+/**
+ * 牛客**题库列表页**（整表扫描路径）单页 fixture：多行拼在一个 <table> 里。
+ * 行结构就是真实页面形态：标题与算法标签同处一个 `colspan="2"` 单元格，难度是**紧随其后**的那一格，
+ * 末格恒为操作列（收藏/加入题单，类名 js-collect-question）—— 解析层据此做列结构校验。
+ * fixture 必须带上 colspan 与操作列，否则「按列下标硬取」与「标题锚点 + 后一格」两种规则在测试里看不出差别。
+ */
+function ncBankPage(rows: Array<{ id: string; title: string; diff: string; tags?: string[] }>): string {
+  const trs = rows
+    .map((r) => {
+      const tagLinks = (r.tags ?? [])
+        .map((t) => `<a href="javascript:void(0);" class="tag-label js-tag">${t}</a>`)
+        .join('');
+      return `<tr data-problemId="${r.id}">
+      <td><a href="/acm/problem/${r.id}">NC${r.id}</a></td>
+      <td class="fn-right" colspan="2"><a href="/acm/problem/${r.id}" class="title">${r.title}</a>${tagLinks}</td>
+      <td>${r.diff}</td><td>100</td>
+      <td><a href="javascript:void(0);" data-id="${r.id}" class="js-collect-question"></a></td>
+    </tr>`;
+    })
     .join('');
-  // 真实页面形态：标题与算法标签同处一个 `colspan="2"` 单元格，难度是**紧随其后**的那一格。
-  // fixture 必须带上 colspan，否则「按列下标硬取」与「标题锚点 + 后一格」两种规则在测试里看不出差别。
-  return `<table><tr data-problemId="${info.id}">
-    <td><a href="/acm/problem/${info.id}">NC${info.id}</a></td>
-    <td class="fn-right" colspan="2"><a href="/acm/problem/${info.id}" class="title">${info.title}</a>${tagLinks}</td>
-    <td>${info.diff}</td><td>100</td><td></td>
-  </tr></table>`;
+  return `<table>${trs}</table>`;
 }
 
 test('backfill: fills nowcoder difficulty + repairs polluted title/empty tags', async () => {
@@ -375,17 +535,22 @@ test('backfill: fills nowcoder difficulty + repairs polluted title/empty tags', 
   insertProblem('codeforces', '1662A', 'A', null, []);
 
   const fetchFn = router({
-    'keyword=16640': () => ncListPage({ id: '16640', title: '纪念品分组', diff: '1500', tags: ['构造', '排序', '贪心'] }),
-    'keyword=50039': () => ncListPage({ id: '50039', title: 'kotori和气球', diff: '800', tags: ['数学'] }),
-    'keyword=280771': () => ncListPage({ id: '280771', title: '小红的好数组', diff: '700', tags: ['暴力'] }),
+    // 整表扫描：一页里同时给出三道题（题库页与搜索结果页共用同一套行结构）
+    'acm/problem/list': () =>
+      ncBankPage([
+        { id: '16640', title: '纪念品分组', diff: '1500', tags: ['构造', '排序', '贪心'] },
+        { id: '50039', title: 'kotori和气球', diff: '800', tags: ['数学'] },
+        { id: '280771', title: '小红的好数组', diff: '700', tags: ['暴力'] },
+      ]),
   });
   const results = await backfillDifficulties(db, fetchFn);
   const nc = results.find((r) => r.platform === 'nowcoder')!;
   assert.equal(nc.scanned, 3);
   assert.equal(nc.filled, 2); // 16640 / 50039
-  assert.equal(nc.repaired, 1); // 280771
+  assert.equal(nc.repaired, 1); // 280771：难度已有 700、上游同为 700 → 只修标题/补标签
   assert.equal(nc.missing, 0);
   assert.equal(nc.failed, 0);
+  assert.equal(nc.deferred, 0); // 牛客已改为整表扫描 → 不再有 deferred
 
   const row = db.prepare("SELECT difficulty, title, tags FROM problems WHERE platform='nowcoder' AND problem_key='16640'").get() as any;
   assert.equal(row.difficulty, 1500);
@@ -402,8 +567,11 @@ test('backfill: keeps existing difficulty on repair, records official-missing', 
   // 未知难度；上游无难度分
   insertProblem('nowcoder', '20319', '红黑树', null, []);
   const fetchFn = router({
-    'keyword=280771': () => ncListPage({ id: '280771', title: '小红的好数组', diff: '700', tags: ['暴力'] }),
-    'keyword=20319': () => ncListPage({ id: '20319', title: '红黑树', diff: '', tags: ['树形dp'] }),
+    'acm/problem/list': () =>
+      ncBankPage([
+        { id: '280771', title: '小红的好数组', diff: '700', tags: ['暴力'] },
+        { id: '20319', title: '红黑树', diff: '', tags: ['树形dp'] },
+      ]),
   });
   const results = await backfillDifficulties(db, fetchFn);
   const nc = results.find((r) => r.platform === 'nowcoder')!;
@@ -420,15 +588,19 @@ test('backfill: keeps existing difficulty on repair, records official-missing', 
   assert.deepEqual(JSON.parse(m.tags), ['树形dp']);
 });
 
-test('backfill: consecutive failures abort nowcoder queries (risk control)', async () => {
+test('backfill: 牛客整表拉取为空/失败时，目标如实记为 failed 且不写坏数据', async () => {
+  // 牛客已是整表型平台：单题不再发请求，也就没有「连续失败」可数 —— 表拉空/拉失败时
+  // 所有目标统一记 failed（逾期重试即可），而不是逐题重打上游制造上千次无效请求。
   for (let i = 0; i < 12; i += 1) insertProblem('nowcoder', String(90000 + i), `T${i}`, null, []);
   const fetchFn = router({
-    'acm/problem/list': () => '<html>empty</html>', // 全部未命中
+    'acm/problem/list': () => '<html>empty</html>', // 表为空 → 全部未命中
   });
   const results = await backfillDifficulties(db, fetchFn);
   const nc = results.find((r) => r.platform === 'nowcoder')!;
   assert.equal(nc.failed, 12);
   assert.equal(nc.filled, 0);
+  const untouched = db.prepare("SELECT COUNT(*) AS c FROM problems WHERE platform='nowcoder' AND difficulty IS NOT NULL").get() as any;
+  assert.equal(untouched.c, 0, '不得凭空写入难度');
 });
 
 // ---------- 回填服务（洛谷） ----------
@@ -492,6 +664,31 @@ test('backfill: luogu unrated difficulty (0) recorded as missing', async () => {
   const lg = results.find((r) => r.platform === 'luogu')!;
   assert.equal(lg.filled, 0);
   assert.equal(lg.missing, 1);
+});
+
+test('回填：一次运行写入超过一个批次（分批提交，行数与结果不得因批次边界丢失）', async () => {
+  // 整表类平台一轮要写上万行；逐行自动提交会把一次回填拖到近十分钟，故按批提交（WRITE_BATCH=100）。
+  // 本用例写 250 行（3 批：100 / 100 / 50）覆盖「批次满即提交」与「收尾提交」两个分支。
+  const COUNT = 250;
+  const rows: Array<{ id: string; title: string; diff: string }> = [];
+  for (let i = 0; i < COUNT; i += 1) {
+    const id = String(700000 + i);
+    insertProblem('nowcoder', id, `批量题${i}`, null, []);
+    rows.push({ id, title: `批量题${i}`, diff: '1200' });
+  }
+  const fetchFn = router({
+    'acm/problem/list': (url) =>
+      new URL(url).searchParams.get('page') === '1' ? ncBankPage(rows) : ncBankPage([]),
+  });
+  const results = await backfillDifficulties(db, fetchFn);
+  const nc = results.find((r) => r.platform === 'nowcoder')!;
+  assert.equal(nc.scanned, COUNT);
+  assert.equal(nc.filled, COUNT);
+  assert.equal(nc.failed, 0);
+  const written = db
+    .prepare("SELECT COUNT(*) AS c FROM problems WHERE platform='nowcoder' AND difficulty=1200 AND native_difficulty='1200'")
+    .get() as any;
+  assert.equal(written.c, COUNT, '跨批次提交后所有行都必须落库');
 });
 
 test('回填：单平台单次运行题数上限（capped 如实回传，未处理的题留作下次目标）', async () => {

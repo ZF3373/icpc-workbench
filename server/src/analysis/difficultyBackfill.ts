@@ -1,19 +1,29 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { PlatformId } from '../../../shared/src/index.ts';
-import { difficultyFields, type DifficultyScale } from '../../../shared/src/difficulty.ts';
+import { CF_RATING_MAX, CF_RATING_MIN, difficultyFields, type DifficultyScale } from '../../../shared/src/difficulty.ts';
 import type { Db } from '../db/index.ts';
 import { fetchWithChallenge } from '../adapters/luogu.ts';
 import { parseJisuankeProblemTags } from '../adapters/jisuanke.ts';
 import {
-  hydroDifficulty,
+  fetchDaimayuanBank,
+  fetchNowcoderBank,
   LEETCODE_BANK_PAGE,
   LEETCODE_BANK_QUERY,
   parseNcRowCells,
+  type BankFetchResult,
 } from '../adapters/problemBank.ts';
 import { asHttpClient, sleep } from '../adapters/http.ts';
 import { purifyTags } from '../import/problemWritePolicy.ts';
 import { effectiveDataDir } from '../knowledge/store.ts';
+import {
+  createIcpcRuntime,
+  MAX_BOARDS_PER_RUN,
+  qojProblemIdFromKey,
+  resolveIcpcDifficulty,
+  type IcpcProblemInfo,
+  type IcpcRuntime,
+} from './icpcBoard.ts';
 
 /** 单题回填查得的信息（洛谷/牛客逐题查询的返回结构） */
 export interface BackfillInfo {
@@ -27,6 +37,9 @@ export interface BackfillInfo {
   tags: string[] | null;
 }
 
+/** 缺口类型（决定回填优先级：真缺难度 > 缺标签 > 只缺原生值） */
+export type BackfillGap = 'difficulty' | 'tags' | 'native';
+
 /** 需要回填元数据的题（难度/原生难度/标签三者缺一即入选） */
 export interface BackfillTarget {
   platform: PlatformId;
@@ -35,6 +48,8 @@ export interface BackfillTarget {
   difficulty: number | null;
   nativeDifficulty: string | null;
   tags: string[];
+  /** 该题最大的缺口（见 BackfillGap）；回填按此排序，真缺口先做 */
+  gap: BackfillGap;
 }
 
 /** 单题元数据：fetcher 的统一返回结构（未知一律 null，不猜） */
@@ -56,7 +71,7 @@ export interface PlatformBackfillResult {
   filled: number;
   /** 原生难度（native_difficulty）由 NULL 被补上的题数（与 filled 相互独立） */
   nativeFilled: number;
-  /** 标题/标签被修正的题数 */
+  /** 标题/标签/过时难度值被修正的题数（改自旧映射、旧钳位留下的过时值） */
   repaired: number;
   /** 上游仍无难度数据的题数（官方未评级等） */
   missing: number;
@@ -64,6 +79,12 @@ export interface PlatformBackfillResult {
   failed: number;
   /** 本次因「单平台单次运行上限」未处理的题数（0 = 该平台目标已全部处理；>0 时再点一次继续） */
   capped: number;
+  /**
+   * 因「仅缺原生难度、且该平台逐题查询代价高」被本轮跳过的题数（不打扰上游、也不占用并发额度）。
+   * 见 PER_PROBLEM_NATIVE_DEFERRED：这些题的 CF 难度**已经有了**，缺的只是原生原文，
+   * 由 `includeNativeOnly` 显式开启后才逐题重查（默认跳过，避免每次点击打数百个无效请求）。
+   */
+  deferred: number;
   /** 每题明细（problemKey → 说明） */
   details: Array<{ problemKey: string; action: 'filled' | 'repaired' | 'missing' | 'failed' | 'skipped'; note?: string }>;
 }
@@ -73,7 +94,6 @@ const LUOGU_API = 'https://www.luogu.com.cn';
 const CODEFORCES_API = 'https://codeforces.com/api';
 const KENKOOOO_API = 'https://kenkoooo.com/atcoder';
 const LEETCODE_GRAPHQL = 'https://leetcode.cn/graphql';
-const DAIMAYUAN_BASE = 'https://bs.daimayuan.top';
 const JISUANKE_BASE = 'https://www.jisuanke.com';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
 
@@ -84,26 +104,50 @@ const JISUANKE_BANK_PAGE = 20;
 
 /**
  * 平台限速与失败保护：
- * - `delayMs`：**逐题**请求之间的间隔（只有逐题型平台 luogu/nowcoder/daimayuan 会请求上游；
- *   整表型平台的元数据来自整表/缓存，逐题循环不再发请求 → 间隔为 0，页间限速见 SCAN_DELAY_MS）。
+ * - `delayMs`：**逐题**请求之间的间隔（只有逐题型平台 luogu 会逐题请求上游；
+ *   整表型平台（CF/AtCoder/力扣/计蒜客/**牛客/代码源**）的元数据来自整表/缓存，
+ *   逐题循环不再发请求 → 间隔为 0，页间限速见 SCAN_DELAY_MS 与各题库拉取器内部限速）。
  * - `failLimit`：连续失败阈值，超过即视为触发风控并中止该平台（下次运行继续补）。
- *   牛客与洛谷开启（实测匿名逐题查询连续失败后会被限流，继续打会加重风控）；
- *   两者都是「逐题发请求」的平台，一次点击可能发出上千个请求，故必须有熔断。
+ *   洛谷开启（实测匿名逐题查询连续失败后会被限流，继续打会加重风控）；
+ *   它是「逐题发请求」的平台，一次点击可能发出几百个请求，故必须有熔断。
+ *   整表型平台不逐题发请求 → 无单题失败可数，取 null。
  * - `maxPerRun`：**单次运行**最多处理的题数（一次点击的耗时上限 =
  *   maxPerRun × delayMs）。没有它时，一个「全库原生难度为空」的旧库点一次回填会串行跑十几分钟
  *   才发现没补上几题；超出部分留在库里（状态即游标），下次点击继续。
- *   整表型平台不发逐题请求，上限只限制本次写库量，取 2000。
+ *   整表型平台不发逐题请求，上限只限制本次写库量；牛客/代码源一轮的目标数约 1.0k/0.5k，
+ *   故取 20000 让它们在**一轮**内全部收敛（整表已拉、分批只会让下一轮重下整表）。
  */
 const PLATFORM_LIMITS: Record<PlatformId, { delayMs: number; failLimit: number | null; maxPerRun: number }> = {
-  nowcoder: { delayMs: 450, failLimit: 8, maxPerRun: 300 }, // ≈2.3 分钟
+  // 牛客：整表分页扫描（见 fetchNowcoderTable）→ 不再逐题请求
+  nowcoder: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
   luogu: { delayMs: 300, failLimit: 8, maxPerRun: 400 }, // ≈2 分钟
-  daimayuan: { delayMs: 400, failLimit: null, maxPerRun: 300 }, // ≈2 分钟
-  leetcode: { delayMs: 0, failLimit: null, maxPerRun: 2000 },
-  jisuanke: { delayMs: 0, failLimit: null, maxPerRun: 2000 },
-  atcoder: { delayMs: 0, failLimit: null, maxPerRun: 2000 },
-  codeforces: { delayMs: 0, failLimit: null, maxPerRun: 2000 },
+  // 代码源：整表 JSON 分页扫描（见 fetchDaimayuanTable）→ 不再逐题请求
+  daimayuan: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
+  // 整表平台：一次请求就拿到全库元数据，逐题循环只是查内存 → 上限只限制「本次写库量」，
+  // 放宽到 20000 让「仅缺原生值」的历史行在一轮内收敛（此前 2000 要连点数次，每点一次都重下整表）
+  leetcode: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
+  jisuanke: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
+  atcoder: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
+  codeforces: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
+  // QOJ 不逐题发请求：目录/索引/榜单各拉一次（榜单下载量另受 MAX_BOARDS_PER_RUN 约束）
   qoj: { delayMs: 0, failLimit: null, maxPerRun: 2000 },
 };
+
+/**
+ * 「仅缺原生难度」在**逐题查询**平台上默认跳过（计入 deferred），因为这类题的 CF 难度已经有了，
+ * 只是缺原生原文；而逐题平台每补一行要单独打一次上游（洛谷 300ms/题），一个老库动辄几千行
+ * —— 每次点击都在为「不影响展示的原生列」发几百个请求，既慢又招风控。
+ * 需要补齐原生列时显式开 `includeNativeOnly`（代价是这一轮的耗时）。
+ *
+ * 2026-09-27 起**只剩洛谷**在这里：牛客与代码源虽然也是逐题来源，但两者都有**公开题库整表接口**
+ * （见 fetchNowcoderTable / fetchDaimayuanTable），改用整表扫描后一轮就能把「仅缺原生值」的历史行
+ * 全部补齐（实测牛客 1055/1082、代码源 459/459），代价是几十~两百次分页请求而不是上千次逐题请求；
+ * 更要紧的是，**保留 defer 会让旧映射留下的过时难度值永远得不到修正**
+ * （实测代码源 459 行里 411 行、牛客 1033 行里 280 行的难度值与上游不一致）。
+ * 洛谷实测整表接口对本库的行覆盖率只有 63/2418（本库的洛谷题多来自提交记录，不在题库列表前若干页），
+ * 且要扫 77 页/140s —— 收益不足以抵消成本，故仍保持逐题 + 默认跳过。
+ */
+const PER_PROBLEM_NATIVE_DEFERRED: ReadonlySet<PlatformId> = new Set<PlatformId>(['luogu']);
 
 /** 未登记平台的兜底限额：不发逐题请求、不熔断、本次不设额外上限（见 backfillPlatform） */
 const DEFAULT_PLATFORM_LIMITS = { delayMs: 0, failLimit: null, maxPerRun: 0 } as const;
@@ -120,19 +164,39 @@ interface BackfillCtx {
   wanted: Map<PlatformId, Set<string>>;
   /** 洛谷 tag id → 名称字典（懒加载，供逐题详情复用） */
   luoguTagDict?: Promise<Map<number, string>>;
+  /** ICPC/CCPC 公开榜单运行时（QOJ 难度来源；目录/索引只拉一次、榜单按赛场去重） */
+  icpc: IcpcRuntime;
+  /** 本次运行内 QOJ 题的推导结果（懒加载一次；结果用题目 id 索引） */
+  icpcInfo?: Promise<Map<string, IcpcProblemInfo>>;
 }
 
 // ---------- 回填目标选择 ----------
 
-/** 需要回填的题：无 CF 难度 / 无原生难度 / 无标签（QOJ 无数据来源，排除） */
+/**
+ * 需要回填的题：无 CF 难度 / 无原生难度 / 无标签。
+ *
+ * 排序即优先级（2026-09-27 起）：`difficulty IS NULL` 最前，其次 `tags = '[]'`，
+ * 最后才是「难度已有、只缺原生原文」。原因：老库（`native_difficulty` 列是后加的）
+ * 里绝大多数行只是原生值为空，而每平台的单次上限是按这个顺序截断的 —— 不排序时，
+ * 一次点击发出的数百个逐题请求几乎全打给「难度早就有了」的题，真缺难度的题排在
+ * 字母序末尾、要点好几次才轮到（实测牛客 41 道缺难度题里有 7 道从未被轮到）。
+ *
+ * QOJ 也纳入目标（原先被排除）：其难度由 `analysis/icpcBoard.ts` 从 ICPC/CCPC
+ * 公开榜单推导；推导不到时仍如实记 missing，不猜。
+ */
 export function pickBackfillTargets(db: Db): BackfillTarget[] {
   const rows = db
     .prepare(
       `SELECT platform, problem_key, title, difficulty, native_difficulty, tags
          FROM problems
-        WHERE platform != 'qoj'
-          AND (difficulty IS NULL OR native_difficulty IS NULL OR tags = '[]')
-        ORDER BY platform, problem_key`,
+        WHERE difficulty IS NULL OR native_difficulty IS NULL OR tags = '[]'
+        ORDER BY platform,
+                 CASE
+                   WHEN difficulty IS NULL THEN 0
+                   WHEN tags = '[]' THEN 1
+                   ELSE 2
+                 END,
+                 problem_key`,
     )
     .all() as Array<{
     platform: PlatformId;
@@ -142,14 +206,79 @@ export function pickBackfillTargets(db: Db): BackfillTarget[] {
     native_difficulty: string | null;
     tags: string;
   }>;
-  return rows.map((r) => ({
-    platform: r.platform,
-    problemKey: r.problem_key,
-    title: r.title,
-    difficulty: r.difficulty,
-    nativeDifficulty: r.native_difficulty,
-    tags: JSON.parse(r.tags) as string[],
-  }));
+  return rows.map((r) => {
+    const tags = JSON.parse(r.tags) as string[];
+    const gap: BackfillGap = r.difficulty === null ? 'difficulty' : tags.length === 0 ? 'tags' : 'native';
+    return {
+      platform: r.platform,
+      problemKey: r.problem_key,
+      title: r.title,
+      difficulty: r.difficulty,
+      nativeDifficulty: r.native_difficulty,
+      tags,
+      gap,
+    };
+  });
+}
+
+// ---------- 本地补齐：原生难度 = 映射后难度（零请求） ----------
+
+/**
+ * 对**难度与原生值同值**且**逐题查询**的标度，直接用已落库的 CF 难度回填 `native_difficulty`：
+ * - nowcoder：原生难度分与 CF 难度分同量纲，但映射带钳位（`nowcoderScoreToRating` 把低于 800
+ *   的值钳到 800、高于 3500 的钳到 3500）→ 只有严格落在开区间内才与原值相等；边界值
+ *   （800 / 3500）无法区分原值到底是它本身还是被钳上来的，一律不推导、留给上游。
+ * - codeforces：原生值同样是 rating 本身，**但故意不本地推导** —— CF 的难度来自
+ *   `problemset.problems` 整表（一次请求拿全库），同一轮就能用上游权威值修正历史遗留的
+ *   过时难度；本地推导反而会把这些行移出目标集，让「过时值永远不会被纠正」。
+ *   表驱动平台（CF/AtCoder/力扣/计蒜客）同理：拉表不逐题，保留为回填目标。
+ *
+ * 为什么值得做：nowcoder 一个老库动辄上千行「难度已有、只缺原生值」，逐题重查要发上千个请求，
+ * 而这一步零请求、且与原始映射严格同源（同一张表、同一个值）。
+ */
+export function identityNative(platform: PlatformId, difficulty: number | null): string | null {
+  if (difficulty === null) return null;
+  if (platform === 'nowcoder') {
+    return difficulty > CF_RATING_MIN && difficulty < CF_RATING_MAX ? String(difficulty) : null;
+  }
+  return null;
+}
+
+/** 可本地推导原生值的平台（见 identityNative 注释：只限 identity 标度 + 逐题查询） */
+const IDENTITY_DERIVE_PLATFORMS: ReadonlyArray<[PlatformId, DifficultyScale]> = [['nowcoder', 'nowcoder-score']];
+
+/** 本地补齐可推导的原生难度/标度，返回补齐行数（纯 SQL，无网络） */
+export function deriveIdentityNative(db: Db): number {
+  let total = 0;
+  for (const [platform, scale] of IDENTITY_DERIVE_PLATFORMS) {
+    const rows = db
+      .prepare(
+        `SELECT problem_key, difficulty FROM problems
+          WHERE platform = ? AND difficulty IS NOT NULL AND native_difficulty IS NULL
+            AND COALESCE(difficulty_source, 'sync') != 'manual'`,
+      )
+      .all(platform) as Array<{ problem_key: string; difficulty: number }>;
+    if (rows.length === 0) continue;
+    const update = db.prepare(
+      `UPDATE problems SET native_difficulty = ?, difficulty_scale = COALESCE(difficulty_scale, ?)
+        WHERE platform = ? AND problem_key = ?`,
+    );
+    // node:sqlite 无 better-sqlite3 的 transaction() 包装：显式 BEGIN/COMMIT（与 db/index.ts 同风格）
+    db.exec('BEGIN');
+    try {
+      for (const r of rows) {
+        const native = identityNative(platform, r.difficulty);
+        if (native === null) continue;
+        update.run(native, scale, platform, r.problem_key);
+        total += 1;
+      }
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+  }
+  return total;
 }
 
 // ---------- 逐题来源：牛客 ----------
@@ -179,7 +308,13 @@ export function parseNcSearchRow(html: string, problemKey: string): BackfillInfo
   };
 }
 
-/** 牛客单题回填：keyword=题号 搜索（匿名可访问），未命中/风控返回 null */
+/**
+ * 牛客单题回填：keyword=题号 搜索（匿名可访问），未命中/风控返回 null。
+ *
+ * 注意：**批量回填已不再走这里**（改用题库整表扫描，见 fetchNowcoderTable）—— 逐题搜索会为
+ * 「难度/原生值早就有了」的历史行发出上千次请求，而整表扫描一次就能覆盖并顺带修正过时难度值。
+ * 本函数保留为单题排查入口，两个读取方的单元格定位规则仍共用一份（parseNcRowCells）。
+ */
 export async function fetchNcProblemInfo(
   fetchFn: typeof fetch,
   problemKey: string,
@@ -271,41 +406,7 @@ async function fetchLuoguTagDict(fetchFn: typeof fetch): Promise<Map<number, str
   return dict;
 }
 
-// ---------- 逐题来源：代码源（Hydro） ----------
-
-interface DmyPdoc {
-  docId?: number;
-  title?: string;
-  tag?: string[];
-  nSubmit?: number;
-  nAccept?: number;
-  difficulty?: number;
-}
-
-/**
- * 代码源单题元数据：GET /p/{docId} + `Accept: application/json` → `{ pdoc }`。
- * 难度用站点手工档位优先，否则按 Hydro difficultyAlgorithm 本地复算（与题库拉取同源）。
- */
-async function fetchDaimayuanMeta(fetchFn: typeof fetch, problemKey: string): Promise<ProblemMeta | null> {
-  const res = await asHttpClient(fetchFn).fetch(`${DAIMAYUAN_BASE}/p/${encodeURIComponent(problemKey)}`, {
-    headers: { 'User-Agent': UA, Accept: 'application/json', Referer: `${DAIMAYUAN_BASE}/p` },
-  }, { timeoutMs: 20000 });
-  if (!res.ok) return null;
-  const body = (await res.json().catch(() => null)) as { pdoc?: DmyPdoc } | null;
-  const pdoc = body?.pdoc;
-  if (!pdoc) return null;
-  const level = hydroDifficulty(pdoc.nSubmit ?? 0, pdoc.nAccept ?? 0, pdoc.difficulty ?? null);
-  const mapped = difficultyFields('daimayuan', level);
-  return {
-    difficulty: mapped.difficulty ?? null,
-    nativeDifficulty: mapped.nativeDifficulty ?? null,
-    difficultyScale: mapped.difficultyScale,
-    tags: Array.isArray(pdoc.tag) && pdoc.tag.length > 0 ? pdoc.tag.map(String) : null,
-    title: typeof pdoc.title === 'string' && pdoc.title.trim() !== '' ? pdoc.title.trim() : null,
-  };
-}
-
-// ---------- 整表来源：Codeforces / AtCoder / 力扣 / 计蒜客 ----------
+// ---------- 整表来源：Codeforces / AtCoder / 力扣 / 计蒜客 / 牛客 / 代码源 ----------
 
 function metaFromFields(
   platform: PlatformId,
@@ -505,7 +606,62 @@ const TABLE_FETCHERS: Partial<Record<PlatformId, (ctx: BackfillCtx) => Promise<M
   atcoder: fetchAtcoderTable,
   leetcode: fetchLeetcodeTable,
   jisuanke: fetchJisuankeTable,
+  nowcoder: fetchNowcoderTable,
+  daimayuan: fetchDaimayuanTable,
 };
+
+/**
+ * 题库拉取结果 → 回填用「键 → 元数据」表。
+ *
+ * 复用 `adapters/problemBank.ts` 的题库拉取器（它们已经是「分页列表一次拿全」）而不是逐题查询：
+ * 这是参考项目 OJ_Insight 获取难度的方式（`src-tauri/src/sync/nowcoder.rs` 逐页翻题库列表、
+ * `xcpc/rating.rs` 按公开榜单整体推导），本项目此前只在「拉题库」链路用了整表、
+ * 回填链路却逐题打上游，导致缺原生值的历史行只能 defer。
+ */
+function bankToTable(bank: BankFetchResult): Map<string, ProblemMeta> {
+  const table = new Map<string, ProblemMeta>();
+  for (const p of bank.problems) {
+    table.set(p.problemKey, {
+      difficulty: p.difficulty,
+      nativeDifficulty: p.nativeDifficulty,
+      difficultyScale: p.difficultyScale,
+      tags: p.tags,
+      title: p.title,
+    });
+  }
+  return table;
+}
+
+/**
+ * 牛客：公开题库整表分页扫描（GET /acm/problem/list?queryType=all&orderById=true&page=N）。
+ *
+ * 为什么改用整表：牛客是「逐题查询」平台里历史包袱最重的一个 —— 本机 1082 行「难度已有、
+ * 只缺原生值」，逐题补要发 1082 次请求（约 8 分钟），旧实现因此默认 defer 它们，
+ * 于是 `native_difficulty` 常年为空、且**旧映射留下的过时难度值永远不会被修正**。
+ * 实测整表扫描（200 页 / 约 120 秒）覆盖 1055/1082 行，其中 1040 行能拿到难度、
+ * 并顺带修正 280 行与上游不一致的过时难度值 —— 请求数少一个量级，结果还更全。
+ */
+async function fetchNowcoderTable(ctx: BackfillCtx): Promise<Map<string, ProblemMeta>> {
+  const bank = await fetchNowcoderBank(ctx.fetchFn, {
+    // 库内目标通常几百行：全部命中即停，避免为几道题扫完整表（见 BankFetchOptions.wantKeys）
+    wantKeys: ctx.wanted.get('nowcoder'),
+    max: 20000,
+  });
+  return bankToTable(bank);
+}
+
+/**
+ * 代码源（Hydro）：整表 JSON 分页扫描（GET /p?page=N）。
+ * 本机 459 行缺原生值全部可在 5 页内覆盖（约 2 秒），并修正 411 行过时难度值
+ * （旧版 hydroDifficulty/映射留下的值，例如上游 2000 而库内 2200/2500）。
+ */
+async function fetchDaimayuanTable(ctx: BackfillCtx): Promise<Map<string, ProblemMeta>> {
+  const bank = await fetchDaimayuanBank(ctx.fetchFn, {
+    wantKeys: ctx.wanted.get('daimayuan'),
+    max: 20000,
+  });
+  return bankToTable(bank);
+}
 
 /** 整表平台的键 → 元数据；同一运行内只拉一次。
  *  拉取失败缓存 null（不重复打上游，也不中断其他平台）→ 该平台的目标题统一记 failed。 */
@@ -520,11 +676,11 @@ function platformTable(platform: PlatformId, ctx: BackfillCtx): Promise<Map<stri
 
 /**
  * 单题元数据获取（回填注册表入口）。平台 → 来源：
- * - luogu：GET /problem/{pid}（逐题，300ms 间隔）
- * - nowcoder：GET /acm/problem/list?keyword=（逐题，450ms 间隔 + 连续失败 8 次中止）
- * - daimayuan：GET /p/{docId} JSON（逐题，400ms 间隔）
- * - codeforces / atcoder / leetcode / jisuanke：整表一次拉取后在内存里查（tables 缓存）
- * - qoj：平台无难度/标签来源 → 恒 null（目标选择阶段已排除）
+ * - luogu：GET /problem/{pid}（**唯一**逐题查询的平台，300ms 间隔 + 连续失败 8 次中止）
+ * - codeforces / atcoder / leetcode / jisuanke / nowcoder / daimayuan：整表拉取后在内存里查
+ *   （tables 缓存；nowcoder 与 daimayuan 复用题库拉取器的分页扫描，见 fetchNowcoderTable）
+ * - qoj：平台无难度字段 → 用 ICPC/CCPC 公开榜单推导档位（见 analysis/icpcBoard.ts）；
+ *   题号无法映射或榜单不可用时返回 null（保持未知，不猜）
  */
 export async function fetchProblemMeta(
   platform: PlatformId,
@@ -537,12 +693,6 @@ export async function fetchProblemMeta(
       const info = await fetchLgProblemInfo(ctx.fetchFn, problemKey, await ctx.luoguTagDict);
       return info === null ? null : toMeta(info);
     }
-    case 'nowcoder': {
-      const info = await fetchNcProblemInfo(ctx.fetchFn, problemKey);
-      return info === null ? null : toMeta(info);
-    }
-    case 'daimayuan':
-      return fetchDaimayuanMeta(ctx.fetchFn, problemKey);
     case 'codeforces':
       return (await platformTable('codeforces', ctx))?.get(problemKey.toUpperCase()) ?? null;
     case 'atcoder':
@@ -551,6 +701,29 @@ export async function fetchProblemMeta(
       return (await platformTable('leetcode', ctx))?.get(problemKey.toLowerCase()) ?? null;
     case 'jisuanke':
       return (await platformTable('jisuanke', ctx))?.get(problemKey) ?? null;
+    case 'nowcoder':
+      return (await platformTable('nowcoder', ctx))?.get(problemKey) ?? null;
+    case 'daimayuan':
+      return (await platformTable('daimayuan', ctx))?.get(problemKey) ?? null;
+    case 'qoj': {
+      const problemId = qojProblemIdFromKey(problemKey);
+      if (problemId === null) return null;
+      ctx.icpcInfo ??= resolveIcpcDifficulty(
+        ctx.icpc,
+        [...(ctx.wanted.get('qoj') ?? [])].map((k) => qojProblemIdFromKey(k)).filter((v): v is string => v !== null),
+      );
+      const info = (await ctx.icpcInfo).get(problemId);
+      if (!info) return null;
+      const mapped = info.native === '' ? null : difficultyFields('qoj', info.native);
+      return {
+        difficulty: mapped?.difficulty ?? null,
+        nativeDifficulty: mapped?.nativeDifficulty ?? null,
+        // 拿不到榜单（只有标签）时标度记 none：与适配器的「平台不提供难度」语义一致
+        difficultyScale: mapped?.difficultyScale ?? 'none',
+        tags: info.tags,
+        title: null,
+      };
+    }
     default:
       return null;
   }
@@ -581,12 +754,20 @@ export function cleanNcTitle(title: string): string {
 
 /**
  * 未知难度/原生难度/标签的全平台回填：
- * - 目标选择见 pickBackfillTargets（QOJ 排除）
- * - 每平台按 PLATFORM_LIMITS 限速；牛客/洛谷连续失败 8 次判定风控并中止该平台
- * - 每平台单次运行题数上限见 PLATFORM_LIMITS.maxPerRun：一次点击的耗时因此有上界，
- *   未处理的题数随结果回传（capped），下次点击从剩余目标继续
+ * - 目标选择见 pickBackfillTargets（含 QOJ；按缺口优先级排序，真缺难度先做）
+ * - **先做一次零请求的本地补齐**（deriveIdentityNative）：把「难度已有、只缺原生值」的可推导行
+ *   就地补齐，目标集合从「全库上万人行」收敛到真正缺东西的几百行
+ * - **按平台取数方式分两类**（2026-09-27 起）：
+ *   ① 整表类：CF / AtCoder / 力扣 / 计蒜客 / **牛客 / 代码源** —— 一次分页扫描拿全，逐题循环只查内存；
+ *   ② 逐题类：仅剩洛谷（`GET /problem/{pid}`，300ms/题、连续失败 8 次熔断）。
+ *   牛客与代码源原先也逐题查，导致「仅缺原生值」的历史行只能默认 defer、过时难度值永远得不到修正；
+ *   改用各自的公开题库整表接口后（参考项目 OJ_Insight 的做法：分页列表一次拿全），一轮即可补齐
+ *   并顺带修正过时值（本机实测：牛客覆盖 1055/1082 缺原生值的行、修正 280 行过时难度；
+ *   代码源覆盖 459/459、修正 411 行）。洛谷整表对本库覆盖率仅 63/2418，故仍保持逐题 + 默认跳过。
+ * - 每平台单次运行题数上限见 PLATFORM_LIMITS.maxPerRun：未处理的题数随结果回传（capped），
+ *   下次点击从剩余目标继续
  * - 写库统一走 difficulty_source='backfill'（优先级 3）：难度、原生难度、标度、标题、标签
- *   都只在「库内为空 / 上游有值」时补齐，绝不覆盖已有手动值
+ *   都只在「库内为空 / 上游有值」时补齐，绝不覆盖已有手动值（manual）
  */
 export async function backfillDifficulties(
   db: Db,
@@ -594,13 +775,25 @@ export async function backfillDifficulties(
   opts: {
     /** 覆盖「单平台单次运行上限」（默认取 PLATFORM_LIMITS[platform].maxPerRun）；仅供测试与运维调低 */
     maxTargetsPerPlatform?: number;
+    /** 逐题平台是否也补「仅缺原生难度」的行（默认 false；开启后单轮耗时会显著变长） */
+    includeNativeOnly?: boolean;
   } = {},
 ): Promise<PlatformBackfillResult[]> {
+  // 零请求收敛：可推导的原生值就地补齐（详见 deriveIdentityNative 注释）。
+  // includeNativeOnly 时不做本地推导，保证「显式要求逐题重查上游」这一运维口子真的会打上游
+  if (opts.includeNativeOnly !== true) deriveIdentityNative(db);
+
   const targets = pickBackfillTargets(db);
   if (targets.length === 0) return [];
 
   const byPlatform = new Map<PlatformId, BackfillTarget[]>();
+  const deferredByPlatform = new Map<PlatformId, number>();
   for (const t of targets) {
+    // 逐题平台的「仅缺原生难度」：默认跳过（不打扰上游、不占并发额度）
+    if (t.gap === 'native' && PER_PROBLEM_NATIVE_DEFERRED.has(t.platform) && opts.includeNativeOnly !== true) {
+      deferredByPlatform.set(t.platform, (deferredByPlatform.get(t.platform) ?? 0) + 1);
+      continue;
+    }
     const list = byPlatform.get(t.platform);
     if (list) list.push(t);
     else byPlatform.set(t.platform, [t]);
@@ -619,12 +812,31 @@ export async function backfillDifficulties(
     fetchFn,
     tables: new Map(),
     wanted: new Map([...byPlatform].map(([p, list]) => [p, new Set(list.map((t) => t.problemKey))])),
+    icpc: createIcpcRuntime(fetchFn),
   };
 
   const results: PlatformBackfillResult[] = [];
-  for (const [platform, list] of byPlatform) {
-    const r = await backfillPlatform(db, platform, list, ctx);
+  // 只被 deferred 的平台也要出结果：否则「本平台全部是仅缺原生值的行」时整条信息被吞掉，
+  // 前端会误显示成「没有待补的题」
+  for (const platform of new Set<PlatformId>([...byPlatform.keys(), ...deferredByPlatform.keys()])) {
+    const list = byPlatform.get(platform) ?? [];
+    const r =
+      list.length > 0
+        ? await backfillPlatform(db, platform, list, ctx)
+        : {
+            platform: String(platform),
+            scanned: 0,
+            filled: 0,
+            nativeFilled: 0,
+            repaired: 0,
+            missing: 0,
+            failed: 0,
+            capped: 0,
+            deferred: 0,
+            details: [],
+          };
     r.capped = cappedByPlatform.get(platform) ?? 0;
+    r.deferred = deferredByPlatform.get(platform) ?? 0;
     results.push(r);
   }
   return results;
@@ -654,6 +866,7 @@ async function backfillPlatform(
     missing: 0,
     failed: 0,
     capped: 0,
+    deferred: 0,
     details: [],
   };
   const before = db.prepare(
@@ -693,89 +906,153 @@ async function backfillPlatform(
   );
 
   let consecutiveFails = 0;
-  for (const t of targets) {
-    if (limits.failLimit !== null && consecutiveFails >= limits.failLimit) {
-      r.failed += 1;
-      r.details.push({ problemKey: t.problemKey, action: 'failed', note: '疑似触发风控，中止后续查询（可稍后重试）' });
-      continue;
+  /**
+   * 写库分批提交。
+   *
+   * 为什么需要：node:sqlite 默认自动提交 —— 每条 UPDATE 各自一个事务、各自 fsync。
+   * 整表类平台一轮要写上万行（实测 CF 1.1 万 + 力扣 3.5k），逐行提交会把一次回填拖到近十分钟
+   * （实测 1.9 万目标 ≈ 579s，其中写库占大头），而它本可以是几秒。
+   * 分批（而不是整平台一个事务）是有意的：逐题平台（洛谷）在循环里发真实网络请求，
+   * 一个长事务横跨 290 次网络往返会长时间占住写锁、并让 WAL 膨胀；分批同时把
+   * 「中途异常回滚」的粒度限制在一批之内（保住已提交的进度）。
+   */
+  const WRITE_BATCH = 100;
+  let inTx = false;
+  let batchedWrites = 0;
+  const openTx = (): void => {
+    if (!inTx) {
+      db.exec('BEGIN');
+      inTx = true;
     }
-    let meta: ProblemMeta | null = null;
-    let failed = false;
-    try {
-      meta = await fetchProblemMeta(platform, t.problemKey, ctx);
-    } catch {
-      failed = true;
+  };
+  const flushTx = (): void => {
+    if (inTx) {
+      db.exec('COMMIT');
+      inTx = false;
+      batchedWrites = 0;
     }
-    if (failed || meta === null) {
-      // 未命中也可能是题号已废弃（如转私密），按单题缺失计，连续缺失也计入风控判定
-      r.failed += 1;
-      r.details.push({ problemKey: t.problemKey, action: 'failed', note: failed ? '请求失败' : '上游未命中' });
-      consecutiveFails += 1;
+  };
+  const abortTx = (): void => {
+    if (inTx) {
+      db.exec('ROLLBACK');
+      inTx = false;
+      batchedWrites = 0;
+    }
+  };
+
+  try {
+    for (const t of targets) {
+      if (limits.failLimit !== null && consecutiveFails >= limits.failLimit) {
+        r.failed += 1;
+        r.details.push({ problemKey: t.problemKey, action: 'failed', note: '疑似触发风控，中止后续查询（可稍后重试）' });
+        continue;
+      }
+      let meta: ProblemMeta | null = null;
+      let failed = false;
+      try {
+        meta = await fetchProblemMeta(platform, t.problemKey, ctx);
+      } catch {
+        failed = true;
+      }
+      if (failed || meta === null) {
+        // 未命中也可能是题号已废弃（如转私密），按单题缺失计，连续缺失也计入风控判定
+        r.failed += 1;
+        r.details.push({
+          problemKey: t.problemKey,
+          action: 'failed',
+          note: failed
+            ? '请求失败'
+            : platform === 'qoj'
+              ? `公开榜单未匹配到该题（题号映射缺失 / 榜单源不可用 / 本轮榜单拉取已达上限 ${MAX_BOARDS_PER_RUN}）`
+              : '上游未命中',
+        });
+        consecutiveFails += 1;
+        if (limits.delayMs > 0) await sleep(limits.delayMs);
+        continue;
+      }
+      consecutiveFails = 0;
+
+      const row = before.get(platform, t.problemKey) as
+        | { title: string; difficulty: number | null; native_difficulty: string | null; tags: string }
+        | undefined;
+      if (!row) {
+        // 题目在回填途中被删（用户并发删除回收站等）：记为跳过。此处再往下会让
+        // row.title 抛 TypeError → 整个 backfillDifficulties reject → 路由 502、其余平台结果全丢
+        r.details.push({ problemKey: t.problemKey, action: 'skipped', note: '题目已被删除' });
+        continue;
+      }
+      const tags = meta.tags === null ? null : purifyTags(meta.tags);
+      const tagsJson = tags === null || tags.length === 0 ? null : JSON.stringify(tags);
+      // 牛客历史缺陷：标题曾被标签污染；上游未给标题时用本地清洗兜底
+      const title =
+        meta.title !== null && meta.title !== ''
+          ? meta.title
+          : platform === 'nowcoder' && ncTitlePolluted(row.title)
+            ? cleanNcTitle(row.title)
+            : null;
+
+      openTx();
+      update.run(
+        meta.difficulty,
+        meta.nativeDifficulty,
+        meta.difficultyScale,
+        meta.difficulty,
+        title,
+        tagsJson,
+        tagsJson,
+        platform,
+        t.problemKey,
+      );
+      batchedWrites += 1;
+      if (batchedWrites >= WRITE_BATCH) flushTx();
+
+      // 计数按**实际落库结果**判定（而不是按 SQL 分支二次推断）：manual 行不写原生值时不会被误计
+      const after = before.get(platform, t.problemKey) as
+        | { title: string; difficulty: number | null; native_difficulty: string | null; tags: string }
+        | undefined;
+      if (!after) {
+        // UPDATE 已因行消失而空转（0 行受影响）：同样记跳过，防 TypeError 打穿整轮
+        r.details.push({ problemKey: t.problemKey, action: 'skipped', note: '题目已被删除' });
+        continue;
+      }
+      const filledByWrite = row.difficulty === null && after.difficulty !== null;
+      const filledNative = row.native_difficulty === null && after.native_difficulty !== null;
+      /**
+       * 过时难度值修正：难度本来有值、但与上游当前值不一致（旧映射/旧钳位留下的）。
+       * 这类行不计入 filled（难度并非从无到有），但必须与「只补了原生值」区分开 ——
+       * 整表扫描一轮能修正几百行（本机实测代码源 411、牛客 280），是改用整表的主要收益之一。
+       */
+      const difficultyCorrected =
+        row.difficulty !== null && after.difficulty !== null && row.difficulty !== after.difficulty;
+      const titleChanged = after.title !== row.title;
+      const tagsChanged = after.tags !== row.tags;
+      if (filledByWrite) r.filled += 1;
+      if (filledNative) r.nativeFilled += 1;
+      if (filledByWrite) {
+        r.details.push({ problemKey: t.problemKey, action: 'filled', note: `难度 ${meta.difficulty}` });
+      } else if (meta.difficulty === null) {
+        r.missing += 1;
+        r.details.push({ problemKey: t.problemKey, action: 'missing', note: '上游无难度数据（未评级/未设定）' });
+      } else if (difficultyCorrected || titleChanged || tagsChanged || filledNative) {
+        r.repaired += 1;
+        r.details.push({
+          problemKey: t.problemKey,
+          action: 'repaired',
+          note: difficultyCorrected
+            ? `修正难度 ${row.difficulty}→${after.difficulty}`
+            : titleChanged
+              ? '修正标题'
+              : tagsChanged
+                ? '补标签'
+                : '补原生难度',
+        });
+      }
       if (limits.delayMs > 0) await sleep(limits.delayMs);
-      continue;
     }
-    consecutiveFails = 0;
-
-    const row = before.get(platform, t.problemKey) as
-      | { title: string; difficulty: number | null; native_difficulty: string | null; tags: string }
-      | undefined;
-    if (!row) {
-      // 题目在回填途中被删（用户并发删除回收站等）：记为跳过。此处再往下会让
-      // row.title 抛 TypeError → 整个 backfillDifficulties reject → 路由 502、其余平台结果全丢
-      r.details.push({ problemKey: t.problemKey, action: 'skipped', note: '题目已被删除' });
-      continue;
-    }
-    const tags = meta.tags === null ? null : purifyTags(meta.tags);
-    const tagsJson = tags === null || tags.length === 0 ? null : JSON.stringify(tags);
-    // 牛客历史缺陷：标题曾被标签污染；上游未给标题时用本地清洗兜底
-    const title =
-      meta.title !== null && meta.title !== ''
-        ? meta.title
-        : platform === 'nowcoder' && ncTitlePolluted(row.title)
-          ? cleanNcTitle(row.title)
-          : null;
-
-    update.run(
-      meta.difficulty,
-      meta.nativeDifficulty,
-      meta.difficultyScale,
-      meta.difficulty,
-      title,
-      tagsJson,
-      tagsJson,
-      platform,
-      t.problemKey,
-    );
-
-    // 计数按**实际落库结果**判定（而不是按 SQL 分支二次推断）：manual 行不写原生值时不会被误计
-    const after = before.get(platform, t.problemKey) as
-      | { title: string; difficulty: number | null; native_difficulty: string | null; tags: string }
-      | undefined;
-    if (!after) {
-      // UPDATE 已因行消失而空转（0 行受影响）：同样记跳过，防 TypeError 打穿整轮
-      r.details.push({ problemKey: t.problemKey, action: 'skipped', note: '题目已被删除' });
-      continue;
-    }
-    const filledByWrite = row.difficulty === null && after.difficulty !== null;
-    const filledNative = row.native_difficulty === null && after.native_difficulty !== null;
-    const titleChanged = after.title !== row.title;
-    const tagsChanged = after.tags !== row.tags;
-    if (filledByWrite) r.filled += 1;
-    if (filledNative) r.nativeFilled += 1;
-    if (filledByWrite) {
-      r.details.push({ problemKey: t.problemKey, action: 'filled', note: `难度 ${meta.difficulty}` });
-    } else if (meta.difficulty === null) {
-      r.missing += 1;
-      r.details.push({ problemKey: t.problemKey, action: 'missing', note: '上游无难度数据（未评级/未设定）' });
-    } else if (titleChanged || tagsChanged || filledNative) {
-      r.repaired += 1;
-      r.details.push({
-        problemKey: t.problemKey,
-        action: 'repaired',
-        note: titleChanged ? '修正标题' : tagsChanged ? '补标签' : '补原生难度',
-      });
-    }
-    if (limits.delayMs > 0) await sleep(limits.delayMs);
+    flushTx();
+  } catch (e) {
+    abortTx();
+    throw e;
   }
   return r;
 }

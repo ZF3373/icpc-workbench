@@ -570,19 +570,27 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   }));
 
   // POST /api/problems/backfill-difficulty
-  // 对库内未知难度/未知原生难度/无标签的题逐题查询公开接口回填（匿名可访问）：
-  // - 牛客顺带修复标题污染/空标签（题库搜索接口返回分离的标题与算法标签）
-  // - 全平台覆盖（整表型平台 CF/AtCoder/力扣/计蒜客 一次拉表后在内存里查，QOJ 无数据来源）
-  // - CF 未知难度题为 gym/官方 Unrated 比赛，官方无 rating，不参与回填
-  // 耗时与待补题数成正比（洛谷 ~0.3s/题、牛客 ~0.45s/题），故每平台单次运行题数有上限
-  // （PLATFORM_LIMITS.maxPerRun）：超出的题数用 capped 如实回传，下次点击继续
-  // 响应：{ ok, results: [{ platform, scanned, filled, nativeFilled, repaired, missing, failed, capped, details }], unknownLeft }
+  // 对库内未知难度/未知原生难度/无标签的题回填公开接口给出的难度（匿名可访问）：
+  // - 全平台覆盖：整表型 CF/AtCoder/力扣/计蒜客/牛客/代码源 一次分页扫描后在内存里查；
+  //   仅洛谷逐题查询（GET /problem/{pid}）；QOJ 走 ICPC/CCPC 公开榜单推导档位
+  // - 牛客/代码源改走各自题库整表接口（2026-09-27）：一轮即可补齐「难度已有、只缺原生值」的
+  //   历史行，并**修正旧映射留下的过时难度值**（repaired 里带「修正难度 X→Y」明细）
+  // - CF 未知难度题为 gym/官方 Unrated 比赛，官方无 rating（problemset.problems 实测 0 条 gym、
+  //   gym 榜单 API 需登录、题面页被 Cloudflare 403），确实无来源，不参与回填
+  // 耗时与待补题数成正比（洛谷 ~0.3s/题；整表型平台取决于分页数，牛客全表约 120s），
+  // 故每平台单次运行题数有上限（PLATFORM_LIMITS.maxPerRun）：超出的题数用 capped 如实回传，下次点击继续
+  // 优先级：真缺难度 > 缺标签 > 仅缺原生值；**仅洛谷**的「仅缺原生值」默认跳过（deferred），
+  // body { includeNativeOnly: true } 可强制逐题重查上游（耗时显著变长）
+  // 响应：{ ok, results: [{ platform, scanned, filled, nativeFilled, repaired, missing, failed, capped, deferred, details }], unknownLeft }
   //   nativeFilled = 该平台 native_difficulty 由 NULL 被补上的题数（与 filled 相互独立：
   //   难度已有值但原生值缺失时只增 nativeFilled —— 双标度要能各自如实上报）
-  //   scanned = 本次实际处理的题数（已扣除 capped）；capped = 本次因上限未处理的题数
-  r.post('/backfill-difficulty', asyncHandler(async (_req, res) => {
+  //   repaired = 标题/标签/过时难度值被修正的题数（details 里给出每题 note）
+  //   scanned = 本次实际处理的题数（已扣除 capped/deferred）；capped = 本次因上限未处理的题数
+  //   deferred = 因「仅缺原生值」被跳过的题数（当前仅洛谷；不占额度、不打上游）
+  r.post('/backfill-difficulty', asyncHandler(async (req, res) => {
     try {
-      const results = await backfillDifficulties(db, fetchFn);
+      const includeNativeOnly = req.body?.includeNativeOnly === true;
+      const results = await backfillDifficulties(db, fetchFn, { includeNativeOnly });
       const unknownLeft = (
         db.prepare('SELECT COUNT(*) AS c FROM problems WHERE difficulty IS NULL').get() as { c: number }
       ).c;

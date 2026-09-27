@@ -145,7 +145,9 @@ function ncBankPage(rows: Array<[id: string, title: string, diff: string]>, tota
       ([id, title, diff]) =>
         `<tr data-problemId="${id}"><td> <a href="/acm/problem/${id}">NC${id}</a> </td>` +
         `<td class="fn-right" colspan="2"> <a href="/acm/problem/${id}" class="title">${title}</a> </td>` +
-        `<td> ${diff} </td><td>100</td><td><a href="javascript:void(0);"></a></td></tr>`,
+        `<td> ${diff} </td><td>100</td>` +
+        // 操作列（收藏/加入题单）是真实页面恒定存在的最后一格，解析层用它做列结构校验（见 parseNcRowCells）
+        `<td><a href="javascript:void(0);" data-id="${id}" class="js-collect-question ico-bank-item"></a></td></tr>`,
     )
     .join('');
   const totalDiv = total === undefined ? '' : `<div>共 ${total} 条</div>`;
@@ -200,6 +202,50 @@ test('nowcoder bank: HTTP failure throws', async () => {
     'acm/problem/list': () => ({ status: 403, body: '' }),
   });
   await assert.rejects(() => fetchNowcoderBank(fetchFn, {}), /HTTP 403/);
+});
+
+/** 牛客题库每页 50 行：返回一个**满页**（含给定行 + 填充行），用于验证翻页与早停 */
+function ncFullPage(extra: Array<[string, string, string]>, offset: number): string {
+  const rows: Array<[string, string, string]> = [...extra];
+  for (let i = rows.length; i < 50; i += 1) rows.push([String(900000 + offset + i), `填充${i}`, '1000']);
+  return ncBankPage(rows, 14317);
+}
+
+test('nowcoder bank: wantKeys 全部命中即停（回填只为库里几道题，不必扫完整表）', async () => {
+  const pages: string[] = [];
+  const fetchFn = router({
+    'acm/problem/list': (url) => {
+      const page = new URL(url).searchParams.get('page');
+      pages.push(page ?? '');
+      // 第 1 页含目标 50039；第 2 页另有目标 16640（不该被请求到）
+      if (page === '1') return ncFullPage([['50039', 'kotori和气球', '800']], 0);
+      return ncFullPage([['16640', '纪念品分组', '1500']], 100);
+    },
+  });
+  const r = await fetchNowcoderBank(fetchFn, { max: 1000, wantKeys: new Set(['50039']) });
+  assert.deepEqual(pages, ['1'], '目标题齐了就不再翻页');
+  assert.ok(r.problems.some((p) => p.problemKey === '50039'));
+
+  // 未给 wantKeys 时保持原行为：按 max 上限收工（每页恒满 → 靠 max 终止，不扫到 200 页）
+  pages.length = 0;
+  const r2 = await fetchNowcoderBank(fetchFn, { max: 100 });
+  assert.deepEqual(pages, ['1', '2']);
+  assert.equal(r2.problems.length, 100);
+});
+
+test('nowcoder bank: wantKeys 未全部命中时照常翻页（不得提前收工）', async () => {
+  const pages: string[] = [];
+  const fetchFn = router({
+    'acm/problem/list': (url) => {
+      const page = new URL(url).searchParams.get('page');
+      pages.push(page ?? '');
+      if (page === '1') return ncFullPage([], 0);
+      return ncFullPage([['50039', 'kotori和气球', '800'], ['16640', '纪念品分组', '1500']], 100);
+    },
+  });
+  const r = await fetchNowcoderBank(fetchFn, { max: 1000, wantKeys: new Set(['50039', '16640']) });
+  assert.deepEqual(pages, ['1', '2'], '两个目标都在第 2 页才齐 → 必须翻到第 2 页');
+  assert.ok(r.problems.some((p) => p.problemKey === '16640'));
 });
 
 // ---------- AtCoder 题库拉取 ----------
@@ -416,35 +462,44 @@ test('牛客：题库行解析出算法标签，且标题不混入标签文本',
     <td class="fn-right" colspan="2"><a class="title" href="/acm/problem/19842">约数</a>
       <a class="tag-label js-tag" data-id="145480">gcd与exgcd</a>
       <a class="tag-label js-tag" data-id="145607">数论</a></td>
-    <td> 1500 </td><td>926</td><td></td></tr>`;
+    <td> 1500 </td><td>926</td>
+    <td><a href="javascript:void(0);" data-id="19842" class="js-collect-question"></a></td></tr>`;
   const rows = parseNcBankRows(html);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].problemId, '19842');
-  assert.equal(rows[0].difficulty, 1500); // 难度列为 100 的倍数（colspan 行不得按列下标硬取）
+  assert.equal(rows[0].difficulty, 1500); // 难度恒紧随标题单元格（colspan 行不得按列下标硬取）
   assert.equal(rows[0].nativeScore, 1500); // 原生分原文（映射前的站点值）
   assert.deepEqual(rows[0].tags, ['gcd与exgcd', '数论']);
   assert.equal(rows[0].title, '约数');
 });
 
-test('牛客：无标签行不产生标签，脏难度（非 100 倍数）视作未知', () => {
-  const html = `<tr data-problemId="1"><td><a href="/acm/problem/1">NC1</a></td>
-    <td class="fn-right" colspan="2"><a class="title" href="/acm/problem/1">Hello</a></td>
-    <td> 926 </td><td>100</td><td></td></tr>`;
-  const rows = parseNcBankRows(html);
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].difficulty, null);
-  assert.equal(rows[0].nativeScore, null);
-  assert.deepEqual(rows[0].tags, []);
+test('牛客：非整百分值的真实难度分照常采纳（老题实测 926 / 623 / 1049 都存在）', () => {
+  // 历史缺陷：校验器曾要求「100 的倍数」，把老题的真实难度判成未知 —— 2026-09-27 逐题实测纠正，
+  // 站上难度列确实给出 NC22014=623、NC22158=726、NC24739=972、NC16640=1049 这类值。
+  // 注意：原生分照原文采纳（nativeScore），映射后的 CF 难度按统一标尺钳到 [800,3500]。
+  for (const diff of ['926', '623', '726', '972', '1049']) {
+    const html = `<tr data-problemId="1"><td><a href="/acm/problem/1">NC1</a></td>
+      <td class="fn-right" colspan="2"><a class="title" href="/acm/problem/1">Hello</a></td>
+      <td> ${diff} </td><td>100</td>
+      <td><a href="javascript:void(0);" data-id="1" class="js-collect-question"></a></td></tr>`;
+    const rows = parseNcBankRows(html);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].nativeScore, Number(diff), `难度分 ${diff} 应被采纳为原生值`);
+    assert.equal(rows[0].difficulty, Math.max(800, Math.min(3500, Number(diff))));
+    assert.deepEqual(rows[0].tags, []);
+  }
 });
 
 test('牛客：难度单元格为空时取未知，绝不顺延到相邻列（通过数不得被伪造成难度）', () => {
-  // 通过数恰为 100 的倍数（100/200 都常见）：若扫描顺延到相邻列就会凭空造出难度
+  // 通过数恰好也是 200..4000 内的整数：若扫描顺延到相邻列就会凭空造出难度
   const html = `<tr data-problemId="2"><td><a href="/acm/problem/2">NC2</a></td>
     <td class="fn-right" colspan="2"><a class="title" href="/acm/problem/2">空难度题</a></td>
-    <td></td><td>100</td><td></td></tr>
+    <td></td><td>100</td>
+    <td><a href="javascript:void(0);" data-id="2" class="js-collect-question"></a></td></tr>
     <tr data-problemId="3"><td><a href="/acm/problem/3">NC3</a></td>
     <td class="fn-right" colspan="2"><a class="title" href="/acm/problem/3">空难度题二</a></td>
-    <td> </td><td>200</td><td></td></tr>`;
+    <td> </td><td>200</td>
+    <td><a href="javascript:void(0);" data-id="3" class="js-collect-question"></a></td></tr>`;
   const rows = parseNcBankRows(html);
   assert.equal(rows.length, 2);
   assert.equal(rows[0].difficulty, null);
@@ -453,12 +508,24 @@ test('牛客：难度单元格为空时取未知，绝不顺延到相邻列（�
   assert.equal(rows[1].nativeScore, null);
 });
 
+test('牛客：列结构异常（缺操作列）时不猜难度 —— 结构校验替代了「整百分值」护栏', () => {
+  // 放宽数值域后，防串列必须靠结构：这里把操作列去掉（真实页面恒有），难度数字本身合法也不采纳。
+  const html = `<tr data-problemId="7"><td><a href="/acm/problem/7">NC7</a></td>
+    <td class="fn-right" colspan="2"><a class="title" href="/acm/problem/7">结构异常行</a></td>
+    <td>1500</td><td>245</td></tr>`;
+  const rows = parseNcBankRows(html);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].difficulty, null);
+  assert.equal(rows[0].nativeScore, null);
+});
+
 test('牛客：没有标题单元格时不猜难度（数字题号列不得被当作难度）', () => {
   // 行内无 class="title" 锚点 → 位置关系无从判断 → 难度未知（不得从 tds[0] 起顺延：
   // 修复前 tds[0] 的数字题号 400 会被当成难度分 → difficulty 800）。
   // 该行带一个算法标签，避免被「标题与标签皆空 → 跳过」规则吞掉，从而能断言难度为 null。
   const html = `<tr data-problemId="400"><td>400</td><td class="fn-right" colspan="2">无标题锚点
-    <a class="tag-label js-tag">模拟</a></td><td>1500</td><td>245</td><td></td></tr>`;
+    <a class="tag-label js-tag">模拟</a></td><td>1500</td><td>245</td>
+    <td><a href="javascript:void(0);" data-id="400" class="js-collect-question"></a></td></tr>`;
   const rows = parseNcBankRows(html);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].title, '');
@@ -467,16 +534,17 @@ test('牛客：没有标题单元格时不猜难度（数字题号列不得被�
   assert.deepEqual(rows[0].tags, ['模拟']);
 });
 
-test('牛客：离网难度（1049）与越界值一律未知（与回填路径共用同一校验器）', () => {
+test('牛客：越界/非数字难度分一律未知（1049 这类真实老题值是合法难度，不再被误杀）', () => {
   const row = (diff: string): string => `<tr data-problemId="9"><td><a href="/acm/problem/9">NC9</a></td>
-    <td class="fn-right" colspan="2"><a class="title" href="/acm/problem/9">离网题</a></td>
-    <td> ${diff} </td><td>245</td><td></td></tr>`;
-  for (const diff of ['1049', '100', '5000']) {
+    <td class="fn-right" colspan="2"><a class="title" href="/acm/problem/9">题</a></td>
+    <td> ${diff} </td><td>245</td>
+    <td><a href="javascript:void(0);" data-id="9" class="js-collect-question"></a></td></tr>`;
+  for (const diff of ['100', '5000', 'abc']) {
     const rows = parseNcBankRows(row(diff));
     assert.equal(rows[0].difficulty, null, `难度分 ${diff} 应为未知`);
     assert.equal(rows[0].nativeScore, null);
   }
-  assert.equal(parseNcBankRows(row('1500'))[0].difficulty, 1500); // 网格值正常解析
+  assert.equal(parseNcBankRows(row('1049'))[0].difficulty, 1049); // 实测存在的真实难度（NC16640）
 });
 
 test('luogu bank: luoguTypes 多类型依次拉取（默认仅 P）', async () => {

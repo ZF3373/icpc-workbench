@@ -1679,13 +1679,13 @@ function BackfillDifficultyCard() {
         ok: boolean
         results: Array<{
           platform: string; scanned: number; filled: number; nativeFilled: number
-          repaired: number; missing: number; failed: number; capped: number
+          repaired: number; missing: number; failed: number; capped: number; deferred: number
         }>
         unknownLeft: number
       }>('/api/problems/backfill-difficulty', {})
       const parts = r.results.map((x) => {
         const name = platformName(x.platform as PlatformId)
-        return `${name}：补难度 ${x.filled} 题、补原生难度 ${x.nativeFilled} 题、修标题/标签 ${x.repaired} 题${x.missing ? `、官方无难度 ${x.missing} 题` : ''}${x.failed ? `、失败 ${x.failed} 题` : ''}${x.capped ? `、本次上限外还有 ${x.capped} 题（再点一次继续）` : ''}`
+        return `${name}：补难度 ${x.filled} 题、补原生难度 ${x.nativeFilled} 题、修标题/标签/难度值 ${x.repaired} 题${x.missing ? `、官方无难度 ${x.missing} 题` : ''}${x.failed ? `、失败 ${x.failed} 题` : ''}${x.deferred ? `、跳过 ${x.deferred} 题（难度已有、仅缺原生值）` : ''}${x.capped ? `、本次上限外还有 ${x.capped} 题（再点一次继续）` : ''}`
       })
       setResult(parts.length ? parts.join('；') + `。全库剩余未知难度 ${r.unknownLeft} 题` : '库内没有待回填难度的题')
       message.success('难度回填完成')
@@ -1703,9 +1703,10 @@ function BackfillDifficultyCard() {
         （Codeforces / AtCoder / 力扣 / 计蒜客）先拉一次题库表再在本地比对；逐题型平台
         （洛谷 / 牛客 / 代码源）逐题查询官方接口（洛谷约 0.3 秒/题、牛客约 0.45 秒/题，请耐心等待），
         连续失败会被判定为风控并中止该平台。牛客同时修复历史遗留的标题混入标签问题。
-        为避免一次点击耗时过长，单次每个平台有题数上限（洛谷 400、牛客/代码源 300、整表平台 2000），
-        超出部分在结果里如实提示，再点一次即可继续。
-        QOJ 无难度数据来源；Codeforces 的 gym 与官方 Unrated 比赛无公开难度可补。
+        回填按缺口优先级执行：<b>真缺难度</b>最优先，其次缺标签，最后才是「难度已有、只缺原生原文」；
+        后一类在逐题平台默认跳过（结果里显示「跳过 N 题」），因此一次点击就能把真缺口补完。
+        QOJ 的难度改由 ICPC/CCPC 公开榜单（RankLand + xcpcrating 题号映射）推导档位，推导不到时保持未知。
+        Codeforces 的 gym 与官方 Unrated 比赛无公开难度可补。
       </p>
       <Button loading={busy} onClick={run}>一键回填未知难度</Button>
       {result && <p style={{ marginTop: 12 }}>{result}</p>}

@@ -53,8 +53,24 @@ export interface BankFetchOptions {
    * `AT1202Contest_a` 这类洛谷自定义比赛号无对应），故默认关闭并在结果里如实上报命中计数。
    */
   atcoderTagsFromLuogu?: boolean;
+  /**
+   * 目标题号集合：**全部命中后立即停止翻页**（回填场景用 —— 只为库里几百道缺难度的题扫完整表
+   * 是纯浪费；实测牛客全表 200 页/2 分钟，而目标往往在前几页就齐了）。
+   * 不传 = 保持原有行为（按 `max` / 页数上限拉完）。
+   */
+  wantKeys?: ReadonlySet<string>;
   /** 进度回调（每完成一页触发） */
   onProgress?: (fetched: { platform: PlatformId; count: number; total: number | null }) => void;
+}
+
+/**
+ * `wantKeys` 早停判定器：每命中一个目标题号即从待命中移除，全部命中后返回 true。
+ * 不传 `wantKeys`（或为空集）时恒返回 false —— 不改变「按 max/页数上限拉完」的既有语义。
+ */
+function makeWantedTracker(wantKeys?: ReadonlySet<string>): (key: string) => boolean {
+  if (!wantKeys || wantKeys.size === 0) return () => false;
+  const remaining = new Set(wantKeys);
+  return (key: string) => remaining.delete(key) && remaining.size === 0;
 }
 
 export interface BankFetchResult {
@@ -209,7 +225,9 @@ export async function fetchNowcoderBank(
   const max = opts.max ?? 2000;
   const problems: BankProblem[] = [];
   const seen = new Set<string>();
+  const hitWanted = makeWantedTracker(opts.wantKeys);
   let total: number | null = null;
+  let wantedDone = false;
 
   for (let page = 1; page <= 200; page += 1) {
     const url = `${NOWCODER_API}/acm/problem/list?queryType=all&orderById=true&page=${page}`;
@@ -245,8 +263,13 @@ export async function fetchNowcoderBank(
         url: `https://ac.nowcoder.com/acm/problem/${key}`,
         tags: row.tags,
       });
+      if (hitWanted(key)) {
+        wantedDone = true;
+        break;
+      }
     }
     opts.onProgress?.({ platform: 'nowcoder', count: problems.length, total });
+    if (wantedDone) break;
     if (problems.length >= max) break;
     if (rows.length < NOWCODER_PER_PAGE) break;
     await sleep(500); // 牛客反爬较强：页间限速
@@ -273,7 +296,7 @@ export interface NcRowCells {
 /**
  * **唯一的**牛客行解析（题库列表页与标题搜索页两处读取方共用这一份，不得各写一套）。
  *
- * 三个必须遵守的坑：
+ * 四个必须遵守的坑：
  * 1. **先收标签、再取标题**：标签是 `class="tag-label"` 的 `<a>`，标题是 `class="title"` 的 `<a>`；
  *    若把整行文本抠一遍再 trim，标签文本会并进标题（本项目已踩过一次）。
  * 2. **难度只认「标题单元格的下一个单元格」**：标题单元格带 `colspan="2"`，行内单元格数量不固定，
@@ -281,8 +304,13 @@ export interface NcRowCells {
  *    绝**不**向后继续扫描找数字——否则难度为空的行会取到通过数（伪造成难度）。
  *    历史缺陷：回填路径曾直接取 `tds[2]`，与题库路径的「标题锚点 + 后一格」规则不一致，
  *    行内列数一变就会把通过数当难度写库，而 backfill(3) 的优先级高于 bank(1)/sync(2)。
- * 3. **取值规则由 `parseNowcoderScore` 统一裁决**（200..4000、100 的倍数；详见 shared/src/difficulty.ts）：
- *    空值 / 非纯数字 / 离网值（通过数列）/ 越界值 → 未知，不猜。
+ * 3. **取值规则由 `parseNowcoderScore` 统一裁决**（200..4000 的纯数字整数；详见 shared/src/difficulty.ts）。
+ * 4. **结构校验代替数值校验**（2026-09-27 起）：牛客真实难度分**不保证是 100 的倍数**
+ *    （老题实测 1049 / 623 / 726 / 876 / 972），所以不能再靠「整百」当防串列的护栏。
+ *    改为校验**列结构**：难度单元格之外必须同时存在通过人数单元格与操作锚点
+ *    （`class="js-collect-question"`，恒为最后一格），且难度文本 ≠ 通过人数文本。
+ *    列结构一旦变化（例如难度列被移除、整行错位）→ 难度记 unknown，宁可未知、不可臆造。
+ *    注入样式与真实行的取证见 shared/src/difficulty.ts 的 `parseNowcoderScore` 注释。
  */
 export function parseNcRowCells(cell: string): NcRowCells {
   const tds = [...cell.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((x) => x[1]);
@@ -291,8 +319,15 @@ export function parseNcRowCells(cell: string): NcRowCells {
     .filter(Boolean);
   const title = stripNcCell(/class="title"[^>]*>([\s\S]*?)<\/a>/.exec(cell)?.[1] ?? '');
   const titleIdx = tds.findIndex((t) => /class="title"/.test(t));
-  const diffCell = titleIdx >= 0 ? tds[titleIdx + 1] : undefined;
-  const nativeScore = parseNowcoderScore(diffCell === undefined ? null : stripNcCell(diffCell));
+  // 结构校验（见 doc 第 4 条）：五列行 = 题号 / 标题+知识点 / 难度 / 通过人数 / 操作。
+  // 操作锚点恒在最后一格；标题之后至少还要有难度、通过人数、操作三格。
+  const opIdx = tds.findIndex((t) => /class="js-collect-question/.test(t));
+  const structureOk =
+    titleIdx >= 0 && opIdx === tds.length - 1 && tds.length >= 5 && titleIdx + 3 < tds.length;
+  const diffText = structureOk ? stripNcCell(tds[titleIdx + 1] ?? '') : '';
+  const passText = structureOk ? stripNcCell(tds[titleIdx + 2] ?? '') : '';
+  const nativeScore =
+    structureOk && diffText !== '' && diffText !== passText ? parseNowcoderScore(diffText) : null;
   return { title, tags, nativeScore };
 }
 
@@ -709,7 +744,9 @@ export async function fetchDaimayuanBank(
   const max = opts.max ?? 2000;
   const problems: BankProblem[] = [];
   const seen = new Set<string>();
+  const hitWanted = makeWantedTracker(opts.wantKeys);
   let total: number | null = null;
+  let wantedDone = false;
 
   for (let page = 1; page <= 50; page += 1) {
     const url = `${DAIMAYUAN_BASE}/p?page=${page}`;
@@ -745,9 +782,14 @@ export async function fetchDaimayuanBank(
         url: `${DAIMAYUAN_BASE}/p/${key}`,
         tags: Array.isArray(p.tag) ? p.tag.map((t) => String(t).trim()).filter(Boolean) : [],
       });
+      if (hitWanted(key)) {
+        wantedDone = true;
+        break;
+      }
       if (problems.length >= max) break;
     }
     opts.onProgress?.({ platform: 'daimayuan', count: problems.length, total });
+    if (wantedDone) break;
     if (problems.length >= max) break;
     if (typeof body.ppcount === 'number' && page >= body.ppcount) break;
     if (list.length < DAIMAYUAN_PER_PAGE) break;

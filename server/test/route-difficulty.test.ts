@@ -291,13 +291,14 @@ test('POST /api/problems/backfill-difficulty: 回传每平台 nativeFilled 计�
     const body = (await res.json()) as {
       ok: boolean;
       unknownLeft: number;
-      results: Array<{ platform: string; scanned: number; filled: number; nativeFilled: number }>;
+      results: Array<{ platform: string; scanned: number; filled: number; nativeFilled: number; deferred: number }>;
     };
     assert.equal(body.ok, true);
     const js = body.results.find((r) => r.platform === 'jisuanke')!;
     assert.equal(js.scanned, 1);
     assert.equal(js.filled, 1);
     assert.equal(js.nativeFilled, 1); // 原生难度由 NULL 被补上
+    assert.equal(js.deferred, 0); // 真缺难度的题不会被跳过
     assert.equal(body.unknownLeft, 0);
 
     const rows = (await (await fetch(`${base}/api/problems?bank=1&platform=jisuanke`)).json()) as Array<
@@ -306,6 +307,47 @@ test('POST /api/problems/backfill-difficulty: 回传每平台 nativeFilled 计�
     assert.equal(rows[0].nativeDifficulty, 'level5');
     assert.equal(rows[0].difficultyScale, 'jisuanke-level-8');
     assert.equal(rows[0].difficultyLabel, '提高');
+  });
+  db.close();
+});
+
+test('POST /api/problems/backfill-difficulty: 逐题平台的「仅缺原生值」行回传 deferred（不打扰上游）', async () => {
+  const db = createDb(':memory:');
+  // 洛谷：难度已有 1800、原生值缺失、标签齐备 → 属于「仅缺原生值」
+  seedProblem(db, 'luogu', 'P1', { difficulty: 1800, tags: '["dp"]' });
+  let problemFetches = 0;
+  const fetchFn = router({
+    '_lfe/tags': () => ({ tags: [] }),
+    'problem/P1': () => {
+      problemFetches += 1;
+      return { data: { problem: { pid: 'P1', name: 'X', difficulty: 5, tags: [] } } };
+    },
+  });
+  await withApp(problemsApp(db, fetchFn), async (base) => {
+    const res = await postJson(base, '/api/problems/backfill-difficulty', {});
+    const body = (await res.json()) as {
+      results: Array<{ platform: string; scanned: number; deferred: number }>;
+    };
+    const lg = body.results.find((r) => r.platform === 'luogu')!;
+    assert.equal(lg.scanned, 0);
+    assert.equal(lg.deferred, 1);
+    assert.equal(problemFetches, 0, 'deferred 的行不得发逐题请求');
+
+    // 显式要求逐题重查时才真正打上游
+    const forced = await postJson(base, '/api/problems/backfill-difficulty', { includeNativeOnly: true });
+    const forcedBody = (await forced.json()) as {
+      results: Array<{ platform: string; scanned: number; deferred: number; nativeFilled: number }>;
+    };
+    const lgForced = forcedBody.results.find((r) => r.platform === 'luogu')!;
+    assert.equal(lgForced.scanned, 1);
+    assert.equal(lgForced.nativeFilled, 1);
+    assert.equal(problemFetches, 1);
+    const row = db.prepare("SELECT native_difficulty, difficulty_scale FROM problems WHERE problem_key='P1'").get() as {
+      native_difficulty: string;
+      difficulty_scale: string;
+    };
+    assert.equal(row.native_difficulty, '5');
+    assert.equal(row.difficulty_scale, 'luogu-2026-06');
   });
   db.close();
 });
