@@ -69,6 +69,11 @@ CREATE TABLE IF NOT EXISTS problems (
   -- 平台原生难度原文与所属标度（如 '4' + 'luogu-2026-06'）：平台改档后可按标度重算，UI 可显示双标度
   native_difficulty TEXT,
   difficulty_scale TEXT,
+  -- 「上游确认没有」的负缓存：本轮查过且确认缺失的缺口维度（CSV，取值 difficulty|tags）与查证时刻。
+  -- 作用：这些行若在 TTL 内就不再进回填目标（否则每轮都被重新查询，还会让整表扫描的
+  -- wantKeys 早停永远无法触发）。见 analysis/difficultyBackfill.ts 的 GAP_TTL_MS。
+  gap_state TEXT,
+  gap_checked_at TEXT,
   UNIQUE (platform, problem_key)
 );
 -- 难度过滤/排序（题库页 ORDER BY difficulty、stats 难度分布）在 2 万题规模上依赖此索引

@@ -6,6 +6,8 @@ import {
   cleanNcTitle,
   backfillDifficulties,
   pickBackfillTargets,
+  nextGapState,
+  GAP_TTL_MS,
 } from '../src/analysis/difficultyBackfill.ts';
 import { parseNcBankRows } from '../src/adapters/problemBank.ts';
 import { HOST_MIN_INTERVAL_MS } from '../src/net/hostThrottle.ts';
@@ -823,4 +825,161 @@ test('回填节奏：洛谷逐题间隔不得快于主机安全下限（防退�
   await backfillDifficulties(db, fetchFn);
   const elapsed = Date.now() - t0;
   assert.ok(elapsed >= floor, `逐题间隔 ${elapsed}ms 必须 ≥ 主机安全下限 ${floor}ms`);
+});
+
+// ---------- 负缓存：上游确认「给不出」的维度不再每轮重查 ----------
+
+/** 读某行的负缓存两列 */
+function gapOf(key: string): { gap_state: string | null; gap_checked_at: string | null } {
+  return db
+    .prepare('SELECT gap_state, gap_checked_at FROM problems WHERE problem_key = ?')
+    .get(key) as { gap_state: string | null; gap_checked_at: string | null };
+}
+
+/** CF 整表 mock：problems 由用例给定，同时统计被调用次数 */
+function cfRouter(problems: Array<Record<string, unknown>>): { fetchFn: typeof fetch; calls: () => number } {
+  let n = 0;
+  const fetchFn = router({
+    'problemset.problems': () => {
+      n += 1;
+      return { status: 'OK', result: { problems } };
+    },
+  });
+  return { fetchFn, calls: () => n };
+}
+
+test('负缓存：上游收录该题但无评级 → 记 difficulty 维度，下一轮不再拉表', async () => {
+  insertProblem('codeforces', '1116Q', 'Q# 量子题', null, ['dp']);
+  const { fetchFn, calls } = cfRouter([{ contestId: 1116, index: 'Q', name: 'Q#', tags: ['math'] }]); // 无 rating
+
+  const first = await backfillDifficulties(db, fetchFn);
+  assert.equal(first.find((r) => r.platform === 'codeforces')!.missing, 1);
+  assert.equal(calls(), 1);
+  const g = gapOf('1116Q');
+  assert.equal(g.gap_state, 'difficulty');
+  assert.ok(g.gap_checked_at, '写入查证时刻');
+
+  // 第二轮：该行既不进目标、也不产生任何上游请求
+  assert.deepEqual(pickBackfillTargets(db).filter((t) => t.platform === 'codeforces'), []);
+  const second = await backfillDifficulties(db, fetchFn);
+  const cf = second.find((r) => r.platform === 'codeforces')!;
+  assert.equal(cf.scanned, 0, 'cached 行不计入 scanned');
+  assert.equal(cf.cached, 1, '如实上报「因已确认上游无难度而跳过」的题数');
+  assert.equal(calls(), 1, '命中负缓存后不应再拉整表');
+});
+
+test('负缓存：只记「上游给不出」的维度 —— 补齐难度后留 tags，上游有标签的行不留', async () => {
+  insertProblem('codeforces', '1001A', 'A', 1000, [], { native: '1000', scale: 'cf-rating' }); // 缺标签
+  insertProblem('codeforces', '1001B', 'B', null, ['dp'], { scale: 'cf-rating' }); // 缺难度+原生
+  const { fetchFn } = cfRouter([
+    { contestId: 1001, index: 'A', name: 'A', rating: 1000 }, // 上游也没有标签 → tags 维度成立
+    { contestId: 1001, index: 'B', name: 'B', rating: 1200, tags: ['dp'] }, // 两项都有 → 不留缓存
+  ]);
+  await backfillDifficulties(db, fetchFn);
+  assert.equal(gapOf('1001A').gap_state, 'tags');
+  assert.equal(gapOf('1001B').gap_state, null);
+  assert.notEqual(
+    (db.prepare("SELECT tags FROM problems WHERE problem_key='1001B'").get() as any).tags,
+    '[]',
+    '上游给了标签 → 已补齐，不留缓存记录',
+  );
+});
+
+test('负缓存：整表未命中只在「单次响应即完整题库」的平台作定论；逐题 404 不作定论', async () => {
+  insertProblem('codeforces', '100001A', 'gym 题', null, ['dp']); // problemset.problems 完全不含 gym
+  const { fetchFn, calls } = cfRouter([{ contestId: 1001, index: 'A', name: 'A', rating: 1000, tags: ['math'] }]);
+  await backfillDifficulties(db, fetchFn);
+  assert.equal(gapOf('100001A').gap_state, 'difficulty');
+  assert.equal(calls(), 1);
+
+  // 洛谷的单题 404 可能就是风控页/挑战页 → 不下定论，下一轮照常重查
+  insertProblem('luogu', 'P1002', '洛谷题', null, ['dp']);
+  const lg = await backfillDifficulties(db, router({ 'problemset.problems': () => ({ status: 'OK', result: { problems: [] } }) }));
+  assert.equal(lg.find((r) => r.platform === 'luogu')!.failed, 1);
+  assert.equal(gapOf('P1002').gap_state, null, '未命中 ≠ 上游确认没有');
+});
+
+test('负缓存：TTL 过期后重新查证；includeNativeOnly 立即绕过', async () => {
+  insertProblem('codeforces', '1116Q', 'Q#', null, ['dp']);
+  const { fetchFn, calls } = cfRouter([{ contestId: 1116, index: 'Q', name: 'Q#', tags: ['math'] }]);
+  await backfillDifficulties(db, fetchFn);
+  assert.equal(calls(), 1);
+
+  await backfillDifficulties(db, fetchFn); // 全命中缓存 → 不打上游
+  assert.equal(calls(), 1);
+
+  // 显式强查（运维口子）→ 无视缓存
+  await backfillDifficulties(db, fetchFn, { includeNativeOnly: true });
+  assert.equal(calls(), 2);
+
+  // 过期 → 自动重新查证
+  db.prepare('UPDATE problems SET gap_checked_at = ?').run(new Date(Date.now() - GAP_TTL_MS - 1000).toISOString());
+  await backfillDifficulties(db, fetchFn);
+  assert.equal(calls(), 3);
+});
+
+test('负缓存：上游后来给出难度 → 立即退出缓存（不等 TTL）', async () => {
+  insertProblem('codeforces', '1116Q', 'Q#', null, ['dp']);
+  let rated = false;
+  const fetchFn = router({
+    'problemset.problems': () => ({
+      status: 'OK',
+      result: { problems: [{ contestId: 1116, index: 'Q', name: 'Q#', rating: rated ? 1400 : undefined, tags: ['math'] }] },
+    }),
+  });
+  await backfillDifficulties(db, fetchFn);
+  assert.equal(gapOf('1116Q').gap_state, 'difficulty');
+  assert.equal(pickBackfillTargets(db).filter((t) => t.platform === 'codeforces').length, 0);
+
+  rated = true;
+  db.prepare('UPDATE problems SET gap_checked_at = ?').run(new Date(Date.now() - GAP_TTL_MS - 1000).toISOString());
+  const results = await backfillDifficulties(db, fetchFn);
+  assert.equal(results.find((r) => r.platform === 'codeforces')!.filled, 1);
+  const row = db.prepare('SELECT difficulty, gap_state, gap_checked_at FROM problems WHERE problem_key=?').get('1116Q') as any;
+  assert.equal(row.difficulty, 1400);
+  assert.equal(row.gap_state, null, '补齐后不留缓存记录');
+  assert.equal(row.gap_checked_at, null);
+});
+
+test('nextGapState：TTL 只随新增判定顺延，QOJ 一律不缓存', () => {
+  const meta = (difficulty: number | null, tags: string[] | null) => ({
+    difficulty,
+    nativeDifficulty: difficulty === null ? null : String(difficulty),
+    difficultyScale: 'cf-rating' as const,
+    tags,
+    title: null,
+  });
+  const base = {
+    platform: 'codeforces' as const,
+    oldState: null,
+    oldCheckedAt: null,
+    definitiveAbsence: false,
+    checkedAt: '2026-09-27T00:00:00.000Z',
+    after: { difficulty: null as number | null, native_difficulty: null as string | null, tags: '[]' },
+  };
+  // 上游有题、无评级、无标签 → 两个维度一起记
+  const both = nextGapState({ ...base, meta: meta(null, null), tagsFromUpstream: null });
+  assert.equal(both.state, 'difficulty,tags');
+  assert.equal(both.checkedAt, base.checkedAt);
+
+  // 「tags」判定本轮被重新确认、但难度已补齐 → 集合与时刻都不变：
+  // TTL 只随**新增判定**顺延，否则一个维度会靠另一个维度的活动无限续命，「过期重查」永不发生
+  const kept = nextGapState({
+    ...base,
+    oldState: 'tags',
+    oldCheckedAt: '2026-09-01T00:00:00.000Z',
+    meta: meta(1500, null),
+    tagsFromUpstream: null,
+    after: { difficulty: 1500, native_difficulty: '1500', tags: '[]' },
+  });
+  assert.equal(kept.changed, false, '无新判定、无维度退出 → 不写库');
+  assert.equal(kept.checkedAt, '2026-09-01T00:00:00.000Z');
+
+  // QOJ：null 既可能是「目录没有」也可能是「榜单源不可用」→ 完全不写缓存
+  const qoj = nextGapState({ ...base, platform: 'qoj', meta: null, tagsFromUpstream: null, definitiveAbsence: true });
+  assert.deepEqual({ state: qoj.state, checkedAt: qoj.checkedAt, changed: qoj.changed }, {
+    state: null,
+    checkedAt: null,
+    changed: false,
+  });
 });

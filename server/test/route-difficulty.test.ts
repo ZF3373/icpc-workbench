@@ -112,6 +112,27 @@ test('GET /api/problems 返回原生难度/标度与派生标签（原生未知 
   db.close();
 });
 
+test('GET /api/problems 的 difficultyGap：只在「上游确认无难度」且未过期时为真', async () => {
+  const db = createDb(':memory:');
+  seedProblem(db, 'codeforces', '100001A', { difficulty: null }); // 已确认无难度（gym）
+  seedProblem(db, 'codeforces', '100002B', { difficulty: null }); // 同上，但记录已过期
+  seedProblem(db, 'codeforces', '100003C', { difficulty: 1500 }); // 后来被评级：有难度 → 不算缺口
+  const fresh = new Date().toISOString();
+  const stale = new Date(Date.now() - 31 * 24 * 3600 * 1000).toISOString(); // 31 天前 → 已过 TTL
+  db.prepare("UPDATE problems SET gap_state = 'difficulty', gap_checked_at = ? WHERE problem_key IN ('100001A','100002B','100003C')").run(stale);
+  db.prepare("UPDATE problems SET gap_checked_at = ? WHERE problem_key = '100001A'").run(fresh);
+  await withApp(problemsApp(db), async (base) => {
+    const rows = (await (await fetch(`${base}/api/problems?bank=1`)).json()) as Array<Record<string, unknown>>;
+    const by = (k: string) => rows.find((r) => r.problem_key === k)!;
+    assert.equal(by('100001A').difficultyGap, true, '新鲜记录 → 显示「平台无公开难度」');
+    assert.equal(by('100002B').difficultyGap, false, '过期记录 → 回到「难度未知」（下轮会重查）');
+    assert.equal(by('100003C').difficultyGap, false, '难度已有值时不得再报「无公开难度」');
+    // 负缓存两列是实现细节，不原样下发
+    assert.equal(Object.hasOwn(by('100001A'), 'gap_state'), false);
+  });
+  db.close();
+});
+
 test('GET /api/problems/page 的行同样带 nativeDifficulty / difficultyScale / difficultyLabel', async () => {
   const db = createDb(':memory:');
   seedProblem(db, 'nowcoder', '321126', { difficulty: 800, native: '700', scale: 'nowcoder-score' });

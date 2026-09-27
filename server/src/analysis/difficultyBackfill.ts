@@ -41,6 +41,54 @@ export interface BackfillInfo {
 /** 缺口类型（决定回填优先级：真缺难度 > 缺标签 > 只缺原生值） */
 export type BackfillGap = 'difficulty' | 'tags' | 'native';
 
+/**
+ * 负缓存的维度：上游被查过、且**确认这一项它给不出**。
+ * - `difficulty` 同时覆盖「原生原文」（上游没有评级时，原生值与映射值必然同时无解）
+ * - `tags` 表示该平台/该题没有标签来源（如 kenkoooo 只有难度）
+ */
+export type GapDimension = 'difficulty' | 'tags';
+
+/** 维度全集（也是 `gap_state` 里的固定书写顺序） */
+const GAP_DIMENSIONS: readonly GapDimension[] = ['difficulty', 'tags'];
+
+/**
+ * 负缓存有效期（天）。取 30 天的理由：这类缺口的性质变化很慢（CF 事后评级、牛客题目转私密、
+ * 平台后来给题加标签），但也不是永不变；到期后重新查证一次，代价是一行/月。
+ */
+export const GAP_TTL_MS = 30 * 24 * 3600 * 1000;
+
+/**
+ * 「整表未收录」可以当作定论的来源：单次响应就是该平台的**完整**公开题库，
+ * 键查不到 = 它确实不在这个接口里（CF 的 gym、AtCoder 已下线题）。
+ * 分页扫描型（牛客/代码源/力扣/计蒜客）**不算**：单次回填只翻到页数上限为止，
+ * 「本次没翻到」不等于「上游没有」，缓存它会把还在表里的题误关 30 天。
+ */
+const ABSENCE_IS_DEFINITIVE: ReadonlySet<PlatformId> = new Set<PlatformId>(['codeforces', 'atcoder']);
+
+/**
+ * 完全不写负缓存的平台：QOJ 的难度来自「xcpcrating 目录 + RankLand 榜单」两跳推导，
+ * 返回 null 既可能是「目录里没有这道题」也可能是「榜单源不可用 / 本轮榜单配额已用满」——
+ * 后者是临时故障，缓存它会让题目 30 天不再被尝试。整表一跳只需约 18 秒，不值得冒这个风险。
+ */
+const NO_GAP_CACHE: ReadonlySet<PlatformId> = new Set<PlatformId>(['qoj']);
+
+/** `gap_state` 列（CSV）→ 维度集合；脏值（未知维度、空串）逐项忽略，不让它影响回填 */
+export function parseGapState(raw: string | null | undefined): Set<GapDimension> {
+  const set = new Set<GapDimension>();
+  if (!raw) return set;
+  for (const part of raw.split(',')) {
+    const trimmed = part.trim();
+    if ((GAP_DIMENSIONS as readonly string[]).includes(trimmed)) set.add(trimmed as GapDimension);
+  }
+  return set;
+}
+
+/** 维度集合 → `gap_state` 列值；空集落 NULL（没有「已确认无」的东西就不该留记录） */
+function formatGapState(set: ReadonlySet<GapDimension>): string | null {
+  const parts = GAP_DIMENSIONS.filter((d) => set.has(d));
+  return parts.length === 0 ? null : parts.join(',');
+}
+
 /** 需要回填元数据的题（难度/原生难度/标签三者缺一即入选） */
 export interface BackfillTarget {
   platform: PlatformId;
@@ -66,7 +114,7 @@ export interface ProblemMeta {
 /** 单平台回填结果 */
 export interface PlatformBackfillResult {
   platform: string;
-  /** 参与回填的题数（该平台需补难度/原生难度/标签的题；已扣除本次未处理的 capped 部分） */
+  /** 参与回填的题数（该平台需补难度/原生难度/标签的题；已扣除 capped、deferred 与命中负缓存的部分） */
   scanned: number;
   /** 难度被补上的题数 */
   filled: number;
@@ -86,6 +134,13 @@ export interface PlatformBackfillResult {
    * 由 `includeNativeOnly` 显式开启后才逐题重查（默认跳过，避免每次点击打数百个无效请求）。
    */
   deferred: number;
+  /**
+   * 命中负缓存（上一轮已问过上游、上游明确给不出）而在 TTL 内**不再查询**的题数。
+   * 与 `deferred` 的区别：deferred 是「难度已经有了、只缺原生原文，不值得逐题打上游」；
+   * cached 是「这项上游真的没有，问过就行，别每月问第二次」。明细不在 details 里
+   * （没有本轮请求，也就没有本轮结果），但计入 `unknownLeft` 等库内统计与前端文案。
+   */
+  cached: number;
   /** 每题明细（problemKey → 说明） */
   details: Array<{ problemKey: string; action: 'filled' | 'repaired' | 'missing' | 'failed' | 'skipped'; note?: string }>;
 }
@@ -192,8 +247,8 @@ const SCAN_DELAY_MS = {
 /** 一次回填运行的上下文：整表平台只拉一次，逐题平台用共享的 tag 字典 */
 interface BackfillCtx {
   fetchFn: typeof fetch;
-  /** 整表型平台：键 → 元数据（同一运行内复用；失败记 null，不重复打上游） */
-  tables: Map<PlatformId, Promise<Map<string, ProblemMeta> | null>>;
+  /** 整表型平台：键 → 元数据（同一运行内复用；拉取失败则 promise 拒绝，不重复打上游） */
+  tables: Map<PlatformId, Promise<Map<string, ProblemMeta>>>;
   /** 本次需要回填的题号（整表平台据此在扫描中提前结束） */
   wanted: Map<PlatformId, Set<string>>;
   /** 洛谷 tag id → 名称字典（懒加载，供逐题详情复用） */
@@ -202,12 +257,14 @@ interface BackfillCtx {
   icpc: IcpcRuntime;
   /** 本次运行内 QOJ 题的推导结果（懒加载一次；结果用题目 id 索引） */
   icpcInfo?: Promise<Map<string, IcpcProblemInfo>>;
+  /** 本次运行的统一时刻：写 `gap_checked_at` 用同一个值，避免同一轮里 TTL 起点漂移 */
+  gapCheckedAt: string;
 }
 
 // ---------- 回填目标选择 ----------
 
 /**
- * 需要回填的题：无 CF 难度 / 无原生难度 / 无标签。
+ * 需要回填的题：无 CF 难度 / 无原生难度 / 无标签，且**未被负缓存覆盖**。
  *
  * 排序即优先级（2026-09-27 起）：`difficulty IS NULL` 最前，其次 `tags = '[]'`，
  * 最后才是「难度已有、只缺原生原文」。原因：老库（`native_difficulty` 列是后加的）
@@ -217,11 +274,47 @@ interface BackfillCtx {
  *
  * QOJ 也纳入目标（原先被排除）：其难度由 `analysis/icpcBoard.ts` 从 ICPC/CCPC
  * 公开榜单推导；推导不到时仍如实记 missing，不猜。
+ *
+ * 负缓存（`problems.gap_state` + `gap_checked_at`）：上一轮已经问过上游、且上游明确
+ * 给不出的维度，在 TTL 内不再进目标 —— 否则这些行会**永远**留在目标集合里，
+ * 连带让整表扫描的 wantKeys 早停无法触发（本机实测牛客因此每次都要翻满 200 页）。
+ * `ignoreGapCache` 是运维强查口子（路由上复用 `includeNativeOnly`）。
  */
-export function pickBackfillTargets(db: Db): BackfillTarget[] {
-  const rows = db
+export function pickBackfillTargets(
+  db: Db,
+  opts: { ignoreGapCache?: boolean } = {},
+): BackfillTarget[] {
+  return selectGapRows(db)
+    .filter((r) => opts.ignoreGapCache === true || !isGapCached(r))
+    .map(toBackfillTarget);
+}
+
+/** `problems` 里仍有缺口的原始行（含负缓存两列，供选择与统计共用一条 SQL） */
+interface GapRow {
+  platform: PlatformId;
+  problem_key: string;
+  title: string;
+  difficulty: number | null;
+  native_difficulty: string | null;
+  tags: string;
+  gap_state: string | null;
+  gap_checked_at: string | null;
+}
+
+/** 逐题循环里按 (platform, key) 回读的行形状（比 GapRow 少排序列，多一个 title 供标题判定） */
+interface GapColumns {
+  title: string;
+  difficulty: number | null;
+  native_difficulty: string | null;
+  tags: string;
+  gap_state: string | null;
+  gap_checked_at: string | null;
+}
+
+function selectGapRows(db: Db): GapRow[] {
+  return db
     .prepare(
-      `SELECT platform, problem_key, title, difficulty, native_difficulty, tags
+      `SELECT platform, problem_key, title, difficulty, native_difficulty, tags, gap_state, gap_checked_at
          FROM problems
         WHERE difficulty IS NULL OR native_difficulty IS NULL OR tags = '[]'
         ORDER BY platform,
@@ -232,27 +325,44 @@ export function pickBackfillTargets(db: Db): BackfillTarget[] {
                  END,
                  problem_key`,
     )
-    .all() as Array<{
-    platform: PlatformId;
-    problem_key: string;
-    title: string;
-    difficulty: number | null;
-    native_difficulty: string | null;
-    tags: string;
-  }>;
-  return rows.map((r) => {
-    const tags = JSON.parse(r.tags) as string[];
-    const gap: BackfillGap = r.difficulty === null ? 'difficulty' : tags.length === 0 ? 'tags' : 'native';
-    return {
-      platform: r.platform,
-      problemKey: r.problem_key,
-      title: r.title,
-      difficulty: r.difficulty,
-      nativeDifficulty: r.native_difficulty,
-      tags,
-      gap,
-    };
-  });
+    .all() as unknown as GapRow[];
+}
+
+function toBackfillTarget(r: GapRow): BackfillTarget {
+  const tags = JSON.parse(r.tags) as string[];
+  const gap: BackfillGap = r.difficulty === null ? 'difficulty' : tags.length === 0 ? 'tags' : 'native';
+  return {
+    platform: r.platform,
+    problemKey: r.problem_key,
+    title: r.title,
+    difficulty: r.difficulty,
+    nativeDifficulty: r.native_difficulty,
+    tags,
+    gap,
+  };
+}
+
+/**
+ * 该行**仍未被满足**的缺口维度。
+ * `difficulty` 维度同时要求难度与原生原文都有值：上游给出评级时两者同源同写，
+ * 只有旧库（`native_difficulty` 列后加）才会出现「有难度、无原文」，那一类由整表扫描补齐。
+ */
+function openDimensions(r: Pick<GapRow, 'difficulty' | 'native_difficulty' | 'tags'>): GapDimension[] {
+  const dims: GapDimension[] = [];
+  if (r.difficulty === null || r.native_difficulty === null) dims.push('difficulty');
+  const rowTags = JSON.parse(r.tags) as string[];
+  if (rowTags.length === 0) dims.push('tags');
+  return dims;
+}
+
+/** 负缓存是否已覆盖该行**全部**缺口：命中即本轮不必再打上游 */
+export function isGapCached(r: GapRow, now: number = Date.now()): boolean {
+  const state = parseGapState(r.gap_state);
+  if (state.size === 0) return false;
+  const checkedAt = r.gap_checked_at === null ? NaN : Date.parse(r.gap_checked_at);
+  if (!Number.isFinite(checkedAt) || now - checkedAt > GAP_TTL_MS) return false;
+  const open = openDimensions(r);
+  return open.length > 0 && open.every((d) => state.has(d));
 }
 
 // ---------- 本地补齐：原生难度 = 映射后难度（零请求） ----------
@@ -701,12 +811,17 @@ async function fetchDaimayuanTable(ctx: BackfillCtx): Promise<Map<string, Proble
 }
 
 /** 整表平台的键 → 元数据；同一运行内只拉一次。
- *  拉取失败缓存 null（不重复打上游，也不中断其他平台）→ 该平台的目标题统一记 failed。 */
-function platformTable(platform: PlatformId, ctx: BackfillCtx): Promise<Map<string, ProblemMeta> | null> {
+ *  拉取失败时把**已拒绝的 promise** 留在缓存里（不重复打上游、也不中断其他平台）：
+ *  调用方（fetchProblemMeta）据此抛出 → 逐题循环把该平台的目标统一记 failed。
+ *  这里刻意不再「失败也返回 null」：整表未命中是有价值的定论（可用于负缓存），
+ *  而「上游没返回」什么都说明不了，两者混在一起会让风控期间的失败被当成「官方无此题」。 */
+function platformTable(platform: PlatformId, ctx: BackfillCtx): Promise<Map<string, ProblemMeta>> {
   const cached = ctx.tables.get(platform);
   if (cached) return cached;
   const fetcher = TABLE_FETCHERS[platform];
-  const p = fetcher ? fetcher(ctx).catch(() => null) : Promise.resolve(null);
+  const p = fetcher
+    ? fetcher(ctx)
+    : Promise.reject(new Error(`平台 ${String(platform)} 无整表元数据来源`));
   ctx.tables.set(platform, p);
   return p;
 }
@@ -731,17 +846,17 @@ export async function fetchProblemMeta(
       return info === null ? null : toMeta(info);
     }
     case 'codeforces':
-      return (await platformTable('codeforces', ctx))?.get(problemKey.toUpperCase()) ?? null;
+      return (await platformTable('codeforces', ctx)).get(problemKey.toUpperCase()) ?? null;
     case 'atcoder':
-      return (await platformTable('atcoder', ctx))?.get(problemKey) ?? null;
+      return (await platformTable('atcoder', ctx)).get(problemKey) ?? null;
     case 'leetcode':
-      return (await platformTable('leetcode', ctx))?.get(problemKey.toLowerCase()) ?? null;
+      return (await platformTable('leetcode', ctx)).get(problemKey.toLowerCase()) ?? null;
     case 'jisuanke':
-      return (await platformTable('jisuanke', ctx))?.get(problemKey) ?? null;
+      return (await platformTable('jisuanke', ctx)).get(problemKey) ?? null;
     case 'nowcoder':
-      return (await platformTable('nowcoder', ctx))?.get(problemKey) ?? null;
+      return (await platformTable('nowcoder', ctx)).get(problemKey) ?? null;
     case 'daimayuan':
-      return (await platformTable('daimayuan', ctx))?.get(problemKey) ?? null;
+      return (await platformTable('daimayuan', ctx)).get(problemKey) ?? null;
     case 'qoj': {
       const problemId = qojProblemIdFromKey(problemKey);
       if (problemId === null) return null;
@@ -803,6 +918,8 @@ export function cleanNcTitle(title: string): string {
  *   代码源覆盖 459/459、修正 411 行）。洛谷整表对本库覆盖率仅 63/2418，故仍保持逐题 + 默认跳过。
  * - 每平台单次运行题数上限见 PLATFORM_LIMITS.maxPerRun：未处理的题数随结果回传（capped），
  *   下次点击从剩余目标继续
+ * - **负缓存**（gap_state / gap_checked_at，TTL 见 GAP_TTL_MS）：上游明确给不出的维度在 TTL 内
+ *   不再进目标，题数计入 cached。`includeNativeOnly: true` 一并绕过它（运维强查口子）
  * - **平台按实测成本升序处理**（见 PLATFORM_ORDER）：qoj/atcoder 等几秒完成，牛客整表扫描垫底；
  *   这样中途被放弃或进程被杀时，先跑完的平台成果已经落库，而不会「等都等了、qoj 一行都没写」
  * - 写库统一走 difficulty_source='backfill'（优先级 3）：难度、原生难度、标度、标题、标签
@@ -814,7 +931,10 @@ export async function backfillDifficulties(
   opts: {
     /** 覆盖「单平台单次运行上限」（默认取 PLATFORM_LIMITS[platform].maxPerRun）；仅供测试与运维调低 */
     maxTargetsPerPlatform?: number;
-    /** 逐题平台是否也补「仅缺原生难度」的行（默认 false；开启后单轮耗时会显著变长） */
+    /**
+     * 逐题平台是否也补「仅缺原生难度」的行（默认 false；开启后单轮耗时会显著变长）。
+     * 同时兼作**忽略负缓存**的运维强查口子：置 true 时连「上游已确认给不出」的维度也重新问一遍。
+     */
     includeNativeOnly?: boolean;
   } = {},
 ): Promise<PlatformBackfillResult[]> {
@@ -822,8 +942,21 @@ export async function backfillDifficulties(
   // includeNativeOnly 时不做本地推导，保证「显式要求逐题重查上游」这一运维口子真的会打上游
   if (opts.includeNativeOnly !== true) deriveIdentityNative(db);
 
-  const targets = pickBackfillTargets(db);
-  if (targets.length === 0) return [];
+  const ignoreGapCache = opts.includeNativeOnly === true;
+  const gapRows = selectGapRows(db);
+  const cachedByPlatform = new Map<PlatformId, number>();
+  const targets: BackfillTarget[] = [];
+  for (const r of gapRows) {
+    // 负缓存命中（本轮全部缺口都在 TTL 内被确认「上游给不出」）→ 不发请求、不占额度
+    if (!ignoreGapCache && isGapCached(r)) {
+      cachedByPlatform.set(r.platform, (cachedByPlatform.get(r.platform) ?? 0) + 1);
+      continue;
+    }
+    targets.push(toBackfillTarget(r));
+  }
+  // 一行都不必查时也要把 cached 报出去：否则前端显示「没有待补的题」，
+  // 而实际情况是「有 N 题上游确实没有，一个月内不再重复问」
+  if (targets.length === 0 && cachedByPlatform.size === 0) return [];
 
   const byPlatform = new Map<PlatformId, BackfillTarget[]>();
   const deferredByPlatform = new Map<PlatformId, number>();
@@ -852,12 +985,17 @@ export async function backfillDifficulties(
     tables: new Map(),
     wanted: new Map([...byPlatform].map(([p, list]) => [p, new Set(list.map((t) => t.problemKey))])),
     icpc: createIcpcRuntime(fetchFn),
+    gapCheckedAt: new Date().toISOString(),
   };
 
   const results: PlatformBackfillResult[] = [];
-  // 只被 deferred 的平台也要出结果：否则「本平台全部是仅缺原生值的行」时整条信息被吞掉，
-  // 前端会误显示成「没有待补的题」
-  for (const platform of orderedPlatforms([...byPlatform.keys(), ...deferredByPlatform.keys()])) {
+  // 只被 deferred / 只命中负缓存的平台也要出结果：否则「本平台全部是仅缺原生值的行」时
+  // 整条信息被吞掉，前端会误显示成「没有待补的题」
+  for (const platform of orderedPlatforms([
+    ...byPlatform.keys(),
+    ...deferredByPlatform.keys(),
+    ...cachedByPlatform.keys(),
+  ])) {
     const list = byPlatform.get(platform) ?? [];
     const r =
       list.length > 0
@@ -872,10 +1010,12 @@ export async function backfillDifficulties(
             failed: 0,
             capped: 0,
             deferred: 0,
+            cached: 0,
             details: [],
           };
     r.capped = cappedByPlatform.get(platform) ?? 0;
     r.deferred = deferredByPlatform.get(platform) ?? 0;
+    r.cached = cachedByPlatform.get(platform) ?? 0;
     results.push(r);
   }
   return results;
@@ -939,10 +1079,15 @@ async function backfillPlatform(
     failed: 0,
     capped: 0,
     deferred: 0,
+    cached: 0,
     details: [],
   };
   const before = db.prepare(
-    'SELECT title, difficulty, native_difficulty, tags FROM problems WHERE platform = ? AND problem_key = ?',
+    'SELECT title, difficulty, native_difficulty, tags, gap_state, gap_checked_at FROM problems WHERE platform = ? AND problem_key = ?',
+  );
+  /** 负缓存两列的独立写入语句（未命中定论时只动这两列，不碰题面数据） */
+  const writeGap = db.prepare(
+    'UPDATE problems SET gap_state = ?, gap_checked_at = ? WHERE platform = ? AND problem_key = ?',
   );
   /**
    * 写库语义（与 import/problemWritePolicy.ts 的来源优先级一致：manual(4) > backfill(3) > sync(2) > bank(1)）：
@@ -1040,13 +1185,30 @@ async function backfillPlatform(
         });
         consecutiveFails += 1;
         if (limits.delayMs > 0) await sleep(limits.delayMs);
+        // 「上游未命中」只有在**单次响应即完整题库**的平台上才是定论（CF 的 problemset 不含 gym、
+        // AtCoder 已下线题）；分页扫描型本次没翻到 ≠ 上游没有，故不写缓存。
+        // 请求失败（failed）同样不写：风控期间的 404 会把题目锁住 30 天。
+        if (!failed && meta === null && ABSENCE_IS_DEFINITIVE.has(platform)) {
+          const miss = before.get(platform, t.problemKey) as GapColumns | undefined;
+          if (miss) {
+            const g = nextGapState({
+              platform,
+              oldState: miss.gap_state,
+              oldCheckedAt: miss.gap_checked_at,
+              meta: null,
+              tagsFromUpstream: null,
+              definitiveAbsence: true,
+              checkedAt: ctx.gapCheckedAt,
+              after: miss,
+            });
+            if (g.changed) writeGap.run(g.state, g.checkedAt, platform, t.problemKey);
+          }
+        }
         continue;
       }
       consecutiveFails = 0;
 
-      const row = before.get(platform, t.problemKey) as
-        | { title: string; difficulty: number | null; native_difficulty: string | null; tags: string }
-        | undefined;
+      const row = before.get(platform, t.problemKey) as GapColumns | undefined;
       if (!row) {
         // 题目在回填途中被删（用户并发删除回收站等）：记为跳过。此处再往下会让
         // row.title 抛 TypeError → 整个 backfillDifficulties reject → 路由 502、其余平台结果全丢
@@ -1079,9 +1241,7 @@ async function backfillPlatform(
       if (batchedWrites >= WRITE_BATCH) flushTx();
 
       // 计数按**实际落库结果**判定（而不是按 SQL 分支二次推断）：manual 行不写原生值时不会被误计
-      const after = before.get(platform, t.problemKey) as
-        | { title: string; difficulty: number | null; native_difficulty: string | null; tags: string }
-        | undefined;
+      const after = before.get(platform, t.problemKey) as GapColumns | undefined;
       if (!after) {
         // UPDATE 已因行消失而空转（0 行受影响）：同样记跳过，防 TypeError 打穿整轮
         r.details.push({ problemKey: t.problemKey, action: 'skipped', note: '题目已被删除' });
@@ -1119,6 +1279,23 @@ async function backfillPlatform(
                 : '补原生难度',
         });
       }
+      // 负缓存：本轮既然已经付过一次上游请求，就把「它给不出什么」一并记下（见 nextGapState）
+      const g = nextGapState({
+        platform,
+        oldState: row.gap_state,
+        oldCheckedAt: row.gap_checked_at,
+        meta,
+        tagsFromUpstream: tags,
+        definitiveAbsence: false,
+        checkedAt: ctx.gapCheckedAt,
+        after,
+      });
+      if (g.changed) {
+        openTx();
+        writeGap.run(g.state, g.checkedAt, platform, t.problemKey);
+        batchedWrites += 1;
+        if (batchedWrites >= WRITE_BATCH) flushTx();
+      }
       if (limits.delayMs > 0) await sleep(limits.delayMs);
     }
     flushTx();
@@ -1127,4 +1304,59 @@ async function backfillPlatform(
     throw e;
   }
   return r;
+}
+
+/** 回填一行前后的负缓存判定输入 */
+interface GapInput {
+  platform: PlatformId;
+  /** 行上已有的 `gap_state` / `gap_checked_at` */
+  oldState: string | null;
+  oldCheckedAt: string | null;
+  /** 本轮拿到的上游元数据；null = 未命中（是否算定论由 definitiveAbsence 决定） */
+  meta: ProblemMeta | null;
+  /** 上游标签经净化后的结果（null / 空数组 = 上游这道题没有可用标签） */
+  tagsFromUpstream: string[] | null;
+  /** meta 为 null 时可否当定论（单次响应即完整公开题库的平台，见 ABSENCE_IS_DEFINITIVE） */
+  definitiveAbsence: boolean;
+  /** 本轮统一时刻（ISO） */
+  checkedAt: string;
+  /** 写库之后的行：用来判断哪些维度已经补齐（manual 保护的行不会误判成「已补齐」） */
+  after: Pick<GapRow, 'difficulty' | 'native_difficulty' | 'tags'>;
+}
+
+/**
+ * 本轮之后该行的负缓存应该长什么样。
+ *
+ * 三条规则：
+ * 1. **只记查过且给不出的**：meta 有值但难度/标签为空 → 记；未命中且来源不是完整题库 → 不记；
+ *    请求失败 → 调用方根本不会走到这里。宁可下轮多问一次，也不把「暂时没翻到」锁 30 天。
+ * 2. **补齐即退出**：这次上游给了难度（或加了标签），该维度立刻从集合里删掉 ——
+ *    CF 赛后补评级、平台后来给题加标签都靠这条生效，不必等 TTL。
+ * 3. **TTL 只随新判定顺延**：本轮没有新增判定时保留旧时刻，避免一个维度靠另一个维度的
+ *    活动无限续命（那样「过期重查」永远不会发生）。
+ */
+export function nextGapState(i: GapInput): {
+  state: string | null;
+  checkedAt: string | null;
+  changed: boolean;
+} {
+  if (NO_GAP_CACHE.has(i.platform)) {
+    return { state: i.oldState, checkedAt: i.oldCheckedAt, changed: false };
+  }
+  const before = parseGapState(i.oldState);
+  const set = new Set(before);
+  if (i.meta !== null) {
+    // 难度与原生原文一起记：上游给不出评级时两者必然同时无解（同一个 raw 值映射出来的）
+    if (i.meta.difficulty === null && i.meta.nativeDifficulty === null) set.add('difficulty');
+    if (i.tagsFromUpstream === null || i.tagsFromUpstream.length === 0) set.add('tags');
+  } else if (i.definitiveAbsence) {
+    set.add('difficulty');
+  }
+  if (i.after.difficulty !== null && i.after.native_difficulty !== null) set.delete('difficulty');
+  if (i.after.tags !== '[]') set.delete('tags');
+
+  const state = formatGapState(set);
+  const added = [...set].some((d) => !before.has(d));
+  const checkedAt = state === null ? null : added ? i.checkedAt : i.oldCheckedAt;
+  return { state, checkedAt, changed: state !== i.oldState || checkedAt !== i.oldCheckedAt };
 }

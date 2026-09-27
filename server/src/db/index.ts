@@ -70,6 +70,9 @@ function migrate(db: Db): void {
   // v0.6: 难度双标度——保留平台原生难度原文与所属标度（便于平台改档后重算 + UI 展示）
   if (!problemCols.has('native_difficulty')) db.exec('ALTER TABLE problems ADD COLUMN native_difficulty TEXT');
   if (!problemCols.has('difficulty_scale')) db.exec('ALTER TABLE problems ADD COLUMN difficulty_scale TEXT');
+  // v0.6.1: 「上游确认没有」的负缓存列（回填不再每轮重查同一批无解的行）
+  if (!problemCols.has('gap_state')) db.exec('ALTER TABLE problems ADD COLUMN gap_state TEXT');
+  if (!problemCols.has('gap_checked_at')) db.exec('ALTER TABLE problems ADD COLUMN gap_checked_at TEXT');
   // 题目删除墓碑的题目快照列（回收站恢复依据）；无表则 schema.sql 已建全列，这里只补老表
   const tombstoneCols = columnsOf('deleted_problems');
   for (const col of ['title', 'url', 'tags', 'difficulty_source', 'native_difficulty', 'difficulty_scale']) {

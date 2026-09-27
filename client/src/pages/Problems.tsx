@@ -30,7 +30,7 @@ import { PLATFORMS } from '../../../shared/src/index.ts'
 import IntentPopover from '../components/IntentPopover'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
-import { difficultyColor, formatDifficulty, PLATFORM_COLOR, platformName, tagColor } from '../ui'
+import { difficultyColor, formatDifficulty, OFFICIAL_NO_DIFFICULTY_TEXT, PLATFORM_COLOR, platformName, tagColor } from '../ui'
 import { DIFFICULTY_BUCKETS as DIFF_BUCKETS, type DifficultyBucket } from '../problemFilter'
 import { codeOptionsFromTags } from '../intentOptions'
 import { del, get, post, put } from '../api'
@@ -97,6 +97,8 @@ interface ProblemRow {
   difficultyScale?: string | null
   /** 服务端按标度派生的原生档位名（如洛谷「提高」/ 力扣「中等」；原生难度未知时为 null） */
   difficultyLabel?: string | null
+  /** 负缓存：回填问过上游、上游明确给不出该题难度（显示「无官方难度」而不是横杠） */
+  difficultyGap?: boolean
   url: string | null
   tags: string[]
   attempts: number
@@ -783,11 +785,20 @@ export default function Problems() {
       width: 88,
       align: 'right',
       // 单元格只放 CF 标尺数值（列宽有限）；悬停给出「数值 · 平台 原生档位」双标度，
-      // 原生档位名直接用服务端下发的 difficultyLabel（前端不重算档位映射表）
+      // 原生档位名直接用服务端下发的 difficultyLabel（前端不重算档位映射表）。
+      // 空值分两种：`-` = 还没查过/查失败；`无官方难度` = 回填问过上游、上游确实不给评级
+      // （负缓存，见服务端 gap_state）—— 二者对用户是完全不同的两件事，不能都显示一个横杠。
       render: (v: number | null, r) => (
-        <Tooltip title={formatDifficulty(v, r.difficultyLabel, r.difficultyScale)}>
+        <Tooltip
+          title={formatDifficulty(
+            v,
+            r.difficultyLabel,
+            r.difficultyScale,
+            r.difficultyGap ? OFFICIAL_NO_DIFFICULTY_TEXT : undefined,
+          )}
+        >
           {v == null ? (
-            <span style={{ color: '#4e5a68' }}>-</span>
+            <span style={{ color: '#4e5a68' }}>{r.difficultyGap ? '无官方难度' : '-'}</span>
           ) : (
             <span className="rating-pill mono" style={{ color: difficultyColor(v) }}>{v}</span>
           )}
@@ -1680,12 +1691,13 @@ function BackfillDifficultyCard() {
         results: Array<{
           platform: string; scanned: number; filled: number; nativeFilled: number
           repaired: number; missing: number; failed: number; capped: number; deferred: number
+          cached: number
         }>
         unknownLeft: number
       }>('/api/problems/backfill-difficulty', {})
       const parts = r.results.map((x) => {
         const name = platformName(x.platform as PlatformId)
-        return `${name}：补难度 ${x.filled} 题、补原生难度 ${x.nativeFilled} 题、修标题/标签/难度值 ${x.repaired} 题${x.missing ? `、官方无难度 ${x.missing} 题` : ''}${x.failed ? `、失败 ${x.failed} 题` : ''}${x.deferred ? `、跳过 ${x.deferred} 题（难度已有、仅缺原生值）` : ''}${x.capped ? `、本次上限外还有 ${x.capped} 题（再点一次继续）` : ''}`
+        return `${name}：补难度 ${x.filled} 题、补原生难度 ${x.nativeFilled} 题、修标题/标签/难度值 ${x.repaired} 题${x.missing ? `、官方无难度 ${x.missing} 题` : ''}${x.cached ? `、${x.cached} 题维持「无官方难度」（已问过上游，不再重复查询）` : ''}${x.failed ? `、失败 ${x.failed} 题` : ''}${x.deferred ? `、跳过 ${x.deferred} 题（难度已有、仅缺原生值）` : ''}${x.capped ? `、本次上限外还有 ${x.capped} 题（再点一次继续）` : ''}`
       })
       setResult(parts.length ? parts.join('；') + `。全库剩余未知难度 ${r.unknownLeft} 题` : '库内没有待回填难度的题')
       message.success('难度回填完成')
@@ -1712,7 +1724,9 @@ function BackfillDifficultyCard() {
         后一类只在洛谷默认跳过（结果里显示「跳过 N 题」），因此一次点击就能把真缺口补完。
         牛客同时修复历史遗留的标题混入标签问题。QOJ 的难度由 ICPC/CCPC 公开榜单
         （RankLand + xcpcrating 题号映射）推导档位，不在审核目录内的题仍保持未知。
-        Codeforces 的 gym 与官方未评级比赛无公开难度可补。
+        Codeforces 的 gym 与官方未评级比赛、牛客站上难度格为空的题<b>确实没有公开难度</b>：
+        回填问过上游后会记下这个结论（列表里显示「无官方难度」而不是横杠），
+        <b>一个月内不再对这些题重复发请求</b>，到期再自动重查一次（平台后来给出评级就会被采纳）。
       </p>
       <Button loading={busy} onClick={run}>一键回填未知难度</Button>
       {result && <p style={{ marginTop: 12 }}>{result}</p>}

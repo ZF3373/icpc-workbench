@@ -7,7 +7,7 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { safeTags } from '../analysis/stats.ts';
-import { backfillDifficulties } from '../analysis/difficultyBackfill.ts';
+import { backfillDifficulties, GAP_TTL_MS, parseGapState } from '../analysis/difficultyBackfill.ts';
 import { fetchLuoguBank, fetchNowcoderBank, fetchCodeforcesBank, fetchLeetcodeBank, fetchAtcoderBank, fetchDaimayuanBank, fetchJisuankeBank } from '../adapters/problemBank.ts';
 import type { LuoguProblemType } from '../adapters/problemBank.ts';
 import { upsertBankProblems } from '../import/bankService.ts';
@@ -33,6 +33,12 @@ interface ProblemRow {
   last_ac_at: string | null;
   /** 已在复习队列时为 review_items.id，否则 null */
   review_item_id: number | null;
+  /**
+   * 负缓存两列（上游确认给不出的缺口维度 + 查证时刻，见 analysis/difficultyBackfill.ts）。
+   * 只用于派生下面那个 `difficultyGap`，不原样下发。
+   */
+  gap_state: string | null;
+  gap_checked_at: string | null;
 }
 
 /** deleted_problems 墓碑行（含删除时刻的题目快照，回收站恢复依据；快照列对旧墓碑可为 null） */
@@ -220,7 +226,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   `;
   const coreSelect = `
       SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
-             p.native_difficulty, p.difficulty_scale,
+             p.native_difficulty, p.difficulty_scale, p.gap_state, p.gap_checked_at,
              ${knowledgeTagsCoalesceSql()},
              COUNT(s.id) AS attempts,
              COALESCE(SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END), 0) AS ac_count,
@@ -576,17 +582,22 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   // - 牛客/代码源改走各自题库整表接口（2026-09-27）：一轮即可补齐「难度已有、只缺原生值」的
   //   历史行，并**修正旧映射留下的过时难度值**（repaired 里带「修正难度 X→Y」明细）
   // - CF 未知难度题为 gym/官方 Unrated 比赛，官方无 rating（problemset.problems 实测 0 条 gym、
-  //   gym 榜单 API 需登录、题面页被 Cloudflare 403），确实无来源，不参与回填
-  // 耗时与待补题数成正比（洛谷 ~0.3s/题；整表型平台取决于分页数，牛客全表约 120s），
+  //   gym 榜单 API 需登录、题面页被 Cloudflare 403），确实无来源，如实记为无难度
+  // 请求节奏走全局按域名限速（安全下限：洛谷 4s/题、牛客 2s/页…，设置页可放慢到 5×），
   // 故每平台单次运行题数有上限（PLATFORM_LIMITS.maxPerRun）：超出的题数用 capped 如实回传，下次点击继续
-  // 优先级：真缺难度 > 缺标签 > 仅缺原生值；**仅洛谷**的「仅缺原生值」默认跳过（deferred），
-  // body { includeNativeOnly: true } 可强制逐题重查上游（耗时显著变长）
-  // 响应：{ ok, results: [{ platform, scanned, filled, nativeFilled, repaired, missing, failed, capped, deferred, details }], unknownLeft }
+  // 优先级：真缺难度 > 缺标签 > 仅缺原生值；**仅洛谷**的「仅缺原生值」默认跳过（deferred）。
+  // **负缓存**：上游明确给不出的维度记在 problems.gap_state（TTL 30 天）→ 期内不再重复发请求，
+  // 题数计入 cached；这些题在列表里显示「平台无公开难度」而不是「难度未知」。
+  // body { includeNativeOnly: true } = 运维强查口子：连「仅缺原生值」和负缓存一起无视，重问上游
+  // 响应：{ ok, results: [{ platform, scanned, filled, nativeFilled, repaired, missing, failed, capped, deferred, cached, details }], unknownLeft }
   //   nativeFilled = 该平台 native_difficulty 由 NULL 被补上的题数（与 filled 相互独立：
   //   难度已有值但原生值缺失时只增 nativeFilled —— 双标度要能各自如实上报）
   //   repaired = 标题/标签/过时难度值被修正的题数（details 里给出每题 note）
-  //   scanned = 本次实际处理的题数（已扣除 capped/deferred）；capped = 本次因上限未处理的题数
+  //   scanned = 本次实际处理的题数（已扣除 capped/deferred/cached）；capped = 因上限未处理的题数
   //   deferred = 因「仅缺原生值」被跳过的题数（当前仅洛谷；不占额度、不打上游）
+  //   cached = 因负缓存（上游已确认给不出）而本轮未查询的题数
+  // 整轮耗时取决于最慢的平台（牛客整表最多 200 页、洛谷逐题数百题 → 十几分钟），
+  // 写入按批提交，中途关掉页面或服务重启都不丢已落库的部分。
   r.post('/backfill-difficulty', asyncHandler(async (req, res) => {
     try {
       const includeNativeOnly = req.body?.includeNativeOnly === true;
@@ -890,15 +901,17 @@ function findDuplicateGroups(db: Db): DuplicateGroup[] {
  * shared/src/difficulty.ts 一份，路由层不做任何本地换算）；原生难度未知 → label 也是 null
  * （**未知一律 null，不猜**：绝不退回用 CF rating 反推一个「档位名」）。
  */
-function toApiProblem(r: ProblemRow): Omit<ProblemRow, 'tags' | 'native_difficulty' | 'difficulty_scale' | 'review_item_id'> & {
+function toApiProblem(r: ProblemRow): Omit<ProblemRow, 'tags' | 'native_difficulty' | 'difficulty_scale' | 'review_item_id' | 'gap_state' | 'gap_checked_at'> & {
   tags: string[];
   nativeDifficulty: string | null;
   difficultyScale: string | null;
   difficultyLabel: string | null;
+  /** 上游确实给不出该题难度（负缓存内）→ 前端显示「平台无公开难度」而不是「难度未知」 */
+  difficultyGap: boolean;
   status: 'ac' | 'tried' | 'none';
   reviewItemId: number | null;
 } {
-  const { native_difficulty, difficulty_scale, review_item_id, ...rest } = r;
+  const { native_difficulty, difficulty_scale, review_item_id, gap_state, gap_checked_at, ...rest } = r;
   return {
     ...rest,
     reviewItemId: review_item_id ?? null,
@@ -907,8 +920,25 @@ function toApiProblem(r: ProblemRow): Omit<ProblemRow, 'tags' | 'native_difficul
     difficultyScale: difficulty_scale,
     difficultyLabel:
       native_difficulty === null ? null : nativeDifficultyLabel(r.platform, native_difficulty),
+    difficultyGap: hasFreshDifficultyGap(gap_state, gap_checked_at, r.difficulty),
     status: r.ac_count > 0 ? 'ac' : r.attempts > 0 ? 'tried' : 'none',
   };
+}
+
+/**
+ * 「平台确实给不出这道题的难度」= 负缓存记了 difficulty 维度 + 未过期 + 库里难度仍为空。
+ * 第三个条件不能省：题目后来被评级（同步/手动填）时缓存记录可能还在，
+ * 但那时难度已有值，再显示「平台无公开难度」就是在报假信息。
+ */
+function hasFreshDifficultyGap(
+  state: string | null,
+  checkedAt: string | null,
+  difficulty: number | null,
+): boolean {
+  if (difficulty !== null || checkedAt === null) return false;
+  const at = Date.parse(checkedAt);
+  if (!Number.isFinite(at) || Date.now() - at > GAP_TTL_MS) return false;
+  return parseGapState(state).has('difficulty');
 }
 
 function clampInt(raw: unknown, fallback: number, min: number, max: number): number {
