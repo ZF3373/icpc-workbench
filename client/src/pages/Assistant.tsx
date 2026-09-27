@@ -39,6 +39,7 @@ import PageHeader from '../components/PageHeader'
 import { platformName } from '../ui'
 import { createStreamBuffer } from '../streamBuffer'
 import { rememberSessionFiles, getSessionFileText, forgetSessionFiles } from './sessionFiles'
+import { sanitizeOutgoingTurns, describeToolStatus, EMPTY_REPLY_NOTICE } from './assistantTurns'
 import {
   REVIEW_REQUEST_TEXT,
   contestJumpWarning,
@@ -394,6 +395,8 @@ export default function Assistant() {
   const [listCreating, setListCreating] = useState(false)
   const [planCreating, setPlanCreating] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
+  /** 当前正在跑的工具体（属于哪个会话 + 文案）：正文输出完后 AI 还在检索/抓网页时的进度提示 */
+  const [toolStatus, setToolStatus] = useState<{ sessionId: string; text: string } | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dragOverId, setDragOverId] = useState<string | null>(null)
   /** 左侧栏折叠：会话记录/上下文/能力值收成一条窄栏，把宽度让给对话区 */
@@ -793,6 +796,12 @@ export default function Assistant() {
       ...(attsForStore.length > 0 ? { attachments: attsForStore } : {}),
     }
     const nextMessages: ChatMsg[] = [...session.messages, userMsg]
+    /**
+     * 送出前的历史清洗（issue 36）：本地历史里可能残留 content 为空的 assistant 轮次
+     * （模型偶发空回复留下的）。旧服务端会因为这一条空轮次整体拒绝请求，导致该会话
+     * 之后每一轮都发不出去。本地仍保留它（用户能看到自己发过什么），只是不发给模型。
+     */
+    const outgoingMessages = sanitizeOutgoingTurns(nextMessages)
     const sendPlanId = session.planId
     const sendListId = session.listId
     const sendContestKey = session.contestKey
@@ -828,6 +837,8 @@ export default function Assistant() {
      */
     const buf = createStreamBuffer(({ delta, reasoning }) => {
       if (!delta && !reasoning) return
+      // 正文重新开始输出 = 工具阶段结束，清掉「正在检索…」进度（否则会一直挂在输入栏）
+      if (delta) setToolStatus((cur) => (cur && cur.sessionId === sessionId ? null : cur))
       patchActiveSessionMessages(sessionId, (msgs) => {
         const last = msgs[msgs.length - 1]
         if (!last || last.role !== 'assistant') return msgs
@@ -851,7 +862,7 @@ export default function Assistant() {
 
       const result = await chatWithAssistantStream(
         {
-          messages: nextMessages.map(({ role, content, attachments }, idx) => ({
+          messages: outgoingMessages.map(({ role, content, attachments }, idx) => ({
             role,
             content,
             // 带附件的消息：最后一条用本轮新附件全文；历史消息从会话缓存回填全文
@@ -862,7 +873,7 @@ export default function Assistant() {
                     .map((a) => ({
                       ...a,
                       textContent:
-                        idx === nextMessages.length - 1
+                        idx === outgoingMessages.length - 1
                           ? attsForSend.find((x) => x.fileId === a.fileId)?.textContent
                           : getSessionFileText(sessionId, a.fileId),
                     }))
@@ -879,6 +890,8 @@ export default function Assistant() {
         (delta) => buf.pushDelta(delta),
         ac.signal,
         (reasoningChunk) => buf.pushReasoning(reasoningChunk),
+        // 工具执行进度：正文输出完但 AI 还在检索/抓网页时，界面显示进度而不是只剩「停止生成」
+        (status) => setToolStatus({ sessionId, text: describeToolStatus(status.name, status.detail) }),
       )
       // 流已结束：先把缓冲里剩下的内容落库，再处理用量/截断等收尾信息，
       // 否则这些内容会被追加到"还没有最后一段文字"的消息上
@@ -948,6 +961,17 @@ export default function Assistant() {
         })
       }
 
+      // 模型返回了空回复（无正文，可能只有思考内容）：必须留下可见痕迹。
+      // 空 Markdown 渲染出来就是一片空白 —— 用户看到的「发了问题但没有任何输出」正是这种，
+      // 而且旧服务端会因为这条空轮次拒绝该会话之后的所有请求（issue 36）。
+      patchActiveSessionMessages(sessionId, (msgs) => {
+        const last = msgs[msgs.length - 1]
+        if (last && last.role === 'assistant' && last.content.trim() === '') {
+          return [...msgs.slice(0, -1), { ...last, content: EMPTY_REPLY_NOTICE, failed: true }]
+        }
+        return msgs
+      })
+
       // 会话标题自动生成：首条消息发送后（原标题为默认/截断）异步生成更好的标题
       if (session.messages.length === 0) {
         const titleMsgs = [{ role: 'user' as const, content: text || '图片提问' }]
@@ -990,6 +1014,7 @@ export default function Assistant() {
       // 异常/中止路径也要把缓冲里的字送出去，保证"停止生成"时看到的内容是完整的
       buf.dispose()
       sessionAbortControllers.delete(sessionId)
+      setToolStatus((cur) => (cur && cur.sessionId === sessionId ? null : cur))
       setChatState((prev) => {
         if (!prev.sendingIds.has(sessionId)) return prev
         const next = new Set(prev.sendingIds)
@@ -1795,12 +1820,21 @@ export default function Assistant() {
               onChange={(e) => void handlePickFiles(e.target.files)}
             />
             {sending ? (
-              <Button
-                danger
-                onClick={() => stopSending(activeId)}
-              >
-                停止
-              </Button>
+              <>
+                {/* 正文输出完但 AI 还在跑工具（检索/抓网页）时，说明为什么按钮仍是「停止」 */}
+                {toolStatus?.sessionId === activeId && (
+                  <span style={{ fontSize: 12, color: 'var(--text-3, #8993a2)', whiteSpace: 'nowrap' }}>
+                    {toolStatus.text}
+                  </span>
+                )}
+                <Button
+                  danger
+                  onClick={() => stopSending(activeId)}
+                  title="停止本次生成（已输出的内容会保留）"
+                >
+                  停止
+                </Button>
+              </>
             ) : (
               <Button
                 type="primary"

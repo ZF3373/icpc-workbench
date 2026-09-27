@@ -3,6 +3,11 @@ import { canonicalTag, expandTag, filterNoiseTags } from '../../../shared/src/in
 import type { PlatformId } from '../../../shared/src/index.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
 import { nativeDifficultyLabel } from '../../../shared/src/difficulty.ts';
+import {
+  DIFFICULTY_BUCKETS as DIFFICULTY_BUCKET_RANGES,
+  UNKNOWN_DIFFICULTY_BUCKET,
+  difficultyBucketOf,
+} from '../../../shared/src/difficulty.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
@@ -55,19 +60,62 @@ interface ProblemSnapshot {
   difficulty_scale: string | null;
 }
 
-/** 难度分桶（与客户端 DIFF_BUCKETS / analysis/stats.bucketForDifficulty 同口径） */
-const DIFFICULTY_BUCKETS: Record<string, { min: number | null; max: number | null }> = {
-  '未知': { min: null, max: null },
-  '<1200': { min: null, max: 1199 },
-  '1200-1399': { min: 1200, max: 1399 },
-  '1400-1599': { min: 1400, max: 1599 },
-  '1600-1899': { min: 1600, max: 1899 },
-  '1900-2199': { min: 1900, max: 2199 },
-  '2200+': { min: 2200, max: null },
-};
+/**
+ * 难度分桶（唯一真源：shared/src/difficulty.ts；`未知` 单独一档）。
+ * 客户端 DIFF_BUCKETS / analysis/bucketForDifficulty / knowledge/conceptStats 共用同一份定义。
+ */
+const DIFFICULTY_BUCKETS: Record<string, { min: number | null; max: number | null }> = Object.fromEntries([
+  // 顺序 = 展示顺序（升序，未知最后）：facets 的 difficulty 字段按此初始化
+  ...DIFFICULTY_BUCKET_RANGES.map((b) => [b.key, { min: b.min, max: b.max }] as const),
+  [UNKNOWN_DIFFICULTY_BUCKET, { min: null, max: null }],
+]);
 
 const MAX_LIMIT = 500;
 const DEFAULT_LIMIT = 50;
+
+/** 未指定排序时的默认顺序（与改动前逐字一致：难度降序、未知难度最后、id 兜底） */
+const DEFAULT_ORDER_BY = 'p.difficulty IS NULL, p.difficulty DESC, p.id DESC';
+
+/**
+ * /page 的排序白名单（issue #38）：用户传来的 sort= 只用于**查表**，取值全部来自本常量，
+ * 任何用户输入都不会进入 SQL 文本；order= 同理只映射成 'ASC' / 'DESC' 两个常量。
+ *
+ * 每个字段给出「排序键 + 方向」的完整片段，约定：
+ * - NULL 一律排最后：`(x IS NULL) ASC` 恒定升序（不随 dir 翻转），再按 x 本身排。
+ * - 题号用「先按长度、再按字典序」逼近自然序：字符串长度不同时短的自然更小
+ *   （P2 < P10 < P100 < P1001），长度相同时字典序与数值序一致；SQLite 没有自然序 collation，
+ *   这是不引入自定义函数的前提下最接近人类预期的写法。
+ * - 标题用 COLLATE NOCASE：ASCII 大小写不敏感（中文标题不区分大小写，无影响）。
+ * - attempts / ac_count / last_ac_at 是 SELECT 里的聚合别名，SQLite 允许在 ORDER BY 里引用。
+ * - 每段末尾由 parseSort 追加 p.id 兜底，保证排序是全序 —— 否则同键行在翻页时可能重复或丢失。
+ */
+const SORT_KEYS: Record<string, (dir: 'ASC' | 'DESC') => string> = {
+  problem_key: (d) => `LENGTH(p.problem_key) ${d}, p.problem_key ${d}`,
+  difficulty: (d) => `(p.difficulty IS NULL) ASC, p.difficulty ${d}`,
+  title: (d) => `p.title COLLATE NOCASE ${d}`,
+  platform: (d) => `p.platform ${d}`,
+  attempts: (d) => `attempts ${d}`,
+  ac_count: (d) => `ac_count ${d}`,
+  last_ac_at: (d) => `(last_ac_at IS NULL) ASC, last_ac_at ${d}`,
+};
+
+/** 排序方向的合法取值（小写，前端按此下发） */
+const SORT_ORDERS: ReadonlySet<string> = new Set(['asc', 'desc']);
+
+/**
+ * 解析 `?sort=<字段>&order=asc|desc`，返回可直接拼进 ORDER BY 的片段。
+ *
+ * 两者必须**同时**合法，否则整组忽略并回退 DEFAULT_ORDER_BY（宁可不排，也不猜用户意图）：
+ * 非法值/缺参不报 400，因为排序只是视图选项，不该让列表整体报错。
+ */
+function parseSort(query: Record<string, unknown>): string | null {
+  const sort = typeof query.sort === 'string' ? query.sort : '';
+  const order = typeof query.order === 'string' ? query.order.toLowerCase() : '';
+  // 必须用 hasOwn：'constructor' / 'toString' 之类的原型链键不能当成白名单命中
+  if (!Object.hasOwn(SORT_KEYS, sort) || !SORT_ORDERS.has(order)) return null;
+  const dir = order === 'asc' ? 'ASC' : 'DESC';
+  return `${SORT_KEYS[sort](dir)}, p.id ${dir}`;
+}
 
 /** 洛谷题库类型白名单（与 adapters/problemBank.ts 的 LuoguProblemType 同源；此处只做入参校验） */
 const LUOGU_PROBLEM_TYPES: ReadonlySet<LuoguProblemType> = new Set<LuoguProblemType>([
@@ -268,7 +316,8 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
 
   /**
    * GET /api/problems/page?page=1&pageSize=50&...同上的过滤参数
-   * 服务端分页：总数与当前页分两次查询（COUNT 走同一过滤条件但不取标注 JSON）。
+   * 另支持 ?sort=<字段>&order=asc|desc（issue #38）：白名单见 SORT_KEYS，
+   * 非法或缺参一律回退默认顺序 —— 排序在 SQL 里做，前端只持有当前页，排序必须下推。
    * 响应：{ items, total, page, pageSize, hasMore }
    */
   r.get('/page', (req, res) => {
@@ -277,6 +326,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       return res.status(400).json({ error: `platform 非法: ${String(platform)}` });
     }
     const filters = parseFilters(req.query as Record<string, unknown>);
+    const orderBy = parseSort(req.query as Record<string, unknown>) ?? DEFAULT_ORDER_BY;
     const pageSize = clampInt(req.query.pageSize, DEFAULT_LIMIT, 1, MAX_LIMIT);
     const page = clampInt(req.query.page, 1, 1, Number.MAX_SAFE_INTEGER);
     const offset = (page - 1) * pageSize;
@@ -288,7 +338,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       from +
       ' GROUP BY p.id' +
       statusHavingSql(filters.status) +
-      ' ORDER BY p.difficulty IS NULL, p.difficulty DESC, p.id DESC LIMIT ? OFFSET ?';
+      ' ORDER BY ' + orderBy + ' LIMIT ? OFFSET ?';
     const items = db
       .prepare(listSql)
       .all(DEFAULT_USER_ID, ...params, pageSize, offset) as unknown as ProblemRow[];
@@ -834,16 +884,8 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   return r;
 }
 
-/** 难度值 → 分桶名（与客户端 DIFF_BUCKETS 一致） */
-function bucketName(difficulty: number | null): string {
-  if (difficulty === null) return '未知';
-  if (difficulty < 1200) return '<1200';
-  if (difficulty < 1400) return '1200-1399';
-  if (difficulty < 1600) return '1400-1599';
-  if (difficulty < 1900) return '1600-1899';
-  if (difficulty < 2200) return '1900-2199';
-  return '2200+';
-}
+/** 难度值 → 分桶名（唯一真源：shared/src/difficulty.ts，与客户端 DIFF_BUCKETS 同口径） */
+const bucketName = difficultyBucketOf;
 
 /** 「平台 + 标题 + 归一化题号完全相同」的重复题分组（issue #27：合并与过滤顺带去重）。
  * 归一化题号 = 去空格、忽略大小写：'1234A' / '1234a' / ' 1234A' 视为同一题号。

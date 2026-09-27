@@ -4,8 +4,13 @@
  */
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTagAliasSet, matchesProblemFilters } from '../src/problemFilter.ts'
+import { DIFFICULTY_BUCKETS, buildTagAliasSet, matchesProblemFilters } from '../src/problemFilter.ts'
 import { canonicalTag, filterNoiseTags } from '../../shared/src/index.ts'
+import {
+  DIFFICULTY_BUCKETS as SHARED_DIFFICULTY_BUCKETS,
+  UNKNOWN_DIFFICULTY_BUCKET,
+  compareDifficultyBuckets,
+} from '../../shared/src/difficulty.ts'
 
 const row = (over: Partial<{ tags: string[]; difficulty: number | null; status: 'ac' | 'tried' | 'none' }>) => ({
   tags: [] as string[],
@@ -153,6 +158,31 @@ describe('problemFilter.ts', () => {
       // 算法标签保留并归并
       assert.equal(m.get('动态规划'), 1)
       assert.equal(m.get('贪心'), 1)
+    })
+  })
+
+  describe('DIFFICULTY_BUCKETS（与 shared 定义同口径，issue 37）', () => {
+    it('档位与 shared/src/difficulty.ts 完全一致，只额外补了 <1200 的下界与「未知」', () => {
+      assert.deepEqual(
+        DIFFICULTY_BUCKETS.map((b) => b.key),
+        [...SHARED_DIFFICULTY_BUCKETS.map((b) => b.key), UNKNOWN_DIFFICULTY_BUCKET],
+      )
+      for (const shared of SHARED_DIFFICULTY_BUCKETS) {
+        const local = DIFFICULTY_BUCKETS.find((b) => b.key === shared.key)!
+        assert.ok(local, `缺少档位 ${shared.key}`)
+        // '<1200' 的下界补 0（服务端把难度区间下推为闭区间，null 无法当区间用）
+        assert.equal(local.min, shared.min ?? 0)
+        assert.equal(local.max, shared.max)
+      }
+      const unknown = DIFFICULTY_BUCKETS.find((b) => b.key === UNKNOWN_DIFFICULTY_BUCKET)!
+      assert.equal(unknown.min, null)
+      assert.equal(unknown.max, null)
+    })
+
+    it('最高档已拆为 2200-2599 / 2600+，且顺序可直接用于展示', () => {
+      const sorted = [...DIFFICULTY_BUCKETS].map((b) => b.key).sort(compareDifficultyBuckets)
+      assert.deepEqual(sorted, DIFFICULTY_BUCKETS.map((b) => b.key), '定义顺序即升序展示顺序')
+      assert.ok(!DIFFICULTY_BUCKETS.some((b) => b.key === '2200+'), '旧的 2200+ 档应已撤销')
     })
   })
 })

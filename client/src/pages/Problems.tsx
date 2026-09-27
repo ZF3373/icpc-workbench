@@ -18,7 +18,7 @@ import {
   TreeSelect,
   Upload,
 } from 'antd'
-import type { TreeSelectProps } from 'antd'
+import type { TableProps, TreeSelectProps } from 'antd'
 import { ApartmentOutlined, CheckOutlined, ClearOutlined, CloudDownloadOutlined, DeleteOutlined, DownOutlined, EditOutlined, HistoryOutlined, InboxOutlined, PlusOutlined, ReadOutlined, RestOutlined, TagsOutlined, UpOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useSearchParams } from 'react-router-dom'
@@ -32,6 +32,7 @@ import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
 import { difficultyColor, formatDifficulty, OFFICIAL_NO_DIFFICULTY_TEXT, PLATFORM_COLOR, platformName, tagColor } from '../ui'
 import { DIFFICULTY_BUCKETS as DIFF_BUCKETS, type DifficultyBucket } from '../problemFilter'
+import { appendSortParams, sortFieldOf, sortFromAntd, sorterOrderOf, sortTooltip, type SortState } from '../problemSort'
 import { codeOptionsFromTags } from '../intentOptions'
 import { del, get, post, put } from '../api'
 
@@ -150,6 +151,11 @@ export default function Problems() {
   const [rows, setRows] = useState<ProblemRow[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
+  /**
+   * 排序状态（issue #38）：null = 不排序，走服务端默认顺序（难度降序、未知最后）。
+   * 排序由服务端 ORDER BY 全量完成（本页只持有当前页 50 行，前端排序只能排当前页，是错的）。
+   */
+  const [sort, setSort] = useState<SortState | null>(null)
   // 全部题目的分面（右侧「难度/平台分布」用）与当前筛选后的分面（侧边栏标签计数用）
   const [facets, setFacets] = useState<ProblemsFacets | null>(null)
   const [unfilteredFacets, setUnfilteredFacets] = useState<ProblemsFacets | null>(null)
@@ -228,8 +234,10 @@ export default function Problems() {
     }
     // 标签多选按「或」：重复 tag 参数，服务端展开同义别名后取并集
     for (const t of tagFilters) params.append('tag', t)
+    // 排序（issue #38）：sort/order 下推到服务端 ORDER BY；未排序时不写参数 = 默认顺序
+    appendSortParams(params, sort)
     return params
-  }, [platform, q, includeBank, statusFilter, diffMin, diffMax, diffUnknown, tagFilters])
+  }, [platform, q, includeBank, statusFilter, diffMin, diffMax, diffUnknown, tagFilters, sort])
 
   // 只允许「最新一次请求」落地：连点筛选/翻页时多个请求在途，晚到的旧响应若照常写回，
   // 会把旧条件的行连同它的 total/page 一起盖上去，之后没有新请求来自愈（界面长期停在错数据上）
@@ -760,23 +768,48 @@ export default function Problems() {
     },
   }
 
+  /**
+   * 表头排序（issue #38）：antd 只负责给出「点了几次」，带箭头显示与取数都由这里的状态决定。
+   * 排序变化会改变 queryKey → 下面那个 useEffect 回到第 1 页重取：
+   * 否则「第 3 页 + 新排序」会落到全量结果的第 3 页，看起来像排错了或空白。
+   * 翻页同样触发 onChange（sorter 为当前排序）—— next 与现状相同时保持原对象，避免多余请求。
+   */
+  const onTableChange: TableProps<ProblemRow>['onChange'] = (_pagination, _filters, sorter) => {
+    const s = Array.isArray(sorter) ? sorter[0] : sorter
+    const field = s?.order ? sortFieldOf(s) : null
+    const next = field ? sortFromAntd(field, s.order) : null
+    setSort((prev) => (prev?.field === next?.field && prev?.order === next?.order ? prev : next))
+  }
+
   const cols: ColumnsType<ProblemRow> = [
     {
       title: '平台',
       dataIndex: 'platform',
       width: 110,
+      // sorter: true = 服务端排序（数据源只是当前页，antd 的本地比较函数在这里没有意义）；
+      // sortOrder 受控：只有当前排序列亮箭头，null 表示该列未参与排序
+      sorter: true,
+      sortOrder: sorterOrderOf(sort, 'platform'),
+      showSorterTooltip: { title: sortTooltip('平台') },
       render: (v: PlatformId) => <PlatformTag id={v} />,
     },
     {
       title: '题号',
       dataIndex: 'problem_key',
       width: 120,
+      sorter: true,
+      sortOrder: sorterOrderOf(sort, 'problem_key'),
+      // 题号是「形状各异」的字符串（P1001 / abc321_a / 1919C），服务端按长度+字典序近似自然序
+      showSorterTooltip: { title: sortTooltip('题号', '题号按自然序，P2 排在 P1001 之前') },
       render: (v: string, r) => (r.url ? <a className="mono" href={r.url} target="_blank" rel="noreferrer">{v}</a> : <span className="mono">{v}</span>),
     },
     {
       title: '标题',
       dataIndex: 'title',
       ellipsis: true,
+      sorter: true,
+      sortOrder: sorterOrderOf(sort, 'title'),
+      showSorterTooltip: { title: sortTooltip('标题') },
       render: (v: string, r) => (r.url ? <a href={r.url} target="_blank" rel="noreferrer">{v}</a> : v),
     },
     {
@@ -784,6 +817,10 @@ export default function Problems() {
       dataIndex: 'difficulty',
       width: 88,
       align: 'right',
+      sorter: true,
+      sortOrder: sorterOrderOf(sort, 'difficulty'),
+      // 未评级（无难度）的行不参与难度比较，统一排在最后（升/降序都一样，见服务端 SORT_KEYS）
+      showSorterTooltip: { title: sortTooltip('难度', '未知难度恒排最后') },
       // 单元格只放 CF 标尺数值（列宽有限）；悬停给出「数值 · 平台 原生档位」双标度，
       // 原生档位名直接用服务端下发的 difficultyLabel（前端不重算档位映射表）。
       // 空值分两种：`-` = 还没查过/查失败；`无官方难度` = 回填问过上游、上游确实不给评级
@@ -821,7 +858,15 @@ export default function Problems() {
           <span style={{ color: '#4e5a68' }}>-</span>
         ),
     },
-    { title: '提交', dataIndex: 'attempts', width: 70, align: 'right' },
+    {
+      title: '提交',
+      dataIndex: 'attempts',
+      width: 70,
+      align: 'right',
+      sorter: true,
+      sortOrder: sorterOrderOf(sort, 'attempts'),
+      showSorterTooltip: { title: sortTooltip('提交次数') },
+    },
     {
       title: '操作',
       // 5 个按钮最小内容宽约 214px + 单元格内边距，150 会把「卡在哪」裁出列外
@@ -1142,6 +1187,8 @@ export default function Problems() {
               loading={loading}
               columns={cols}
               dataSource={rows}
+              // 表头点击排序（受控 sortOrder）：onChange 里只处理排序，翻页仍走下面的 pagination.onChange
+              onChange={onTableChange}
               // 固定列宽合计 850px；概览条已移到页顶不再占宽度，两栏布局下中栏
               // 一般足够 970px，更窄的窗口才出横向滚动条，操作列吸附右缘始终可见
               scroll={{ x: 970 }}

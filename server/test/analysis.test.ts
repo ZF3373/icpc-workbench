@@ -60,8 +60,33 @@ test('bucketForDifficulty boundaries', () => {
   assert.equal(bucketForDifficulty(1400), '1400-1599');
   assert.equal(bucketForDifficulty(1899), '1600-1899');
   assert.equal(bucketForDifficulty(2199), '1900-2199');
-  assert.equal(bucketForDifficulty(2200), '2200+');
+  // issue 37：最高档从 `2200+` 拆成 `2200-2599` / `2600+`（2200 与 3400 不再挤一根柱子）
+  assert.equal(bucketForDifficulty(2200), '2200-2599');
+  assert.equal(bucketForDifficulty(2400), '2200-2599');
+  assert.equal(bucketForDifficulty(2599), '2200-2599');
+  assert.equal(bucketForDifficulty(2600), '2600+');
+  assert.equal(bucketForDifficulty(3500), '2600+');
   assert.equal(bucketForDifficulty(null), '未知');
+  assert.equal(bucketForDifficulty(undefined), '未知');
+  assert.equal(bucketForDifficulty(Number.NaN), '未知');
+});
+
+test('computeOverall: byDifficulty 恒按难度升序（未知最后），与提交先后无关', () => {
+  // 回归 issue 37：byDifficulty 曾按 Map 插入序返回，而插入序取决于 SQL 返回行的先后，
+  // 于是同一份数据在不同机器/不同同步顺序下横轴顺序会变（图里 1400-1599 排在 1200-1399 前）。
+  // 这里故意按「乱序」写入：2600 → 1200 → 未知 → 2200 → 1400
+  insertNormalized(db, 1, [
+    sub('codeforces', 'H', 'AC', '2026-08-01T10:00:00.000Z', ['dp'], 2600),
+    sub('codeforces', 'L', 'AC', '2026-08-01T11:00:00.000Z', ['dp'], 1200),
+    sub('luogu', 'P0000', 'AC', '2026-08-01T12:00:00.000Z', ['dp']),
+    sub('codeforces', 'M', 'AC', '2026-08-01T13:00:00.000Z', ['dp'], 2200),
+    sub('codeforces', 'N', 'AC', '2026-08-01T14:00:00.000Z', ['dp'], 1500),
+  ]);
+  const s = computeOverall(db, 1);
+  assert.deepEqual(
+    s.byDifficulty.map((d) => d.bucket),
+    ['1200-1399', '1400-1599', '2200-2599', '2600+', '未知'],
+  );
 });
 
 test('computeOverall aggregates attempts/ac/rate/solved', () => {

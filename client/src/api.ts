@@ -124,12 +124,15 @@ export interface TokenUsage {
  * @param onDelta 正文内容增量回调
  * @param onReasoning 推理内容（思维链）增量回调，与正文分离渲染
  * @param signal AbortSignal，用户停止生成时中断
+ * @param onToolStatus 工具执行进度回调（服务端 {tool:{name,detail}} 事件）。
+ *   正文输出完而 AI 还在跑工具时，界面靠它显示「正在联网检索…」，否则只剩「停止生成」看起来像卡死。
  */
 export async function chatWithAssistantStream(
   body: { messages: PlanChatTurn[]; planId?: number; listId?: number; contestKey?: string },
   onDelta: (chunk: string) => void,
   signal?: AbortSignal,
   onReasoning?: (chunk: string) => void,
+  onToolStatus?: (status: { name: string; detail?: string }) => void,
 ): Promise<{
   truncated: boolean;
   contextTrimmed: number;
@@ -194,6 +197,8 @@ export async function chatWithAssistantStream(
             droppedCount?: number;
             searching?: boolean;
             query?: string;
+            /** 正在执行的工具（name/detail），用于显示生成进度 */
+            tool?: { name?: string; detail?: string };
             sources?: Array<{ title: string; url: string }>;
             usage?: TokenUsage;
           };
@@ -201,6 +206,9 @@ export async function chatWithAssistantStream(
           if (obj.reasoning && onReasoning) onReasoning(obj.reasoning);
           if (obj.error) throw new Error(obj.error);
           if (obj.debug) console.warn('[AI debug]', obj.debug);
+          if (obj.tool && onToolStatus) {
+            onToolStatus({ name: obj.tool.name ?? '', ...(obj.tool.detail ? { detail: obj.tool.detail } : {}) });
+          }
           if (obj.truncated) truncated = true;
           if (typeof obj.contextTrimmed === 'number') contextTrimmed = obj.contextTrimmed;
           if (obj.summarized) summarized = true;

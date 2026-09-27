@@ -1,8 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DIFFICULTY_BUCKETS,
+  UNKNOWN_DIFFICULTY_BUCKET,
   atcoderThetaToRating,
   cfRatingTitle,
+  compareDifficultyBuckets,
+  difficultyBucketOf,
   difficultyFields,
   nativeDifficultyLabel,
   parseIcpcTier,
@@ -10,6 +14,50 @@ import {
   parseNowcoderScore,
   toCfRating,
 } from '../../shared/src/difficulty.ts';
+
+// ---------- 难度分档（唯一真源，issue 37） ----------
+
+test('difficulty buckets: 分档连续无缝、升序、最高档无上限', () => {
+  assert.ok(DIFFICULTY_BUCKETS.length > 0);
+  const first = DIFFICULTY_BUCKETS[0]!;
+  assert.equal(first.key, '<1200');
+  assert.equal(first.min, null); // 最低档无下界（difficulty 恒非负）
+  assert.equal(first.max, 1199);
+  for (let i = 1; i < DIFFICULTY_BUCKETS.length; i += 1) {
+    const prev = DIFFICULTY_BUCKETS[i - 1]!;
+    const cur = DIFFICULTY_BUCKETS[i]!;
+    assert.equal(cur.min, (prev.max ?? 0) + 1, `档位必须无缝衔接：${prev.key} → ${cur.key}`);
+    assert.ok(cur.max === null || cur.max > cur.min!, `档位区间必须非空：${cur.key}`);
+  }
+  // 用户要求：`2200+` 拆成 `2200-2599` 与 `2600+`，前者紧接 1900-2199
+  const keys = DIFFICULTY_BUCKETS.map((b) => b.key);
+  assert.deepEqual(keys, ['<1200', '1200-1399', '1400-1599', '1600-1899', '1900-2199', '2200-2599', '2600+']);
+  assert.equal(DIFFICULTY_BUCKETS[DIFFICULTY_BUCKETS.length - 1]!.max, null);
+});
+
+test('difficultyBucketOf: 边界值落在正确的档，未知不并入最低档', () => {
+  const cases: Array<[number | null | undefined, string]> = [
+    [0, '<1200'], [1199, '<1200'], [1200, '1200-1399'], [1399, '1200-1399'],
+    [1400, '1400-1599'], [1599, '1400-1599'], [1600, '1600-1899'], [1899, '1600-1899'],
+    [1900, '1900-2199'], [2199, '1900-2199'], [2200, '2200-2599'], [2599, '2200-2599'],
+    [2600, '2600+'], [3500, '2600+'],
+    [null, UNKNOWN_DIFFICULTY_BUCKET], [undefined, UNKNOWN_DIFFICULTY_BUCKET], [Number.NaN, UNKNOWN_DIFFICULTY_BUCKET],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(difficultyBucketOf(input), expected, `difficulty=${String(input)}`);
+  }
+});
+
+test('compareDifficultyBuckets: 难度升序，未知恒排最后（图表现场顺序 bug）', () => {
+  // 现场（issue 37）：柱状图横轴是 1400-1599 在 1200-1399 之前、1900-2199 在 1600-1899 之前
+  const unordered = ['2600+', '1400-1599', '未知', '1200-1399', '2200-2599', '1900-2199', '1600-1899', '<1200'];
+  assert.deepEqual([...unordered].sort(compareDifficultyBuckets), [
+    '<1200', '1200-1399', '1400-1599', '1600-1899', '1900-2199', '2200-2599', '2600+', '未知',
+  ]);
+  // 未登记的档名不炸，按「未知」同级的最后处理，且比较稳定
+  assert.equal(compareDifficultyBuckets('未知', '不存在的档'), 0);
+  assert.ok(compareDifficultyBuckets('2600+', '未知') < 0);
+});
 
 test('difficulty: 洛谷 1-8 档映射为实测中位数，0 为未知', () => {
   // 证据：洛谷 type=CF 镜像题 × CF API rating 共 737 对（见 spec §2.2）

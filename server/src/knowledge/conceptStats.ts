@@ -21,6 +21,7 @@
  * 也能让消费端按需求决定是否夹取。
  */
 import type { Db } from '../db/index.ts';
+import { difficultyBucketOf } from '../../../shared/src/difficulty.ts';
 
 export const INFORMATIVENESS_FLOOR = 0.25;
 
@@ -36,16 +37,8 @@ export function informativeness(p: number): number {
   return Math.min(1, Math.max(0, 1 - h));
 }
 
-/** 难度桶（与 routes/problems.ts 的 DIFFICULTY_BUCKETS / bucketName 同口径） */
-function bucketOf(difficulty: number | null): string {
-  if (difficulty === null) return '未知';
-  if (difficulty < 1200) return '<1200';
-  if (difficulty < 1400) return '1200-1399';
-  if (difficulty < 1600) return '1400-1599';
-  if (difficulty < 1900) return '1600-1899';
-  if (difficulty < 2200) return '1900-2199';
-  return '2200+';
-}
+/** 难度桶：唯一真源在 shared/src/difficulty.ts（分档改动只需改那一处，含 routes/problems 的口径） */
+const bucketOf = difficultyBucketOf;
 
 /**
  * 重算并物化全部 (code × bucket) 统计。幂等：同一数据重复执行结果一致。

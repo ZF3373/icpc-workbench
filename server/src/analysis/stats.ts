@@ -1,20 +1,15 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
 import { PLATFORMS, canonicalTag } from '../../../shared/src/index.ts';
+import { compareDifficultyBuckets, difficultyBucketOf } from '../../../shared/src/difficulty.ts';
 import type { Db } from '../db/index.ts';
 import { filterNoiseTags } from './tags.ts';
 import { knowledgeTagsSql } from '../knowledge/store.ts';
 
-export function bucketForDifficulty(difficulty: number | null | undefined): string {
-  if (difficulty === null || difficulty === undefined || !Number.isFinite(difficulty)) {
-    return '未知';
-  }
-  const bounds = [1200, 1400, 1600, 1900, 2200];
-  const labels = ['<1200', '1200-1399', '1400-1599', '1600-1899', '1900-2199', '2200+'];
-  for (let i = 0; i < bounds.length; i += 1) {
-    if (difficulty < bounds[i]) return labels[i];
-  }
-  return labels[labels.length - 1];
-}
+/**
+ * 难度分档（分档表唯一真源在 shared/src/difficulty.ts，此处保留既有导入名）。
+ * 分档边界与档名不得在本文件另写一份。
+ */
+export const bucketForDifficulty = difficultyBucketOf;
 
 export interface CountStat {
   attempts: number;
@@ -144,10 +139,14 @@ export function computeOverall(
       ...toStat(s),
       solved: solvedByPlatform.get(platform)?.size ?? 0,
     })),
-    byDifficulty: [...byDifficulty.entries()].map(([bucket, s]) => ({
-      bucket,
-      ...toStat(s),
-    })),
+    byDifficulty: [...byDifficulty.entries()]
+      .map(([bucket, s]) => ({
+        bucket,
+        ...toStat(s),
+      }))
+      // 必须按档位升序返回：Map 的插入序取决于提交行的先后，数据一变横轴顺序就变 ——
+      // 现场表现为 1400-1599 排在 1200-1399 前面（issue 37「统计图的神秘问题」）。
+      .sort((a, b) => compareDifficultyBuckets(a.bucket, b.bucket)),
     byTag: [...byTag.entries()].map(([tag, s]) => ({
       tag,
       ...toStat(s),

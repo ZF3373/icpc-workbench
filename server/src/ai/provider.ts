@@ -55,7 +55,20 @@ export interface ChatOptions {
   signal?: AbortSignal;
   /** 是否解析 DSML 标记为 tool_calls（默认 true；二轮流式设为 false 避免 DeepSeek 误触发） */
   parseDsmlTools?: boolean;
+  /** 流式读取的空闲超时（毫秒，默认 STREAM_STALL_TIMEOUT_MS；测试可注入小值） */
+  stallTimeoutMs?: number;
 }
+
+/**
+ * 流式读取的空闲看门狗阈值。
+ *
+ * 为什么需要：正文读取阶段故意不受 timeoutMs 约束（AI 生成可能耗时数分钟），
+ * 但上游「连上了却再也不发数据」（聚合网关挂住、中间设备吞流、连接半开）时
+ * reader.read() 永不返回 —— 前端表现为「正文已经输出完，按钮却一直停在停止生成」
+ * 且没有任何错误可看（issue 36）。空闲超过这个阈值就掐断并抛出可读错误。
+ * 阈值取 120s：远大于正常 token 间隔（含长思考、工具执行之间的间隙），不会误杀。
+ */
+export const STREAM_STALL_TIMEOUT_MS = 120_000;
 
 /** baseURL → chat/completions 端点：容忍用户直接粘贴完整端点地址 */
 export function chatUrl(base: string): string {
@@ -557,10 +570,35 @@ export class AiProvider {
       }
     };
 
+    // 空闲看门狗：每收到一段数据就重置；长时间没有数据即掐断（见 STREAM_STALL_TIMEOUT_MS 注释）
+    const stallMs = opts.stallTimeoutMs ?? STREAM_STALL_TIMEOUT_MS;
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearStall = (): void => {
+      if (stallTimer !== null) {
+        clearTimeout(stallTimer);
+        stallTimer = null;
+      }
+    };
+    const armStall = (): void => {
+      clearStall();
+      stallTimer = setTimeout(() => {
+        connectController.abort(
+          new DOMException(`AI 响应中断（${Math.ceil(stallMs / 1000)}s 内未收到任何数据）`, 'TimeoutError'),
+        );
+      }, stallMs);
+    };
+
     try {
       for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        armStall();
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await reader.read();
+        } finally {
+          clearStall();
+        }
+        if (chunk.done) break;
+        const value = chunk.value;
         buffer += decoder.decode(value, { stream: true });
 
         // SSE 帧以双换行分隔，逐帧解析
@@ -642,6 +680,7 @@ export class AiProvider {
         }
       }
     } finally {
+      clearStall();
       reader.releaseLock();
       // 流结束后移除调用方中断监听（用户点「停止」时 controller 已 abort，这里兜底防泄漏）
       opts.signal?.removeEventListener('abort', onCallerAbort);

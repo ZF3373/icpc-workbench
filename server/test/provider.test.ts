@@ -212,3 +212,77 @@ describe('AiProvider signal', () => {
     );
   });
 });
+
+// ---------- 流式空闲看门狗（issue 36） ----------
+
+describe('AiProvider chatStream 空闲看门狗', () => {
+  /**
+   * 构造「先发一段就永不再发」的响应体：模拟上游网关挂住（连接半开）。
+   * 旧实现下 reader.read() 永远挂起 → 前端正文输出完却一直停在「停止生成」，且无任何报错。
+   */
+  function stallingFetch(): typeof fetch {
+    return async (_input: URL | RequestInfo, init?: RequestInit): Promise<Response> => {
+      const signal = init?.signal;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"前半段"}}]}\n\n'));
+          signal?.addEventListener('abort', () => {
+            controller.error(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+          });
+        },
+      });
+      return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+    };
+  }
+
+  it('上游挂住不发数据时按空闲阈值掐断并抛出可读错误', async () => {
+    const provider = new AiProvider(CFG, stallingFetch());
+    const received: string[] = [];
+    await assert.rejects(
+      (async () => {
+        for await (const delta of provider.chatStream([{ role: 'user', content: 'hi' }], { stallTimeoutMs: 80 })) {
+          received.push(delta);
+        }
+      })(),
+      /未收到任何数据/,
+    );
+    // 掐断前收到的内容仍要交付（不能吞字）
+    assert.deepEqual(received, ['前半段']);
+  });
+
+  it('数据持续到达时看门狗不会误杀（间隔小于阈值）', async () => {
+    const sse = [
+      'data: {"choices":[{"delta":{"content":"a"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"b"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"c"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ].join('');
+    const fetchFn: typeof fetch = async (): Promise<Response> =>
+      new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+    const provider = new AiProvider(CFG, fetchFn);
+    let content = '';
+    for await (const delta of provider.chatStream([{ role: 'user', content: 'hi' }], { stallTimeoutMs: 80 })) {
+      content += delta;
+    }
+    assert.equal(content, 'abc');
+  });
+
+  it('流结束（[DONE]）后不再残留看门狗定时器', async () => {
+    const sse = ['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', 'data: [DONE]\n\n'].join('');
+    const fetchFn: typeof fetch = async (): Promise<Response> =>
+      new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+    const provider = new AiProvider(CFG, fetchFn);
+    let content = '';
+    for await (const delta of provider.chatStream([{ role: 'user', content: 'hi' }], { stallTimeoutMs: 50 })) {
+      content += delta;
+    }
+    assert.equal(content, 'ok');
+    // 阈值 50ms 已过：若定时器残留会 abort 掉已结束的流（后续调用会莫名失败）
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    let again = '';
+    for await (const delta of provider.chatStream([{ role: 'user', content: 'hi' }], { stallTimeoutMs: 50 })) {
+      again += delta;
+    }
+    assert.equal(again, 'ok');
+  });
+});

@@ -51,7 +51,8 @@ test('recomputeConceptStats: 按难度桶物化占比与信息量', () => {
 
 test('recomputeConceptStats: 按难度桶分层 —— 同一 code 在不同桶得到不同信息量', () => {
   // spec §2.3：膨胀是难度相关的。同一「贪心」在低难度桶占比高（低信息量）、
-  // 在 2200+ 桶占比低（较高信息量），两个桶必须分别统计，不可混算。
+  // 在高难度桶占比低（较高信息量），两个桶必须分别统计，不可混算。
+  // 注：2400 落在分档后的 2200-2599 桶（issue 37 把原 `2200+` 拆成两档）。
   const db = createDb(':memory:');
   db.prepare("INSERT OR IGNORE INTO platforms (id,name,has_official_api) VALUES ('codeforces','CF',1)").run();
   const insP = db.prepare("INSERT INTO problems (platform,problem_key,title,difficulty,tags) VALUES ('codeforces',?,'T',?,'[]')");
@@ -63,7 +64,7 @@ test('recomputeConceptStats: 按难度桶分层 —— 同一 code 在不同桶�
     insP.run(`L${i}`, 900);
     if (i < 5) insK.run(`L${i}`);
   }
-  // 2200+ 桶：20 题里 1 题标贪心（占比 0.05 → 较高信息量）
+  // 2200-2599 桶：20 题里 1 题标贪心（占比 0.05 → 较高信息量）
   for (let i = 0; i < 20; i += 1) {
     insP.run(`H${i}`, 2400);
     if (i === 0) insK.run(`H${i}`);
@@ -71,7 +72,7 @@ test('recomputeConceptStats: 按难度桶分层 —— 同一 code 在不同桶�
   recomputeConceptStats(db);
 
   const low = conceptStatsFor(db, '<1200').get('basic.greedy');
-  const high = conceptStatsFor(db, '2200+').get('basic.greedy');
+  const high = conceptStatsFor(db, '2200-2599').get('basic.greedy');
   assert.ok(low !== undefined && high !== undefined, '两个桶都应有贪心的统计');
   assert.ok(low! < high!, `低难度桶信息量(${low}) 应低于高难度桶(${high})`);
   // 分层验证：两桶的 share 分别按各自桶内总题数计算（都是 20 题）

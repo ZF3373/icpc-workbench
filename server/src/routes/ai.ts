@@ -56,6 +56,19 @@ interface IncomingAttachment {
   textContent?: unknown;
 }
 
+/** 通过校验后的轮次（role/content 类型已在上方循环里确认；供后续 map/filter 使用） */
+type ValidTurn = IncomingTurn & { role: 'user' | 'assistant'; content: string };
+
+/**
+ * 单次对话允许携带的轮次上限。
+ * 超出部分**从最早开始丢弃**（与 trimContext 的 token 裁剪同向，并复用同一条
+ * 「已自动裁剪最早的 N 条消息」提示），而不是整单拒绝 —— 长会话不该发不出消息。
+ */
+const MAX_TURNS = 60;
+
+/** 硬上限：只用于挡住异常/恶意超大请求体，正常会话不该碰到 */
+const HARD_MAX_TURNS = 1000;
+
 /** 助手提示词模板：懒加载（SEA bundle 注入值优先，同 planService 惯例） */
 let promptOverride: string | null = null;
 let promptFromDisk: string | null = null;
@@ -326,12 +339,19 @@ export function aiRoutes(
   // OpenAI 多模态内容块（file 引用 + 文本）后调用上游。
   r.post('/chat', asyncHandler(async (req, res) => {
     const { messages, planId, listId, contestKey } = req.body ?? {};
-    const turns = Array.isArray(messages) ? (messages as IncomingTurn[]) : [];
-    const BAD_MSGS = 'messages 必填：1-60 条 {role: user|assistant, content} 轮次';
-    if (turns.length === 0 || turns.length > 60) {
+    const rawTurns = Array.isArray(messages) ? (messages as IncomingTurn[]) : [];
+    // 轮次数量本身不再是「多则拒绝」：超过 MAX_TURNS 的部分在下方按最早优先裁剪并告知前端，
+    // 只有 0 条 / 超过硬上限才报错（文案要能区分这两种情况，否则用户看到「1-60」会误判）
+    const BAD_MSGS = `messages 必填：至少 1 条 {role: user|assistant, content} 轮次（最多 ${HARD_MAX_TURNS} 条）`;
+    if (rawTurns.length === 0) {
       return res.status(400).json({ error: BAD_MSGS });
     }
-    for (const m of turns) {
+    if (rawTurns.length > HARD_MAX_TURNS) {
+      return res.status(400).json({
+        error: `messages 轮次过多：最多 ${HARD_MAX_TURNS} 条（当前 ${rawTurns.length} 条）`,
+      });
+    }
+    for (const m of rawTurns) {
       if (typeof m !== 'object' || m === null || (m.role !== 'user' && m.role !== 'assistant')) {
         return res.status(400).json({ error: BAD_MSGS });
       }
@@ -366,10 +386,21 @@ export function aiRoutes(
           }
         }
       }
-      // 文本不能为空；user 消息带附件时允许空文本（纯图片提问）
-      if (m.content.trim() === '' && !(m.role === 'user' && Array.isArray(m.attachments))) {
-        return res.status(400).json({ error: BAD_MSGS });
-      }
+    }
+    /**
+     * 空内容轮次直接丢弃，不整单拒绝。
+     *
+     * 现场（issue 36）：模型偶发返回空回复时，前端会留下一条 content='' 的 assistant 轮次；
+     * 历史里一旦有它，之后**每一轮**都会撞上「messages 必填」而被整体拒绝 —— 报错文案指向
+     * 轮次数量，真正的原因却是一条空轮次，用户无从自救（只能删掉整个会话）。
+     * 空轮次不携带任何信息（上游 API 也普遍拒绝空 content），丢掉即可。
+     * user 纯附件提问（content 为空但有 attachments）仍保留。
+     */
+    const turns = (rawTurns as ValidTurn[]).filter(
+      (m) => m.content.trim() !== '' || (m.role === 'user' && Array.isArray(m.attachments) && m.attachments.length > 0),
+    );
+    if (turns.length === 0) {
+      return res.status(400).json({ error: 'messages 无有效内容：所有轮次的 content 均为空' });
     }
     // user 消息带附件时：图片附件转为 file 内容块，文本附件拼接到消息文本
     // 注意：本地提取文本的附件（PDF/文档/文本文件）fileId 形如 doc-…/text-…，
@@ -600,12 +631,18 @@ export function aiRoutes(
     const aiCfg = getAiConfig();
     const maxTokens = aiCfg.maxTokens ?? 393216;
     const contextWindow = aiCfg.contextWindow ?? 1024000;
-    const { messages: trimmedMsgs, trimmed: trimmedCount } = trimContext(
+    // 长会话带动轮次上限：超过 MAX_TURNS 的旧轮次先丢（与 token 裁剪同向：都从最早开始丢），
+    // 再按 token 预算裁剪。两次裁剪都是「丢前缀」，故 trimmedCount 可以直接相加，
+    // 摘要用的 normalized.slice(0, trimmedCount) 恰好覆盖被丢掉的整段（旧实现：>60 条直接 400）。
+    const turnTrimmed = Math.max(0, normalized.length - MAX_TURNS);
+    const cappedMsgs = turnTrimmed > 0 ? normalized.slice(turnTrimmed) : normalized;
+    const { messages: trimmedMsgs, trimmed: tokenTrimmed } = trimContext(
       estimateTokens(system),
-      normalized,
+      cappedMsgs,
       contextWindow,
       maxTokens,
     );
+    const trimmedCount = turnTrimmed + tokenTrimmed;
 
     // 客户端中断传播：前端 AbortController.abort() → 取消上游 AI 请求与后续工具轮次，
     // 避免用户点「停止」后仍继续烧配额（参考 opencode 的 Cancel + ctx.Done()）。
@@ -698,10 +735,18 @@ export function aiRoutes(
               args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
             } catch { /* 参数解析失败，传空对象 */ }
 
-            // 通知前端正在执行工具
+            // 通知前端正在执行工具。issue 36 现场：正文已经输出完、工具还在跑（检索/抓网页
+            // 可能十几秒），前端只有「停止生成」一个状态，用户以为卡死就去点停止。
+            // 因此这里把工具名与关键参数也发出去，前端据此显示「正在检索…」这类进度。
             const query = typeof args.query === 'string' ? args.query : '';
-            if (query) {
-              res.write(`data: ${JSON.stringify({ searching: true, query })}\n\n`);
+            const detail =
+              typeof args.url === 'string' ? args.url : typeof args.problem === 'string' ? args.problem : '';
+            if (!res.writableEnded) {
+              res.write(`data: ${JSON.stringify({ tool: { name: tc.function.name, detail } })}\n\n`);
+              // 兼容既有前端事件（web_search 的检索词）
+              if (query) {
+                res.write(`data: ${JSON.stringify({ searching: true, query })}\n\n`);
+              }
             }
 
             // 通过注册表执行工具

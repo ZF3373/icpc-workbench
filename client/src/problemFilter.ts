@@ -3,6 +3,10 @@
  * 标签按「逻辑或」组合：命中任一所选标签（含同义别名，如 二分 ↔ binary search）即保留该题。
  */
 import { expandTag } from '../../shared/src/index.ts'
+import {
+  DIFFICULTY_BUCKETS as SHARED_DIFFICULTY_BUCKETS,
+  UNKNOWN_DIFFICULTY_BUCKET,
+} from '../../shared/src/difficulty.ts'
 
 export interface ProblemFilterInput {
   tags: string[]
@@ -33,18 +37,14 @@ export interface DifficultyBucket {
 }
 
 /**
- * 难度分桶。与后端 `server/src/routes/problems.ts` 的 `DIFFICULTY_BUCKETS`
- * 以及 `analysis/stats.bucketForDifficulty` 必须同口径——改一处要三处同步。
- * min/max 均为 null 表示「未知难度」桶。
+ * 难度分桶：**定义来自 shared/src/difficulty.ts（唯一真源）**，前端只做两件事：
+ *   · 把 '<1200' 的下界补成 0（服务端把难度区间下推成闭区间，`min: null` 无法当区间用）；
+ *   · 追加「未知」桶（min/max 均为 null）。
+ * 服务端 DIFFICULTY_BUCKETS / conceptStats 用同一份定义，改分档只改 shared 一处。
  */
 export const DIFFICULTY_BUCKETS: DifficultyBucket[] = [
-  { key: '<1200', min: 0, max: 1199 },
-  { key: '1200-1399', min: 1200, max: 1399 },
-  { key: '1400-1599', min: 1400, max: 1599 },
-  { key: '1600-1899', min: 1600, max: 1899 },
-  { key: '1900-2199', min: 1900, max: 2199 },
-  { key: '2200+', min: 2200, max: null },
-  { key: '未知', min: null, max: null },
+  ...SHARED_DIFFICULTY_BUCKETS.map((b) => ({ key: b.key, min: b.min ?? 0, max: b.max })),
+  { key: UNKNOWN_DIFFICULTY_BUCKET, min: null, max: null },
 ]
 
 /**

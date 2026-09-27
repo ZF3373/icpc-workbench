@@ -7,6 +7,61 @@ import type { PlatformId } from './index.ts';
 export const CF_RATING_MIN = 800;
 export const CF_RATING_MAX = 3500;
 
+/**
+ * 难度分档（CF rating 统一标尺）的**唯一真源**。
+ *
+ * 为什么放这里：分档此前在 4 处各写一份（server 的 analysis/stats、routes/problems、
+ * knowledge/conceptStats 与客户端 problemFilter），口径漂移过、也漏改过；而且最高档
+ * 曾只有 `2200+` —— 2200 的题和 3400 的题挤在同一根柱子里，看不出高段分布（issue 37）。
+ * 现按用户反馈拆成 `2200-2599` 与 `2600+`。
+ *
+ * 顺序即展示顺序（rating 升序）。`未知`（difficulty 为 null）不在此列，见
+ * UNKNOWN_DIFFICULTY_BUCKET；`max: null` 表示无上限。
+ */
+export interface DifficultyBucketRange {
+  key: string;
+  min: number | null;
+  max: number | null;
+}
+
+export const DIFFICULTY_BUCKETS: readonly DifficultyBucketRange[] = [
+  { key: '<1200', min: null, max: 1199 },
+  { key: '1200-1399', min: 1200, max: 1399 },
+  { key: '1400-1599', min: 1400, max: 1599 },
+  { key: '1600-1899', min: 1600, max: 1899 },
+  { key: '1900-2199', min: 1900, max: 2199 },
+  { key: '2200-2599', min: 2200, max: 2599 },
+  { key: '2600+', min: 2600, max: null },
+];
+
+/** 难度未知（difficulty 为 null/非有限值）的档名 */
+export const UNKNOWN_DIFFICULTY_BUCKET = '未知';
+
+/** rating → 档名；未知难度返回 `未知`（不猜、不并入最低档） */
+export function difficultyBucketOf(difficulty: number | null | undefined): string {
+  if (difficulty === null || difficulty === undefined || !Number.isFinite(difficulty)) {
+    return UNKNOWN_DIFFICULTY_BUCKET;
+  }
+  for (const b of DIFFICULTY_BUCKETS) {
+    if (b.max === null || difficulty <= b.max) return b.key;
+  }
+  return DIFFICULTY_BUCKETS[DIFFICULTY_BUCKETS.length - 1]!.key;
+}
+
+/**
+ * 档名的展示/排序权重：按 DIFFICULTY_BUCKETS 的升序下标；
+ * `未知` 与任何未登记的档名一律排到最后（保证图表横轴顺序稳定）。
+ */
+export function difficultyBucketRank(bucket: string): number {
+  const i = DIFFICULTY_BUCKETS.findIndex((b) => b.key === bucket);
+  return i === -1 ? DIFFICULTY_BUCKETS.length : i;
+}
+
+/** 档名比较器：升序，`未知` 恒在最后 */
+export function compareDifficultyBuckets(a: string, b: string): number {
+  return difficultyBucketRank(a) - difficultyBucketRank(b);
+}
+
 export type DifficultyScale =
   | 'cf-rating'
   | 'luogu-2026-06'

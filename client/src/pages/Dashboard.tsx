@@ -34,6 +34,7 @@ import { applyModuleOrder, loadModuleOrder, saveModuleOrder, type ModuleId } fro
 import { platformName, rateColor } from '../ui'
 import { get, post } from '../api'
 import type { PlatformId, SyncResult } from '../../../shared/src/index.ts'
+import { compareDifficultyBuckets } from '../../../shared/src/difficulty.ts'
 
 interface SyncAllResponse {
   results: Array<SyncResult & { durationMs?: number }>
@@ -351,12 +352,9 @@ export default function Dashboard() {
 
   const diffData = stats.byDifficulty
     .slice()
-    .sort((a, b) => {
-      // "未知" 排到最后
-      if (a.bucket === '未知' && b.bucket !== '未知') return 1
-      if (a.bucket !== '未知' && b.bucket === '未知') return -1
-      return 0
-    })
+    // 横轴必须按难度升序（未知最后）：服务端已按档位排序，这里再排一次是为了
+    // 兼容旧服务端/本地缓存响应的数据顺序 —— 旧版图里 1400-1599 会排在 1200-1399 前（issue 37）
+    .sort((a, b) => compareDifficultyBuckets(a.bucket, b.bucket))
     .map((d: DifficultyStat) => ({
       bucket: d.bucket,
       AC: d.ac,
