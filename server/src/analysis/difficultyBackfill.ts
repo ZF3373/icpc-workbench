@@ -14,6 +14,7 @@ import {
   type BankFetchResult,
 } from '../adapters/problemBank.ts';
 import { asHttpClient, sleep } from '../adapters/http.ts';
+import { HOST_MIN_INTERVAL_MS } from '../net/hostThrottle.ts';
 import { purifyTags } from '../import/problemWritePolicy.ts';
 import { effectiveDataDir } from '../knowledge/store.ts';
 import {
@@ -103,6 +104,27 @@ const RESOURCES_TTL_MS = 24 * 3600 * 1000;
 const JISUANKE_BANK_PAGE = 20;
 
 /**
+ * 回填自带的**兜底间隔** ＝ 全局按域名限速的安全下限（`net/hostThrottle.ts` 的 HOST_MIN_INTERVAL_MS）。
+ *
+ * 为什么必须与下限取同一个值：
+ * - 线上「节流间隔是下限而非叠加」（两者取较大者），所以把适配器自带的 sleep 抬到同值
+ *   **不会让线上额外变慢**；全局节流表仍可经设置页倍率（1×–5×）调慢。
+ * - 但适配器原来的自带值（洛谷 0.3s/题、牛客 0.5s/页、代码源 0.4s/页…）远快于安全下限，
+ *   一旦某条路径没挂全局节流层（本地脚本、单测、未来重构遗漏），它就成了**实际节奏**
+ *   —— 那正是会触发平台风控的频率（2026-09-27 实测：不走节流层时牛客 200 页按 0.5s/页 连发）。
+ *   因此这里把兜底钉到下限：任何路径下都不会比安全下限更快。
+ * - 引用常量而不是写死数字：改下限时这里自动跟随，不会两边漂移。
+ */
+const FLOOR_MS = {
+  luogu: HOST_MIN_INTERVAL_MS['www.luogu.com.cn'],
+  nowcoder: HOST_MIN_INTERVAL_MS['ac.nowcoder.com'],
+  daimayuan: HOST_MIN_INTERVAL_MS['bs.daimayuan.top'],
+  leetcode: HOST_MIN_INTERVAL_MS['leetcode.cn'],
+  jisuanke: HOST_MIN_INTERVAL_MS['www.jisuanke.com'],
+  atcoder: HOST_MIN_INTERVAL_MS['kenkoooo.com'],
+} as const;
+
+/**
  * 平台限速与失败保护：
  * - `delayMs`：**逐题**请求之间的间隔（只有逐题型平台 luogu 会逐题请求上游；
  *   整表型平台（CF/AtCoder/力扣/计蒜客/**牛客/代码源**）的元数据来自整表/缓存，
@@ -118,9 +140,12 @@ const JISUANKE_BANK_PAGE = 20;
  *   故取 20000 让它们在**一轮**内全部收敛（整表已拉、分批只会让下一轮重下整表）。
  */
 const PLATFORM_LIMITS: Record<PlatformId, { delayMs: number; failLimit: number | null; maxPerRun: number }> = {
-  // 牛客：整表分页扫描（见 fetchNowcoderTable）→ 不再逐题请求
+  // 牛客：整表分页扫描（见 fetchNowcoderTable）→ 不再逐题请求；页间节奏见 FLOOR_MS.nowcoder
   nowcoder: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
-  luogu: { delayMs: 300, failLimit: 8, maxPerRun: 400 }, // ≈2 分钟
+  // 洛谷：唯一的逐题平台。delayMs 取主机安全下限（4s/题）—— 线上与全局节流取较大者，不额外变慢，
+  // 但保证不走节流层时也不会用 0.3s/题 的频率连发（那正是会招风控的节奏）。
+  // 一轮最坏耗时 = maxPerRun × delayMs ≈ 400 × 4s ≈ 27 分钟（可用设置页倍率整体调慢）。
+  luogu: { delayMs: FLOOR_MS.luogu, failLimit: 8, maxPerRun: 400 },
   // 代码源：整表 JSON 分页扫描（见 fetchDaimayuanTable）→ 不再逐题请求
   daimayuan: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
   // 整表平台：一次请求就拿到全库元数据，逐题循环只是查内存 → 上限只限制「本次写库量」，
@@ -135,7 +160,7 @@ const PLATFORM_LIMITS: Record<PlatformId, { delayMs: number; failLimit: number |
 
 /**
  * 「仅缺原生难度」在**逐题查询**平台上默认跳过（计入 deferred），因为这类题的 CF 难度已经有了，
- * 只是缺原生原文；而逐题平台每补一行要单独打一次上游（洛谷 300ms/题），一个老库动辄几千行
+ * 只是缺原生原文；而逐题平台每补一行要单独打一次上游（洛谷 ≥4s/题），一个老库动辄几千行
  * —— 每次点击都在为「不影响展示的原生列」发几百个请求，既慢又招风控。
  * 需要补齐原生列时显式开 `includeNativeOnly`（代价是这一轮的耗时）。
  *
@@ -152,8 +177,17 @@ const PER_PROBLEM_NATIVE_DEFERRED: ReadonlySet<PlatformId> = new Set<PlatformId>
 /** 未登记平台的兜底限额：不发逐题请求、不熔断、本次不设额外上限（见 backfillPlatform） */
 const DEFAULT_PLATFORM_LIMITS = { delayMs: 0, failLimit: null, maxPerRun: 0 } as const;
 
-/** 整表扫描的页间/请求间间隔（力扣分页 400ms；计蒜客分页 300ms；AtCoder 要求 >= 1s） */
-const SCAN_DELAY_MS = { leetcode: 400, jisuanke: 300, atcoder: 1000 } as const;
+/**
+ * 整表扫描的页间/请求间间隔：同样取各主机的**安全下限**（见 FLOOR_MS）。
+ * 这些值原先是按平台自己声明的「最低要求」定的（力扣 400ms / 计蒜客 300ms / AtCoder ≥1s），
+ * 安全下限普遍更严（1.5s–2.5s）；线上与全局节流取较大者 → 不额外变慢，
+ * 但不走节流层时也不会用「作品站最低要求」的频率连发。
+ */
+const SCAN_DELAY_MS = {
+  leetcode: FLOOR_MS.leetcode,
+  jisuanke: FLOOR_MS.jisuanke,
+  atcoder: FLOOR_MS.atcoder,
+} as const;
 
 /** 一次回填运行的上下文：整表平台只拉一次，逐题平台用共享的 tag 字典 */
 interface BackfillCtx {
@@ -645,6 +679,8 @@ async function fetchNowcoderTable(ctx: BackfillCtx): Promise<Map<string, Problem
   const bank = await fetchNowcoderBank(ctx.fetchFn, {
     // 库内目标通常几百行：全部命中即停，避免为几道题扫完整表（见 BankFetchOptions.wantKeys）
     wantKeys: ctx.wanted.get('nowcoder'),
+    // 页间兜底间隔 = 主机安全下限（见 FLOOR_MS）：不走全局节流层时也不会 0.5s/页 连发
+    pageDelayMs: FLOOR_MS.nowcoder,
     max: 20000,
   });
   return bankToTable(bank);
@@ -658,6 +694,7 @@ async function fetchNowcoderTable(ctx: BackfillCtx): Promise<Map<string, Problem
 async function fetchDaimayuanTable(ctx: BackfillCtx): Promise<Map<string, ProblemMeta>> {
   const bank = await fetchDaimayuanBank(ctx.fetchFn, {
     wantKeys: ctx.wanted.get('daimayuan'),
+    pageDelayMs: FLOOR_MS.daimayuan,
     max: 20000,
   });
   return bankToTable(bank);
@@ -766,6 +803,8 @@ export function cleanNcTitle(title: string): string {
  *   代码源覆盖 459/459、修正 411 行）。洛谷整表对本库覆盖率仅 63/2418，故仍保持逐题 + 默认跳过。
  * - 每平台单次运行题数上限见 PLATFORM_LIMITS.maxPerRun：未处理的题数随结果回传（capped），
  *   下次点击从剩余目标继续
+ * - **平台按实测成本升序处理**（见 PLATFORM_ORDER）：qoj/atcoder 等几秒完成，牛客整表扫描垫底；
+ *   这样中途被放弃或进程被杀时，先跑完的平台成果已经落库，而不会「等都等了、qoj 一行都没写」
  * - 写库统一走 difficulty_source='backfill'（优先级 3）：难度、原生难度、标度、标题、标签
  *   都只在「库内为空 / 上游有值」时补齐，绝不覆盖已有手动值（manual）
  */
@@ -818,7 +857,7 @@ export async function backfillDifficulties(
   const results: PlatformBackfillResult[] = [];
   // 只被 deferred 的平台也要出结果：否则「本平台全部是仅缺原生值的行」时整条信息被吞掉，
   // 前端会误显示成「没有待补的题」
-  for (const platform of new Set<PlatformId>([...byPlatform.keys(), ...deferredByPlatform.keys()])) {
+  for (const platform of orderedPlatforms([...byPlatform.keys(), ...deferredByPlatform.keys()])) {
     const list = byPlatform.get(platform) ?? [];
     const r =
       list.length > 0
@@ -840,6 +879,39 @@ export async function backfillDifficulties(
     results.push(r);
   }
   return results;
+}
+
+/**
+ * 平台处理顺序：**实测成本升序**（便宜、高价值的先做，长扫描放最后）。
+ *
+ * 为什么不能沿用默认顺序（`pickBackfillTargets` 的 `ORDER BY platform` = 字母序）：
+ * 回填是一串**同步**的上游访问，总耗时由最慢的平台决定，而各平台成本差了两个数量级
+ * （2026-09-27 实测：QOJ 目录+榜单 ≈18s、AtCoder 整表 ≈3s、代码源 5 页 ≈8s、
+ * 力扣 ~35 页 ≈53s、计蒜客最多 184 页 ≈276s、洛谷逐题 ≥4s/题 × 数百题 ≈十几分钟、
+ * 牛客整表最多 200 页 ≈400s）。字母序把 qoj 排在第 8（最后）→ 用户要等十几分钟才轮到它；
+ * 更糟的是**中途放弃或进程被杀（开发期 `tsx watch` 因文件变更重启）时，先跑完的成果留下、
+ * 排在后面的平台一行都没写** —— 实测一次被打断的回填只写完 atcoder + CF，qoj 全空，
+ * 用户看到的就是「跑完回填，QOJ 还是没难度标签」。
+ * 按成本升序后，即使被打断，用户也已经拿到绝大多数平台的标签；qoj 在头几秒就完成。
+ */
+const PLATFORM_ORDER: readonly PlatformId[] = [
+  'qoj', // ≈18s：目录 + 榜单；一次点击内就能出结果
+  'atcoder', // ≈3s：kenkoooo 两份整表
+  'daimayuan', // ≈8s：Hydro 5 页
+  'codeforces', // ≈10s：problemset.problems 一次拉表（写库量大，但一次请求）
+  'leetcode', // ≈53s：problemsetQuestionList 分页
+  'jisuanke', // ≈276s：题库分页最多 184 页（目标题常年不在题库里 → 常扫满）
+  'luogu', // 逐题 ≥4s/题 × 数百题
+  'nowcoder', // 整表最多 200 页 ≈400s
+];
+
+/** 按 PLATFORM_ORDER 排序；未登记的 platform（配置异常）排在最后，且保持稳定顺序 */
+function orderedPlatforms(platforms: PlatformId[]): PlatformId[] {
+  const rank = (p: PlatformId): number => {
+    const i = PLATFORM_ORDER.indexOf(p);
+    return i === -1 ? PLATFORM_ORDER.length : i;
+  };
+  return [...new Set(platforms)].sort((a, b) => rank(a) - rank(b));
 }
 
 /**

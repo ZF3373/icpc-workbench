@@ -59,6 +59,15 @@ export interface BankFetchOptions {
    * 不传 = 保持原有行为（按 `max` / 页数上限拉完）。
    */
   wantKeys?: ReadonlySet<string>;
+  /**
+   * 覆盖该平台的**页间**间隔（毫秒）。缺省用各平台自带的保守值。
+   *
+   * 存在意义：页间 sleep 是「不走全局按域名节流层时的最后一道防线」。
+   * 回填链路会把这里抬到 `HOST_MIN_INTERVAL_MS` 的安全下限（见 difficultyBackfill），
+   * 保证即使某条路径没挂节流层（脚本 / 单测 / 未来重构遗漏）也不会打出风控级频率；
+   * 线上因为「节流间隔是下限而非叠加」（取较大者），抬到同值**不会额外变慢**。
+   */
+  pageDelayMs?: number;
   /** 进度回调（每完成一页触发） */
   onProgress?: (fetched: { platform: PlatformId; count: number; total: number | null }) => void;
 }
@@ -272,7 +281,7 @@ export async function fetchNowcoderBank(
     if (wantedDone) break;
     if (problems.length >= max) break;
     if (rows.length < NOWCODER_PER_PAGE) break;
-    await sleep(500); // 牛客反爬较强：页间限速
+    await sleep(opts.pageDelayMs ?? 500); // 牛客反爬较强：页间限速
   }
   return { platform: 'nowcoder', problems: problems.slice(0, max), total };
 }
@@ -793,7 +802,7 @@ export async function fetchDaimayuanBank(
     if (problems.length >= max) break;
     if (typeof body.ppcount === 'number' && page >= body.ppcount) break;
     if (list.length < DAIMAYUAN_PER_PAGE) break;
-    await sleep(400); // 页间限速
+    await sleep(opts.pageDelayMs ?? 400); // 页间限速
   }
   return { platform: 'daimayuan', problems: problems.slice(0, max), total };
 }
