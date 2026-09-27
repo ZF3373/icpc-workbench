@@ -88,6 +88,116 @@ test('template categories: create custom category and use it for custom template
   });
 });
 
+// ---------- 自建标签的删除（用户反馈：新建标签后无法删除） ----------
+
+/** 建一个自建标签，返回 key */
+async function createCategory(base: string, name: string): Promise<string> {
+  const res = await fetch(`${base}/categories`, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ name }),
+  });
+  assert.equal(res.status, 200, '建标签应成功');
+  return ((await res.json()) as { key: string }).key;
+}
+
+const categoryKeys = async (base: string): Promise<string[]> => {
+  const body = (await (await fetch(`${base}/categories`)).json()) as {
+    categories: Array<{ key: string; custom: boolean; templateCount?: number }>;
+  };
+  return body.categories.map((c) => c.key);
+};
+
+test('custom categories: 空标签可直接删除，内置分类不可删', async () => {
+  await withServer(async (base) => {
+    const key = await createCategory(base, '临时标签');
+    assert.ok((await categoryKeys(base)).includes(key));
+
+    const builtin = await fetch(`${base}/categories/basic`, { method: 'DELETE' });
+    assert.equal(builtin.status, 400, '内置课程分类必须不可删');
+    assert.match(((await builtin.json()) as { error: string }).error, /内置/);
+
+    const missing = await fetch(`${base}/categories/custom-does-not-exist`, { method: 'DELETE' });
+    assert.equal(missing.status, 404);
+
+    const ok = await fetch(`${base}/categories/${encodeURIComponent(key)}`, { method: 'DELETE' });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), { ok: true, deletedTemplates: 0 });
+
+    assert.ok(!(await categoryKeys(base)).includes(key), '删除后不应再出现在分类清单里');
+    const outline = (await (await fetch(base)).json()) as { categories: Array<{ key: string }> };
+    assert.ok(!outline.categories.some((c) => c.key === key), '课程大纲里也不应再有该标签');
+  });
+});
+
+test('custom categories: 有模板时不带 force 拒绝（409 + count），带 force 连带删除模板与进度', async () => {
+  await withServer(async (base) => {
+    const key = await createCategory(base, '待删标签');
+    const created = await fetch(`${base}/custom`, {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ categoryKey: key, name: '模板 A', difficulty: 3, code: 'int main(){}' }),
+    });
+    const { id } = (await created.json()) as { id: string };
+    await fetch(`${base}/${id}/status`, {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ status: 'mastered' }),
+    });
+
+    // 默认拒绝：误删必须是显式动作
+    const blocked = await fetch(`${base}/categories/${encodeURIComponent(key)}`, { method: 'DELETE' });
+    assert.equal(blocked.status, 409);
+    const blockedBody = (await blocked.json()) as { error: string; count: number };
+    assert.equal(blockedBody.count, 1);
+    assert.match(blockedBody.error, /1 个模板/);
+    assert.ok((await categoryKeys(base)).includes(key), '被拒绝时标签必须还在');
+    const stillThere = (await (await fetch(base)).json()) as {
+      categories: Array<{ key: string; templates: Array<{ id: string }> }>;
+    };
+    assert.equal(stillThere.categories.find((c) => c.key === key)!.templates.length, 1, '被拒绝时模板必须还在');
+
+    // force=1：连带删除模板与其学习进度
+    const forced = await fetch(`${base}/categories/${encodeURIComponent(key)}?force=1`, { method: 'DELETE' });
+    assert.equal(forced.status, 200);
+    assert.deepEqual(await forced.json(), { ok: true, deletedTemplates: 1 });
+    assert.ok(!(await categoryKeys(base)).includes(key));
+    const outline = (await (await fetch(base)).json()) as {
+      customCount: number;
+      mastered: number;
+      categories: Array<{ key: string; templates: unknown[] }>;
+    };
+    assert.equal(outline.customCount, 0, '模板应一并删除');
+    assert.equal(outline.mastered, 0, '学习进度应一并清理（否则残留进度会污染已掌握计数）');
+    assert.ok(!outline.categories.some((c) => c.key === key));
+  });
+});
+
+test('custom categories: GET /categories 下发可选分类清单（含自建标签与模板数）', async () => {
+  await withServer(async (base) => {
+    const key = await createCategory(base, '图论进阶');
+    await fetch(`${base}/custom`, {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ categoryKey: key, name: '圆方树', difficulty: 5, code: 'x' }),
+    });
+    const body = (await (await fetch(`${base}/categories`)).json()) as {
+      categories: Array<{ key: string; name: string; custom: boolean; templateCount?: number }>;
+    };
+    // 内置分类在前且标记 custom:false
+    assert.equal(body.categories[0]!.key, 'basic');
+    assert.equal(body.categories[0]!.custom, false);
+    const mine = body.categories.find((c) => c.key === key)!;
+    assert.equal(mine.name, '图论进阶');
+    assert.equal(mine.custom, true);
+    assert.equal(mine.templateCount, 1);
+    // 空的自建标签也要出现在清单里（AI 必须能看见「刚建好还没装东西」的标签）
+    const emptyKey = await createCategory(base, '空标签');
+    const after = (await (await fetch(`${base}/categories`)).json()) as typeof body;
+    assert.equal(after.categories.find((c) => c.key === emptyKey)?.templateCount, 0);
+  });
+});
+
 test('custom templates: create → merged in list → status → edit → delete cleans progress', async () => {
   await withServer(async (base) => {
     // 创建

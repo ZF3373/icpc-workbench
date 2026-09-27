@@ -41,6 +41,11 @@ import { createStreamBuffer } from '../streamBuffer'
 import { rememberSessionFiles, getSessionFileText, forgetSessionFiles } from './sessionFiles'
 import { sanitizeOutgoingTurns, describeToolStatus, EMPTY_REPLY_NOTICE } from './assistantTurns'
 import {
+  resolveTemplateTarget,
+  templateCategoryLabel,
+  type TemplateCategoryOption,
+} from '../templateTarget'
+import {
   REVIEW_REQUEST_TEXT,
   contestJumpWarning,
   reviewRequestText,
@@ -395,6 +400,10 @@ export default function Assistant() {
   const [listCreating, setListCreating] = useState(false)
   const [planCreating, setPlanCreating] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
+  /** 模板库分类清单（内置课程分类 + 用户自建标签）：写入模板库时选目标标签用 */
+  const [tplCategories, setTplCategories] = useState<TemplateCategoryOption[]>([])
+  /** 用户为某个 template-add 草稿显式指定的目标标签（key = `${消息下标}:${草稿下标}`） */
+  const [tplTargets, setTplTargets] = useState<Record<string, string>>({})
   /** 当前正在跑的工具体（属于哪个会话 + 文案）：正文输出完后 AI 还在检索/抓网页时的进度提示 */
   const [toolStatus, setToolStatus] = useState<{ sessionId: string; text: string } | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
@@ -699,6 +708,11 @@ export default function Assistant() {
           return prev
         })
       })
+      .catch(() => {})
+    // 模板库分类清单（含用户自建标签）：写入模板库前让用户能指定目标标签。
+    // 加载失败静默降级 —— 此时不显示选择器，仍按 AI 给的 categoryKey 写入。
+    get<{ categories: TemplateCategoryOption[] }>('/api/templates/categories')
+      .then(({ categories }) => setTplCategories(categories))
       .catch(() => {})
     // 参加过的比赛（赛后复盘）：加载失败静默为空。?contest=<key> 从赛事中心
     // 「去 AI 复盘」跳转而来：新建专属会话（不占用当前会话）并预填复盘请求；
@@ -1073,6 +1087,18 @@ export default function Assistant() {
 
   const tplKey = (msgIndex: number, draftIndex: number) => `${msgIndex}:${draftIndex}`
 
+  /**
+   * 该草稿最终写入的目标标签：用户显式选择 > AI 给的 categoryKey（有效时）> 第一个分类。
+   * 用户反馈「无法指定 AI 把模板放到哪个标签下」——选择器与这里的解析共同保证
+   * 用户点名的标签（含自己新建的自建标签）一定被原样写入。
+   */
+  const templateTargetOf = (msgIndex: number, draftIndex: number, draft: TemplateAddDraft): string =>
+    resolveTemplateTarget({
+      aiKey: draft.categoryKey,
+      chosen: tplTargets[tplKey(msgIndex, draftIndex)],
+      categories: tplCategories,
+    })
+
   /** 写入单个模板草稿（不弹 toast，供单条/批量复用），返回是否成功。
    *  有 templateId → 完善已有内置模板（PUT /api/templates/:id/content）；
    *  无 templateId → 新建自定义模板（POST /api/templates/custom） */
@@ -1093,9 +1119,9 @@ export default function Assistant() {
           url: draft.url,
         })
       } else {
-        // 新建自定义模板
+        // 新建自定义模板：目标标签取「用户选择器里的选择 → AI 给的 key → 兜底」（见 templateTargetOf）
         await post('/api/templates/custom', {
-          categoryKey: draft.categoryKey,
+          categoryKey: templateTargetOf(msgIndex, draftIndex, draft),
           name: draft.name,
           difficulty: draft.difficulty,
           tags: draft.tags,
@@ -1700,21 +1726,41 @@ export default function Assistant() {
                         tplAdds.map((draft, j) => {
                           const applied = appliedTplSet.has(j)
                           return (
-                            <Button
-                              key={j}
-                              size="small"
-                              type="primary"
-                              ghost
-                              disabled={applied}
-                              loading={tplWriting.has(tplKey(i, j))}
-                              onClick={() => void confirmTemplate(draft, i, j)}
-                            >
-                              {applied
-                                ? `✓ 已完善：${draft.name}`
-                                : draft.templateId
-                                  ? `完善模板：「${draft.name}」`
-                                  : `写入模板库：「${draft.name}」`}
-                            </Button>
+                            <Space key={j} size={4}>
+                              {/* 目标标签选择器：用户可显式指定放到哪个课程分类/自建标签下
+                                  （templateId 草稿是「完善已有内置条目」，不存在选分类的问题） */}
+                              {!draft.templateId && tplCategories.length > 0 && (
+                                <Tooltip title="写入到哪个标签下 —— 含你在「模板库 → 新建标签」里自己建的标签">
+                                  <Select
+                                    size="small"
+                                    style={{ minWidth: 140 }}
+                                    value={templateTargetOf(i, j, draft)}
+                                    disabled={applied}
+                                    onChange={(key: string) =>
+                                      setTplTargets((prev) => ({ ...prev, [tplKey(i, j)]: key }))
+                                    }
+                                    options={tplCategories.map((c) => ({
+                                      value: c.key,
+                                      label: templateCategoryLabel(c),
+                                    }))}
+                                  />
+                                </Tooltip>
+                              )}
+                              <Button
+                                size="small"
+                                type="primary"
+                                ghost
+                                disabled={applied}
+                                loading={tplWriting.has(tplKey(i, j))}
+                                onClick={() => void confirmTemplate(draft, i, j)}
+                              >
+                                {applied
+                                  ? `✓ 已完善：${draft.name}`
+                                  : draft.templateId
+                                    ? `完善模板：「${draft.name}」`
+                                    : `写入模板库：「${draft.name}」`}
+                              </Button>
+                            </Space>
                           )
                         })}
                       {hasTpl && pendingTplCount > 1 && (

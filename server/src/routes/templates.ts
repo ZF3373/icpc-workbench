@@ -4,6 +4,7 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { CURRICULUM, TEMPLATE_TOTAL } from '../templates/curriculum.ts';
+import { listTemplateCategoryOptions } from '../templates/categories.ts';
 import {
   isTemplateId,
   nextTemplate,
@@ -490,6 +491,69 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
       'INSERT INTO template_categories (user_id, key, name, description) VALUES (?, ?, ?, ?)',
     ).run(DEFAULT_USER_ID, key, name, description);
     res.json({ ok: true, key, name, description, custom: true });
+  });
+
+  // GET /api/templates/categories → 可选分类清单（内置 + 自建，含成员数）
+  // 供「AI 助手 → 写入模板库」选择目标标签用：只回分类，不带模板正文，比拉全量课程大纲轻得多。
+  r.get('/categories', (_req, res) => {
+    const counts = db
+      .prepare('SELECT category_key, COUNT(*) AS n FROM custom_templates WHERE user_id = ? GROUP BY category_key')
+      .all(DEFAULT_USER_ID) as unknown as Array<{ category_key: string; n: number }>;
+    const countMap = new Map(counts.map((c) => [c.category_key, c.n]));
+    res.json({
+      categories: listTemplateCategoryOptions(db).map((c) => ({
+        ...c,
+        // 自建标签的模板数（内置分类的模板数由课程大纲决定，这里不查）
+        ...(c.custom ? { templateCount: countMap.get(c.key) ?? 0 } : {}),
+      })),
+    });
+  });
+
+  /**
+   * DELETE /api/templates/categories/:key?force=1 → 删除自建标签。
+   *
+   * 语义（用户反馈：新建标签后无法删除）：
+   * - 内置课程分类不可删（400）；
+   * - 不存在的分类 404；
+   * - 标签下还有自建模板时**默认拒绝**（409 + count），由前端明确确认后再带 force=1
+   *   连带删除这些模板及其学习进度 —— 删除用户积累必须是显式动作，不能静默级联。
+   */
+  r.delete('/categories/:key', (req, res) => {
+    const key = String(req.params.key ?? '');
+    if (CURRICULUM.some((category) => category.key === key)) {
+      return res.status(400).json({ error: '内置课程分类不可删除' });
+    }
+    const category = db
+      .prepare('SELECT key, name FROM template_categories WHERE user_id = ? AND key = ?')
+      .get(DEFAULT_USER_ID, key) as { key: string; name: string } | undefined;
+    if (!category) return res.status(404).json({ error: '标签不存在' });
+
+    const rows = db
+      .prepare('SELECT id FROM custom_templates WHERE user_id = ? AND category_key = ?')
+      .all(DEFAULT_USER_ID, key) as unknown as Array<{ id: number }>;
+    const force = req.query.force === '1' || req.query.force === 'true';
+    if (rows.length > 0 && !force) {
+      return res.status(409).json({
+        error: `标签「${category.name}」下还有 ${rows.length} 个模板，删除标签会一并删除这些模板`,
+        count: rows.length,
+      });
+    }
+
+    db.exec('BEGIN');
+    try {
+      const delTemplate = db.prepare('DELETE FROM custom_templates WHERE id = ? AND user_id = ?');
+      const delProgress = db.prepare('DELETE FROM template_progress WHERE template_id = ? AND user_id = ?');
+      for (const row of rows) {
+        delTemplate.run(row.id, DEFAULT_USER_ID);
+        delProgress.run(customId(row.id), DEFAULT_USER_ID);
+      }
+      db.prepare('DELETE FROM template_categories WHERE user_id = ? AND key = ?').run(DEFAULT_USER_ID, key);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+    res.json({ ok: true, deletedTemplates: rows.length });
   });
 
   const validateCustomBody = (body: Record<string, unknown>) => {

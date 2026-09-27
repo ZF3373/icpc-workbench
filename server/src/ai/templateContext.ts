@@ -1,6 +1,7 @@
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { CURRICULUM } from '../templates/curriculum.ts';
+import { listTemplateCategoryOptions } from '../templates/categories.ts';
 
 /** 截取代码片段的前 N 行，供 AI 学习用户的代码风格（不全文注入以免撑大上下文） */
 function codeSnippet(code: string, maxLines = 30): string {
@@ -80,6 +81,24 @@ export function buildTemplateLibrarySummary(db: Db): string {
       const tagStr = tags.length ? `，标签：${tags.join('/')}` : '';
       const contentStr = hasContent ? '，已有内容' : '，空模板';
       lines.push(`  - [${r.category_key}] ${r.name}（难度${r.difficulty}${tagStr}${contentStr}）`);
+    }
+  }
+
+  /**
+   * 用户自建标签清单（**含一个模板都没有的空标签**）。
+   *
+   * 旧实现只列出已经存在的自定义模板，空标签对 AI 完全不可见 —— 用户建好标签后说
+   * 「把这段记到 XX 标签下」，AI 只能回「没有这个分类」。用户明确指定的标签必须能被
+   * 原样写进去，所以这里把 key 与名称都摊开给 AI（key 就是 template-add 的 categoryKey）。
+   */
+  const categoryOptions = listTemplateCategoryOptions(db);
+  const customOptions = categoryOptions.filter((c) => c.custom);
+  if (customOptions.length > 0) {
+    const countByKey = new Map<string, number>();
+    for (const r of customRows) countByKey.set(r.category_key, (countByKey.get(r.category_key) ?? 0) + 1);
+    lines.push('### 用户自建标签（用户自己建的分类；template-add 的 categoryKey 可直接用这些 key）');
+    for (const c of customOptions) {
+      lines.push(`  - ${c.name}（key=${c.key}，已有 ${countByKey.get(c.key) ?? 0} 个模板）`);
     }
   }
 

@@ -18,6 +18,7 @@ import { extractPdfText, truncatePdfText, isPdfContentType, isPdfFilename } from
 import { convertDocument, isDocumentFile } from '../ai/docConverter.ts';
 import { getToolDefinitions, executeToolCall, type ToolContext, type PlatformCookies } from '../ai/tools/registry.ts';
 import { buildTemplateLibrarySummary } from '../ai/templateContext.ts';
+import { listTemplateCategoryOptions } from '../templates/categories.ts';
 import { computeWeakness } from '../analysis/weakness.ts';
 import { buildPracticeSummary, renderSummaryForPrompt } from '../analysis/summary.ts';
 import { effectiveAbility, renderAbilityEvidence, setAbilityOverride } from '../today/ability.ts';
@@ -614,8 +615,11 @@ export function aiRoutes(
       listSection,
       contestSection,
       upcomingContests,
-      // 模板库写入（template-add 块）可选的课程分类清单，跟内置课程大纲保持同步
-      templateCategories: CURRICULUM.map((c) => `${c.key}（${c.name}）`).join('、'),
+      // 模板库写入（template-add 块）可选的分类清单：内置课程大纲 + 用户自建标签。
+      // 自建标签必须一并给出（并标注「自建」），否则用户「记到 XX 标签下」的要求 AI 无从满足。
+      templateCategories: listTemplateCategoryOptions(db)
+        .map((c) => `${c.key}（${c.name}${c.custom ? '·自建' : ''}）`)
+        .join('、'),
       // 模板库现有内容摘要：让 AI 知道用户已有哪些模板，避免建议重复、可针对性建议补充
       templateLibrary: buildTemplateLibrarySummary(db),
     });

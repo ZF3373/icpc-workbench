@@ -47,7 +47,7 @@ import { tagColor } from '../ui'
 import { saveUrlAsFile } from '../download'
 import { del, get, patch, post, put } from '../api'
 import { TEMPLATE_EXPORT_OPTIONS, type TemplateExportFormat } from '../templateExport'
-import type { TemplateContentInfo, TemplateExampleInfo, TemplateItemInfo, TemplatesResponse, TemplateStatus } from '../types'
+import type { TemplateCategoryInfo, TemplateContentInfo, TemplateExampleInfo, TemplateItemInfo, TemplatesResponse, TemplateStatus } from '../types'
 
 const STATUS_META: Array<{ key: TemplateStatus; label: string; icon: typeof CheckCircleOutlined }> = [
   { key: 'todo', label: '未学', icon: PlayCircleOutlined },
@@ -120,7 +120,7 @@ const downloadTemplates = async (
 
 export default function Templates() {
   // React 19 下 antd 静态 message 静默失效，必须用 App 上下文实例
-  const { message } = AntdApp.useApp()
+  const { message, modal } = AntdApp.useApp()
   const [data, setData] = useState<TemplatesResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeCat, setActiveCat] = useState<string>()
@@ -278,6 +278,42 @@ export default function Templates() {
     } catch (e) {
       message.error((e as Error).message)
     }
+  }
+
+  /**
+   * 删除自建标签（用户反馈：新建标签后无法删除）。
+   *
+   * 有模板时先说明会连带删除模板与学习进度 —— 删除是显式动作，接口侧同样要求 force=1，
+   * 不在这里做静默级联（服务端对没带 force 的请求返回 409 + count）。
+   */
+  const removeCategory = (category: TemplateCategoryInfo) => {
+    const count = category.templates.length
+    modal.confirm({
+      title: `删除标签「${category.name}」？`,
+      content:
+        count > 0
+          ? `该标签下有 ${count} 个自建模板，删除标签会一并删除这些模板及其学习进度，且无法恢复。`
+          : '该标签下还没有模板，删除后如需可重新「新建标签」。',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const r = await del<{ deletedTemplates: number }>(
+            `/api/templates/categories/${encodeURIComponent(category.key)}${count > 0 ? '?force=1' : ''}`,
+          )
+          message.success(
+            r.deletedTemplates > 0
+              ? `标签「${category.name}」已删除（含 ${r.deletedTemplates} 个模板）`
+              : `标签「${category.name}」已删除`,
+          )
+          if (activeCat === category.key) setActiveCat(undefined)
+          load()
+        } catch (e) {
+          message.error((e as Error).message)
+        }
+      },
+    })
   }
 
   // ---------- 例题练习 ----------
@@ -518,9 +554,23 @@ export default function Templates() {
         <section>
           {cat && (
             <>
-              <p className="band-desc" style={{ marginBottom: 10 }}>
-                {cat.description}
-              </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <p className="band-desc" style={{ margin: 0, flex: 1 }}>
+                  {cat.description}
+                </p>
+                {/* 自建标签可删除（内置课程分类不可删，服务端同样拒绝） */}
+                {cat.custom && (
+                  <Button
+                    size="small"
+                    type="text"
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={() => removeCategory(cat)}
+                  >
+                    删除该标签
+                  </Button>
+                )}
+              </div>
               {cat.templates.length === 0 ? (
                 <Card>
                   <Empty description="该分类暂无模板 —— 点击「新建模板」添加自己的积累" />
