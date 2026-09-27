@@ -2,10 +2,11 @@
 
 > 本文合并了此前的实现审查与证据增强两份文档，是**唯一权威版本**。所有需求与优化点均已完整保留。
 >
-> **实施状态（2026-09-26 更新）**：阶段 0–6 已全部落地，`npm test`（server 905 + client 332，0 失败）、
+> **实施状态（2026-09-26 更新）**：阶段 0–6 已全部落地，`npm test`（server 907 + client 332，0 失败）、
 > `npm run typecheck`、`npm run lint`（0 error）、`npm run build` 全绿，详见文末「七、实施状态」。
-> 上线后修掉两个真实缺陷：**已 AC 的题没有题面 → AI 编造题意**（见 7.1）；
-> **题面覆盖与抽取质量**（AtCoder 旧实现只抽到 68 字符、牛客导航被当题面、题名串号，见 7.2）。
+> 上线后修掉三个真实缺陷：**已 AC 的题没有题面 → AI 编造题意**（7.1）；
+> **题面覆盖与抽取质量**（AtCoder 旧实现只抽 68 字符、噪声被当题面、题名串号，见 7.2）；
+> **赛事中心总题数显示成"我交过几题"**（7.3）。
 > 唯一剩下的平台边界：**Codeforces 的 HTML 页被 Cloudflare 拦死，服务端拿不到 CF 题面**（7.2 有实测依据）。
 
 ## 目标与需求（完整保留）
@@ -347,7 +348,7 @@ CREATE TABLE IF NOT EXISTS problem_statements (
 | --- | --- | --- |
 | **AtCoder** | ✅ 题面 + **题目列表**都能抓 | 题目页 `#task-statement` 内含 `lang-en`/`lang-ja` 两份；`/contests/{slug}/tasks` 实测列出 abc454 A–G 共 7 题 |
 | **洛谷** | ✅ 匿名可抓（需过 C3VK 反爬） | 直连 `problem/P1001` 抛 `fetch failed`（302 循环）；改 `redirect:'manual'` + 取新 C3VK 重试 → 200，抽到 1537 字符题面 |
-| **牛客** | ⚠️ 题目页需登录 | 匿名题库页只剩 457 字符站点导航（含「没有查看题目的权限哦」） |
+| **牛客** | ⚠️ **尽力抓**（多数比赛题目页公开可读） | 用户实际库（demo 数据集）里 6/6 成功，700-900 字符真实题面（题目描述/时空限制/样例齐全）；但部分页面返回「没有查看题目的权限哦」导航页（实测 `acm/problem/213096`）→ 照抓，噪声校验兜底 |
 | **Codeforces** | ❌ HTML 页全被拦（**但配了 Cookie 会尝试**） | `/contest/1877/problem/A`、`/problemset/problem/1877/A` 均 403 "Just a moment..."；官方镜像 m1 返回 JS 机器人校验页、m2 403、mirror 连不上；`codeforces.com/api/*` 正常但**不含题面**。已留出口：`fetchProblemStatement` 对 blocked 平台在**存在该平台 Cookie** 时仍会尝试（CF 的 `cf_clearance` 可过挑战，同 QOJ 做法），抓回内容仍过噪声校验 |
 | 计蒜客 / QOJ / 代码源 / 力扣 | ❌ 无公开可抓来源 | QOJ `/problem/*` 403 challenge；计蒜客题目页是 SPA（1472B 空壳） |
 
@@ -360,9 +361,11 @@ CREATE TABLE IF NOT EXISTS problem_statements (
 2. **题目集覆盖扩到 AtCoder**：`fetchContestProblemSet` 新增 `atcoder` 分支（`/contests/{slug}/tasks`），
    于是「赛时未提交的题」有题号/题名，**它们的题面也进得了预取范围**——实测 abc454 的 E/F/G 三题
    （本地从未提交）题面全部抓到并注入。
-3. **噪声一律拒收 + 平台矩阵**：新增 `statementSupport()`（ok / gated / blocked / unsupported）与
-   `statementLooksValid()`（权限墙/挑战页/站点导航 → 不落库）。不支持的平台**直接不发请求**，
-   并在上下文里写明原因 + 可执行替代路径（请用户粘贴题面），提示词同步改成"取不到就先请用户贴，
+3. **噪声一律拒收 + 平台矩阵**：新增 `statementSupport()` 与 `statementLooksValid()`
+   （权限墙/挑战页/站点导航 → 不落库）。语义现在是三档：
+   **`ok`**（AtCoder/洛谷，公开必抓）、**`gated`**（牛客，尽力抓——公开页能拿到，登录墙页被噪声校验拦下）、
+   **`blocked`/`unsupported`**（CF 需 Cookie、计蒜客·QOJ 无源 → 默认**不发请求**）。
+   抓不到时上下文写明原因 + 可执行替代路径（请用户粘贴题面），提示词同步改成"取不到就先请用户贴，
    不许凭题名硬讲"。CF 也据此明确告知用户（这是平台边界，服务端无解）。
 4. **顺手修掉一个题名串号的数据缺陷**：`problems.title` 来自 kenkoooo 社区 `problems.json`，
    实测字母前缀错位（`abc454_b` → 「C. Mapping」、`abc454_c` → 「F. Straw Millionaire」、
@@ -376,6 +379,35 @@ CREATE TABLE IF NOT EXISTS problem_statements (
 （`cf_clearance` 与浏览器 UA 绑定）并放开 UI 条件；本轮没做，因为**没有真实 `cf_clearance` 就无法验证**，
 不想留一条假装能用的路径。
 
-**本轮验证（真实联网，非 stub）**：`npm test` server 905 / client 332 全通过、typecheck 无错、lint 0 error；
+**本轮验证（真实联网，非 stub）**：`npm test` server 907 / client 332 全通过、typecheck 无错、lint 0 error；
 真实库迁移副本跑完整链路（解析单场 → 补拉题目集 → 后台预取 → 渲染）：AtCoder abc454 七题题面全部落库并注入，
-未提交题 E/F/G 也带上了官方题名与题解入口；洛谷 P1001 匿名取到 1537 字符题面；CF 返回 null 且上下文如实说明原因。
+未提交题 E/F/G 也带上了官方题名与题解入口；洛谷 P1001 匿名取到 1537 字符题面；
+牛客 320779/320786 取到真实题面（731/757 字符）、权限墙页 213096 被拒；
+CF 返回 null 且上下文如实说明原因。
+
+### 7.3 修复：赛事中心「我参加的」总题数显示成"我交过几题"（2026-09-26）
+
+**用户反馈**：牛客周赛162 共 6 题、已 AC 4 题，赛事中心却显示总共只有 4 题。
+
+**根因**（[participated.ts:371](server/src/contests/participated.ts#L371)）：
+`qualifyGroup` 里 `problemCount: problemKeys.size` —— 取的是**本地提交里不同题目的个数**，
+完全没用已经存好的权威数据。实测用户实际库（`server/config.json` 的 dbPath 指向
+`videos/edit/demo-data/data/icpc.db`）该场一行：
+
+```
+nowcoder 140489 | 牛客周赛 Round 162 | problem_count=6 accepted_count=4 problem_ids=6 道
+```
+
+即**库里本来就有 6**，只是渲染时被 `problemKeys.size`（=4）覆盖了。同一缺陷还波及
+「N 题 · AC M」列表行、AI 助手的比赛下拉项、复盘请求里的「AC 4/6 题」分母
+（此前会写成「AC 4/4 题」），以及 `renderContestContext` 在题目集未知时的概况句。
+
+**修复**：`problemCount` 语义明确为**该场共几题**，三者取最大（"至少这么多"——不可能提交到不存在的题）：
+① 平台参赛记录题数 `src.problemCount` → ② 已拉取题目集 `src.problems.length`
+→ ③ 本地提交去重 `problemKeys.size`（兜底）。
+
+**验证**（读用户实际在用的库，只读）：
+`nowcoder:140489 牛客周赛 Round 162 → 6 题 · AC 4 · 7 次提交`（修复前 `4 题 · AC 4`）；
+同批发现在其它场次也一起修正了，例如 `codeforces:2241 → 20 题 · AC 4`（修复前 4 题）、
+`luogu:358517 → 8 题 · AC 2`（修复前 2 题）。测试新增「牛客周赛162：共 6 题、交 4 题全 AC → 6 题 AC 4」
+的回归用例（含未提交题 E/F 的推导与上下文概况断言）。

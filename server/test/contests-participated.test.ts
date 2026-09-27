@@ -582,7 +582,8 @@ test('牛客合成组：练习页已含比赛提交（context=null），按权�
     assert.deepEqual(contests.map((c) => c.key), ['nowcoder:140489']);
     const c = contests[0]!;
     assert.equal(c.submissionCount, 2, '题目集排歧：窗口内的题库练习题不归因');
-    assert.equal(c.problemCount, 2);
+    // problemCount 是「该场共几题」（平台参赛记录 6），不是「我交过几题」（本地 2）
+    assert.equal(c.problemCount, 6, '总题数取平台参赛记录/题目集，而不是本地提交去重');
     assert.equal(c.acProblemCount, 2);
 
     const review = resolveContestGroup(db, 'nowcoder:140489', { sources })!;
@@ -604,6 +605,49 @@ test('牛客合成组：练习页已含比赛提交（context=null），按权�
       },
     })[0]!;
     assert.equal(degraded.submissionCount, 3, '无题目集时退化为整窗归因');
+  } finally {
+    db.close();
+  }
+});
+
+test('列表总题数 = 该场题目总数（牛客周赛162：共 6 题、交了 4 题全 AC → 6 题 AC 4）', () => {
+  const db = createDb(':memory:');
+  try {
+    // 只提交了 A/B/C/D 四题且全 AC；E/F 赛时未开（真实用户反馈的场景）
+    seedAll(db, [
+      { platform: 'nowcoder', problemKey: '323650', title: '小月的贴纸', verdict: 'AC', submittedAt: '2026-09-20T11:10:10.000Z', externalId: 'n1', context: null },
+      { platform: 'nowcoder', problemKey: '323652', title: '小月的周长', verdict: 'AC', submittedAt: '2026-09-20T11:20:00.000Z', externalId: 'n2', context: null },
+      { platform: 'nowcoder', problemKey: '323654', title: '小月的数码轮', verdict: 'AC', submittedAt: '2026-09-20T11:40:00.000Z', externalId: 'n3', context: null },
+      { platform: 'nowcoder', problemKey: '323656', title: '小月的字带', verdict: 'AC', submittedAt: '2026-09-20T12:13:07.000Z', externalId: 'n4', context: null },
+    ]);
+    const problems = ['323650', '323652', '323654', '323656', '323658', '323660'].map((id) => ({ id }));
+    const sources = {
+      nowcoder: [
+        srcEntry('nowcoder', '140489', {
+          name: '牛客周赛 Round 162',
+          url: 'https://ac.nowcoder.com/acm/contest/140489',
+          startTimeMs: Date.parse('2026-09-20T11:00:00.000Z'),
+          endTimeMs: Date.parse('2026-09-20T13:00:00.000Z'),
+          problemCount: 6,
+          acceptedCount: 4,
+          problems,
+        }),
+      ],
+    };
+    const c = deriveParticipatedContests(db, { sources })[0]!;
+    assert.equal(c.problemCount, 6, '总题数是该场 6 题，不是「我交过的 4 题」');
+    assert.equal(c.acProblemCount, 4);
+    assert.equal(c.submissionCount, 4);
+
+    // 复盘上下文同样按 6 题算：未提交的 E/F 要列出来
+    const review = resolveContestGroup(db, 'nowcoder:140489', { sources })!;
+    assert.equal(review.problemSetKnown, true);
+    assert.deepEqual(
+      review.unsubmittedProblems.map((p) => p.id),
+      ['323658', '323660'],
+      '未提交的题 = 题目集 − 已提交',
+    );
+    assert.match(renderContestContext(review), /全场 6 题中 AC 4 题、未提交 2 题/);
   } finally {
     db.close();
   }
@@ -637,7 +681,8 @@ test('洛谷有参赛记录时：按官方窗口归因 T 号题提交，公开�
     const c = contests[0]!;
     assert.equal(c.name, 'qu 第一次纳新题');
     assert.equal(c.submissionCount, 2, '只归因 T 号比赛题提交');
-    assert.equal(c.problemCount, 2);
+    // 总题数用洛谷参赛记录里的 8 题（本地只交了 2 题）
+    assert.equal(c.problemCount, 8);
   } finally {
     db.close();
   }

@@ -74,10 +74,13 @@ export type StatementSupport = 'ok' | 'gated' | 'blocked' | 'unsupported';
  *   比赛题目列表可从 `/contests/{slug}/tasks` 抓出（实测 abc454 → 7 题）。
  * - `luogu` ✅ 公开但**有 C3VK 反爬**：首请求 302 回自身并下发 C3VK，带新值重试即 200；
  *   题面在 `window.__INITIAL_STATE__`（见 extractLuoguStatement）。
- * - `nowcoder` ⚠️ 题库页**需登录**：匿名只剩导航噪声 → 归为 gated，不抓（由用户粘贴）。
+ * - `nowcoder` ⚠️ **尽力抓**（best-effort）：比赛题目页多数公开（用户库里 6/6 成功，
+ *   700-900 字符真实题面），但部分页面会返回「没有查看题目的权限哦」导航页 ——
+ *   照抓，交给 statementLooksValid 拦噪声。
  * - `codeforces` ❌ 所有 HTML 页被 **Cloudflare** 拦截（实测 `/contest/1877/problem/A`、
- *   `/problemset/problem/1877/A` 均 403 "Just a moment..."，补 Accept-Language/Referer 无效）；
- *   `codeforces.com/api/*` 可用但**不含题面** → 服务端拿不到 CF 题面，只能请用户粘贴。
+ *   `/problemset/problem/1877/A` 均 403 "Just a moment..."，官方镜像 m1 返回 JS 机器人校验页、
+ *   m2 403、mirror 连不上；补 Accept-Language/Referer 无效）；`codeforces.com/api/*` 可用但
+ *   **不含题面** → 服务端默认拿不到 CF 题面（配了 cf_clearance Cookie 才试，见 fetchProblemStatement）。
  * - 其余（jisuanke/qoj/daimayuan/leetcode）❌ 无公开可抓来源（QOJ 403 challenge；计蒜客为 SPA）。
  */
 export function statementSupport(platform: PlatformId): StatementSupport {
@@ -86,7 +89,7 @@ export function statementSupport(platform: PlatformId): StatementSupport {
     case 'luogu':
       return 'ok';
     case 'nowcoder':
-      return 'gated';
+      return 'gated'; // 尽力抓：能抓就抓，抓不到让 statementLooksValid 拦
     case 'codeforces':
       return 'blocked';
     default:
@@ -100,7 +103,7 @@ export function statementUnavailableReason(platform: PlatformId): string {
     case 'ok':
       return '';
     case 'gated':
-      return '牛客题目页需登录才可见（匿名只剩站点导航）';
+      return '牛客部分题目页需登录（多数比赛题目页公开可读）';
     case 'blocked':
       return 'Codeforces 的 HTML 页被 Cloudflare 拦截（API 不提供题面）';
     default:
@@ -309,11 +312,12 @@ export async function fetchProblemStatement(
   fetchFn: typeof fetch = throttledFetch,
   cookie?: string,
 ): Promise<string | null> {
-  // 默认只抓「公开可抓」的平台；但 blocked/gated 平台在**用户配置了该平台 Cookie** 时值得一试：
-  // CF 的 Cloudflare 挑战可用浏览器里带出来的 cf_clearance 通过（同 QOJ 的做法），
-  // 牛客登录态也可能解锁题目页。抓回来仍要过 statementLooksValid —— 挑战页/权限墙一律不落库，
-  // 所以"试一次"没有副作用（最坏就是又一条「未取到题面」）。
-  if (statementSupport(platform) !== 'ok' && !cookie?.trim()) return null;
+  // 默认抓「公开可抓」与「尽力抓」的平台；blocked 平台在**用户配置了该平台 Cookie** 时值得一试
+  // （CF 的 Cloudflare 挑战可用浏览器里带出来的 cf_clearance 通过，同 QOJ 的做法）。
+  // 抓回来一律过 statementLooksValid —— 权限墙/挑战页/导航噪声不落库，
+  // 所以"尽力试一次"没有副作用（最坏就是又一条「未取到题面」）。
+  const support = statementSupport(platform);
+  if (support !== 'ok' && support !== 'gated' && !cookie?.trim()) return null;
 
   const cacheKey = `${platform}:${problemKey}`;
   if (Date.now() - (fetchBackoff.get(cacheKey) ?? 0) < FETCH_BACKOFF_MS) return null;
@@ -556,20 +560,28 @@ export function renderStatementSection(
         '先调用 `fetch_url` 读题目链接；读不到就明确写"未取到题面"，不得虚构题意。）',
     );
     const support = statementSupport(contest.platform);
-    // 平台压根抓不到（CF 被 Cloudflare 拦 / 牛客需登录 / 计蒜客·QOJ 无源）：
-    // 明说原因并给出可执行的替代路径，别写成"正在预取"骗人
-    if (support !== 'ok') {
+    // 平台压根抓不到（CF 被 Cloudflare 拦 / 计蒜客·QOJ 无源）：明说原因并给出可执行的替代路径，
+    // 别写成"正在预取"骗人
+    if (support === 'blocked' || support === 'unsupported') {
       lines.push(
         `（本平台题面**无法自动抓取**：${statementUnavailableReason(contest.platform)}。` +
           '这些题的题意与卡点分析必须先拿到题面——请让用户把题面正文粘贴到对话里（或上传截图/文本附件），' +
           '也可以让用户把题目链接的正文复制过来；**不得凭题名硬讲**。）',
       );
     }
-    const noUrl = support === 'ok' ? missing.filter((t) => !t.url).map((t) => t.problemKey) : [];
+    // 尽力抓的平台（牛客部分题目页需登录）：会一直试，抓不到的仍需用户粘贴
+    if (support === 'gated') {
+      lines.push(
+        `（本平台题面为**尽力抓取**：${statementUnavailableReason(contest.platform)}。` +
+          '仍取不到的题请让用户把题面粘贴/上传过来，在此之前不得凭题名推断题意。）',
+      );
+    }
+    const attemptable = support === 'ok' || support === 'gated';
+    const noUrl = attemptable ? missing.filter((t) => !t.url).map((t) => t.problemKey) : [];
     if (noUrl.length > 0) {
       lines.push(`（${noUrl.join('、')} 缺少题目链接，无法自动抓取题面。）`);
     }
-    const pending = support === 'ok' ? missing.filter((t) => t.url).map((t) => t.problemKey) : [];
+    const pending = attemptable ? missing.filter((t) => t.url).map((t) => t.problemKey) : [];
     if (pending.length > 0) {
       lines.push(
         `（${pending.join('、')} 的题面正在后台按场次预取；落库后下一条消息即会注入，无需重开会话。）`,

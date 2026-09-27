@@ -129,7 +129,7 @@ test('fetchProblemStatement：AtCoder 题面抓取并落库（含约束/输入�
   }
 });
 
-test('fetchProblemStatement：CF / 牛客 / 计蒜客等不支持平台不抓取（不浪费请求）', async () => {
+test('fetchProblemStatement：无来源/被拦平台不浪费请求；牛客为尽力抓（噪声校验兜底）', async () => {
   __resetProblemStatementsForTest();
   const db = createDb(':memory:');
   try {
@@ -138,18 +138,31 @@ test('fetchProblemStatement：CF / 牛客 / 计蒜客等不支持平台不抓取
       calls += 1;
       return new Response('<div class="problem-statement">x</div>', { status: 200 });
     }) as unknown as typeof fetch;
+    // CF（Cloudflare 拦死，需 Cookie 才试）/ 计蒜客 / QOJ：直接跳过，不发请求
     for (const [platform, key] of [
       ['codeforces', '1877A'],
-      ['nowcoder', '213096'],
       ['jisuanke', '37170-101605'],
       ['qoj', '20028'],
     ] as const) {
-      const text = await fetchProblemStatement(
-        db, platform, key, 'https://example.com/p', spyFetch,
-      );
+      const text = await fetchProblemStatement(db, platform, key, 'https://example.com/p', spyFetch);
       assert.equal(text, null, `${platform} 不应抓取题面`);
     }
-    assert.equal(calls, 0, '不支持的平台不应发出任何网络请求（CF 被 Cloudflare 拦、牛客需登录）');
+    assert.equal(calls, 0, '无来源/被拦的平台不应发出任何网络请求');
+
+    // 牛客：尽力抓（用户库里 6/6 比赛题目页实测成功），但抓到导航页必须被拒
+    const nav = '返回 首页 比赛 题库 课程 竞赛讨论区 登录/ 注册 去牛客 没有查看题目的权限哦 回首页 扫码加入竞赛交流群 下载牛客APP 意见反馈 关于我们。'.repeat(2);
+    const navFetch = (async () => {
+      calls += 1;
+      return new Response(`<div>${nav}</div>`, { status: 200 });
+    }) as unknown as typeof fetch;
+    assert.equal(
+      await fetchProblemStatement(db, 'nowcoder', '213096', 'https://ac.nowcoder.com/acm/problem/213096', navFetch),
+      null,
+      '牛客权限墙页面不能被当成题面',
+    );
+    assert.equal(calls, 1, '牛客要真的试一次（不是直接跳过）');
+    const count = db.prepare('SELECT COUNT(*) AS n FROM problem_statements').get() as { n: number };
+    assert.equal(count.n, 0, '噪声不落库');
   } finally {
     db.close();
   }
@@ -456,6 +469,16 @@ test('renderStatementSection：平台无法抓题面时给出原因与替代路�
     const jskJoined = renderStatementSection(db, jsk).join('\n');
     assert.match(jskJoined, /无法自动抓取/);
     assert.match(jskJoined, /没有公开可抓的题面来源/);
+
+    // 牛客：尽力抓（部分页面需登录）→ 不能写成"无法自动抓取"，要说明会尽量试、取不到请用户贴
+    const nc = makeReview('nowcoder', '140489', [
+      { problemKey: '323650', verdict: 'AC', url: 'https://ac.nowcoder.com/acm/problem/323650' },
+    ], []);
+    const ncJoined = renderStatementSection(db, nc).join('\n');
+    assert.match(ncJoined, /尽力抓取/);
+    assert.match(ncJoined, /仍取不到的题请让用户把题面粘贴/);
+    assert.doesNotMatch(ncJoined, /无法自动抓取/);
+    assert.match(ncJoined, /正在后台按场次预取/, '尽力抓的平台仍要说明在预取');
   } finally {
     db.close();
   }

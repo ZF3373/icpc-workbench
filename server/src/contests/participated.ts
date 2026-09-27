@@ -359,6 +359,18 @@ function qualifyGroup(platform: PlatformId, g: ContestGroup): ParticipatedContes
     lastIso;
   const problemKeys = new Set(g.rows.map((r) => r.problemKey));
   const acProblems = new Set(g.rows.filter((r) => r.verdict === 'AC').map((r) => r.problemKey));
+  // problemCount 的语义是**该场比赛一共几题**（列表「6 题 · AC 4」、复盘请求「AC 4/6 题」的分母），
+  // 不是「我提交过几题」。曾经只用 problemKeys.size，于是牛客周赛162（共 6 题、交了 4 题全 AC）
+  // 被显示成「4 题 · AC 4」——用户实测反馈的就是这个。
+  // 取值优先级（三者取最大 = "至少这么多"，因为不可能提交到不存在的题）：
+  //   ① 平台参赛记录里的题数（牛客 joined-list / 洛谷 joinedContests）
+  //   ② 已拉取的题目集（CF contest.standings / 牛客 problem-list / AtCoder tasks）
+  //   ③ 本地提交去重（兜底）
+  const problemCount = Math.max(
+    src?.problemCount ?? 0,
+    src?.problems?.length ?? 0,
+    problemKeys.size,
+  );
   return {
     key: `${platform}:${g.contestId}`,
     platform,
@@ -368,7 +380,7 @@ function qualifyGroup(platform: PlatformId, g: ContestGroup): ParticipatedContes
     startTimeIso: startIso,
     endTimeIso: endIso,
     submissionCount: g.rows.length,
-    problemCount: problemKeys.size,
+    problemCount,
     acProblemCount: acProblems.size,
     // 无提交的权威场次按官方结束时间排进列表（最近的在前）
     lastSubmittedAt: lastIso ?? endIso ?? '',
