@@ -1139,6 +1139,31 @@ body {
   color: #48c774 !important;
 }
 
+/* 难度格 = 手动填写入口：整格可点，但不做成按钮外观（列宽只有 88px） */
+.difficulty-edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.difficulty-edit:hover {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+
+/* 手动标定的难度：虚线描边，与上游给的难度值区分开（回填不会覆盖） */
+.rating-pill.is-manual {
+  border-style: dashed;
+}
+
 /* ---------- 顶部概览条：难度分布 + 平台分布 ---------- */
 
 /* 放在页头下方、表格上方横排铺开：不放右栏是因为内容区 1440 封顶时

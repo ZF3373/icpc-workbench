@@ -28,6 +28,8 @@ export interface BackfillPlatformResult {
   nativeFilled: number;
   repaired: number;
   missing: number;
+  /** 上游明确拒绝提供该题（401/403：已删除/私有）的题数；旧服务端不返回该字段（可选） */
+  denied?: number;
   failed: number;
   capped: number;
   deferred: number;
@@ -63,7 +65,16 @@ export function progressText(run: BackfillRunStatus | null, nameOf: (platform: s
 export function resultText(r: BackfillResponse, nameOf: (platform: string) => string): string {
   const parts = r.results.map((x) => {
     const name = nameOf(x.platform);
-    return `${name}：补难度 ${x.filled} 题、补原生难度 ${x.nativeFilled} 题、修标题/标签/难度值 ${x.repaired} 题${x.missing ? `、官方无难度 ${x.missing} 题` : ''}${x.cached ? `、${x.cached} 题维持「无官方难度」（已问过上游，不再重复查询）` : ''}${x.failed ? `、失败 ${x.failed} 题` : ''}${x.deferred ? `、跳过 ${x.deferred} 题（难度已有、仅缺原生值）` : ''}${x.capped ? `、本次上限外还有 ${x.capped} 题（再点一次继续）` : ''}`;
+    // QOJ 平台自身没有难度字段（靠 ICPC/CCPC 公开榜单推导）：`missing` 的含义是**推不出来**
+    // （题号映射缺失 / 榜单源不可用 / 本轮上限），不是「上游未评级」——两个说法对用户完全不同
+    const missing = x.missing
+      ? x.platform === 'qoj'
+        ? `、推不出难度 ${x.missing} 题（公开榜单未匹配）`
+        : `、官方无难度 ${x.missing} 题`
+      : '';
+    // denied（上游明确拒绝：已删除/私有）与 missing（题还在、只是没评级）分开说 ——
+    // 前者意味着「再等也不会有难度」，后者是「平台就没给这道题评级」，用户要做的事不同
+    return `${name}：补难度 ${x.filled} 题、补原生难度 ${x.nativeFilled} 题、修标题/标签/难度值 ${x.repaired} 题${missing}${x.denied ? `、无公开来源 ${x.denied} 题（上游已下架/私有）` : ''}${x.cached ? `、${x.cached} 题维持「无官方难度」（已问过上游，不再重复查询）` : ''}${x.failed ? `、失败 ${x.failed} 题` : ''}${x.deferred ? `、跳过 ${x.deferred} 题（难度已有、仅缺原生值）` : ''}${x.capped ? `、本次上限外还有 ${x.capped} 题（再点一次继续）` : ''}`;
   });
   if (parts.length === 0) {
     return r.stopped === true

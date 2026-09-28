@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PLATFORMS, type PlatformId } from '../../../shared/src/index.ts';
 import { problemSetMatchesContest } from '../contests/problemSetShape.ts';
+import { atcoderProblemIdCandidates } from '../adapters/problemKey.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
@@ -116,6 +117,63 @@ function migrate(db: Db): void {
   // 老库残留过同一 (user_id, problem_id) 的多行。schema 的 UNIQUE 保证新库不会产生重复，但已存在的
   // 重复不会被自动清除，而「是否在复习队列」的标量子查询只取第一行，会让另一条永久无法移出。这里补齐唯一性。
   dedupeReviewItems(db);
+  // v0.10 数据修复：作废「题号形态不可信」的难度定论（见下）
+  invalidateUnreliableGapVerdicts(db);
+}
+
+/**
+ * 本次修复（AtCoder 题号归一 + 定论形态校验）的生效时刻。
+ * 早于它的定论按**旧判据**写下，作废一次；修复后重新写下的定论带新时刻，不再被清 → 迁移幂等。
+ */
+const GAP_VERDICT_CUTOFF = '2026-09-28T00:00:00.000Z';
+
+/**
+ * v0.10 数据修复：作废「形态不可信」的 `problems.gap_state` 定论（2026-09-28）。
+ *
+ * 事故：AtCoder 库内题号是**展示形态** `abc300a`，kenkoooo 整表是 `abc300_a` → 整表查不到；
+ * 而 AtCoder 属于「单次响应即完整题库」（`ABSENCE_IS_DEFINITIVE`），这个 miss 被当成定论写下
+ * 30 天负缓存 —— 本机 demo 库 90 行 AtCoder 缺口全部由此被锁（其中 64 行的题号只差一个下划线），
+ * 且 `difficulty` 维度要求「难度 + 原生原文」都有值，所以这些行会在「每 30 天重查一次、又必查不到」
+ * 的循环里永远补不上 `native_difficulty`。
+ *
+ * 查询侧现在已加题号归一（`adapters/problemKey.ts` 的 `atcoderProblemIdCandidates`）与定论形态校验
+ * （`analysis/difficultyBackfill.ts` 的 `absenceIsDefinitive`），但**已经写下的定论会把行挡在回填目标
+ * 之外** —— 不点一次「强制重查」就永远解不开。所以这里把旧判据写下的定论一次性作废，
+ * 下一次回填自然就会重查：AtCoder 是整表型（一次请求拿全库、逐题只查内存），重查的代价是多一次
+ * 整表请求，不会逐题打上游，也不会波及逐题型平台（洛谷/牛客的定论一条都不动）。
+ *
+ * 判据（保守：宁可多查一次，不可继续误锁）：
+ * - atcoder：库内题号**还有别的合法形态**（无下划线 → 补下划线后可能就是整表里的题号）。
+ *   代价是 `joi2011ho1` 这类**原生**无下划线的题号也会被作废一次（候选表有两种形态，迁移里
+ *   无法区分），下次回填重查一次即回到原结论 —— 整表平台重查不额外发逐题请求，可以接受。
+ * - codeforces 不在此列：查表前本就有大写归一，题号形态不会造成 miss（CF 的 `92101` 这类
+ *   纯数字键还可能是合法表键），没有需要作废的误判。
+ * 幂等：清掉的行若下次仍查不到，会带**新时刻**重新写下定论（> 本次修复时刻），不会再被清。
+ */
+function invalidateUnreliableGapVerdicts(db: Db): void {
+  const rows = db
+    .prepare(
+      `SELECT problem_key FROM problems
+        WHERE platform = 'atcoder' AND gap_state IS NOT NULL
+          AND (gap_checked_at IS NULL OR gap_checked_at < ?)`,
+    )
+    .all(GAP_VERDICT_CUTOFF) as unknown as Array<{ problem_key: string }>;
+  const unreliable = rows.filter((r) => atcoderProblemIdCandidates(r.problem_key).length > 1);
+  if (unreliable.length === 0) return;
+  const clear = db.prepare(
+    "UPDATE problems SET gap_state = NULL, gap_checked_at = NULL WHERE platform = 'atcoder' AND problem_key = ?",
+  );
+  db.exec('BEGIN');
+  try {
+    for (const r of unreliable) clear.run(r.problem_key);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  console.log(
+    `[migrate] 已作废 ${unreliable.length} 条题号形态不可信的 AtCoder 难度定论（下一次回填会重新查证）`,
+  );
 }
 
 /**

@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { PlatformId } from '../../../shared/src/index.ts';
 import { CF_RATING_MAX, CF_RATING_MIN, difficultyFields, type DifficultyScale } from '../../../shared/src/difficulty.ts';
 import type { Db } from '../db/index.ts';
+import { atcoderContestPrefix, atcoderProblemIdCandidates, isPlausibleProblemKey } from '../adapters/problemKey.ts';
 import { fetchWithChallenge } from '../adapters/luogu.ts';
 import { parseJisuankeProblemTags } from '../adapters/jisuanke.ts';
 import {
@@ -15,12 +16,14 @@ import {
 } from '../adapters/problemBank.ts';
 import { asHttpClient, sleep } from '../adapters/http.ts';
 import { HOST_MIN_INTERVAL_MS } from '../net/hostThrottle.ts';
+import { qojTransportFetch } from '../net/qojTransport.ts';
 import type { BackfillProgress } from './backfillRun.ts';
 import { purifyTags } from '../import/problemWritePolicy.ts';
 import { effectiveDataDir } from '../knowledge/store.ts';
 import {
   createIcpcRuntime,
   MAX_BOARDS_PER_RUN,
+  MAX_QOJ_PAGES_PER_RUN,
   qojProblemIdFromKey,
   resolveIcpcDifficulty,
   type IcpcProblemInfo,
@@ -42,6 +45,12 @@ export interface BackfillInfo {
    * 这不是「上游没有标签」，而是「我没解析出来」—— 见 nextGapState 的负缓存规则。
    */
   tagsUnavailable?: boolean;
+  /**
+   * 上游**明确拒绝**给出这道题（HTTP 401/403：题已删除 / 转私有 / 不对外开放）。
+   * 与「没翻到」「请求失败」都不同：它是上游对本行的确定性答复，可以进负缓存
+   * （见 nextGapState 与 backfillPlatform 的 denied 分支）。置位时其余字段恒为空。
+   */
+  denied?: boolean;
 }
 
 /** 缺口类型（决定回填优先级：真缺难度 > 缺标签 > 只缺原生值） */
@@ -68,6 +77,11 @@ export const GAP_TTL_MS = 30 * 24 * 3600 * 1000;
  * 键查不到 = 它确实不在这个接口里（CF 的 gym、AtCoder 已下线题）。
  * 分页扫描型（牛客/代码源/力扣/计蒜客）**不算**：单次回填只翻到页数上限为止，
  * 「本次没翻到」不等于「上游没有」，缓存它会把还在表里的题误关 30 天。
+ *
+ * 光有这一条还不够：**键的形态本身也可能是错的**。2026-09-28 取证的真 bug —— 库内题号是
+ * 展示形态 `abc300a`，kenkoooo 是 `abc300_a`，整表查不到 → 被当成「上游确实没有」写进
+ * 30 天负缓存，90 行再也补不上难度（见 absenceIsDefinitive 与 atcoderProblemIdCandidates）。
+ * 因此写定论前还要过一道**形态校验**。
  */
 const ABSENCE_IS_DEFINITIVE: ReadonlySet<PlatformId> = new Set<PlatformId>(['codeforces', 'atcoder']);
 
@@ -121,6 +135,12 @@ export interface ProblemMeta {
    * 「上游无标签」的负缓存结论（那会把题误锁 30 天）。见 nextGapState 规则 1。
    */
   tagsUnavailable?: boolean;
+  /**
+   * 上游明确拒绝提供这道题（HTTP 401/403：已删除 / 私有 / 不对外开放）。
+   * 与 `null`（未命中、形态可疑、请求失败）完全不同：这是上游的确定性答复，
+   * 可以记负缓存（记 difficulty + tags 两个维度），不必每轮重打 —— 见 BackfillInfo.denied。
+   */
+  denied?: boolean;
 }
 
 /** 单平台回填结果 */
@@ -136,6 +156,12 @@ export interface PlatformBackfillResult {
   repaired: number;
   /** 上游仍无难度数据的题数（官方未评级等） */
   missing: number;
+  /**
+   * 上游**明确拒绝**给出该题（HTTP 401/403：已删除 / 转私有 / 不对外开放）的题数。
+   * 与 `missing`（题还在、只是没评级）分开计数：前者是「没有公开来源」，两者对用户的含义不同。
+   * 这些题会写进负缓存（见 nextGapState），因此下一轮不再重复打上游。
+   */
+  denied: number;
   /** 拉取失败（风控/网络/上游无此题）的题数 */
   failed: number;
   /** 本次因「单平台单次运行上限」未处理的题数（0 = 该平台目标已全部处理；>0 时再点一次继续） */
@@ -199,9 +225,10 @@ const FLOOR_MS = {
 
 /**
  * 平台限速与失败保护：
- * - `delayMs`：**逐题**请求之间的间隔（只有逐题型平台 luogu 会逐题请求上游；
- *   整表型平台（CF/AtCoder/力扣/计蒜客/**牛客/代码源**）的元数据来自整表/缓存，
- *   逐题循环不再发请求 → 间隔为 0，页间限速见 SCAN_DELAY_MS 与各题库拉取器内部限速）。
+ * - `delayMs`：**逐题**请求之间的间隔（逐题型平台 luogu 每题一次请求；牛客只在
+ *   「小规模目标 → 逐题 keyword 搜索」那条链路上逐题请求，见 perProblemDelayMs 与
+ *   NOWCODER_PROBLEM_SEARCH_MAX。其余整表型平台（CF/AtCoder/力扣/计蒜客/牛客整表/代码源）
+ *   的元数据来自整表/缓存，逐题循环不再发请求 → 间隔为 0，页间限速见 SCAN_DELAY_MS 与各题库拉取器内部限速）。
  * - `failLimit`：连续失败阈值，超过即视为触发风控并中止该平台（下次运行继续补）。
  *   洛谷开启（实测匿名逐题查询连续失败后会被限流，继续打会加重风控）；
  *   它是「逐题发请求」的平台，一次点击可能发出几百个请求，故必须有熔断。
@@ -213,7 +240,8 @@ const FLOOR_MS = {
  *   故取 20000 让它们在**一轮**内全部收敛（整表已拉、分批只会让下一轮重下整表）。
  */
 const PLATFORM_LIMITS: Record<PlatformId, { delayMs: number; failLimit: number | null; maxPerRun: number }> = {
-  // 牛客：整表分页扫描（见 fetchNowcoderTable）→ 不再逐题请求；页间节奏见 FLOOR_MS.nowcoder
+  // 牛客：整表分页扫描（见 fetchNowcoderTable）→ 默认不逐题请求；
+  // 目标数少时改走逐题 keyword 搜索，那一档的间隔见 perProblemDelayMs
   nowcoder: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
   // 洛谷：唯一的逐题平台。delayMs 取主机安全下限（4s/题）—— 线上与全局节流取较大者，不额外变慢，
   // 但保证不走节流层时也不会用 0.3s/题 的频率连发（那正是会招风控的节奏）。
@@ -227,7 +255,8 @@ const PLATFORM_LIMITS: Record<PlatformId, { delayMs: number; failLimit: number |
   jisuanke: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
   atcoder: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
   codeforces: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
-  // QOJ 不逐题发请求：目录/索引/榜单各拉一次（榜单下载量另受 MAX_BOARDS_PER_RUN 约束）
+  // QOJ 不逐题发请求：目录/索引/榜单各拉一次（榜单下载量受 MAX_BOARDS_PER_RUN 约束，
+  // 比赛页读取受 MAX_QOJ_PAGES_PER_RUN 约束）
   qoj: { delayMs: 0, failLimit: null, maxPerRun: 2000 },
 };
 
@@ -246,6 +275,18 @@ const PLATFORM_LIMITS: Record<PlatformId, { delayMs: number; failLimit: number |
  * 且要扫 77 页/140s —— 收益不足以抵消成本，故仍保持逐题 + 默认跳过。
  */
 const PER_PROBLEM_NATIVE_DEFERRED: ReadonlySet<PlatformId> = new Set<PlatformId>(['luogu']);
+
+/**
+ * 牛客目标数不超过这个规模时走**逐题 `keyword=` 搜索**（1 次请求 1 道题），而不是整表扫描。
+ *
+ * 依据（2026-09-28 实测）：整表 `orderById=true` 是按题号**降序**，站点报告 14767 题 = 296 页，
+ * 而回填原先固定翻到 200 页 → 只覆盖题号 ≥51006。本库 120 道牛客目标里 `16593`/`19877`/`21984`
+ * 那几道早就在范围之外，于是 `wantKeys` 的「全部命中才停」**永远**触发不了，每轮固定白扫
+ * 约 200 页（≈10 分钟），那几道题还每轮记成「上游未命中」（分页没翻到不算定论 → 连负缓存都不能写）。
+ * `keyword=<题号>` 实测精确返回该题一行（含难度分与知识点标签），代价是每题 1 个请求：
+ * 目标数少于整表页数上限时逐题既更快又能覆盖小题号；目标数上千时整表仍然划算（见 fetchNowcoderTable）。
+ */
+const NOWCODER_PROBLEM_SEARCH_MAX = 200;
 
 /** 未登记平台的兜底限额：不发逐题请求、不熔断、本次不设额外上限（见 backfillPlatform） */
 const DEFAULT_PLATFORM_LIMITS = { delayMs: 0, failLimit: null, maxPerRun: 0 } as const;
@@ -267,6 +308,8 @@ interface BackfillCtx {
   fetchFn: typeof fetch;
   /** 整表型平台：键 → 元数据（同一运行内复用；拉取失败则 promise 拒绝，不重复打上游） */
   tables: Map<PlatformId, Promise<Map<string, ProblemMeta>>>;
+  /** 整表题号的比赛前缀集合（AtCoder 形态校验用；每平台每轮只算一次，见 absenceIsDefinitive） */
+  prefixCache: Map<PlatformId, Set<string>>;
   /** 本次需要回填的题号（整表平台据此在扫描中提前结束） */
   wanted: Map<PlatformId, Set<string>>;
   /** 洛谷 tag id → 名称字典（懒加载，供逐题详情复用） */
@@ -277,6 +320,12 @@ interface BackfillCtx {
   icpcInfo?: Promise<Map<string, IcpcProblemInfo>>;
   /** 本次运行的统一时刻：写 `gap_checked_at` 用同一个值，避免同一轮里 TTL 起点漂移 */
   gapCheckedAt: string;
+  /**
+   * 牛客本轮走**逐题 `keyword=` 搜索**（目标数 ≤ `NOWCODER_PROBLEM_SEARCH_MAX`）而非整表扫描。
+   * 既决定 `fetchProblemMeta` 取数链路，也决定要不要按题补限速（整表模式只在页间限速，
+   * 逐题模式每题一个真实请求 → 见 backfillPlatform 的 perProblemDelayMs）。
+   */
+  ncSearch: boolean;
 }
 
 // ---------- 回填目标选择 ----------
@@ -446,6 +495,34 @@ export function deriveIdentityNative(db: Db): number {
 // ---------- 逐题来源：牛客 ----------
 
 /**
+ * 「上游明确拒绝」的 HTTP 状态：401 未认证 / 403 无权限。
+ * 洛谷对已删除或转私有、不对外开放的题（本机实测 T822401 等 3 道）匿名给 401、带已配置 Cookie
+ * 给 403 —— 这是上游对**这一行**的确定性答复，与「风控页 / 挑战页 / 没翻到」不是一回事：
+ * 前者可以记「无公开来源」的负缓存（否则每轮都为这几行白打请求、界面永远显示「难度未知」），
+ * 后者不能（下次还得重问）。见 fetchLgProblemInfo / fetchNcProblemInfo。
+ *
+ * 残余风险与出路（刻意接受，不做额外熔断）：若某天上游对**整批**请求返回 403（WAF 挡在 API 前），
+ * 这些行会被记成「无公开来源」并锁 30 天。因为代价有界且可逆 —— ① 列表里不显示「无官方难度」
+ * （负缓存只对 difficulty 维度生效，行本身仍有难度值时不显示该文案）；② 界面上手动填写难度会
+ * 清掉这个记录；③ 回填卡片里的「强制重查」（`includeNativeOnly`）本轮即可绕过；④ TTL 30 天到期自动重查。
+ * 反过来的代价更大：把 401/403 当成「没翻到」会让这些行永远每轮白打请求。
+ */
+const DENIED_STATUS: ReadonlySet<number> = new Set([401, 403]);
+
+/** 上游明确拒绝时返回的空元数据（其余字段恒为 null；denied 让调用方走负缓存分支） */
+function deniedInfo(problemKey: string): BackfillInfo {
+  return {
+    problemKey,
+    difficulty: null,
+    nativeDifficulty: null,
+    difficultyScale: null,
+    title: null,
+    tags: null,
+    denied: true,
+  };
+}
+
+/**
  * 解析牛客搜索结果行，分离标题与标签（.title 链接为标题，.tag-label 为算法标签）。
  * 返回 null 表示未命中该题号。
  *
@@ -473,9 +550,10 @@ export function parseNcSearchRow(html: string, problemKey: string): BackfillInfo
 /**
  * 牛客单题回填：keyword=题号 搜索（匿名可访问），未命中/风控返回 null。
  *
- * 注意：**批量回填已不再走这里**（改用题库整表扫描，见 fetchNowcoderTable）—— 逐题搜索会为
- * 「难度/原生值早就有了」的历史行发出上千次请求，而整表扫描一次就能覆盖并顺带修正过时难度值。
- * 本函数保留为单题排查入口，两个读取方的单元格定位规则仍共用一份（parseNcRowCells）。
+ * 这是**小规模目标**下牛客回填的实际链路（`ctx.ncSearch`，见 NOWCODER_PROBLEM_SEARCH_MAX）：
+ * 整表扫描的代价与目标数无关（几百页起），而逐题搜索是 1 请求 1 题，还能命中整表按题号降序
+ * 翻页上限内根本到不了的老题。目标数上千时才改走整表（fetchNowcoderTable）。
+ * 两个读取方的单元格定位规则仍共用一份（parseNcRowCells）。
  */
 export async function fetchNcProblemInfo(
   fetchFn: typeof fetch,
@@ -489,7 +567,9 @@ export async function fetchNcProblemInfo(
     },
     signal: AbortSignal.timeout(20000),
   });
-  if (!res.ok) return null; // 调用方按连续失败计数中止
+  // 401/403 = 上游明确拒绝（题已删除/私有）；其余非 2xx 仍算「没拿到」（调用方按连续失败计数中止）
+  if (DENIED_STATUS.has(res.status)) return deniedInfo(problemKey);
+  if (!res.ok) return null;
   const html = await res.text();
   return parseNcSearchRow(html, problemKey);
 }
@@ -514,6 +594,9 @@ export async function fetchLgProblemInfo(
     Accept: 'application/json',
     Referer: `${LUOGU_API}/problem/${problemKey}`,
   });
+  // 401/403 = 上游明确拒绝（题已删除 / 私有 / 不对外开放）：记「无公开来源」并可进负缓存，
+  // 而不是每轮重打一遍（见 DENIED_STATUS 与 backfillPlatform 的 denied 分支）
+  if (DENIED_STATUS.has(res.status)) return deniedInfo(problemKey);
   if (!res.ok) return null;
   const text = await res.text();
   if (!text.trim().startsWith('{')) return null;
@@ -808,6 +891,17 @@ function bankToTable(bank: BankFetchResult): Map<string, ProblemMeta> {
 }
 
 /**
+ * 牛客题号归一：历史数据里同一道站点题存在**两种 `problem_key`** —— 同步链路落的是数字
+ * （`20000`），另有一批是展示形态（`NC20000`，`url` 仍是 `/acm/problem/20000`；本机实测 60 行）。
+ * 上游两个入口（题库整表、`keyword=` 搜索）都只认数字 id → 查询前先剥前缀，
+ * 否则这批行每轮都记「上游未命中」。写库仍按库内原键（不动数据、不需要迁移）。
+ */
+export function ncProblemIdFromKey(key: string): string {
+  const m = /^NC(\d+)$/i.exec(key.trim());
+  return m?.[1] ?? key;
+}
+
+/**
  * 牛客：公开题库整表分页扫描（GET /acm/problem/list?queryType=all&orderById=true&page=N）。
  *
  * 为什么改用整表：牛客是「逐题查询」平台里历史包袱最重的一个 —— 本机 1082 行「难度已有、
@@ -815,6 +909,9 @@ function bankToTable(bank: BankFetchResult): Map<string, ProblemMeta> {
  * 于是 `native_difficulty` 常年为空、且**旧映射留下的过时难度值永远不会被修正**。
  * 实测整表扫描（200 页 / 约 120 秒）覆盖 1055/1082 行，其中 1040 行能拿到难度、
  * 并顺带修正 280 行与上游不一致的过时难度值 —— 请求数少一个量级，结果还更全。
+ *
+ * 但整表只适合**目标数很大**的场景（见 NOWCODER_PROBLEM_SEARCH_MAX）：目标少时它是固定
+ * 几百页的白扫，而且实测整表按题号**降序**、翻页上限内根本到不了小题号（16593 那批）。
  */
 async function fetchNowcoderTable(ctx: BackfillCtx): Promise<Map<string, ProblemMeta>> {
   const bank = await fetchNowcoderBank(ctx.fetchFn, {
@@ -858,12 +955,61 @@ function platformTable(platform: PlatformId, ctx: BackfillCtx): Promise<Map<stri
 }
 
 /**
+ * 整表类平台的题号**形态校验**：库内题号的形态是否可信到「查不到 = 上游没有」。
+ *
+ * 为什么必须加这一道（2026-09-28 取证的真 bug）：AtCoder 属于单次响应即完整题库，
+ * 库内展示形态题号 `abc300a` 在整表（`abc300_a`）里查不到 → 写下 30 天负缓存
+ * 「difficulty」，90 行难度再也补不上、也不再重查。形态校验只在**已经要写定论**时生效：
+ *
+ * - codeforces：静态形态通过即允许定论（`isPlausibleProblemKey` 只排除明显异形键 ——
+ *   实测 CF 存在纯数字题号，如 `92101` = 比赛 921 + 题号 `01`，静态规则分不清它和手滑写短的键，
+ *   故刻意保守；拦错只会让本可定论的行每轮重查一次，而 CF 是整表平台、重查不额外发逐题请求）。
+ * - atcoder：不以「有没有下划线」判定（原生就有 20 条无下划线的 `joi20NNhoN`），
+ *   而是看**比赛前缀是否真实存在于整表**：`abc308i` 的前缀 `abc308` 在表里 → 这个比赛存在，
+ *   该题确实未被 kenkoooo 收录，可以定论；拼错的 `abcc300a` 前缀不在表里 → 不下定论。
+ *
+ * 返回 false 时本轮**不写**负缓存（该行仍是下次运行的目标），并在 details 里注明原因。
+ * 拿不到整表（拉取失败）时同样返回 false —— 宁可不写缓存，也不把题锁 30 天。
+ */
+async function absenceIsDefinitive(platform: PlatformId, problemKey: string, ctx: BackfillCtx): Promise<boolean> {
+  if (!ABSENCE_IS_DEFINITIVE.has(platform)) return false;
+  // 静态形态必须先可信（异形键连整表都不必查）—— 见 adapters/problemKey.ts 的 isPlausibleProblemKey
+  if (!isPlausibleProblemKey(platform, problemKey)) return false;
+  // CF 到此为止：静态规则通过即允许定论（其键空间无法用静态规则精确判定，见 problemKey.ts）
+  if (platform !== 'atcoder') return true;
+  try {
+    const table = await platformTable('atcoder', ctx);
+    const prefix = atcoderContestPrefix(problemKey);
+    if (prefix === null) return false;
+    let prefixes = ctx.prefixCache.get('atcoder');
+    if (prefixes === undefined) {
+      prefixes = new Set<string>();
+      for (const id of table.keys()) {
+        const p = atcoderContestPrefix(id);
+        if (p !== null) prefixes.add(p);
+      }
+      ctx.prefixCache.set('atcoder', prefixes);
+    }
+    return prefixes.has(prefix);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 单题元数据获取（回填注册表入口）。平台 → 来源：
- * - luogu：GET /problem/{pid}（**唯一**逐题查询的平台，300ms 间隔 + 连续失败 8 次中止）
- * - codeforces / atcoder / leetcode / jisuanke / nowcoder / daimayuan：整表拉取后在内存里查
+ * - luogu：GET /problem/{pid}（唯一的**固定**逐题查询平台，间隔取主机安全下限 4s/题 + 连续失败 8 次熔断）
+ * - nowcoder：目标少时逐题 `keyword=` 搜索，目标多时整表扫描后在内存里查
+ *   （分档见 NOWCODER_PROBLEM_SEARCH_MAX）
+ * - codeforces / atcoder / leetcode / jisuanke / daimayuan：整表拉取后在内存里查
  *   （tables 缓存；nowcoder 与 daimayuan 复用题库拉取器的分页扫描，见 fetchNowcoderTable）
+ * - atcoder 额外做**题号归一**：库内展示形态 `abc300a` 按候选补成 `abc300_a` 再查
+ *   （见 atcoderProblemIdCandidates；写库仍按库内原键）
  * - qoj：平台无难度字段 → 用 ICPC/CCPC 公开榜单推导档位（见 analysis/icpcBoard.ts）；
  *   题号无法映射或榜单不可用时返回 null（保持未知，不猜）
+ *
+ * 返回 null = 未命中（是否算定论由调用方判，见 absenceIsDefinitive）；
+ * 返回带 `denied` 的元数据 = 上游明确拒绝（401/403），调用方可直接记负缓存。
  */
 export async function fetchProblemMeta(
   platform: PlatformId,
@@ -878,23 +1024,37 @@ export async function fetchProblemMeta(
     }
     case 'codeforces':
       return (await platformTable('codeforces', ctx)).get(problemKey.toUpperCase()) ?? null;
-    case 'atcoder':
-      return (await platformTable('atcoder', ctx)).get(problemKey) ?? null;
+    case 'atcoder': {
+      // 库内题号可能是展示形态（abc300a），而整表是 abc300_a → 按候选逐个查（原样优先，
+      // 见 atcoderProblemIdCandidates；`joi2011ho1` 这类原生无下划线的题号必须原样命中）
+      const table = await platformTable('atcoder', ctx);
+      for (const candidate of atcoderProblemIdCandidates(problemKey)) {
+        const hit = table.get(candidate);
+        if (hit) return hit;
+      }
+      return null;
+    }
     case 'leetcode':
       return (await platformTable('leetcode', ctx)).get(problemKey.toLowerCase()) ?? null;
     case 'jisuanke':
       return (await platformTable('jisuanke', ctx)).get(problemKey) ?? null;
-    case 'nowcoder':
-      return (await platformTable('nowcoder', ctx)).get(problemKey) ?? null;
+    case 'nowcoder': {
+      const id = ncProblemIdFromKey(problemKey);
+      // 目标少 → 逐题 keyword 搜索：整表是几百页的白扫，且降序上限内到不了小题号（见阈值注释）
+      if (ctx.ncSearch) {
+        const info = await fetchNcProblemInfo(ctx.fetchFn, id);
+        return info === null ? null : toMeta(info);
+      }
+      return (await platformTable('nowcoder', ctx)).get(id) ?? null;
+    }
     case 'daimayuan':
       return (await platformTable('daimayuan', ctx)).get(problemKey) ?? null;
     case 'qoj': {
       const problemId = qojProblemIdFromKey(problemKey);
       if (problemId === null) return null;
-      ctx.icpcInfo ??= resolveIcpcDifficulty(
-        ctx.icpc,
-        [...(ctx.wanted.get('qoj') ?? [])].map((k) => qojProblemIdFromKey(k)).filter((v): v is string => v !== null),
-      );
+      // 传**库内键**而不是题号：比赛题键（`2513-14301`）里的比赛号是「社区目录没收录时
+      // 直接读 QOJ 比赛页」的唯一线索（见 analysis/icpcBoard.ts 的 resolveIcpcDifficulty）
+      ctx.icpcInfo ??= resolveIcpcDifficulty(ctx.icpc, [...(ctx.wanted.get('qoj') ?? [])]);
       const info = (await ctx.icpcInfo).get(problemId);
       if (!info) return null;
       const mapped = info.native === '' ? null : difficultyFields('qoj', info.native);
@@ -920,6 +1080,7 @@ function toMeta(info: BackfillInfo): ProblemMeta {
     tags: info.tags,
     title: info.title,
     tagsUnavailable: info.tagsUnavailable,
+    ...(info.denied === true ? { denied: true } : {}),
   };
 }
 
@@ -941,6 +1102,21 @@ function withAbortSignal(fn: typeof fetch, signal: AbortSignal): typeof fetch {
   }) as typeof fetch;
 }
 
+/**
+ * 读某平台在设置页保存的凭据（`settings` 表 `cookie.<platform>` / `ua.<platform>`）。
+ * 只有 QOJ 的难度推导需要它：QOJ 比赛页与提交页受同一套 Cloudflare 校验，
+ * `cf_clearance` 与签发它的浏览器 UA 绑定，缺一份就会被挑战（返回 403 挑战页）。
+ */
+function readPlatformCredential(db: Db, platform: PlatformId): { cookie: string; ua: string } | null {
+  const read = (key: string): string => {
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value?: string } | undefined;
+    return typeof row?.value === 'string' ? row.value.trim() : '';
+  };
+  const cookie = read(`cookie.${platform}`);
+  const ua = read(`ua.${platform}`);
+  return cookie === '' && ua === '' ? null : { cookie, ua };
+}
+
 // ---------- 回填服务 ----------
 
 function ncTitlePolluted(title: string): boolean {
@@ -959,18 +1135,22 @@ export function cleanNcTitle(title: string): string {
  * - 目标选择见 pickBackfillTargets（含 QOJ；按缺口优先级排序，真缺难度先做）
  * - **先做一次零请求的本地补齐**（deriveIdentityNative）：把「难度已有、只缺原生值」的可推导行
  *   就地补齐，目标集合从「全库上万人行」收敛到真正缺东西的几百行
- * - **按平台取数方式分两类**（2026-09-27 起）：
- *   ① 整表类：CF / AtCoder / 力扣 / 计蒜客 / **牛客 / 代码源** —— 一次分页扫描拿全，逐题循环只查内存；
- *   ② 逐题类：仅剩洛谷（`GET /problem/{pid}`，300ms/题、连续失败 8 次熔断）。
+ * - **按平台取数方式分两类**（2026-09-27 起，2026-09-28 修正牛客）：
+ *   ① 整表类：CF / AtCoder / 力扣 / 计蒜客 / 代码源，以及**目标数上千**时的牛客 ——
+ *     一次分页扫描拿全，逐题循环只查内存；
+ *   ② 逐题类：洛谷（`GET /problem/{pid}`，4s/题、连续失败 8 次熔断）与**目标数少**时的牛客
+ *     （`keyword=` 搜索，1 请求 1 题；整表按题号降序且翻页上限到不了老题，白扫更贵，
+ *     见 NOWCODER_PROBLEM_SEARCH_MAX）。
  *   牛客与代码源原先也逐题查，导致「仅缺原生值」的历史行只能默认 defer、过时难度值永远得不到修正；
  *   改用各自的公开题库整表接口后（参考项目 OJ_Insight 的做法：分页列表一次拿全），一轮即可补齐
  *   并顺带修正过时值（本机实测：牛客覆盖 1055/1082 缺原生值的行、修正 280 行过时难度；
- *   代码源覆盖 459/459、修正 411 行）。洛谷整表对本库覆盖率仅 63/2418，故仍保持逐题 + 默认跳过。
+ *   代码源覆盖 459/459、修正 411 行）—— 那种规模下整表远省于逐题，故整表保留为大目标集的链路。
+ *   洛谷整表对本库覆盖率仅 63/2418，故仍保持逐题 + 默认跳过。
  * - 每平台单次运行题数上限见 PLATFORM_LIMITS.maxPerRun：未处理的题数随结果回传（capped），
  *   下次点击从剩余目标继续
  * - **负缓存**（gap_state / gap_checked_at，TTL 见 GAP_TTL_MS）：上游明确给不出的维度在 TTL 内
  *   不再进目标，题数计入 cached。`includeNativeOnly: true` 一并绕过它（运维强查口子）
- * - **平台按实测成本升序处理**（见 PLATFORM_ORDER）：qoj/atcoder 等几秒完成，牛客整表扫描垫底；
+ * - **平台按实测成本升序处理**（见 PLATFORM_ORDER）：qoj/atcoder 等几秒完成，牛客垫底；
  *   这样中途被放弃或进程被杀时，先跑完的平台成果已经落库，而不会「等都等了、qoj 一行都没写」
  * - **可中止**（`opts.signal`）：用户点「停止」→ 在途请求立即中断、循环尽快退出，
  *   已提交的批次**留在库里**（见 backfillPlatform），被中断的题仍是下次运行的目标。
@@ -995,6 +1175,11 @@ export async function backfillDifficulties(
      * 已提交的批次保留，未处理的题留作下次运行的目标。
      */
     signal?: AbortSignal;
+    /**
+     * QOJ 读取通道（比赛页：题号字母映射）。默认用共享的 HTTP/1.1 + 按域名节流单例
+     * （net/qojTransport.ts —— 与提交同步共用同一节奏桶）；单测注入 mock，避免真的打上游。
+     */
+    qojTransport?: typeof fetch;
     /** 进度回调：每个平台开始 + 每处理完一题上报一次（未处理的平台不上报） */
     onProgress?: (p: BackfillProgress) => void;
   } = {},
@@ -1044,12 +1229,29 @@ export async function backfillDifficulties(
   const signal = opts.signal;
   // 上游请求挂上本次运行的中止信号（见 withAbortSignal）→ 点「停止」时在途请求立即失败
   const runFetch: typeof fetch = signal ? withAbortSignal(fetchFn, signal) : fetchFn;
+  /** 牛客本轮目标数：少到「逐题搜索比整表便宜」就用逐题（见 NOWCODER_PROBLEM_SEARCH_MAX） */
+  const ncTargets = byPlatform.get('nowcoder')?.length ?? 0;
+  /**
+   * QOJ 读取通道：比赛页（题号字母映射）必须走 HTTP/1.1 + 已配置凭据（见 net/qojTransport.ts）。
+   * 只在真的有 QOJ 目标时创建/包信号，避免给其它运行引入多余的网络层。
+   */
+  const qojTargets = (byPlatform.get('qoj')?.length ?? 0) > 0;
+  let qojTransport: typeof fetch | undefined;
+  if (qojTargets) {
+    const base = opts.qojTransport ?? qojTransportFetch();
+    qojTransport = signal ? withAbortSignal(base, signal) : base;
+  }
   const ctx: BackfillCtx = {
     fetchFn: runFetch,
     tables: new Map(),
+    prefixCache: new Map(),
     wanted: new Map([...byPlatform].map(([p, list]) => [p, new Set(list.map((t) => t.problemKey))])),
-    icpc: createIcpcRuntime(runFetch),
+    icpc: createIcpcRuntime(runFetch, {
+      qojCredentials: qojTargets ? readPlatformCredential(db, 'qoj') : null,
+      ...(qojTransport ? { qojTransport } : {}),
+    }),
     gapCheckedAt: new Date().toISOString(),
+    ncSearch: ncTargets > 0 && ncTargets <= NOWCODER_PROBLEM_SEARCH_MAX,
   };
 
   /** 本轮目标总数（跨平台）：进度文案里的「（本轮共 N 题）」 */
@@ -1089,6 +1291,7 @@ export async function backfillDifficulties(
             nativeFilled: 0,
             repaired: 0,
             missing: 0,
+            denied: 0,
             failed: 0,
             capped: 0,
             deferred: 0,
@@ -1127,7 +1330,7 @@ const PLATFORM_ORDER: readonly PlatformId[] = [
   'leetcode', // ≈53s：problemsetQuestionList 分页
   'jisuanke', // ≈276s：题库分页最多 184 页（目标题常年不在题库里 → 常扫满）
   'luogu', // 逐题 ≥4s/题 × 数百题
-  'nowcoder', // 整表最多 200 页 ≈400s
+  'nowcoder', // 逐题搜索 2s/题 × N，或整表几百页 —— 两条链路里它都是最贵的一档
 ];
 
 /** 按 PLATFORM_ORDER 排序；未登记的 platform（配置异常）排在最后，且保持稳定顺序 */
@@ -1168,6 +1371,13 @@ async function backfillPlatform(
    */
   const aborted = (): boolean => signal?.aborted === true;
   const limits = platformLimits(platform);
+  /**
+   * 逐题请求之间的兜底间隔。
+   * 牛客整表模式不发逐题请求（页间限速在 `fetchNowcoderBank` 里做），但**逐题搜索模式**每题
+   * 是一个真实请求 → 补上该主机的安全下限。线上它与全局节流取较大者（请求本身已占掉一个
+   * 时间片，因此几乎不额外变慢），不走节流层的脚本/单测里它就是唯一那道防线。
+   */
+  const perProblemDelayMs = platform === 'nowcoder' && ctx.ncSearch ? FLOOR_MS.nowcoder : limits.delayMs;
   const r: PlatformBackfillResult = {
     platform,
     scanned: targets.length,
@@ -1175,6 +1385,7 @@ async function backfillPlatform(
     nativeFilled: 0,
     repaired: 0,
     missing: 0,
+    denied: 0,
     failed: 0,
     capped: 0,
     deferred: 0,
@@ -1294,23 +1505,30 @@ async function backfillPlatform(
           stopped = true;
           break;
         }
+        // 未命中的说明：形态可疑时要把「我们不敢下结论」说出来，否则用户分不清
+        // 「上游没有」与「没翻到 / 题号形态不可信」。
+        let note = failed
+          ? '请求失败'
+          : platform === 'qoj'
+            ? `公开榜单未匹配到该题（题号映射缺失 / 比赛页或榜单源不可用 / 本轮上限：比赛页 ${MAX_QOJ_PAGES_PER_RUN} 场、榜单 ${MAX_BOARDS_PER_RUN} 份）`
+            : '上游未命中';
+        /**
+         * 「上游未命中」只有在**单次响应即完整题库**的平台上才是定论（CF 的 problemset 不含 gym、
+         * AtCoder 已下线题），且**题号形态必须可信**（见 absenceIsDefinitive：形态可疑的 miss
+         * 不写缓存，否则拼写/形态差异会被锁 30 天）。
+         * 请求失败（failed）一律不定论：风控期间的 404 会把题目锁住 30 天。
+         */
+        let definitive = false;
+        if (!failed && meta === null && ABSENCE_IS_DEFINITIVE.has(platform)) {
+          definitive = await absenceIsDefinitive(platform, t.problemKey, ctx);
+          if (!definitive) note = `${note}（题号形态可疑，未记「无官方难度」定论）`;
+        }
         // 未命中也可能是题号已废弃（如转私密），按单题缺失计，连续缺失也计入风控判定
         r.failed += 1;
-        r.details.push({
-          problemKey: t.problemKey,
-          action: 'failed',
-          note: failed
-            ? '请求失败'
-            : platform === 'qoj'
-              ? `公开榜单未匹配到该题（题号映射缺失 / 榜单源不可用 / 本轮榜单拉取已达上限 ${MAX_BOARDS_PER_RUN}）`
-              : '上游未命中',
-        });
+        r.details.push({ problemKey: t.problemKey, action: 'failed', note });
         consecutiveFails += 1;
-        if (limits.delayMs > 0) await sleep(limits.delayMs);
-        // 「上游未命中」只有在**单次响应即完整题库**的平台上才是定论（CF 的 problemset 不含 gym、
-        // AtCoder 已下线题）；分页扫描型本次没翻到 ≠ 上游没有，故不写缓存。
-        // 请求失败（failed）同样不写：风控期间的 404 会把题目锁住 30 天。
-        if (!failed && meta === null && ABSENCE_IS_DEFINITIVE.has(platform)) {
+        if (perProblemDelayMs > 0) await sleep(perProblemDelayMs);
+        if (definitive) {
           const miss = before.get(platform, t.problemKey) as GapColumns | undefined;
           if (miss) {
             const g = nextGapState({
@@ -1329,6 +1547,30 @@ async function backfillPlatform(
         continue;
       }
       consecutiveFails = 0;
+
+      // 上游明确拒绝提供这道题（HTTP 401/403：已删除 / 私有 / 不对外开放）：
+      // 这是**确定性答复**，与「没翻到」不是一回事 —— 如实计 denied，并记负缓存，
+      // 否则这几行每轮都会白打请求、界面永远停在「难度未知」（见 DENIED_STATUS）。
+      if (meta.denied === true) {
+        r.denied += 1;
+        r.details.push({ problemKey: t.problemKey, action: 'missing', note: '上游已下架/私有（无公开来源）' });
+        const miss = before.get(platform, t.problemKey) as GapColumns | undefined;
+        if (miss) {
+          const g = nextGapState({
+            platform,
+            oldState: miss.gap_state,
+            oldCheckedAt: miss.gap_checked_at,
+            meta,
+            tagsFromUpstream: null,
+            definitiveAbsence: true,
+            checkedAt: ctx.gapCheckedAt,
+            after: miss,
+          });
+          if (g.changed) writeGap.run(g.state, g.checkedAt, platform, t.problemKey);
+        }
+        if (perProblemDelayMs > 0) await sleep(perProblemDelayMs);
+        continue;
+      }
 
       const row = before.get(platform, t.problemKey) as GapColumns | undefined;
       if (!row) {
@@ -1386,7 +1628,16 @@ async function backfillPlatform(
         r.details.push({ problemKey: t.problemKey, action: 'filled', note: `难度 ${meta.difficulty}` });
       } else if (meta.difficulty === null) {
         r.missing += 1;
-        r.details.push({ problemKey: t.problemKey, action: 'missing', note: '上游无难度数据（未评级/未设定）' });
+        r.details.push({
+          problemKey: t.problemKey,
+          action: 'missing',
+          // QOJ 平台本身没有难度字段（UOJ 数据模型）：「没难度」的含义是**推导不出来**，
+          // 不是「上游未评级」——这句话直接决定用户会不会去翻榜单/换网络重试
+          note:
+            platform === 'qoj'
+              ? `公开榜单推不出档位（题号映射缺失 / 榜单源不可用 / 本轮上限：比赛页 ${MAX_QOJ_PAGES_PER_RUN} 场、榜单 ${MAX_BOARDS_PER_RUN} 份）`
+              : '上游无难度数据（未评级/未设定）',
+        });
       } else if (difficultyCorrected || titleChanged || tagsChanged || filledNative) {
         r.repaired += 1;
         r.details.push({
@@ -1419,7 +1670,7 @@ async function backfillPlatform(
         batchedWrites += 1;
         if (batchedWrites >= WRITE_BATCH) flushTx();
       }
-      if (limits.delayMs > 0) await sleep(limits.delayMs);
+      if (perProblemDelayMs > 0) await sleep(perProblemDelayMs);
     }
     if (!stopped) report(targets.length); // 正常跑完：把进度推到「N/N」
     flushTx();
@@ -1469,6 +1720,8 @@ interface GapInput {
  *    「解析不出来」也不算给不出：`tagsUnavailable`（上游给了 tag id 但本地字典没解析出名称）
  *    时不记任何结论 —— 字典失败是静默的，照记会把题误锁 30 天（见 fetchLgProblemInfo）。
  *    注意：标签**净化后为空**（上游只有赛事/来源/年份等非算法维度）不在此列，那是真结论。
+ *    上游**明确拒绝**（`denied`：HTTP 401/403，题已删除/私有）走的是 meta 分支 ——
+ *    它是确定性答复，两个维度都如实记为「无公开来源」，下轮不再重打（见 DENIED_STATUS）。
  * 2. **补齐即退出**：这次上游给了难度（或加了标签），该维度立刻从集合里删掉 ——
  *    CF 赛后补评级、平台后来给题加标签都靠这条生效，不必等 TTL。
  * 3. **TTL 只随新判定顺延**：本轮没有新增判定时保留旧时刻，避免一个维度靠另一个维度的

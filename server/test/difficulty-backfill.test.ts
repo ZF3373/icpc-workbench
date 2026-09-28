@@ -7,8 +7,11 @@ import {
   backfillDifficulties,
   pickBackfillTargets,
   nextGapState,
+  fetchLgProblemInfo,
+  parseGapState,
   GAP_TTL_MS,
 } from '../src/analysis/difficultyBackfill.ts';
+import { atcoderThetaToRating } from '../../shared/src/difficulty.ts';
 import { parseNcBankRows } from '../src/adapters/problemBank.ts';
 import { HOST_MIN_INTERVAL_MS } from '../src/net/hostThrottle.ts';
 
@@ -122,18 +125,18 @@ test('回填：逐题平台的「仅缺原生值」默认跳过并计入 deferre
   assert.equal(filledNative.difficulty_scale, 'luogu-2026-06');
 });
 
-test('回填：牛客「难度已有、原生值缺失」—— 可推导的零请求本地推导，其余走题库整表扫描', async () => {
+test('回填：牛客「难度已有、原生值缺失」—— 可推导的零请求本地推导，其余走上游查证', async () => {
   // 牛客原生分与 CF 分值同量纲且未触发钳位 → 与原始映射严格同源，可本地推导（零请求）
   insertProblem('nowcoder', '100', '题一', 1800, ['dp'], { source: 'sync' });
-  // 钳位边界（800）：无法区分原值本身与被钳上来的值 → 不本地推导，交给题库整表扫描
+  // 钳位边界（800）：无法区分原值本身与被钳上来的值 → 不本地推导，交给上游查证
   insertProblem('nowcoder', '200', '题二', 800, ['dp'], { source: 'sync' });
-  let listRequests = 0;
+  const urls: string[] = [];
   const fetchFn = router({
     'acm/problem/list': (url) => {
-      listRequests += 1;
-      const page = new URL(url).searchParams.get('page');
-      // 整表扫描：难度 800 的题在页面上原生分是 700（钳位前）
-      return page === '1' ? ncBankPage([{ id: '200', title: '题二', diff: '700' }]) : ncBankPage([]);
+      urls.push(url);
+      // 目标只有 2 道 → 逐题 keyword 搜索（见 NOWCODER_PROBLEM_SEARCH_MAX）；
+      // 页面行结构两种读取方共用，故同一份行数据既能服务整表也能服务搜索
+      return ncBankPage([{ id: '200', title: '题二', diff: '700' }]);
     },
   });
   const results = await backfillDifficulties(db, fetchFn);
@@ -142,22 +145,28 @@ test('回填：牛客「难度已有、原生值缺失」—— 可推导的零�
   assert.equal(derived.native_difficulty, '1800', '同量纲同值 → 零请求推导');
   assert.equal(derived.difficulty_scale, 'nowcoder-score');
   const swept = db.prepare("SELECT difficulty, native_difficulty FROM problems WHERE problem_key='200'").get() as any;
-  assert.equal(swept.native_difficulty, '700', '边界值由整表扫描给出真实的原生分原文');
+  assert.equal(swept.native_difficulty, '700', '边界值由上游给出真实的原生分原文');
   assert.equal(swept.difficulty, 800);
-  assert.equal(nc.deferred, 0, '牛客已改为整表扫描，不再有 deferred 的「仅缺原生值」行');
-  assert.equal(nc.nativeFilled, 1, '整表扫描补上的那一道');
-  assert.ok(listRequests >= 1, '必须走题库整表接口');
+  assert.equal(nc.deferred, 0, '牛客不再有 deferred 的「仅缺原生值」行（本地推导 + 上游查证覆盖）');
+  assert.equal(nc.nativeFilled, 1, '上游补上的那一道');
+  assert.ok(
+    urls.some((u) => u.includes('keyword=200')),
+    `小规模目标走逐题 keyword 搜索而不是白扫整表：${urls.join(' ')}`,
+  );
+  assert.ok(
+    !urls.some((u) => u.includes('queryType=all')),
+    '逐题模式下不得再翻整表（整表是几百页的固定代价，且降序上限内到不了老题号）',
+  );
 });
 
-test('回填：牛客整表扫描修正旧钳位留下的过时难度值（700 → 800），并计入 repaired', async () => {
+test('回填：牛客修正旧钳位留下的过时难度值（700 → 800），并计入 repaired', async () => {
   // 老库常见：旧版本把低于 CF 下限的原生分直接当难度写库（700），当前标尺应钳到 800
   insertProblem('nowcoder', '249983', '小红的权值', 700, ['dp'], { source: 'sync' });
   const seen: string[] = [];
   const fetchFn = router({
     'acm/problem/list': (url) => {
-      seen.push(new URL(url).searchParams.get('page') ?? '');
-      const page = new URL(url).searchParams.get('page');
-      return page === '1' ? ncBankPage([{ id: '249983', title: '小红的权值', diff: '700' }]) : ncBankPage([]);
+      seen.push(new URL(url).searchParams.get('keyword') ?? new URL(url).searchParams.get('page') ?? '');
+      return ncBankPage([{ id: '249983', title: '小红的权值', diff: '700' }]);
     },
   });
   const results = await backfillDifficulties(db, fetchFn);
@@ -172,8 +181,55 @@ test('回填：牛客整表扫描修正旧钳位留下的过时难度值（700 �
     /修正难度 700→800/,
     'details 明确给出难度值修正',
   );
-  // 目标题已齐 → 单页即停（wantKeys 早停，不为一道题扫完整表）
-  assert.deepEqual(seen, ['1']);
+  // 1 道题只需 1 次请求：逐题搜索不会为一道题翻整表
+  assert.deepEqual(seen, ['249983']);
+});
+
+test('回填：牛客目标数超过整表页数上限时才走整表扫描（逐题此时反而更贵）', async () => {
+  // 阈值见 NOWCODER_PROBLEM_SEARCH_MAX：目标数 ≤ 整表页数上限时逐题（1 请求 1 题）更便宜，
+  // 上千时整表一次扫描覆盖全部（本机实测旧库 1082 行「仅缺原生值」）。
+  for (let i = 0; i < 201; i += 1) insertProblem('nowcoder', String(400000 - i), `T${i}`, null, []);
+  const urls: string[] = [];
+  const fetchFn = router({
+    'acm/problem/list': (url) => {
+      urls.push(url);
+      // 整表：第 1 页就把 201 道目标全给出 → wantKeys 早停应当一页收工
+      return ncBankPage(
+        Array.from({ length: 201 }, (_, i) => ({
+          id: String(400000 - i),
+          title: `T${i}`,
+          diff: '1500',
+          tags: ['贪心'],
+        })),
+      );
+    },
+  });
+  const results = await backfillDifficulties(db, fetchFn);
+  const nc = results.find((r) => r.platform === 'nowcoder')!;
+  assert.equal(nc.filled, 201);
+  assert.ok(urls.every((u) => u.includes('queryType=all')), '大批量目标走整表扫描，不逐题打上游');
+  assert.equal(urls.length, 1, '目标一页就齐 → 早停，不继续翻页');
+});
+
+test('回填：牛客历史键 NC20000 归一成站点 id 再查，写库仍按库内原键', async () => {
+  // 同步链路曾把题号落成展示形态（NC20000，url 仍是 /acm/problem/20000）；上游两个入口
+  // 都只认数字 id → 不归一这批行每轮都记「上游未命中」，永远补不上
+  insertProblem('nowcoder', 'NC20000', '旧键题', null, []);
+  const urls: string[] = [];
+  const fetchFn = router({
+    'acm/problem/list': (url) => {
+      urls.push(url);
+      return ncBankPage([{ id: '20000', title: '旧键题', diff: '1200', tags: ['模拟'] }]);
+    },
+  });
+  const results = await backfillDifficulties(db, fetchFn);
+  const nc = results.find((r) => r.platform === 'nowcoder')!;
+  assert.equal(nc.filled, 1);
+  assert.equal(nc.failed, 0, '归一后必须命中，不得再记上游未命中');
+  assert.ok(urls.some((u) => u.includes('keyword=20000')), `应按数字 id 查询：${urls.join(' ')}`);
+  const row = db.prepare("SELECT difficulty, tags FROM problems WHERE problem_key='NC20000'").get() as any;
+  assert.equal(row.difficulty, 1200);
+  assert.deepEqual(JSON.parse(row.tags), ['模拟']);
 });
 
 // ---------- 全平台元数据回填 ----------
@@ -553,7 +609,7 @@ test('backfill: fills nowcoder difficulty + repairs polluted title/empty tags', 
   assert.equal(nc.repaired, 1); // 280771：难度已有 700、上游同为 700 → 只修标题/补标签
   assert.equal(nc.missing, 0);
   assert.equal(nc.failed, 0);
-  assert.equal(nc.deferred, 0); // 牛客已改为整表扫描 → 不再有 deferred
+  assert.equal(nc.deferred, 0); // 牛客已不再 defer「仅缺原生值」的行（本地推导 + 上游查证覆盖）
 
   const row = db.prepare("SELECT difficulty, title, tags FROM problems WHERE platform='nowcoder' AND problem_key='16640'").get() as any;
   assert.equal(row.difficulty, 1500);
@@ -591,19 +647,25 @@ test('backfill: keeps existing difficulty on repair, records official-missing', 
   assert.deepEqual(JSON.parse(m.tags), ['树形dp']);
 });
 
-test('backfill: 牛客整表拉取为空/失败时，目标如实记为 failed 且不写坏数据', async () => {
-  // 牛客已是整表型平台：单题不再发请求，也就没有「连续失败」可数 —— 表拉空/拉失败时
-  // 所有目标统一记 failed（逾期重试即可），而不是逐题重打上游制造上千次无效请求。
-  for (let i = 0; i < 12; i += 1) insertProblem('nowcoder', String(90000 + i), `T${i}`, null, []);
+test('backfill: 牛客上游返回空页/结构变化时，目标如实记为 failed 且不写坏数据', async () => {
+  // 牛客两条链路都可能整体拿不到数据（逐题：搜不到行；整表：页结构变化 → 表为空）。
+  // 无论哪条，目标都统一记 failed（逾期重试即可）：不得凭空写难度，也不得写「上游没有」的负缓存
+  // —— 分页没翻到 ≠ 上游没有（见 ABSENCE_IS_DEFINITIVE）。
+  for (let i = 0; i < 3; i += 1) insertProblem('nowcoder', String(90000 + i), `T${i}`, null, []);
   const fetchFn = router({
-    'acm/problem/list': () => '<html>empty</html>', // 表为空 → 全部未命中
+    'acm/problem/list': () => '<html>empty</html>',
   });
   const results = await backfillDifficulties(db, fetchFn);
   const nc = results.find((r) => r.platform === 'nowcoder')!;
-  assert.equal(nc.failed, 12);
+  assert.equal(nc.failed, 3);
   assert.equal(nc.filled, 0);
   const untouched = db.prepare("SELECT COUNT(*) AS c FROM problems WHERE platform='nowcoder' AND difficulty IS NOT NULL").get() as any;
   assert.equal(untouched.c, 0, '不得凭空写入难度');
+  assert.deepEqual(
+    pickBackfillTargets(db).filter((t) => t.platform === 'nowcoder').map((t) => t.problemKey).sort(),
+    ['90000', '90001', '90002'],
+    '失败不是定论 → 下一轮仍是目标',
+  );
 });
 
 // ---------- 回填服务（洛谷） ----------
@@ -793,7 +855,7 @@ test('回填：题目在回填途中被删除 → 记为跳过而非整轮 502',
 
 // ---------- 处理顺序与节奏（2026-09-27 用户反馈：跑完回填 QOJ 仍无难度标签） ----------
 
-test('回填顺序：按实测成本升序 —— qoj/atcoder 先完成，牛客整表扫描垫底', async () => {
+test('回填顺序：按实测成本升序 —— qoj/atcoder 先完成，牛客垫底', async () => {
   // 起因：默认按 platform 字母序处理 → qoj 排最后（第 8），而牛客整表扫描要 ~400s、洛谷逐题十几分钟。
   // 用户等到最后仍看不到 qoj 标签；中途放弃 / 开发期 `tsx watch` 因文件变更重启时，
   // 排在后面的平台一行都不会写（实测被打断的一轮只写完 atcoder + CF）。
@@ -802,9 +864,10 @@ test('回填顺序：按实测成本升序 —— qoj/atcoder 先完成，牛客
   insertProblem('codeforces', '1001A', 'CF', null, []);
   insertProblem('atcoder', 'abc321_a', 'AT', null, []);
   insertProblem('qoj', '4071-20016', 'QOJ', null, []);
-  // 全部上游 404 → 每平台都记 failed，但**处理顺序**仍如实反映在 results 里
+  // 全部上游 404 → 每平台都记 failed，但**处理顺序**仍如实反映在 results 里。
+  // QOJ 比赛页走独立的 HTTP/1.1 传输层（生产用共享单例），单测必须注入 mock 以免真打 qoj.ac。
   const fetchFn = router({});
-  const results = await backfillDifficulties(db, fetchFn);
+  const results = await backfillDifficulties(db, fetchFn, { qojTransport: fetchFn });
   assert.deepEqual(
     results.map((r) => r.platform),
     ['qoj', 'atcoder', 'codeforces', 'luogu', 'nowcoder'],
@@ -821,6 +884,21 @@ test('回填节奏：洛谷逐题间隔不得快于主机安全下限（防退�
     'problem/P1001': () => luoguProblemJson('P1001', 1, 'A+B', []),
   });
   const floor = HOST_MIN_INTERVAL_MS['www.luogu.com.cn'];
+  const t0 = Date.now();
+  await backfillDifficulties(db, fetchFn);
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed >= floor, `逐题间隔 ${elapsed}ms 必须 ≥ 主机安全下限 ${floor}ms`);
+});
+
+test('回填节奏：牛客逐题搜索模式同样按 ac.nowcoder.com 的安全下限限速', async () => {
+  // 整表模式下牛客不逐题发请求（页间限速在 fetchNowcoderBank），但**小规模目标**改走逐题搜索后
+  // 每题是一个真实请求 → 兜底间隔必须跟着换到该主机的下限，否则退回 0.5s/题 的旧节奏（招风控）。
+  insertProblem('nowcoder', '200001', 'A', null, []);
+  insertProblem('nowcoder', '200002', 'B', null, []);
+  const fetchFn = router({
+    'acm/problem/list': () => ncBankPage([{ id: '200001', title: 'A', diff: '1200', tags: ['贪心'] }]),
+  });
+  const floor = HOST_MIN_INTERVAL_MS['ac.nowcoder.com'];
   const t0 = Date.now();
   await backfillDifficulties(db, fetchFn);
   const elapsed = Date.now() - t0;
@@ -1174,4 +1252,159 @@ test('回填进度：按平台上报「已完成/平台总数」与本轮累计'
   assert.equal(progress.length, 4, '3 题各报一次 + 平台收尾一次');
   assert.deepEqual(progress[0], { platform: 'nowcoder', platformDone: 0, platformTotal: 3, done: 0, total: 3 });
   assert.deepEqual(progress[3], { platform: 'nowcoder', platformDone: 3, platformTotal: 3, done: 3, total: 3 });
+});
+
+// ---------- AtCoder 题号归一 + 整表形态校验（2026-09-28 取证的真 bug） ----------
+//
+// 现场：库内题号是展示形态 `abc300a`，kenkoooo 整表是 `abc300_a` → 整表查不到；atcoder 又属于
+// 「单次响应即完整题库」（ABSENCE_IS_DEFINITIVE）→ 这个 miss 被当成定论写下 30 天负缓存，
+// 90 行永久「无官方难度」。本组用例钉死两件事：① 查询前按候选归一；② 写定论前过形态校验。
+
+/** kenkoooo 两份资源 mock：problems.json 给题号，problem-models.json 给 θ（难度模型） */
+function atcoderRouter(entries: Array<{ id: string; theta?: number | null; title?: string }>): typeof fetch {
+  return router({
+    'resources/problems.json': () =>
+      entries.map((e) => ({ id: e.id, contest_id: e.id.split('_')[0] ?? e.id, title: e.title ?? e.id })),
+    'resources/problem-models.json': () =>
+      Object.fromEntries(entries.map((e) => [e.id, e.theta == null ? {} : { difficulty: e.theta }])),
+  });
+}
+
+test('回填：AtCoder 展示形态题号 abc300a 归一成 abc300_a 后命中整表（并清掉误写的负缓存）', async () => {
+  insertProblem('atcoder', 'abc300a', 'A - N-choice question', null, []);
+  // 复现现场：上一轮把「整表查不到」当定论，写了 30 天负缓存
+  db.prepare("UPDATE problems SET gap_state = 'difficulty', gap_checked_at = ?").run(new Date().toISOString());
+  const fetchFn = atcoderRouter([{ id: 'abc300_a', theta: 125, title: 'A - N-choice question' }]);
+
+  // 负缓存未过期 → 普通回填会跳过它；用运维强查口子（includeNativeOnly）触发本轮重查，
+  // 也正是「受影响的旧库需要点一次强查才能解套」的真实路径（客户端回填卡片里有勾选项）
+  const results = await backfillDifficulties(db, fetchFn, { includeNativeOnly: true });
+  const at = results.find((r) => r.platform === 'atcoder')!;
+  assert.equal(at.scanned, 1);
+  assert.equal(at.filled, 1, '归一后必须命中（此前每轮都记「上游未命中」）');
+  assert.equal(at.failed, 0, '归一命中 → 不得再记上游未命中');
+  const row = db
+    .prepare("SELECT difficulty, native_difficulty, difficulty_scale, gap_state, gap_checked_at FROM problems WHERE problem_key='abc300a'")
+    .get() as { difficulty: number | null; native_difficulty: string | null; difficulty_scale: string | null; gap_state: string | null; gap_checked_at: string | null };
+  assert.equal(row.difficulty, atcoderThetaToRating(125));
+  assert.equal(row.native_difficulty, '125');
+  assert.equal(row.difficulty_scale, 'atcoder-kenkoooo-irt');
+  assert.equal(row.gap_state, 'tags', 'difficulty 维度必须随补齐退出；AtCoder 无标签来源 → 只留 tags');
+  assert.ok(row.gap_checked_at, '新写入的 tags 判定顺延查证时刻');
+  // 列表按 gap_state 是否含 difficulty 决定显示「无官方难度」还是横杠（见 routes/problems.ts）：
+  // 这一位必须清掉，否则这道已补上难度的题仍会显示「平台无公开难度」
+  assert.equal(parseGapState(row.gap_state).has('difficulty'), false);
+});
+
+test('回填：AtCoder 原生无下划线题号（joi2011ho1）必须原样命中 —— 归一不得反噬', async () => {
+  // 实测 kenkoooo problems.json 9597 条里有 20 条**原生**无下划线的题号（全是 joi20NNhoN）：
+  // 若「没有下划线就补一个」，这批题反而会查不到。故候选表必须保序且以库内原键打头。
+  insertProblem('atcoder', 'joi2011ho1', 'JOI 2011 本選 1', null, []);
+  insertProblem('atcoder', 'joi2012ho2', 'JOI 2012 本選 2', null, []);
+  const fetchFn = atcoderRouter([
+    { id: 'joi2011ho1', theta: 900 },
+    { id: 'joi2012ho2', theta: 1200 },
+  ]);
+  const results = await backfillDifficulties(db, fetchFn);
+  const at = results.find((r) => r.platform === 'atcoder')!;
+  assert.equal(at.scanned, 2);
+  assert.equal(at.filled, 2, '原样形态必须先命中，不得被补下划线带偏');
+  assert.equal(at.failed, 0);
+  const a = db.prepare("SELECT difficulty FROM problems WHERE problem_key='joi2011ho1'").get() as { difficulty: number };
+  assert.equal(a.difficulty, atcoderThetaToRating(900));
+});
+
+test('回填：AtCoder 题号形态不可信（比赛前缀不在整表）→ 不写定论负缓存，留作下次目标', async () => {
+  // 拼错一个字母：`abcc300a`。整表里没有 abcc300 这个比赛 —— 此时「查不到」什么也证明不了，
+  // 若照旧写 30 天负缓存，拼写错误会被固化成「平台无公开难度」（正是真 bug 的成因）。
+  insertProblem('atcoder', 'abcc300a', '拼错的题号', null, []);
+  const fetchFn = atcoderRouter([{ id: 'abc300_a', theta: 125 }]);
+  const results = await backfillDifficulties(db, fetchFn);
+  const at = results.find((r) => r.platform === 'atcoder')!;
+  assert.equal(at.failed, 1, '未命中仍如实记失败（不是定论、也不是成功）');
+  assert.equal(gapOf('abcc300a').gap_state, null, '形态可疑 → 不得写「无官方难度」');
+  assert.equal(gapOf('abcc300a').gap_checked_at, null);
+  assert.match(
+    at.details.find((d) => d.problemKey === 'abcc300a')!.note ?? '',
+    /形态可疑/,
+    '明细里要能看出「我们不敢下结论」，而不是「上游没有」',
+  );
+  assert.deepEqual(
+    pickBackfillTargets(db).filter((t) => t.platform === 'atcoder').map((t) => t.problemKey),
+    ['abcc300a'],
+    '形态可疑的行仍是下次运行的目标（不会被锁 30 天）',
+  );
+});
+
+test('回填：AtCoder 比赛前缀在整表、该题确实未收录（Ex 题）→ 仍可下定论', async () => {
+  // `abc308i` 这类 Ex 题 kenkoooo 未收录，但比赛 abc308 在表里 → 形态可信，
+  // 「查不到 = 上游没有」成立（否则这些题每轮都会被重扫一次）
+  insertProblem('atcoder', 'abc308i', 'Ex - 未收录', null, []);
+  const fetchFn = atcoderRouter([
+    { id: 'abc308_a', theta: 100 },
+    { id: 'abc308_h', theta: 2000 },
+  ]);
+  const results = await backfillDifficulties(db, fetchFn);
+  assert.equal(results.find((r) => r.platform === 'atcoder')!.failed, 1);
+  assert.equal(gapOf('abc308i').gap_state, 'difficulty', '比赛前缀存在 → 定论成立');
+  assert.ok(gapOf('abc308i').gap_checked_at);
+});
+
+// ---------- 401/403：上游明确拒绝 ≠ 没翻到 ----------
+
+test('fetchLgProblemInfo：401/403 是「上游明确拒绝」，500/302 仍只是「没拿到」', async () => {
+  // 现场：洛谷 T822401 等 3 道已删/私有题匿名 401、带已配置 Cookie 仍 403。
+  // 这两类必须区分开 —— 前者是确定性答复（可进负缓存、界面说「无公开来源」），
+  // 后者（风控页/挑战页/500）下次还得重问。
+  for (const status of [401, 403]) {
+    const info = await fetchLgProblemInfo(router({ 'problem/T822401': () => ({ status, body: '' }) }), 'T822401');
+    assert.ok(info, `HTTP ${status} 应返回元数据对象（带 denied），而不是 null`);
+    assert.equal(info!.denied, true);
+    assert.equal(info!.difficulty, null);
+    assert.equal(info!.tags, null);
+  }
+  for (const status of [500, 302, 504]) {
+    assert.equal(
+      await fetchLgProblemInfo(router({ 'problem/T822401': () => ({ status, body: '' }) }), 'T822401'),
+      null,
+      `HTTP ${status} 不是上游的确定性答复 → 保持「没拿到」（不写负缓存）`,
+    );
+  }
+});
+
+test('回填：上游明确拒绝的题记 denied 并进负缓存（下轮不再打上游）；500 仍记 failed 且不写缓存', async () => {
+  insertProblem('nowcoder', '90001', '已下架/私有题', null, []);
+  insertProblem('nowcoder', '90002', '上游 500 的题', null, []);
+  const calls: string[] = [];
+  const fetchFn = (async (input: string | URL | Request) => {
+    const kw = new URL(String(input)).searchParams.get('keyword') ?? '';
+    calls.push(kw);
+    return new Response('', { status: kw === '90001' ? 403 : 500 });
+  }) as typeof fetch;
+
+  const first = await backfillDifficulties(db, fetchFn);
+  const nc = first.find((r) => r.platform === 'nowcoder')!;
+  assert.equal(nc.denied, 1, '403 的一题计入 denied');
+  assert.equal(nc.failed, 1, '500 的一题仍计入 failed');
+  assert.equal(nc.missing, 0, 'denied 与 missing（题还在、只是没评级）分开计数');
+  assert.match(
+    nc.details.find((d) => d.problemKey === '90001')!.note ?? '',
+    /无公开来源/,
+    '"已下架/私有"要说得出来，不能和「上游未命中」混为一谈',
+  );
+  assert.equal(gapOf('90001').gap_state, 'difficulty,tags', '明确拒绝 → 两个维度都记「无公开来源」');
+  assert.equal(gapOf('90002').gap_state, null, 'HTTP 500 ≠ 定论：不写缓存');
+
+  // 第二轮：403 的题命中负缓存（不发请求）；500 的题照旧重试
+  calls.length = 0;
+  const second = await backfillDifficulties(db, fetchFn);
+  const nc2 = second.find((r) => r.platform === 'nowcoder')!;
+  assert.equal(nc2.cached, 1, '明确拒绝的题计入 cached（不再重复查询）');
+  assert.equal(nc2.denied, 0);
+  assert.equal(nc2.scanned, 1);
+  assert.deepEqual(calls, ['90002'], '只有「没拿到」的那道题被重试');
+  assert.deepEqual(
+    pickBackfillTargets(db).filter((t) => t.platform === 'nowcoder').map((t) => t.problemKey),
+    ['90002'],
+  );
 });

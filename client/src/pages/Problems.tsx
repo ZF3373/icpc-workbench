@@ -34,7 +34,7 @@ import { difficultyColor, formatDifficulty, OFFICIAL_NO_DIFFICULTY_TEXT, PLATFOR
 import { DIFFICULTY_BUCKETS as DIFF_BUCKETS, type DifficultyBucket } from '../problemFilter'
 import { appendSortParams, sortFieldOf, sortFromAntd, sorterOrderOf, sortTooltip, type SortState } from '../problemSort'
 import { codeOptionsFromTags } from '../intentOptions'
-import { del, get, post, put } from '../api'
+import { del, get, patch, post, put } from '../api'
 import {
   progressText,
   resultText,
@@ -106,6 +106,11 @@ interface ProblemRow {
   difficultyLabel?: string | null
   /** 负缓存：回填问过上游、上游明确给不出该题难度（显示「无官方难度」而不是横杠） */
   difficultyGap?: boolean
+  /**
+   * 难度来源（服务端下发的 difficultySource）：'manual' = 用户在界面上手动标定。
+   * 手动值优先级最高（manual > backfill > sync > bank），回填与同步都不会覆盖它。
+   */
+  difficultySource?: string | null
   url: string | null
   tags: string[]
   attempts: number
@@ -218,6 +223,11 @@ export default function Problems() {
   const [kpTree, setKpTree] = useState<NonNullable<TreeSelectProps['treeData']>>([])
   const [kpCodes, setKpCodes] = useState<string[]>([])
   const [kpSaving, setKpSaving] = useState(false)
+
+  // 手动标定难度（上游给不出的题：已删除 / 私有 / 永久未评级 / gym 官方 Unrated）
+  const [diffEditRow, setDiffEditRow] = useState<ProblemRow | null>(null)
+  const [diffEditValue, setDiffEditValue] = useState<number | null>(null)
+  const [diffSaving, setDiffSaving] = useState(false)
 
   // 过滤条件 → 查询串（服务端过滤；分页参数单独拼，便于翻页时复用同一组条件）
   const buildFilterParams = useCallback(() => {
@@ -412,6 +422,68 @@ export default function Problems() {
       message.error((e as Error).message)
     } finally {
       setKpSaving(false)
+    }
+  }
+
+  /**
+   * 打开手动难度弹窗（预填库内当前值）。
+   * 入口在难度单元格上：上游确实给不出难度的题（负缓存「无官方难度」、洛谷永久未评级、
+   * gym 官方 Unrated）永远等不到回填结果，只能由用户自己标定。
+   */
+  const openDiffEditor = (r: ProblemRow) => {
+    setDiffEditRow(r)
+    setDiffEditValue(r.difficulty)
+  }
+
+  /**
+   * 保存/清除手动难度（PATCH /api/problems/:platform/:key/difficulty）。
+   * 服务端把 difficulty_source 置 'manual'（回填与同步都不再覆盖），并连带写同源的原生值与标度、
+   * 清掉「平台无公开难度」负缓存；`null` = 清除，恢复「未知」并重新成为回填目标。
+   * 就地更新当前页那一行（不整页重取），保证用户停在原页码与滚动位置。
+   */
+  const saveDiff = async (value: number | null) => {
+    if (!diffEditRow) return
+    setDiffSaving(true)
+    try {
+      const res = await patch<{
+        ok: boolean
+        difficulty: number | null
+        difficultySource: string | null
+        nativeDifficulty: string | null
+        difficultyScale: string | null
+        difficultyLabel: string | null
+      }>(
+        `/api/problems/${diffEditRow.platform}/${encodeURIComponent(diffEditRow.problem_key)}/difficulty`,
+        { difficulty: value },
+      )
+      const id = diffEditRow.id
+      setRows((prev) =>
+        prev.map((x) =>
+          x.id === id
+            ? {
+                ...x,
+                difficulty: res.difficulty,
+                difficultySource: res.difficultySource,
+                nativeDifficulty: res.nativeDifficulty,
+                difficultyScale: res.difficultyScale,
+                difficultyLabel: res.difficultyLabel,
+                difficultyGap: false,
+              }
+            : x,
+        ),
+      )
+      message.success(
+        value === null
+          ? `已清除 ${diffEditRow.problem_key} 的难度（恢复「未知」，下次回填会重新查）`
+          : `已保存手动难度 ${value}（回填不会覆盖；难度分布与弱项分析已同步）`,
+      )
+      setDiffEditRow(null)
+      reloadFacets()
+      reloadUnfilteredFacets()
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setDiffSaving(false)
     }
   }
 
@@ -831,22 +903,41 @@ export default function Problems() {
       // 原生档位名直接用服务端下发的 difficultyLabel（前端不重算档位映射表）。
       // 空值分两种：`-` = 还没查过/查失败；`无官方难度` = 回填问过上游、上游确实不给评级
       // （负缓存，见服务端 gap_state）—— 二者对用户是完全不同的两件事，不能都显示一个横杠。
-      render: (v: number | null, r) => (
-        <Tooltip
-          title={formatDifficulty(
-            v,
-            r.difficultyLabel,
-            r.difficultyScale,
-            r.difficultyGap ? OFFICIAL_NO_DIFFICULTY_TEXT : undefined,
-          )}
-        >
-          {v == null ? (
-            <span style={{ color: '#4e5a68' }}>{r.difficultyGap ? '无官方难度' : '-'}</span>
-          ) : (
-            <span className="rating-pill mono" style={{ color: difficultyColor(v) }}>{v}</span>
-          )}
-        </Tooltip>
-      ),
+      // 单元格整体是「手动填写难度」的入口：上游给不出的题（已删除/私有/永久未评级/gym Unrated）
+      // 永远等不到回填结果，用户只能自己标定（manual 优先级最高，回填不会覆盖）。
+      render: (v: number | null, r) => {
+        const manual = r.difficultySource === 'manual'
+        return (
+          <Tooltip
+            title={
+              <>
+                <div>{formatDifficulty(
+                  v,
+                  r.difficultyLabel,
+                  r.difficultyScale,
+                  r.difficultyGap ? OFFICIAL_NO_DIFFICULTY_TEXT : undefined,
+                )}</div>
+                <div style={{ color: '#c9d4e0' }}>
+                  {manual ? '手动标定（回填与同步不会覆盖）' : '点击这一格可手动填写难度'}
+                </div>
+              </>
+            }
+          >
+            <button
+              type="button"
+              className="difficulty-edit"
+              aria-label={`手动填写难度：${r.problem_key}`}
+              onClick={() => openDiffEditor(r)}
+            >
+              {v == null ? (
+                <span style={{ color: '#4e5a68' }}>{r.difficultyGap ? '无官方难度' : '-'}</span>
+              ) : (
+                <span className={`rating-pill mono${manual ? ' is-manual' : ''}`} style={{ color: difficultyColor(v) }}>{v}</span>
+              )}
+            </button>
+          </Tooltip>
+        )
+      },
     },
     {
       title: '标签',
@@ -1399,6 +1490,71 @@ export default function Problems() {
         />
       </Modal>
 
+      {/* 手动填写难度：上游确实给不出难度的题（已删除 / 私有 / 洛谷「暂无评定」/ gym 官方 Unrated）
+          由用户自行标定。服务端置 difficulty_source='manual'（优先级最高，回填与同步都不覆盖），
+          并连带写同源原生值/标度、清掉「平台无公开难度」负缓存 */}
+      <Modal
+        title={diffEditRow ? `手动填写难度：${diffEditRow.problem_key} ${diffEditRow.title}` : '手动填写难度'}
+        open={diffEditRow !== null}
+        onCancel={() => setDiffEditRow(null)}
+        onOk={() => void saveDiff(diffEditValue)}
+        confirmLoading={diffSaving}
+        okText="保存为手动难度"
+        width={480}
+      >
+        <p style={{ color: '#8993a2', fontSize: 12, marginTop: 0 }}>
+          CF rating 统一标尺（800–3500，步长 100）。手动值优先级最高：回填、同步与题库拉取都不会覆盖它，
+          并会清掉「平台无公开难度」的记录。留空或点「清除」= 恢复「未知」，该题下次回填会重新查上游。
+        </p>
+        {diffEditRow && (
+          <p style={{ fontSize: 12, margin: '0 0 12px' }}>
+            库内现状：{diffEditRow.difficulty == null ? '难度未知' : `难度 ${diffEditRow.difficulty}`}
+            {diffEditRow.difficultySource === 'manual' ? '（手动标定）' : ''}
+            {diffEditRow.difficultyGap ? '；回填已确认上游未给该题评级' : ''}
+            {diffEditRow.nativeDifficulty ? `；原生值 ${diffEditRow.nativeDifficulty}${diffEditRow.difficultyLabel ? `（${diffEditRow.difficultyLabel}）` : ''}` : ''}
+          </p>
+        )}
+        <Space wrap style={{ marginBottom: 12 }}>
+          <InputNumber
+            min={800}
+            max={3500}
+            step={100}
+            value={diffEditValue}
+            onChange={(v) => setDiffEditValue(typeof v === 'number' ? v : null)}
+            placeholder="如 1800"
+            style={{ width: 140 }}
+          />
+          {[800, 1200, 1500, 1800, 2200, 2600, 3000].map((v) => (
+            <Button key={v} size="small" onClick={() => setDiffEditValue(v)}>
+              {v}
+            </Button>
+          ))}
+        </Space>
+        {diffEditRow?.difficulty != null && (
+          <div>
+            <Button
+              danger
+              type="text"
+              size="small"
+              loading={diffSaving}
+              onClick={() => {
+                const row = diffEditRow
+                modal.confirm({
+                  title: `清除 ${row.problem_key} 的难度？`,
+                  content: '该题会恢复为「难度未知」，并在下次回填时重新查上游（手动标定随之丢失）。',
+                  okText: '清除',
+                  okButtonProps: { danger: true },
+                  cancelText: '取消',
+                  onOk: () => saveDiff(null),
+                })
+              }}
+            >
+              清除难度（恢复「未知」）
+            </Button>
+          </div>
+        )}
+      </Modal>
+
       {/* 回收站（issue #27 误删恢复）：列出带快照的墓碑，恢复仅重建题目行 */}
       <Modal
         title="回收站"
@@ -1737,6 +1893,13 @@ function BackfillDifficultyCard() {
   const [result, setResult] = useState<string>()
   /** 服务端运行状态：刷新 / 换个标签页回来时，据此继续显示「回填进行中 N/M」并给出停止入口 */
   const [run, setRun] = useState<BackfillRunStatus | null>(null)
+  /**
+   * 强制重查：无视「平台无公开难度」的负缓存，并把洛谷「仅缺原生值」的行也逐题重查一遍。
+   * 真实用途：① 平台刚补了评级/标签而 TTL 未到，想立刻拿到；② 想把洛谷题的原生档位原文补齐。
+   * （题号形态修复前被误锁的 AtCoder 旧定论已由启动迁移一次性作废，不需要用户点这个。）
+   * 代价是这一轮耗时明显变长（洛谷 ≥4 秒/题），故默认关闭。
+   */
+  const [force, setForce] = useState(false)
 
   const nameOf = (p: string): string => platformName(p as PlatformId)
 
@@ -1769,7 +1932,9 @@ function BackfillDifficultyCard() {
     setResult(undefined)
     setStopping(false)
     try {
-      const r = await post<BackfillResponse>('/api/problems/backfill-difficulty', {})
+      const r = await post<BackfillResponse>('/api/problems/backfill-difficulty', {
+        ...(force ? { includeNativeOnly: true } : {}),
+      })
       setResult(resultText(r, nameOf))
       message.success(r.stopped ? '已停止回填（已落库的不受影响，再点一次继续）' : '难度回填完成')
     } catch (e) {
@@ -1806,17 +1971,17 @@ function BackfillDifficultyCard() {
     <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #222831' }}>
       <p style={{ color: '#8993a2' }}>
         补全库内「未知难度 / 未知原生难度 / 缺标签」的题，覆盖所有平台：整表型平台
-        （Codeforces / AtCoder / 力扣 / 计蒜客 / 牛客 / 代码源）先拉一次题库表再在本地比对；
-        只有洛谷仍需逐题查题目页。所有请求都走<b>全局按域名限速</b>：洛谷 ≥4 秒/题、
-        牛客 ≥2 秒/页、AtCoder ≥2.5 秒、Codeforces ≥2 秒、力扣 / 计蒜客 / 代码源 ≥1.5 秒
-        —— 这是<b>最快端</b>（牛客整表最多 200 页 ≈7 分钟、洛谷逐题上限 400 题 ≈27 分钟，
-        两者排在最后，整轮可能需要十几到三十分钟）；想更稳可到「设置 → 拉取速度」把倍率调到 2×–5×。
+        （Codeforces / AtCoder / 力扣 / 计蒜客 / 代码源）先拉一次题库表再在本地比对；
+        洛谷与牛客按题查题目页（牛客只在待补题上千时才改拉整表）。所有请求都走<b>全局按域名限速</b>：洛谷 ≥4 秒/题、
+        牛客 ≥2 秒/题、AtCoder ≥2.5 秒、Codeforces ≥2 秒、力扣 / 计蒜客 / 代码源 ≥1.5 秒
+        —— 这是<b>最快端</b>（洛谷逐题上限 400 题 ≈30 分钟、牛客每道题 ≈2 秒，
+        两者排在最后，整轮通常几分钟到三十分钟，取决于还剩多少真缺口）；想更稳可到「设置 → 拉取速度」把倍率调到 2×–5×。
         连续失败会判定为风控并中止该平台。
         <b>随时可以点「停止回填」</b>：在途请求立即中断，<b>已落库的题不受影响</b>，
         再点一次「一键回填」就从库里剩下的缺口继续（可反复分多次补完）；停止期间页面刷新也不会
         丢掉进度 —— 重新打开仍会显示「正在处理 平台 N/M」和停止按钮。
         <b>平台按实测成本升序处理</b>：QOJ（约 18 秒）、AtCoder、代码源、Codeforces 先完成，
-        牛客整表扫描垫底 —— 因此中途停止时，前面的成果已经落库。
+        牛客垫底 —— 因此中途停止时，前面的成果已经落库。
         回填按缺口优先级执行：<b>真缺难度</b>最优先，其次缺标签，最后才是「难度已有、只缺原生原文」；
         后一类只在洛谷默认跳过（结果里显示「跳过 N 题」），因此一次点击就能把真缺口补完。
         牛客同时修复历史遗留的标题混入标签问题。QOJ 的难度由 ICPC/CCPC 公开榜单
@@ -1824,6 +1989,10 @@ function BackfillDifficultyCard() {
         Codeforces 的 gym 与官方未评级比赛、牛客站上难度格为空的题<b>确实没有公开难度</b>：
         回填问过上游后会记下这个结论（列表里显示「无官方难度」而不是横杠），
         <b>一个月内不再对这些题重复发请求</b>，到期再自动重查一次（平台后来给出评级就会被采纳）。
+        已删除 / 私有的题（洛谷 T 号题那类）上游明确拒绝（401/403），同样记成「无公开来源」不再重打；
+        这类题与 gym 一样，唯一的出路是在<b>难度格上点击手动填写</b>（手动值优先级最高，回填不会覆盖）。
+        平台后来补了评级/标签而负缓存还没到期时，勾选下面的<b>强制重查</b>再点一次，
+        本轮就会无视这些缓存、重新问上游。
       </p>
       <Space>
         <Button loading={busy} disabled={stopping || run?.running === true} onClick={runBackfill}>
@@ -1833,6 +2002,11 @@ function BackfillDifficultyCard() {
           停止回填
         </Button>
       </Space>
+      <div style={{ marginTop: 8 }}>
+        <Checkbox checked={force} onChange={(e) => setForce(e.target.checked)} disabled={running}>
+          强制重查（无视「平台无公开难度」的结论，并补洛谷的「仅缺原生值」行 —— 这一轮会明显更慢）
+        </Checkbox>
+      </div>
       {progress && <p style={{ marginTop: 12, color: '#8993a2' }}>{progress}</p>}
       {result && <p style={{ marginTop: 12 }}>{result}</p>}
     </div>

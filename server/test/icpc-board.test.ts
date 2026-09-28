@@ -1,23 +1,33 @@
 /**
  * ICPC/CCPC 公开榜单难度（QOJ 题集的难度来源）。
  *
- * fixture 取自 2026-09-27 实测的真实数据（网络抓取后裁剪，形状与字段名保持原样）：
+ * fixture 取自 2026-09-27/28 实测的真实数据（网络抓取后裁剪，形状与字段名保持原样）：
  * - xcpcrating `problem-catalog.json`：`icpc/icpc2026/icpc2026preliminary-1:A` ↔ `qoj:20016`
+ * - xcpcrating `problem-types/*.json`：键同样是 `赛场键:题号字母`，且实测比评分目录**多覆盖**
+ *   一批题（1100 vs 987 条 qoj 题号）；库内实测缺难度的 `2513-14301/2/3` 只在这一份里
+ *   （`icpc/icpc2025/icpc2025preliminary-1:A/B/C`）—— 旧实现只读它的 detailTags、把键丢掉，
+ *   于是这批题「有标签、没难度」。
  * - RankLand 赛场索引：`uk = icpc2026preliminary-1`（兄弟场 `-2` 词元完全相同，只能靠全等 uk 区分）
  * - RankLand 榜单 srk：`problems[].alias` + `statistics.accepted`，`rows` 行数 = 队伍总数
+ * - QOJ 比赛页：`server/test/fixtures/qoj-contest-2513.html`（2026-09-28 实测页面的题目表格裁剪）
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { createDb, type Db } from '../src/db/index.ts';
 import {
+  matchBoardByFacets,
   matchRanklandBoard,
   parseRanklandIndex,
   parseRanklandSrk,
   parseXcpcCatalog,
   parseXcpcTags,
+  parseXcpcTypes,
   qojProblemIdFromKey,
   ranklandTier,
 } from '../src/analysis/icpcBoard.ts';
+import { contestFacets, contestRound, extractYear, classifyStage, classifySite } from '../src/analysis/xcpcFacets.ts';
+import { parseQojContestPage, qojProblemRefFromKey } from '../src/analysis/qojContest.ts';
 import { backfillDifficulties } from '../src/analysis/difficultyBackfill.ts';
 
 // ---------- 纯解析与判定 ----------
@@ -146,6 +156,118 @@ test('qojProblemIdFromKey: 比赛题键取题号段，纯题号原样，非法�
   assert.equal(qojProblemIdFromKey(''), null);
 });
 
+test('qojProblemRefFromKey: 比赛题键同时给出比赛号（读 QOJ 比赛页的唯一线索）', () => {
+  assert.deepEqual(qojProblemRefFromKey('2513-14301'), { contestId: '2513', problemId: '14301' });
+  assert.deepEqual(qojProblemRefFromKey('14002'), { contestId: null, problemId: '14002' });
+  assert.equal(qojProblemRefFromKey('Q1'), null);
+});
+
+// ---------- 题号映射的第二来源：题型数据集的键 ----------
+
+test('parseXcpcTypes: 键里的「赛场键:题号字母」也是映射（旧实现把它丢掉了）', () => {
+  const parsed = parseXcpcTypes({
+    problems: {
+      'icpc/icpc2025/icpc2025preliminary-1:A': {
+        canonicalId: 'qoj:14301',
+        alias: 'A',
+        detailTags: ['模拟'],
+      },
+      'icpc/icpc2025/icpc2025preliminary-1:C': {
+        canonicalId: 'qoj:14303',
+        alias: 'C',
+        detailTags: ['贪心', '堆'],
+      },
+      'ccpc/ccpc2021/ccpc2021final:M': { canonicalId: 'qoj:20028', detailTags: [] }, // 无 alias → 用键尾
+      'atcoder/abc001:A': { canonicalId: 'atcoder:abc001_a', detailTags: ['x'] }, // 非 qoj → 忽略
+    },
+  });
+  assert.deepEqual(parsed.tags.get('14301'), ['模拟']);
+  assert.equal(parsed.tags.has('20028'), false, '空标签不入标签表');
+  assert.deepEqual(parsed.catalog.get('14301'), {
+    contestKey: 'icpc/icpc2025/icpc2025preliminary-1',
+    alias: 'A',
+    title: null,
+  });
+  assert.equal(parsed.catalog.get('20028')!.alias, 'M', '缺 alias 字段时回退键尾');
+  assert.equal(parsed.catalog.size, 3);
+  assert.equal(parsed.catalog.has('abc001_a'), false);
+  // 兼容包装：parseXcpcTags 仍只返回标签表
+  assert.deepEqual(parseXcpcTags({ problems: { a: { canonicalId: 'qoj:1', detailTags: ['x'] } } }).get('1'), ['x']);
+});
+
+// ---------- QOJ 比赛页解析（真实页面 fixture） ----------
+
+const QOJ_2513_HTML = fs.readFileSync(new URL('./fixtures/qoj-contest-2513.html', import.meta.url), 'utf8');
+
+test('parseQojContestPage: 从真实比赛页拿到比赛名与「题号字母 ↔ 题目 id」全表', () => {
+  const page = parseQojContestPage(QOJ_2513_HTML);
+  assert.equal(page.name, 'The 2025 ICPC Asia East Continent Online Contest (I)');
+  assert.equal(page.problems.length, 13);
+  assert.deepEqual(page.problems[0], { problemId: '14301', index: 'A', title: 'Who Can Win' });
+  assert.deepEqual(page.problems[2], { problemId: '14303', index: 'C', title: 'Canvas Painting' });
+  assert.deepEqual(page.problems[12], { problemId: '14313', index: 'M', title: 'Teleporter' });
+  // 表头行没有题目链接 → 不会被当成题目
+  assert.equal(page.problems.some((p) => p.problemId === ''), false);
+  // 结构异常时不猜
+  assert.deepEqual(parseQojContestPage('<html><title>Just a moment...</title></html>'), {
+    name: 'Just a moment...',
+    problems: [],
+  });
+});
+
+test('parseQojContestPage: 题号字母单元格缺失时按行序回退 A/B/C…', () => {
+  const html = `<title>某场比赛 - Dashboard - Contest - QOJ.ac</title>
+    <table><tbody>
+      <tr><td><a href="/contest/1/problem/10">甲</a></td></tr>
+      <tr><td><a href="/contest/1/problem/11">乙</a></td></tr>
+    </tbody></table>`;
+  const page = parseQojContestPage(html);
+  assert.deepEqual(page.problems.map((p) => p.index), ['A', 'B']);
+  assert.equal(page.name, '某场比赛');
+});
+
+// ---------- 比赛名称属性识别与榜单匹配 ----------
+
+test('contestFacets: 从比赛名识别年份/系列/赛段/赛站，网络赛场次可辨', () => {
+  assert.equal(extractYear('The 2025 ICPC Asia East Continent Online Contest (I)'), '2025');
+  assert.equal(extractYear('第十一届中国大学生程序设计竞赛网络预选赛'), '未知');
+  assert.equal(contestRound('The 2025 ICPC Asia East Continent Online Contest (II)'), 2);
+  assert.equal(contestRound('2026 ICPC Asia EC网络预选赛 - 第一场'), 1);
+  assert.equal(contestRound('2026 ICPC Asia EC网络预选赛'), null);
+  assert.equal(contestRound('Online Contest (2026)'), null, '括号里是年份不算场次');
+  assert.equal(classifyStage('The 2025 ICPC Asia Nanjing Regional Contest'), '区域赛');
+  assert.equal(classifyStage('2026 ICPC Asia EC网络预选赛 - 第一场'), '网络赛');
+  assert.equal(classifySite('The 2025 ICPC Asia Nanjing Regional Contest'), '南京');
+  assert.equal(classifySite('The 2025 ICPC Asia Xiangtan Regional Contest'), '全国', 'Xiangtan 不该被 Xian 命中');
+  const f = contestFacets('The 2025 ICPC Asia East Continent Online Contest (I)');
+  assert.deepEqual(f, { year: '2025', series: ['ICPC'], stage: '网络赛', site: '全国' });
+  assert.deepEqual(contestFacets('第十一届中国大学生程序设计竞赛网络预选赛').series, ['CCPC']);
+});
+
+test('matchBoardByFacets: 目录里没有的题也能靠比赛名匹配榜单（兄弟场靠场次区分）', () => {
+  const boards = parseRanklandIndex({
+    data: {
+      contests: [
+        { uk: 'icpc2025preliminary-2', name: '2025 ICPC Asia EC网络预选赛 - 第二场', srkFileID: 'B2' },
+        { uk: 'icpc2025preliminary-1', name: '2025 ICPC Asia EC网络预选赛 - 第一场', srkFileID: 'B1' },
+        { uk: 'icpc2025nanjing', name: '「华为杯」第 50 届 ICPC 国际大学生程序设计竞赛区域赛南京站', srkFileID: 'NJ' },
+        { uk: 'icpc2024nanjing', name: '第 49 届 ICPC 国际大学生程序设计竞赛区域赛南京站', srkFileID: 'NJ24' },
+        { uk: 'ccpc2025preliminary', name: '第十一届 CCPC 网络预选赛', srkFileID: 'C25' },
+      ],
+    },
+  });
+  const pick = (name: string): string | null => matchBoardByFacets(name, boards)?.uk ?? null;
+  // 实测：库内 2513-14301/2/3 所在比赛
+  assert.equal(pick('The 2025 ICPC Asia East Continent Online Contest (I)'), 'icpc2025preliminary-1');
+  assert.equal(pick('The 2025 ICPC Asia East Continent Online Contest (II)'), 'icpc2025preliminary-2');
+  assert.equal(pick('The 2025 ICPC Asia Nanjing Regional Contest'), 'icpc2025nanjing');
+  assert.equal(pick('The 2024 ICPC Asia Nanjing Regional Contest'), 'icpc2024nanjing');
+  // 年份对不上的比赛 → 不猜
+  assert.equal(pick('The 2023 ICPC Asia East Continent Online Contest (I)'), null);
+  // 赛站对不上的区域赛 → 不猜
+  assert.equal(pick('The 2025 ICPC Asia Shanghai Regional Contest'), null);
+});
+
 // ---------- 回填集成（QOJ 全链路，mock 上游） ----------
 
 const CATALOG = {
@@ -179,6 +301,8 @@ const SRK = {
 
 interface RouterOptions {
   catalog?: unknown;
+  /** 题型数据集（键里带赛场键 + 题号字母，顺带给出映射）；null = 拿不到 */
+  types?: unknown;
   index?: unknown;
   srk?: unknown;
 }
@@ -192,7 +316,10 @@ function qojRouter(opts: RouterOptions = {}): typeof fetch {
       if (opts.catalog === null) return new Response('nope', { status: 404 });
       return json(opts.catalog ?? CATALOG);
     }
-    if (u.includes('problem-types')) return json(TYPES);
+    if (u.includes('problem-types')) {
+      if (opts.types === null) return new Response('nope', { status: 404 });
+      return json(opts.types ?? TYPES);
+    }
     if (u.includes('/api/v2/public/contests')) {
       if (opts.index === null) return new Response('nope', { status: 503 });
       return json(opts.index ?? INDEX);
@@ -201,6 +328,27 @@ function qojRouter(opts: RouterOptions = {}): typeof fetch {
     if (u.includes('cdn.algoux.cn')) return json(opts.srk ?? SRK);
     return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
   };
+}
+
+/** 只服务 QOJ 比赛页的 mock 传输层（生产用 HTTP/1.1 + 节流单例，单测必须注入以避免真打上游） */
+function qojPageTransport(
+  handler: (url: string) => Response | undefined,
+): { transport: typeof fetch; calls: string[] } {
+  const calls: string[] = [];
+  const transport: typeof fetch = async (input) => {
+    const url = String(input);
+    calls.push(url);
+    return handler(url) ?? new Response('', { status: 404 });
+  };
+  return { transport, calls };
+}
+
+/** Cloudflare 挑战页（真实形状：403 + `just a moment`） */
+function challengeResponse(): Response {
+  return new Response('<!DOCTYPE html><title>Just a moment...</title>', {
+    status: 403,
+    headers: { 'cf-mitigated': 'challenge' },
+  });
 }
 
 function insertQoj(db: Db, key: string): void {
@@ -228,10 +376,95 @@ test('回填：QOJ 难度由公开榜单推导（题号→赛场+字母→过题
   db.close();
 });
 
-test('回填：QOJ 题不在赛事目录里 → 保持未知并如实说明（绝不臆造难度）', async () => {
+// ---------- 目录没收录的题：两条新路径（2026-09-28） ----------
+
+/** 题型数据集里带 `icpc/icpc2025/icpc2025preliminary-1:A/B/C`（实测覆盖 2513-14301/2/3） */
+const TYPES_2025 = {
+  version: 'problem-types-audited-v4',
+  problems: {
+    'icpc/icpc2025/icpc2025preliminary-1:A': { canonicalId: 'qoj:14301', alias: 'A', detailTags: ['模拟'] },
+    'icpc/icpc2025/icpc2025preliminary-1:B': { canonicalId: 'qoj:14302', alias: 'B', detailTags: ['构造'] },
+    'icpc/icpc2025/icpc2025preliminary-1:C': { canonicalId: 'qoj:14303', alias: 'C', detailTags: ['贪心'] },
+  },
+};
+/** RankLand 索引：2025/2026 各两场网络赛（第一/第二场词元完全相同，只能靠场次区分） */
+const INDEX_2025 = {
+  data: {
+    contests: [
+      { uk: 'icpc2025preliminary-2', name: '2025 ICPC Asia EC网络预选赛 - 第二场', srkFileID: 'F52' },
+      { uk: 'icpc2025preliminary-1', name: '2025 ICPC Asia EC网络预选赛 - 第一场', srkFileID: 'F51' },
+      { uk: 'icpc2026preliminary-1', name: '2026 ICPC Asia EC网络预选赛 - 第一场', srkFileID: 'F61' },
+    ],
+  },
+};
+/** 2025 第一场榜单：实测 A=1594/2279(iron)、C=356/2279(silver) */
+const SRK_2025 = {
+  rows: new Array(2279).fill({}),
+  problems: [
+    { alias: 'A', statistics: { accepted: 1594, submitted: 9999 } },
+    { alias: 'C', statistics: { accepted: 356, submitted: 4321 } },
+  ],
+};
+
+test('回填：评分目录没收录、但题型数据集的键有映射 → 不读 QOJ 比赛页也能补上难度', async () => {
+  // 实测背景：problem-catalog.json（评分数据集）只有 987 道 qoj 题，
+  // problem-types 的键覆盖 1100 道 —— 2513-14301/2/3 恰好在后者。旧实现只读 detailTags、
+  // 把键（赛场键+题号字母）丢掉，于是这批题「有标签、没难度」。
   const db = createDb(':memory:');
-  insertQoj(db, '2513-14301'); // 实测：该题号不在 xcpcrating 目录（2021–2026 审核子集）内
-  const results = await backfillDifficulties(db, qojRouter());
+  insertQoj(db, '2513-14301');
+  insertQoj(db, '2513-14303');
+  const { transport, calls } = qojPageTransport(() => challengeResponse());
+  const results = await backfillDifficulties(
+    db,
+    qojRouter({ catalog: null, types: TYPES_2025, index: INDEX_2025, srk: SRK_2025 }),
+    { qojTransport: transport },
+  );
+  const qoj = results.find((r) => r.platform === 'qoj')!;
+  assert.equal(qoj.filled, 2);
+  assert.equal(qoj.failed, 0, '映射来自社区数据集 → 不该记「公开榜单未匹配」');
+  assert.deepEqual(calls, [], '数据集里有映射时不得去打 QOJ 比赛页');
+  const a = db.prepare("SELECT difficulty, native_difficulty FROM problems WHERE problem_key='2513-14301'").get() as any;
+  assert.equal(a.difficulty, 1000, 'A 题 1594/2279 → iron → CF 1000');
+  assert.equal(a.native_difficulty, 'iron:1594/2279');
+  const c = db.prepare("SELECT difficulty FROM problems WHERE problem_key='2513-14303'").get() as any;
+  assert.equal(c.difficulty, 2000, 'C 题 356/2279 → silver → CF 2000');
+  db.close();
+});
+
+test('回填：社区数据集都没有该题号 → 读 QOJ 比赛页拿题号字母，再按比赛名匹配榜单', async () => {
+  const db = createDb(':memory:');
+  insertQoj(db, '2513-14301');
+  const { transport, calls } = qojPageTransport((url) =>
+    url === 'https://qoj.ac/contest/2513'
+      ? new Response(QOJ_2513_HTML, { status: 200, headers: { 'content-type': 'text/html' } })
+      : undefined,
+  );
+  const results = await backfillDifficulties(
+    db,
+    qojRouter({ catalog: null, types: null, index: INDEX_2025, srk: SRK_2025 }),
+    { qojTransport: transport },
+  );
+  const qoj = results.find((r) => r.platform === 'qoj')!;
+  assert.equal(qoj.filled, 1, '比赛页给了 A 题 → 2025 第一场 A = 1594/2279 → iron');
+  assert.deepEqual(calls, ['https://qoj.ac/contest/2513'], '按比赛号读一次比赛页，不逐题打上游');
+  const row = db.prepare(
+    "SELECT difficulty, native_difficulty, difficulty_scale FROM problems WHERE problem_key='2513-14301'",
+  ).get() as any;
+  assert.equal(row.difficulty, 1000);
+  assert.equal(row.native_difficulty, 'iron:1594/2279');
+  assert.equal(row.difficulty_scale, 'icpc-tier');
+  db.close();
+});
+
+test('回填：QOJ 比赛页被 Cloudflare 挑战 → 该题保持未知（不写脏数据、如实记失败）', async () => {
+  const db = createDb(':memory:');
+  insertQoj(db, '2513-14301');
+  const { transport } = qojPageTransport(() => challengeResponse());
+  const results = await backfillDifficulties(
+    db,
+    qojRouter({ catalog: null, types: null, index: INDEX_2025 }),
+    { qojTransport: transport },
+  );
   const qoj = results.find((r) => r.platform === 'qoj')!;
   assert.equal(qoj.filled, 0);
   assert.equal(qoj.failed, 1);
@@ -243,6 +476,26 @@ test('回填：QOJ 题不在赛事目录里 → 保持未知并如实说明（�
   db.close();
 });
 
+test('回填：榜单索引拿不到、但题型数据可用 → 只补知识点标签，难度保持未知', async () => {
+  // 难度两条路都断了（评分目录没有该题、榜单索引 503），但逐题标签是独立收益：
+  // 写标签、不写难度，也不谎报成功
+  const db = createDb(':memory:');
+  insertQoj(db, '2513-14301');
+  const { transport, calls } = qojPageTransport(() => challengeResponse());
+  const results = await backfillDifficulties(
+    db,
+    qojRouter({ catalog: null, types: TYPES_2025, index: null }),
+    { qojTransport: transport },
+  );
+  const qoj = results.find((r) => r.platform === 'qoj')!;
+  assert.equal(qoj.filled, 0);
+  const row = db.prepare("SELECT difficulty, tags FROM problems WHERE problem_key='2513-14301'").get() as any;
+  assert.equal(row.difficulty, null, '难度推不出来 → 保持 null（不猜）');
+  assert.deepEqual(JSON.parse(row.tags), ['模拟'], '标签照常补上');
+  assert.deepEqual(calls, [], '榜单索引不可用时不必再读比赛页（读到了也配不上档位）');
+  db.close();
+});
+
 test('回填：公开数据源全部不可用 → QOJ 记失败但不影响其他平台、不写脏数据', async () => {
   const db = createDb(':memory:');
   insertQoj(db, '4071-20016');
@@ -250,7 +503,7 @@ test('回填：公开数据源全部不可用 → QOJ 记失败但不影响其�
     `INSERT INTO problems (platform, problem_key, title, difficulty, url, tags, difficulty_source)
      VALUES ('codeforces', '1001A', 'A', NULL, NULL, '[]', 'sync')`,
   ).run();
-  const base = qojRouter({ catalog: null, index: null });
+  const base = qojRouter({ catalog: null, types: null, index: null });
   const fetchFn: typeof fetch = async (input, init) => {
     const u = String(input);
     if (u.includes('problemset.problems')) {
@@ -261,7 +514,8 @@ test('回填：公开数据源全部不可用 → QOJ 记失败但不影响其�
     }
     return base(input, init);
   };
-  const results = await backfillDifficulties(db, fetchFn);
+  const { transport } = qojPageTransport(() => challengeResponse());
+  const results = await backfillDifficulties(db, fetchFn, { qojTransport: transport });
   const qoj = results.find((r) => r.platform === 'qoj')!;
   const cf = results.find((r) => r.platform === 'codeforces')!;
   assert.equal(qoj.failed, 1);

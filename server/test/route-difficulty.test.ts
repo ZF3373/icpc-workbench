@@ -6,6 +6,7 @@ import type { SyncResult } from '../../shared/src/index.ts';
 import { createDb, type Db } from '../src/db/index.ts';
 import { register } from '../src/adapters/index.ts';
 import { problemsRoutes } from '../src/routes/problems.ts';
+import { backfillDifficulties, pickBackfillTargets } from '../src/analysis/difficultyBackfill.ts';
 import { __resetBackfillRunForTest } from '../src/analysis/backfillRun.ts';
 import { syncRoutes } from '../src/routes/sync.ts';
 import { readSyncSettings, settingsRoutes } from '../src/routes/settings.ts';
@@ -60,6 +61,14 @@ function problemsApp(db: Db, fetchFn: typeof fetch = fetch): express.Express {
 function postJson(base: string, path: string, body: unknown): Promise<Response> {
   return fetch(`${base}${path}`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+function patchJson(base: string, path: string, body: unknown): Promise<Response> {
+  return fetch(`${base}${path}`, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
@@ -743,5 +752,146 @@ test('可中止回填：运行中 /run 报进度、重复触发 409、/stop 中�
     assert.equal(secondBody.unknownLeft, 0);
   });
   __resetBackfillRunForTest();
+  db.close();
+});
+
+// ---------- G. PATCH /api/problems/:platform/:key/difficulty：手动填写难度 ----------
+//
+// 上游确实给不出难度的题（已删除/私有、洛谷「暂无评定」、CF 的 gym 与官方 Unrated）此前在界面上
+// 永远停在「难度未知」，掌握度地图与弱项分析里也永远缺席。手动入口是这类题唯一的出路。
+
+/** 读行的难度四列 + 负缓存两列 */
+function diffRow(db: Db, key: string): {
+  difficulty: number | null;
+  difficulty_source: string | null;
+  native_difficulty: string | null;
+  difficulty_scale: string | null;
+  gap_state: string | null;
+  gap_checked_at: string | null;
+} {
+  return db
+    .prepare(
+      `SELECT difficulty, difficulty_source, native_difficulty, difficulty_scale, gap_state, gap_checked_at
+         FROM problems WHERE problem_key = ?`,
+    )
+    .get(key) as never;
+}
+
+test('PATCH 手动难度：置 manual 来源 + 同源原生值/标度 + 清掉「平台无公开难度」记录', async () => {
+  const db = createDb(':memory:');
+  // 复现现场：洛谷 T 号题（已删/私有）匿名 401、带 Cookie 403 → 回填写下「无公开来源」的负缓存
+  seedProblem(db, 'luogu', 'T822401', { difficulty: null, tags: '["dp"]' });
+  db.prepare("UPDATE problems SET gap_state = 'difficulty', gap_checked_at = ? WHERE problem_key = 'T822401'").run(
+    new Date().toISOString(),
+  );
+  await withApp(problemsApp(db), async (base) => {
+    const res = await patchJson(base, '/api/problems/luogu/T822401/difficulty', { difficulty: 1800 });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as Record<string, unknown>;
+    assert.equal(body.ok, true);
+    assert.equal(body.difficulty, 1800);
+    assert.equal(body.difficultySource, 'manual');
+    // 原生值与标度必须与难度**同源**写入：否则会落成「手动 1800 + 洛谷原生『提高』(≈2200)」这种
+    // 自相矛盾的组合（见 import/problemWritePolicy.ts 注释里修掉的历史缺陷）
+    assert.equal(body.nativeDifficulty, '1800');
+    assert.equal(body.difficultyScale, 'cf-rating');
+
+    const row = diffRow(db, 'T822401');
+    assert.equal(row.difficulty, 1800);
+    assert.equal(row.difficulty_source, 'manual');
+    assert.equal(row.gap_state, null, '难度已由用户给定 → 不得再显示「平台无公开难度」');
+    assert.equal(row.gap_checked_at, null);
+
+    // 该行退出回填目标（难度与原生值都有值）
+    assert.deepEqual(
+      pickBackfillTargets(db).filter((t) => t.problemKey === 'T822401'),
+      [],
+      '手动标定后不该再被回填反复打扰',
+    );
+
+    // 列表接口下发 difficultySource（前端据此标出「手动」并画出虚线难度丸）
+    const rows = (await (await fetch(`${base}/api/problems?bank=1`)).json()) as Array<Record<string, unknown>>;
+    assert.equal(rows[0].difficultySource, 'manual');
+    assert.equal(rows[0].difficultyGap, false);
+    assert.equal(rows[0].difficultyLabel, null, 'cf-rating 标度下不臆造平台档位名');
+  });
+  db.close();
+});
+
+test('PATCH 手动难度：回填/题库写入不得覆盖 manual 值（优先级 4 > backfill 3）', async () => {
+  const db = createDb(':memory:');
+  seedProblem(db, 'codeforces', '1116Q', { difficulty: null }); // 缺难度 + 缺标签
+  const fetchFn = router({
+    'problemset.problems': () => ({
+      status: 'OK',
+      result: { problems: [{ contestId: 1116, index: 'Q', name: 'Q#', rating: 1400, tags: ['math'] }] },
+    }),
+  });
+  await withApp(problemsApp(db), async (base) => {
+    const set = await patchJson(base, '/api/problems/codeforces/1116Q/difficulty', { difficulty: 2600 });
+    assert.equal(set.status, 200);
+
+    // 该题仍缺标签 → 仍是回填目标；回填会把标签补上，但难度三元组必须纹丝不动
+    const results = await backfillDifficulties(db, fetchFn);
+    const cf = results.find((r) => r.platform === 'codeforces')!;
+    assert.equal(cf.filled, 0, 'manual 值不参与「补难度」计数');
+    const row = diffRow(db, '1116Q');
+    assert.equal(row.difficulty, 2600, 'manual(4) 高于 backfill(3) → 上游的 1400 不得覆盖');
+    assert.equal(row.difficulty_source, 'manual');
+    assert.equal(row.native_difficulty, '2600');
+    const tags = db.prepare("SELECT tags FROM problems WHERE problem_key='1116Q'").get() as { tags: string };
+    assert.deepEqual(JSON.parse(tags.tags), ['数学（综合）'], '缺标签的缺口照常被回填补上');
+  });
+  db.close();
+});
+
+test('PATCH 手动难度：null 清除 → 恢复未知并重新成为回填目标', async () => {
+  const db = createDb(':memory:');
+  seedProblem(db, 'atcoder', 'abc308i', { difficulty: 1800, native: '1800', scale: 'cf-rating' });
+  db.prepare("UPDATE problems SET difficulty_source = 'manual' WHERE problem_key = 'abc308i'").run();
+  await withApp(problemsApp(db), async (base) => {
+    const res = await patchJson(base, '/api/problems/atcoder/abc308i/difficulty', { difficulty: null });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as Record<string, unknown>;
+    assert.equal(body.difficulty, null);
+    assert.equal(body.difficultySource, null);
+    const row = diffRow(db, 'abc308i');
+    assert.equal(row.difficulty, null);
+    assert.equal(row.native_difficulty, null);
+    assert.equal(row.difficulty_source, null);
+    assert.deepEqual(
+      pickBackfillTargets(db).filter((t) => t.problemKey === 'abc308i').map((t) => t.problemKey),
+      ['abc308i'],
+      '清除后重新进入回填目标（下次回填会去上游查一次）',
+    );
+  });
+  db.close();
+});
+
+test('PATCH 手动难度：越界 / 小数 / 非数值一律 400 且不改动库内行', async () => {
+  const db = createDb(':memory:');
+  seedProblem(db, 'luogu', 'P1001', { difficulty: 1500, native: '3', scale: 'luogu-2026-06' });
+  await withApp(problemsApp(db), async (base) => {
+    for (const bad of [799, 3501, 1800.5, '1800', true, [], {}, undefined]) {
+      const res = await patchJson(base, '/api/problems/luogu/P1001/difficulty', { difficulty: bad });
+      assert.equal(res.status, 400, `difficulty=${JSON.stringify(bad)} 应被拒（静默钳位会让落库值≠输入值）`);
+      assert.match(((await res.json()) as { error: string }).error, /difficulty/);
+    }
+    const row = diffRow(db, 'P1001');
+    assert.equal(row.difficulty, 1500, '被拒的写入不得落库');
+    assert.equal(row.difficulty_source, 'sync');
+  });
+  db.close();
+});
+
+test('PATCH 手动难度：题目不存在 → 404；platform 非法 → 400', async () => {
+  const db = createDb(':memory:');
+  await withApp(problemsApp(db), async (base) => {
+    const missing = await patchJson(base, '/api/problems/luogu/NOPE/difficulty', { difficulty: 1200 });
+    assert.equal(missing.status, 404);
+    const badPlatform = await patchJson(base, '/api/problems/nope-oj/X1/difficulty', { difficulty: 1200 });
+    assert.equal(badPlatform.status, 400);
+    assert.match(((await badPlatform.json()) as { error: string }).error, /platform/);
+  });
   db.close();
 });

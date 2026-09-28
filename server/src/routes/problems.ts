@@ -3,6 +3,7 @@ import { canonicalTag, expandTag, filterNoiseTags } from '../../../shared/src/in
 import type { PlatformId } from '../../../shared/src/index.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
 import { nativeDifficultyLabel } from '../../../shared/src/difficulty.ts';
+import { CF_RATING_MAX, CF_RATING_MIN } from '../../../shared/src/difficulty.ts';
 import {
   DIFFICULTY_BUCKETS as DIFFICULTY_BUCKET_RANGES,
   UNKNOWN_DIFFICULTY_BUCKET,
@@ -40,6 +41,11 @@ interface ProblemRow {
   native_difficulty: string | null;
   /** 原生难度所属标度（见 shared/src/difficulty.ts） */
   difficulty_scale: string | null;
+  /**
+   * 难度来源（'manual' = 用户在界面上手动标定；见 PATCH /:platform/:key/difficulty）。
+   * 下发给前端只为让「手动值」显示得出来（回填/同步不会覆盖它）。
+   */
+  difficulty_source: string | null;
   attempts: number;
   ac_count: number;
   last_ac_at: string | null;
@@ -281,7 +287,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   `;
   const coreSelect = `
       SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
-             p.native_difficulty, p.difficulty_scale, p.gap_state, p.gap_checked_at,
+             p.native_difficulty, p.difficulty_scale, p.difficulty_source, p.gap_state, p.gap_checked_at,
              ${knowledgeTagsCoalesceSql()},
              COUNT(s.id) AS attempts,
              COALESCE(SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END), 0) AS ac_count,
@@ -706,6 +712,72 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   /** 合法的卡点性质（与 client 的选项一一对应）。editorial = 看题解/视频讲解后才做出（能力值模型据此降权） */
   const INTENT_OUTCOMES = new Set(['cant_start', 'editorial', 'wrong_approach', 'implementation', 'slight_bug']);
 
+  /**
+   * PATCH /api/problems/:platform/:key/difficulty
+   * body: { difficulty: number | null }
+   *
+   * 手动标定/清除单题难度（CF 统一标尺数值），用于**上游确实给不出难度**的题：
+   * 已删除/私有的题（回填只能记「无公开来源」）、平台永久未评级的题（洛谷「暂无评定」，
+   * difficulty=0）、gym 这类官方未评级的题 —— 这些题此前在界面上永远停在「难度未知」，
+   * 掌握度地图/弱项分析里也永远缺席。
+   *
+   * 写入语义（与 import/problemWritePolicy.ts 的来源优先级一致：manual(4) > backfill(3) > sync(2) > bank(1)）：
+   * - `difficulty_source` 置 'manual' → 此后回填/同步/题库都不得覆盖它（见 difficultyBackfill 的
+   *   `COALESCE(difficulty_source,'sync') = 'manual'` 保护分支）。
+   * - `native_difficulty` / `difficulty_scale` **与 difficulty 同源一起写**（原生原文 = 这个数值本身、
+   *   标度 cf-rating）。为什么不保留上游原来的档位原文：那会落成「手动 2400 + 原生『提高』(≈2200)」
+   *   这种自相矛盾的组合，正是 problemWritePolicy 注释里修掉的历史缺陷；同源写入后
+   *   由原生值派生的档位名不会再和难度打架。
+   * - 同时清掉 `gap_state` / `gap_checked_at`：难度已由用户给定，负缓存（「平台无公开难度」）
+   *   若留着，列表会继续显示「无官方难度」这一假信息。
+   * - `difficulty: null` = 清除手动标定，恢复「未知」→ 该题重新成为回填目标（负缓存一并不留）。
+   *
+   * 非法值一律 400（含越界/小数/非数值）：静默钳到 800–3500 会让落库值与用户输入不一致。
+   * 响应：{ ok, difficulty, difficultySource, nativeDifficulty, difficultyScale, difficultyLabel }
+   */
+  r.patch('/:platform/:key/difficulty', (req, res) => {
+    const { platform, key } = req.params;
+    if (!PLATFORMS.some((p) => p.id === platform)) {
+      return res.status(400).json({ error: `platform 非法: ${platform}` });
+    }
+    const platformId = platform as PlatformId;
+    const raw = req.body?.difficulty;
+    if (raw !== null && (
+      typeof raw !== 'number' || !Number.isInteger(raw) || raw < CF_RATING_MIN || raw > CF_RATING_MAX
+    )) {
+      return res.status(400).json({
+        error: `difficulty 需为 ${CF_RATING_MIN}–${CF_RATING_MAX} 的整数，或 null（清除手动难度）`,
+      });
+    }
+    const value = raw as number | null;
+    const exists = db
+      .prepare('SELECT id FROM problems WHERE platform = ? AND problem_key = ?')
+      .get(platform, key) as { id: number } | undefined;
+    if (!exists) return res.status(404).json({ error: '题目不存在：请先同步或导入该题' });
+
+    db.prepare(
+      `UPDATE problems
+          SET difficulty = ?, difficulty_source = ?, native_difficulty = ?, difficulty_scale = ?,
+              gap_state = NULL, gap_checked_at = NULL
+        WHERE platform = ? AND problem_key = ?`,
+    ).run(
+      value,
+      value === null ? null : 'manual',
+      value === null ? null : String(value),
+      value === null ? null : 'cf-rating',
+      platform,
+      key,
+    );
+    res.json({
+      ok: true,
+      difficulty: value,
+      difficultySource: value === null ? null : 'manual',
+      nativeDifficulty: value === null ? null : String(value),
+      difficultyScale: value === null ? null : 'cf-rating',
+      difficultyLabel: value === null ? null : nativeDifficultyLabel(platformId, String(value)),
+    });
+  });
+
   // POST /api/problems/:platform/:key/intent
   // body: { outcome: 'cant_start'|'editorial'|'wrong_approach'|'implementation'|'slight_bug', code?: string }
   // 记录用户自述的卡点。code 可省略（= 非知识点摩擦）。
@@ -985,23 +1057,26 @@ function findDuplicateGroups(db: Db): DuplicateGroup[] {
  * shared/src/difficulty.ts 一份，路由层不做任何本地换算）；原生难度未知 → label 也是 null
  * （**未知一律 null，不猜**：绝不退回用 CF rating 反推一个「档位名」）。
  */
-function toApiProblem(r: ProblemRow): Omit<ProblemRow, 'tags' | 'native_difficulty' | 'difficulty_scale' | 'review_item_id' | 'gap_state' | 'gap_checked_at'> & {
+function toApiProblem(r: ProblemRow): Omit<ProblemRow, 'tags' | 'native_difficulty' | 'difficulty_scale' | 'difficulty_source' | 'review_item_id' | 'gap_state' | 'gap_checked_at'> & {
   tags: string[];
   nativeDifficulty: string | null;
   difficultyScale: string | null;
   difficultyLabel: string | null;
+  /** 难度来源：'manual' = 用户手动标定（界面上标注出来，且回填不会覆盖） */
+  difficultySource: string | null;
   /** 上游确实给不出该题难度（负缓存内）→ 前端显示「平台无公开难度」而不是「难度未知」 */
   difficultyGap: boolean;
   status: 'ac' | 'tried' | 'none';
   reviewItemId: number | null;
 } {
-  const { native_difficulty, difficulty_scale, review_item_id, gap_state, gap_checked_at, ...rest } = r;
+  const { native_difficulty, difficulty_scale, difficulty_source, review_item_id, gap_state, gap_checked_at, ...rest } = r;
   return {
     ...rest,
     reviewItemId: review_item_id ?? null,
     tags: safeTags(r.tags),
     nativeDifficulty: native_difficulty,
     difficultyScale: difficulty_scale,
+    difficultySource: difficulty_source,
     difficultyLabel:
       native_difficulty === null ? null : nativeDifficultyLabel(r.platform, native_difficulty),
     difficultyGap: hasFreshDifficultyGap(gap_state, gap_checked_at, r.difficulty),

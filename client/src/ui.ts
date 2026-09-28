@@ -49,8 +49,12 @@ const SCALE_PLATFORM_NAME: Record<string, string> = {
  * 「平台确实给不出这道题难度」的空态文案（服务端负缓存 difficultyGap 为真时使用）。
  * 与默认的「难度未知」区分开：未知 = 还没查到，这句 = 查过且上游没有 —— 用户据此
  * 知道再点一次回填也不会有结果，而不是一以为是数据没同步。
+ *
+ * 末尾必须指向手动入口：这类题（已删除/私有/永久未评级/官方 Unrated）永远等不到上游给值，
+ * 用户唯一的出路是自己在难度格上填（PATCH /api/problems/:platform/:key/difficulty）。
  */
-export const OFFICIAL_NO_DIFFICULTY_TEXT = '平台无公开难度（回填已问过上游、上游未给该题评级；一个月内不再重复查询）'
+export const OFFICIAL_NO_DIFFICULTY_TEXT =
+  '平台无公开难度（回填已问过上游、上游未给该题评级；一个月内不再重复查询）。点击这一格可手动填写难度'
 
 /**
  * 难度展示：CF 统一标尺数值 + 平台原生档位（题库未入库难度时给空态文案）。

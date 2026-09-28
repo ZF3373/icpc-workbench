@@ -8,13 +8,8 @@ import { createNowcoderAdapter } from './nowcoder.ts';
 import { createQojAdapter } from './qoj.ts';
 import { register } from './registry.ts';
 import { createHttpClient, PROD_RETRY } from './http.ts';
-import { createHttp1Fetch } from './http1.ts';
-import {
-  createHostThrottle,
-  DEFAULT_HOST_MIN_INTERVAL_MS,
-  HOST_MIN_INTERVAL_MS,
-  throttledFetch,
-} from '../net/hostThrottle.ts';
+import { qojTransportFetch } from '../net/qojTransport.ts';
+import { throttledFetch } from '../net/hostThrottle.ts';
 
 // 各平台适配器统一在此注册；平台级开关（enabled）由同步 API 按 settings 过滤。
 let initialized = false;
@@ -39,12 +34,9 @@ export function initAdapters(dataDir?: string): void {
   register(createLeetcodeAdapter(http));
   register(createJisuankeAdapter(http));
   // QOJ 必须走 HTTP/1.1：Cloudflare 对 h2 请求恒定下发托管挑战（详见 http1.ts 与 qoj.ts 注释）。
-  // 自定义传输层同样套一层节流（间隔表一致），否则它会绕过全局节流。
-  const qojTransport = createHostThrottle(createHttp1Fetch({ timeoutMs: 25_000 }), {
-    minIntervalMs: HOST_MIN_INTERVAL_MS,
-    defaultMinIntervalMs: DEFAULT_HOST_MIN_INTERVAL_MS,
-  });
-  register(createQojAdapter(createHttpClient(qojTransport.fetch, PROD_RETRY)));
+  // 传输层取自共享单例（net/qojTransport.ts）：难度回填读 QOJ 比赛页也走同一个节奏桶，
+  // 否则两条路径各建一个节流桶 → 对 qoj.ac 的实际频率翻倍。
+  register(createQojAdapter(createHttpClient(qojTransportFetch(), PROD_RETRY)));
 }
 export * from './registry.ts';
 export type { PlatformAdapter } from './types.ts';

@@ -95,6 +95,31 @@ test('resultText：被停止时首句明说「已停止」并指向再点一次�
   assert.doesNotMatch(text, /难度回填完成/)
 })
 
+test('resultText：上游明确拒绝（401/403 已删除/私有）与「官方无难度」分开说', () => {
+  // 两件事对用户含义不同：官方无难度 = 平台就没给这道题评级；
+  // 无公开来源 = 题已下架/私有，再等也没有 —— 且两者都有负缓存，下轮不再重复查询
+  const text = resultText(
+    response({ results: [row({ platform: 'luogu', missing: 2, denied: 3, cached: 5 })] }),
+    nameOf,
+  )
+  assert.match(text, /官方无难度 2 题/)
+  assert.match(text, /无公开来源 3 题（上游已下架\/私有）/)
+  assert.match(text, /5 题维持「无官方难度」/)
+})
+
+test('resultText：旧服务端不返回 denied 字段时不出现这一段（不误报 0）', () => {
+  const text = resultText(response({ results: [row({ missing: 1 })] }), nameOf)
+  assert.doesNotMatch(text, /无公开来源/)
+})
+
+test('resultText：QOJ 的 missing 说「推不出难度」而不是「官方无难度」', () => {
+  // QOJ 平台自身没有难度字段（靠 ICPC/CCPC 公开榜单推导）：missing = 推导失败，
+  // 不是「上游未评级」——说法不同，用户要做的事也不同（换网络/补凭据重试 vs 就此接受）
+  const text = resultText(response({ results: [row({ platform: 'qoj', missing: 3 })] }), nameOf)
+  assert.match(text, /qoj：.*推不出难度 3 题（公开榜单未匹配）/)
+  assert.doesNotMatch(text, /官方无难度/)
+})
+
 test('resultText：库内没有任何待补的题', () => {
   assert.equal(resultText(response({ results: [], unknownLeft: 0 }), nameOf), '库内没有待回填难度的题')
 })
