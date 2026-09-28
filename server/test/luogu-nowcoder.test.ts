@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createLuoguAdapter } from '../src/adapters/luogu.ts';
+import {
+  createLuoguAdapter,
+  fetchWithChallenge,
+  __resetLuoguChallengeJarForTest,
+} from '../src/adapters/luogu.ts';
 import { createNowcoderAdapter } from '../src/adapters/nowcoder.ts';
 import { ManualImportRequiredError } from '../src/adapters/types.ts';
 import { getAdapter, initAdapters } from '../src/adapters/index.ts';
@@ -473,6 +477,89 @@ test('luogu: C3VK challenge — 302 with new cookie then retry succeeds', async 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].externalId, '9001');
   assert.ok(calls >= 2); // 挑战后重试过
+});
+
+// ---------- 洛谷：匿名 C3VK 复用罐（回填逐题的实测瓶颈） ----------
+
+/**
+ * 假洛谷服务端：挑战码是**全站**的（实测 `Max-Age=300; Path=/`，同一枚可打不同题页）。
+ * `issue` 决定 302 时下发什么（含「不下发」= 未登录），`ttl` 决定下发的 Max-Age。
+ */
+function fakeLuogu(opts: { issue?: boolean; ttl?: number } = {}) {
+  const { issue = true, ttl = 300 } = opts;
+  const cookiesSent: string[] = [];
+  let accepted: string | null = null; // 服务端当前认的那一枚
+  const fn = (async (_input: string | URL | Request, init?: RequestInit) => {
+    const cookie = String((init?.headers as Record<string, string> | undefined)?.Cookie ?? '');
+    cookiesSent.push(cookie);
+    const sent = /C3VK=(\w+)/.exec(cookie)?.[1];
+    if (sent !== undefined && sent === accepted) {
+      // 放行：实测连 200 响应也会续签下一枚（值逐步 +1），罐子必须跟着更新
+      accepted = `c${cookiesSent.length}`;
+      return new Response(JSON.stringify({ data: { problem: { pid: 'P1', name: 'A', difficulty: 3, tags: [] } } }), {
+        status: 200,
+        headers: { 'set-cookie': `C3VK=${accepted}; Max-Age=${ttl}; Path=/` },
+      });
+    }
+    if (!issue) return new Response(null, { status: 302 }); // 302 且不下发新码 = 真未登录
+    accepted = `c${cookiesSent.length}`;
+    return new Response(null, {
+      status: 302,
+      headers: { 'set-cookie': `C3VK=${accepted}; Max-Age=${ttl}; Path=/` },
+    });
+  }) as typeof fetch;
+  return { fn, cookiesSent };
+}
+
+test('luogu: 匿名 C3VK 跨题复用（换一道题不再重走 302 挑战，逐题回填因此省一半请求）', async () => {
+  __resetLuoguChallengeJarForTest();
+  const { fn, cookiesSent } = fakeLuogu();
+  const url = (pid: string) => `https://www.luogu.com.cn/problem/${pid}`;
+
+  assert.equal((await fetchWithChallenge(fn, url('P1001'), '')).status, 200);
+  assert.equal(cookiesSent.length, 2, '第一题：302 挑战 + 带码重试');
+
+  assert.equal((await fetchWithChallenge(fn, url('P1002'), '')).status, 200);
+  assert.equal(cookiesSent.length, 3, '第二题应直接带上罐子里的挑战码，只发 1 个请求');
+  assert.match(cookiesSent[2] ?? '', /C3VK=/, '复用罐里的挑战码（实测 Path=/ 跨题有效）');
+});
+
+test('luogu: 挑战码过期（Max-Age 已用尽）后重新过挑战，不得拿旧码硬撞', async () => {
+  __resetLuoguChallengeJarForTest();
+  const { fn, cookiesSent } = fakeLuogu({ ttl: 0 }); // Max-Age=0 → 落地即过期
+  const url = (pid: string) => `https://www.luogu.com.cn/problem/${pid}`;
+
+  assert.equal((await fetchWithChallenge(fn, url('P1001'), '')).status, 200);
+  assert.equal((await fetchWithChallenge(fn, url('P1002'), '')).status, 200);
+  assert.equal(cookiesSent.length, 4, '两题各 2 个请求（挑战 + 重试），罐子没存下已过期的码');
+  assert.equal(cookiesSent[2], '', '第二题的首请求不得带过期挑战码');
+});
+
+test('luogu: 302 且未下发新码时清空罐子（失效的码不反复撞）', async () => {
+  __resetLuoguChallengeJarForTest();
+  const warm = fakeLuogu();
+  await fetchWithChallenge(warm.fn, 'https://www.luogu.com.cn/problem/P1001', '');
+  assert.equal(warm.cookiesSent.length, 2, '先把罐子养上一枚有效挑战码');
+
+  const { fn, cookiesSent } = fakeLuogu({ issue: false });
+  const res = await fetchWithChallenge(fn, 'https://www.luogu.com.cn/problem/P1002', '');
+  assert.equal(res.status, 302, '未登录语义照旧回给调用方');
+  assert.match(cookiesSent[0] ?? '', /C3VK=/, '首请求仍带着罐子里那枚（正是被判失效的）');
+  assert.equal((await fetchWithChallenge(fn, 'https://www.luogu.com.cn/problem/P1003', '')).status, 302);
+  assert.equal(cookiesSent[1], '', '被判失效的挑战码不得留在罐子里给后面的题用');
+});
+
+test('luogu: 复用罐只服务匿名请求，登录 Cookie 不被掺入挑战码', async () => {
+  __resetLuoguChallengeJarForTest();
+  const anon = fakeLuogu();
+  await fetchWithChallenge(anon.fn, 'https://www.luogu.com.cn/problem/P1001', '');
+
+  const { fn, cookiesSent } = fakeLuogu({ issue: false }); // 登录态：302 就是 Cookie 失效
+  await assert.rejects(async () => {
+    const res = await fetchWithChallenge(fn, 'https://www.luogu.com.cn/record/list?user=1', COOKIE);
+    if (res.status === 302) throw new Error('login required');
+  }, /login required/);
+  assert.deepEqual(cookiesSent, [COOKIE], '首请求必须原样带上用户 Cookie，不得注入罐子里的挑战码');
 });
 
 // ---------- 牛客 ----------

@@ -73,13 +73,32 @@ export interface BankFetchOptions {
 }
 
 /**
- * `wantKeys` 早停判定器：每命中一个目标题号即从待命中移除，全部命中后返回 true。
- * 不传 `wantKeys`（或为空集）时恒返回 false —— 不改变「按 max/页数上限拉完」的既有语义。
+ * `wantKeys` 早停判定器：每命中一个目标题号即从待命中移除，全部命中后 `hit` 返回 true。
+ * 不传 `wantKeys`（或为空集）时 `hit` 恒 false、`minRemainingId` 恒 null
+ * —— 不改变「按 max/页数上限拉完」的既有语义。
+ *
+ * `minRemainingId`（2026-09-28 加）是给**按 id 排序**的平台（牛客）用的精确收尾判据：
+ * 只靠「全部命中」不够 —— 目标里只要有一个题号根本不在表里，扫描就会次次翻满上限
+ * （本库实测：牛客整表是**降序**，200 页只覆盖到题号 ≥51006，而目标里有 16593 这类小题号
+ * → 每轮白扫 200 页 ≈ 10 分钟）。既然顺序已知，「本页最小 id 已低于剩余目标最小 id」就是
+ * 「后面不可能再有目标」的定论，可以立即收工。
  */
-function makeWantedTracker(wantKeys?: ReadonlySet<string>): (key: string) => boolean {
-  if (!wantKeys || wantKeys.size === 0) return () => false;
-  const remaining = new Set(wantKeys);
-  return (key: string) => remaining.delete(key) && remaining.size === 0;
+function makeWantedTracker(wantKeys?: ReadonlySet<string>): {
+  hit: (key: string) => boolean;
+  minRemainingId: () => number | null;
+} {
+  const remaining = new Set(wantKeys ?? []);
+  return {
+    hit: (key: string) => remaining.delete(key) && remaining.size === 0,
+    minRemainingId: () => {
+      let min: number | null = null;
+      for (const k of remaining) {
+        const n = Number(k);
+        if (Number.isFinite(n) && (min === null || n < min)) min = n;
+      }
+      return min;
+    },
+  };
 }
 
 export interface BankFetchResult {
@@ -225,7 +244,10 @@ interface NcBankRow {
  * 牛客公开题库页（无需登录）：GET /acm/problem/list?page={n}
  * 表格行 <tr data-problemId="...">：列依次为 NC 题号 / 标题（+算法标签）/ 难度分 / 通过数 / 收藏。
  * 难度分为 CF 风格分值（如 700 / 1100 / 1500），经统一标尺映射（[800,3500] 钳位）。
- * 页面无服务端难度筛选（前端 JS 过滤），按 orderById 顺序翻页。
+ * 页面无服务端难度筛选（前端 JS 过滤）。
+ *
+ * **`orderById=true` 是按题号降序**（2026-09-28 实测：第 1 页 324421→321126、
+ * 第 200 页 51069→51006，站点报告共 14767 条）—— 这一点被用于精确早停，见下方注释。
  */
 export async function fetchNowcoderBank(
   fetchFn: HttpInit,
@@ -234,11 +256,12 @@ export async function fetchNowcoderBank(
   const max = opts.max ?? 2000;
   const problems: BankProblem[] = [];
   const seen = new Set<string>();
-  const hitWanted = makeWantedTracker(opts.wantKeys);
+  const wanted = makeWantedTracker(opts.wantKeys);
   let total: number | null = null;
   let wantedDone = false;
 
-  for (let page = 1; page <= 200; page += 1) {
+  // 上限每轮重算：`共 N 条` 要到第 1 页才拿得到
+  for (let page = 1; page <= nowcoderPageCap(total); page += 1) {
     const url = `${NOWCODER_API}/acm/problem/list?queryType=all&orderById=true&page=${page}`;
     const res = await asHttpClient(fetchFn).fetch(url, {
       headers: {
@@ -256,6 +279,8 @@ export async function fetchNowcoderBank(
     }
     const rows = parseNcBankRows(html);
     if (rows.length === 0) break;
+    /** 本页最小（= 最后一行，降序）题号：与「剩余目标的最小题号」比大小即精确早停判据 */
+    const rowIds = rows.map((r) => Number(r.problemId)).filter((n) => Number.isFinite(n));
 
     for (const row of rows) {
       const key = row.problemId;
@@ -272,18 +297,42 @@ export async function fetchNowcoderBank(
         url: `https://ac.nowcoder.com/acm/problem/${key}`,
         tags: row.tags,
       });
-      if (hitWanted(key)) {
+      if (wanted.hit(key)) {
         wantedDone = true;
         break;
       }
     }
     opts.onProgress?.({ platform: 'nowcoder', count: problems.length, total });
     if (wantedDone) break;
+    // 精确早停（降序整表）：本页已经走过「剩余目标里最小的题号」→ 后面的页只会更小，
+    // 那些目标根本不在可达范围内，再翻下去只是白耗请求（见 makeWantedTracker 注释）
+    const minRemaining = wanted.minRemainingId();
+    if (minRemaining !== null && rowIds.length > 0 && Math.min(...rowIds) < minRemaining) break;
     if (problems.length >= max) break;
     if (rows.length < NOWCODER_PER_PAGE) break;
     await sleep(opts.pageDelayMs ?? 500); // 牛客反爬较强：页间限速
   }
   return { platform: 'nowcoder', problems: problems.slice(0, max), total };
+}
+
+/** 牛客整表的翻页硬护栏：实测 1.47 万题 = 296 页，留出站点增长余量 */
+const NOWCODER_MAX_PAGES = 400;
+/** 没解析到「共 N 条」时的兜底上限（沿用改造前的固定值） */
+const NOWCODER_DEFAULT_PAGES = 200;
+
+/**
+ * 翻页上限 ＝ 覆盖全表所需页数（按服务端报告的总条数算），带硬护栏。
+ *
+ * 为什么不能像原先那样固定 200 页：整表是**降序**，第 200 页只翻到题号 51006，
+ * 更早的题（本库实测有 16593 / 19877 / 21984 这类小题号）永远扫不到 —— 回填每轮
+ * 都白扫满 200 页（≈10 分钟），把它们记成「上游未命中」，而分页扫描没翻到**不算**定论、
+ * 连负缓存都不能写（见 analysis/difficultyBackfill.ts 的 ABSENCE_IS_DEFINITIVE）。
+ * 有了上面那条精确早停，放开上限并不会让常见场景变慢：目标集中在近两年的题时，
+ * 一过最小目标题号就收工。
+ */
+function nowcoderPageCap(total: number | null): number {
+  if (total === null) return NOWCODER_DEFAULT_PAGES;
+  return Math.min(NOWCODER_MAX_PAGES, Math.max(1, Math.ceil(total / NOWCODER_PER_PAGE)));
 }
 
 /**
@@ -753,7 +802,7 @@ export async function fetchDaimayuanBank(
   const max = opts.max ?? 2000;
   const problems: BankProblem[] = [];
   const seen = new Set<string>();
-  const hitWanted = makeWantedTracker(opts.wantKeys);
+  const wanted = makeWantedTracker(opts.wantKeys);
   let total: number | null = null;
   let wantedDone = false;
 
@@ -791,7 +840,7 @@ export async function fetchDaimayuanBank(
         url: `${DAIMAYUAN_BASE}/p/${key}`,
         tags: Array.isArray(p.tag) ? p.tag.map((t) => String(t).trim()).filter(Boolean) : [],
       });
-      if (hitWanted(key)) {
+      if (wanted.hit(key)) {
         wantedDone = true;
         break;
       }

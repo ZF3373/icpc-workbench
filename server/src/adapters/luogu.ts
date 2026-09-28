@@ -121,11 +121,57 @@ function requestHeaders(cookie: string, csrf?: string): Record<string, string> {
 }
 
 /**
+ * 匿名请求的 C3VK 复用罐（2026-09-28 实测：下发为 `C3VK=849621; Max-Age=300; Path=/`）。
+ *
+ * 为什么要跨请求保存：挑战码是**全站**的（`Path=/`）而不是按题页绑定的 —— 实测拿同一枚
+ * C3VK 连打三道不同的题页全部 200。而回填/题面抓取是「同一进程连打数百个不同题页」，
+ * 原先每次调用都从空 Cookie 起步，于是**每题都要先吃一个 302 再重试**；重试同样要排
+ * 全局节流的时间片（洛谷 4s/请求）→ 单题周期整整翻倍（实测 157 题的洛谷一轮因此多花约 10 分钟）。
+ *
+ * 只服务匿名调用（cookie 传空串）：登录路径的 Cookie 由用户在设置页提供，不把挑战码掺进去
+ * （那条链路要如实报「Cookie 无效或已过期」，不能让罐子改变它的语义）。
+ */
+let anonChallenge: { cookie: string; expiresAt: number } | null = null;
+
+/** 响应未带 Max-Age 时的兜底有效期（实测洛谷给 300 秒） */
+const CHALLENGE_DEFAULT_TTL_MS = 300_000;
+/** 提前失效的余量：宁可边界处多走一次挑战，也不把可能已过期的码当有效的发出去 */
+const CHALLENGE_SAFETY_MS = 10_000;
+
+/** 从响应头取出洛谷下发的挑战码连同其有效期 */
+function issuedChallenge(res: Response): { cookie: string; ttlMs: number } | null {
+  const raw = (res.headers.getSetCookie?.() ?? []).find((c) => c.split(';')[0].trim().startsWith('C3VK='));
+  if (!raw) return null;
+  const maxAge = /max-age=(\d+)/i.exec(raw)?.[1];
+  return {
+    cookie: raw.split(';')[0].trim(),
+    ttlMs: maxAge ? Number(maxAge) * 1000 : CHALLENGE_DEFAULT_TTL_MS,
+  };
+}
+
+/** 同名 Cookie 的覆盖语义（浏览器怎么合并，这里就怎么合并） */
+function mergeChallenge(cookie: string, fresh: string): string {
+  if (cookie.includes('C3VK=')) return cookie.replace(/C3VK=[^;]*/, fresh);
+  return cookie === '' || cookie === ';' ? fresh : `${cookie.replace(/;\s*$/, '')}; ${fresh}`;
+}
+
+/** 罐子里仍有效的挑战码（过期即清空，让下一题重新过挑战） */
+function cachedChallenge(): string {
+  if (anonChallenge === null) return '';
+  if (Date.now() >= anonChallenge.expiresAt) {
+    anonChallenge = null;
+    return '';
+  }
+  return anonChallenge.cookie;
+}
+
+/**
  * 洛谷 C3VK 反爬挑战处理：
  * 首次请求（无有效 C3VK）会被 302 重定向回自身，同时 Set-Cookie 下发新 C3VK（5 分钟有效）；
- * 带新 C3VK 重试后放行返回 200。此函数自动保存 set-cookie 中的新 C3VK 并重试（最多 2 次）。
+ * 带新 C3VK 重试后放行返回 200。此函数自动保存 set-cookie 中的新 C3VK 并重试（最多 2 次），
+ * **匿名请求**还会把它存进跨调用复用的罐子（见 `anonChallenge`）→ 5 分钟内换题不再重走挑战。
  * 返回的 Response 状态：200=正常；302/303=未登录（无新 C3VK 下发）；504=挑战重试超限。
- * cookie 传空串即可匿名访问公开接口（题库列表 / 标签字典）。
+ * cookie 传空串即可匿名访问公开接口（题库列表 / 标签字典 / 题面页）。
  */
 export async function fetchWithChallenge(
   fetchFn: HttpInit | typeof fetch,
@@ -135,24 +181,36 @@ export async function fetchWithChallenge(
   extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
   const http = asHttpClient(fetchFn as HttpInit);
-  let current = cookie;
+  const anonymous = cookie.trim() === '';
+  let current = anonymous ? cachedChallenge() : cookie;
   for (let attempt = 0; attempt <= 2; attempt += 1) {
     if (attempt > 0) await sleep(300); // C3VK 重试间限速，避免毫秒级连发请求触发风控
     const res = await http.fetch(url, {
       headers: { ...requestHeaders(current, csrf), ...extraHeaders },
       redirect: 'manual', // 不跟随：302 循环会耗尽 Node fetch 默认重定向次数（抛 fetch failed）
     }, { timeoutMs: 20000 });
+    // 每次响应都可能续签下一枚挑战码（实测放行时也带）→ 先按同名覆盖合并
+    const issued = issuedChallenge(res);
+    if (issued) {
+      current = mergeChallenge(current, issued.cookie);
+      if (anonymous) {
+        anonChallenge = { cookie: issued.cookie, expiresAt: Date.now() + issued.ttlMs - CHALLENGE_SAFETY_MS };
+      }
+    }
     if (![301, 302, 303].includes(res.status)) return res;
-    // 尝试从 set-cookie 提取新 C3VK 并更新后重试
-    const fresh = (res.headers.getSetCookie?.() ?? [])
-      .map((c) => c.split(';')[0])
-      .find((kv) => kv.startsWith('C3VK='));
-    if (!fresh) return res; // 无新 C3VK → 真未登录
-    current = current.includes('C3VK=')
-      ? current.replace(/C3VK=[^;]*/, fresh)
-      : `${current}; ${fresh}`;
+    if (!issued) {
+      // 302 且没下发新码：匿名时说明罐子里那枚已经不作数了（清掉，下一题重新过挑战）；
+      // 登录态则是真未登录
+      if (anonymous) anonChallenge = null;
+      return res;
+    }
   }
   return new Response(null, { status: 504 });
+}
+
+/** 测试用：清空匿名挑战码罐（用例之间互不污染；生产路径不需要） */
+export function __resetLuoguChallengeJarForTest(): void {
+  anonChallenge = null;
 }
 
 /**

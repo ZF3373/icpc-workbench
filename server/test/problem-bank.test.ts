@@ -264,6 +264,51 @@ test('nowcoder bank: wantKeys 未全部命中时照常翻页（不得提前收�
   assert.ok(r.problems.some((p) => p.problemKey === '16640'));
 });
 
+/** 一**满页**（50 行）的降序夹具：题号从 startId 递减，`共 N 条` 写 total */
+function ncDescPage(startId: number, total: number | null): string {
+  const rows: Array<[string, string, string]> = Array.from({ length: 50 }, (_, i) => [
+    String(startId - i),
+    `题${startId - i}`,
+    '1000',
+  ]);
+  return ncBankPage(rows, total ?? undefined);
+}
+
+test('nowcoder bank: 整表按题号降序 → 走过最小目标题号即收工（真机实测 orderById 为降序）', async () => {
+  // 只靠「全部命中」不够：目标里有一个题号不在表里（或超出翻页范围）就会次次白扫到底。
+  // 降序整表里「本页最小题号 < 剩余目标最小题号」就是「后面不可能再有」的定论。
+  const pages: string[] = [];
+  const fetchFn = router({
+    'acm/problem/list': (url) => {
+      const page = new URL(url).searchParams.get('page') ?? '';
+      pages.push(page);
+      // 第 1 页含目标 60020；16640 这道老题**不在**表里（实测第 1 页 324421→321126、第 200 页才到 51006）
+      if (page === '1') return ncDescPage(60039, 14767);
+      if (page === '2') return ncDescPage(50039, 14767);
+      return ncDescPage(16600, 14767); // 本页最小 16551 < 剩余目标最小 16640 → 收工
+    },
+  });
+  const r = await fetchNowcoderBank(fetchFn, { max: 10000, wantKeys: new Set(['60020', '16640']) });
+  assert.deepEqual(pages, ['1', '2', '3'], '走过最小目标题号后不得再翻（第 4 页只会更小）');
+  assert.ok(r.problems.some((p) => p.problemKey === '60020'), '已命中的目标照常返回');
+  assert.ok(!r.problems.some((p) => p.problemKey === '16640'), '不在表里的那道如实缺席');
+});
+
+test('nowcoder bank: 翻页上限按服务端「共 N 条」算（固定 200 页会扫不到老题号）', async () => {
+  const pages: string[] = [];
+  const fetchFn = router({
+    'acm/problem/list': (url) => {
+      const page = Number(new URL(url).searchParams.get('page') ?? '1');
+      pages.push(String(page));
+      return ncDescPage(100000 - page * 50, 100); // 站点只有 100 题 = 2 页
+    },
+  });
+  const r = await fetchNowcoderBank(fetchFn, { max: 10000, pageDelayMs: 0 });
+  assert.deepEqual(pages, ['1', '2'], '共 100 条 → 覆盖全表只需 2 页，不得按旧的固定上限白扫');
+  assert.equal(r.total, 100);
+  assert.equal(r.problems.length, 100);
+});
+
 // ---------- AtCoder 题库拉取 ----------
 
 function kenkoooProblems(): unknown {
