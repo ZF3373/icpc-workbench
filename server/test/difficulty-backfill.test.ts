@@ -941,6 +941,35 @@ test('负缓存：上游后来给出难度 → 立即退出缓存（不等 TTL�
   assert.equal(row.gap_checked_at, null);
 });
 
+test('负缓存：洛谷「解析不出标签」不得记成「上游没有标签」（字典失败是静默的）', async () => {
+  // `fetchLuoguTagDict` 失败时静默返回空字典 → 逐题返回的 tag id 全被丢成空数组；
+  // 若照常记负缓存，这些题（难度可能刚补上）会被误锁 30 天。
+  // 判据：**上游给了 id 却一个名字都没解析出来**才算「解析不出」。
+  // 注意与另一类区分：上游只给赛事/来源/年份标签（净化后为空）是真结论，仍要记（见下对照）。
+  insertProblem('luogu', 'P2001', '字典不可信', null, []); // 难度与标签都缺 → 两个维度都开着
+  const brokenDict = router({
+    '_lfe/tags': () => ({ status: 403, body: '' }), // 字典拉取失败 → 空字典
+    'problem/P2001': () => luoguProblemJson('P2001', 3, '字典不可信', [5, 9]), // 上游给了 tag id
+  });
+  const first = await backfillDifficulties(db, brokenDict);
+  assert.equal(first.find((r) => r.platform === 'luogu')!.filled, 1, '难度照常补上');
+  assert.equal(gapOf('P2001').gap_state, null, '字典不可信 → 不写任何结论（这道题仍是下次的目标）');
+  assert.deepEqual(
+    pickBackfillTargets(db).filter((t) => t.platform === 'luogu').map((t) => t.problemKey),
+    ['P2001'],
+    '标签这一维仍是缺口 → 下次点击还会重查（而不会被误锁 30 天）',
+  );
+
+  // 对照：字典正常、上游这道题确实没有标签 → 该结论要记（否则每轮都白问一次）
+  insertProblem('luogu', 'P2002', '确实没标签', 1800, [], { native: '3', scale: 'luogu-2026-06' });
+  const goodDict = router({
+    '_lfe/tags': () => ({ tags: [{ id: 1, name: '入门' }] }),
+    'problem/P2002': () => luoguProblemJson('P2002', 3, '确实没标签', []),
+  });
+  await backfillDifficulties(db, goodDict);
+  assert.equal(gapOf('P2002').gap_state, 'tags', '上游确实没有标签时才记，且只记 tags 维度');
+});
+
 test('nextGapState：TTL 只随新增判定顺延，QOJ 一律不缓存', () => {
   const meta = (difficulty: number | null, tags: string[] | null) => ({
     difficulty,
@@ -982,4 +1011,167 @@ test('nextGapState：TTL 只随新增判定顺延，QOJ 一律不缓存', () => 
     checkedAt: null,
     changed: false,
   });
+
+  // tagsUnavailable：上游给了标签 id 但一个都没解析出名字（字典不可信）→ 不得记 tags
+  const dictBroken = nextGapState({
+    ...base,
+    meta: meta(1500, null),
+    tagsFromUpstream: null,
+    tagsUnavailable: true,
+    after: { difficulty: 1500, native_difficulty: '1500', tags: '[]' },
+  });
+  assert.equal(dictBroken.state, null, '字典不可信时一个结论都不该留');
+  assert.equal(dictBroken.changed, false);
+});
+// ---------- 可中止回填（用户要求：能停、停了已回填的不受影响、可分多次回填）----------
+
+const waitMs = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 挂起直到被 abort 的假上游：模拟「洛谷逐题请求正卡在网络上」。
+ * 真实 fetch 在 signal 中止时以 abort 原因 reject —— 这里照抄该语义。
+ */
+function hangUntilAborted(init: RequestInit | undefined, onHang: () => void): Promise<never> {
+  onHang();
+  return new Promise((_resolve, reject) => {
+    const signal = init?.signal;
+    const fail = (): void => reject(signal?.reason ?? new Error('aborted'));
+    if (signal?.aborted) return fail();
+    signal?.addEventListener('abort', fail, { once: true });
+  });
+}
+
+test('回填可中止：已写批次提交留库、未处理目标不动、中断不写负缓存', async () => {
+  insertProblem('luogu', 'P1', '已处理的题', null, ['dp']);
+  insertProblem('luogu', 'P2', '未处理的题', null, ['dp']);
+  const ac = new AbortController();
+  let p2Hanging = false;
+  const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('_lfe/tags')) return new Response(JSON.stringify({ tags: [] }), { status: 200 });
+    if (url.includes('problem/P1')) {
+      return new Response(JSON.stringify(luoguProblemJson('P1', 3, '已处理的题', [])), { status: 200 });
+    }
+    await hangUntilAborted(init, () => {
+      p2Hanging = true;
+    });
+    throw new Error('unreachable');
+  }) as typeof fetch;
+
+  const pending = backfillDifficulties(db, fetchFn, { signal: ac.signal });
+  while (!p2Hanging) await waitMs(10); // P1 已写完、P2 的请求正挂在网络上
+  ac.abort(new Error('回填已被用户停止'));
+  const results = await pending;
+
+  const lg = results.find((r) => r.platform === 'luogu')!;
+  assert.equal(lg.stopped, true, '被中断的平台要如实标记 stopped');
+  // 关键：P1/P2 同处一个未满 WRITE_BATCH 的批次，中断时必须**提交**而不是回滚
+  const done = db.prepare("SELECT difficulty, native_difficulty FROM problems WHERE problem_key='P1'").get() as {
+    difficulty: number | null;
+    native_difficulty: string | null;
+  };
+  assert.equal(done.difficulty, 1500, '停止前已查到并写库的题必须保留');
+  assert.equal(done.native_difficulty, '3');
+  const left = db.prepare("SELECT difficulty FROM problems WHERE problem_key='P2'").get() as { difficulty: number | null };
+  assert.equal(left.difficulty, null, '未处理的题保持原样 → 仍是下次运行的目标');
+  assert.deepEqual(
+    pickBackfillTargets(db).map((t) => t.problemKey),
+    ['P2'],
+    '下次点击只补剩下的题（可多次回填）',
+  );
+  // 中断 ≠ 上游给不出：绝不能写负缓存（那会把题锁 30 天）
+  assert.equal(gapOf('P2').gap_state, null, '被中断的题不得记入负缓存');
+  assert.equal(lg.failed, 0, '中断不计失败（否则用户会以为上游坏了）');
+});
+
+test('回填中止：在途请求被立即打断（不必等上游 20s 超时）', async () => {
+  insertProblem('luogu', 'P9', '挂起的题', null, ['dp']);
+  const ac = new AbortController();
+  let abortSeen = false;
+  const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('_lfe/tags')) return new Response(JSON.stringify({ tags: [] }), { status: 200 });
+    abortSeen = true; // 进入挂起状态后立刻被打断
+    await hangUntilAborted(init, () => {});
+    throw new Error('unreachable');
+  }) as typeof fetch;
+
+  const t0 = Date.now();
+  const pending = backfillDifficulties(db, fetchFn, { signal: ac.signal });
+  while (!abortSeen) await waitMs(5);
+  ac.abort(new Error('用户停止'));
+  const results = await pending;
+  const elapsed = Date.now() - t0;
+
+  assert.ok(elapsed < 2000, `中止后应立即返回（实测 ${elapsed}ms；若无 signal 会一直挂到 20s 超时）`);
+  assert.equal(results.find((r) => r.platform === 'luogu')!.stopped, true);
+});
+
+test('回填中止：停止瞬间「上游未命中」的题不计 failed（那只是没查完）', async () => {
+  // 真机实测暴露的边界：洛谷的 302「未登录」分支会让逐题接口返回 null（= 未命中），
+  // 若正好在此时点停止，这道理应算「被打断」而不是「上游失败」——否则结果里出现
+  // 「失败 1 题」，用户会以为上游坏了；它也不该写负缓存（仍是下次的目标）。
+  insertProblem('luogu', 'P1', 'A', null, ['dp']);
+  const ac = new AbortController();
+  const fetchFn = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes('_lfe/tags')) return new Response(JSON.stringify({ tags: [] }), { status: 200 });
+    ac.abort(new Error('用户停止')); // 恰在响应回来的同一刻点了停止
+    return new Response(null, { status: 302 });
+  }) as typeof fetch;
+
+  const results = await backfillDifficulties(db, fetchFn, { signal: ac.signal });
+  const lg = results.find((r) => r.platform === 'luogu')!;
+  assert.equal(lg.stopped, true);
+  assert.equal(lg.failed, 0, '停止瞬间的未命中不是上游失败');
+  assert.equal(gapOf('P1').gap_state, null, '也不得写负缓存');
+  assert.deepEqual(
+    pickBackfillTargets(db).map((t) => t.problemKey),
+    ['P1'],
+  );
+});
+
+test('回填中止：信号在运行时已中止 → 一行都不写、目标全部留待下次', async () => {  insertProblem('luogu', 'P1', 'A', null, ['dp']);
+  let requests = 0;
+  const fetchFn = router({
+    '_lfe/tags': () => {
+      requests += 1;
+      return { tags: [] };
+    },
+    'problem/': () => {
+      requests += 1;
+      return luoguProblemJson('P1', 3, 'A', []);
+    },
+  });
+  const ac = new AbortController();
+  ac.abort(new Error('用户停止'));
+  const results = await backfillDifficulties(db, fetchFn, { signal: ac.signal });
+  assert.equal(requests, 0, '已中止的运行不得再打上游');
+  assert.deepEqual(results, [], '没有平台被处理 → 结果为空（路由层据此显示「已停止」）');
+  assert.deepEqual(
+    pickBackfillTargets(db).map((t) => t.problemKey),
+    ['P1'],
+  );
+});
+
+test('回填进度：按平台上报「已完成/平台总数」与本轮累计', async () => {
+  insertProblem('nowcoder', '100', '一', null, ['dp']);
+  insertProblem('nowcoder', '200', '二', null, ['dp']);
+  insertProblem('nowcoder', '300', '三', null, ['dp']);
+  const fetchFn = router({
+    'acm/problem/list': (url) =>
+      new URL(url).searchParams.get('page') === '1'
+        ? ncBankPage([
+            { id: '100', title: '一', diff: '1200' },
+            { id: '200', title: '二', diff: '1300' },
+            { id: '300', title: '三', diff: '1400' },
+          ])
+        : ncBankPage([]),
+  });
+  const progress: Array<{ platform: string; platformDone: number; platformTotal: number; done: number; total: number }> = [];
+  await backfillDifficulties(db, fetchFn, { onProgress: (p) => progress.push(p) });
+
+  assert.equal(progress.length, 4, '3 题各报一次 + 平台收尾一次');
+  assert.deepEqual(progress[0], { platform: 'nowcoder', platformDone: 0, platformTotal: 3, done: 0, total: 3 });
+  assert.deepEqual(progress[3], { platform: 'nowcoder', platformDone: 3, platformTotal: 3, done: 3, total: 3 });
 });

@@ -13,6 +13,13 @@ import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { safeTags } from '../analysis/stats.ts';
 import { backfillDifficulties, GAP_TTL_MS, parseGapState } from '../analysis/difficultyBackfill.ts';
+import {
+  beginBackfillRun,
+  currentBackfillRun,
+  finishBackfillRun,
+  requestBackfillStop,
+  setBackfillProgress,
+} from '../analysis/backfillRun.ts';
 import { fetchLuoguBank, fetchNowcoderBank, fetchCodeforcesBank, fetchLeetcodeBank, fetchAtcoderBank, fetchDaimayuanBank, fetchJisuankeBank } from '../adapters/problemBank.ts';
 import type { LuoguProblemType } from '../adapters/problemBank.ts';
 import { upsertBankProblems } from '../import/bankService.ts';
@@ -639,7 +646,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   // **负缓存**：上游明确给不出的维度记在 problems.gap_state（TTL 30 天）→ 期内不再重复发请求，
   // 题数计入 cached；这些题在列表里显示「平台无公开难度」而不是「难度未知」。
   // body { includeNativeOnly: true } = 运维强查口子：连「仅缺原生值」和负缓存一起无视，重问上游
-  // 响应：{ ok, results: [{ platform, scanned, filled, nativeFilled, repaired, missing, failed, capped, deferred, cached, details }], unknownLeft }
+  // 响应 results 明细：{ platform, scanned, filled, nativeFilled, repaired, missing, failed, capped, deferred, cached, details }
   //   nativeFilled = 该平台 native_difficulty 由 NULL 被补上的题数（与 filled 相互独立：
   //   难度已有值但原生值缺失时只增 nativeFilled —— 双标度要能各自如实上报）
   //   repaired = 标题/标签/过时难度值被修正的题数（details 里给出每题 note）
@@ -648,18 +655,53 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   //   cached = 因负缓存（上游已确认给不出）而本轮未查询的题数
   // 整轮耗时取决于最慢的平台（牛客整表最多 200 页、洛谷逐题数百题 → 十几分钟），
   // 写入按批提交，中途关掉页面或服务重启都不丢已落库的部分。
+  // **可中止**（2026-09-27 用户要求）：运行中可 POST /backfill-difficulty/stop 立即停止；
+  // 停止后已落库的不受影响，再点一次即从库里剩下的缺口继续（可多次回填）。
+  // 同时只允许一轮：运行中重复触发返回 409 + 当前状态；运行状态与进度见 GET /run。
+  // 响应：{ ok, stopped, results: [...], unknownLeft }
+  //   stopped = 本轮被用户停止（results 只覆盖已处理的部分；被中断的平台带 stopped: true）
   r.post('/backfill-difficulty', asyncHandler(async (req, res) => {
+    const includeNativeOnly = req.body?.includeNativeOnly === true;
+    // 互斥：并发跑两轮会同时打同一批上游、抢写同一批行，除了更快触发风控没有任何好处
+    const signal = beginBackfillRun();
+    if (signal === null) {
+      res.status(409).json({ error: '难度回填正在进行中，请先停止或等它跑完', run: currentBackfillRun() });
+      return;
+    }
     try {
-      const includeNativeOnly = req.body?.includeNativeOnly === true;
-      const results = await backfillDifficulties(db, fetchFn, { includeNativeOnly });
+      const results = await backfillDifficulties(db, fetchFn, {
+        includeNativeOnly,
+        signal,
+        onProgress: setBackfillProgress,
+      });
       const unknownLeft = (
         db.prepare('SELECT COUNT(*) AS c FROM problems WHERE difficulty IS NULL').get() as { c: number }
       ).c;
-      res.json({ ok: true, results, unknownLeft });
+      res.json({ ok: true, stopped: signal.aborted, results, unknownLeft });
     } catch (e) {
       res.status(502).json({ error: (e as Error).message });
+    } finally {
+      // 必须走到：否则后续点击会一直撞 409
+      finishBackfillRun();
     }
   }));
+
+  // POST /api/problems/backfill-difficulty/stop → 停止正在跑的回填（幂等：没在跑返回 stopped: false）
+  // 停止是**服务端**动作：在途的上游请求被立即中断，已提交的批次保留在库里。
+  // 前端单独 abort 自己的 fetch 做不到这件事（服务端循环会照旧写库）。
+  r.post('/backfill-difficulty/stop', (_req, res) => {
+    res.json({ ok: true, stopped: requestBackfillStop() });
+  });
+
+  // GET /api/problems/backfill-difficulty/run → 当前回填状态与进度
+  // 用途：刷新/重开页面后仍能显示「正在处理 洛谷 37/192（本轮共 320 题）」并给出停止入口，
+  // 而不是以为没在跑（此时再点回填会被 409 拒绝，界面上却找不到停止按钮）。
+  r.get('/backfill-difficulty/run', (_req, res) => {
+    const unknownLeft = (
+      db.prepare('SELECT COUNT(*) AS c FROM problems WHERE difficulty IS NULL').get() as { c: number }
+    ).c;
+    res.json({ ok: true, run: currentBackfillRun(), unknownLeft });
+  });
 
   /** 合法的卡点性质（与 client 的选项一一对应）。editorial = 看题解/视频讲解后才做出（能力值模型据此降权） */
   const INTENT_OUTCOMES = new Set(['cant_start', 'editorial', 'wrong_approach', 'implementation', 'slight_bug']);

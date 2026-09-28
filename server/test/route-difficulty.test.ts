@@ -6,6 +6,7 @@ import type { SyncResult } from '../../shared/src/index.ts';
 import { createDb, type Db } from '../src/db/index.ts';
 import { register } from '../src/adapters/index.ts';
 import { problemsRoutes } from '../src/routes/problems.ts';
+import { __resetBackfillRunForTest } from '../src/analysis/backfillRun.ts';
 import { syncRoutes } from '../src/routes/sync.ts';
 import { readSyncSettings, settingsRoutes } from '../src/routes/settings.ts';
 import { DEFAULT_CONFIG } from '../src/config.ts';
@@ -650,4 +651,97 @@ test('GET /api/problems?q= 把 % 与 _ 当字面量，不当通配符', async ()
     assert.deepEqual(await keys('P1_0'), ['P1_0'], "下划线不应当「任意一个字符」，否则 'P1X0' 会被误命中");
     assert.deepEqual(await keys('%'), [], '% 不应当「任意串」，否则搜一个百分号等于不过滤');
   });
+});
+
+// ---------- D. 可中止回填：/run 进度、/stop 停止、运行中重复触发 409 ----------
+
+const waitMs = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+test('可中止回填：运行中 /run 报进度、重复触发 409、/stop 中断且已落库的保留、再点一次继续', async () => {
+  const db = createDb(':memory:');
+  seedProblem(db, 'luogu', 'P1', { tags: '["dp"]' });
+  seedProblem(db, 'luogu', 'P2', { tags: '["dp"]' });
+  __resetBackfillRunForTest();
+  let hangP2 = true;
+  let p2Hanging = false;
+  const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('_lfe/tags')) return new Response(JSON.stringify({ tags: [] }), { status: 200 });
+    if (!hangP2 || url.includes('problem/P1')) {
+      const pid = url.includes('problem/P2') ? 'P2' : 'P1';
+      const difficulty = pid === 'P1' ? 5 : 3;
+      return new Response(
+        JSON.stringify({ data: { problem: { pid, name: pid, difficulty, tags: [] } } }),
+        { status: 200 },
+      );
+    }
+    // P2 挂起：等用户点「停止」（signal 中止）
+    p2Hanging = true;
+    await new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      const fail = (): void => reject(signal?.reason ?? new Error('aborted'));
+      if (signal?.aborted) return fail();
+      signal?.addEventListener('abort', fail, { once: true });
+    });
+    throw new Error('unreachable');
+  }) as typeof fetch;
+
+  await withApp(problemsApp(db, fetchFn), async (base) => {
+    const runUrl = `${base}/api/problems/backfill-difficulty/run`;
+    const firstPending = postJson(base, '/api/problems/backfill-difficulty', {});
+    // 等 P2 的请求挂起（= P1 已处理并写库）
+    while (!p2Hanging) await waitMs(10);
+
+    const running = (await (await fetch(runUrl)).json()) as {
+      ok: boolean;
+      run: { running: boolean; platform: string | null; done: number; total: number };
+    };
+    assert.equal(running.ok, true);
+    assert.equal(running.run.running, true, '刷新页面后 /run 必须能看出回填正在进行');
+    assert.equal(running.run.platform, 'luogu');
+    assert.equal(running.run.total, 2);
+    assert.equal(running.run.done, 1, 'P1 已处理完 → 进度 1/2');
+
+    // 互斥：运行中再点一次不得并发跑第二轮
+    const again = await postJson(base, '/api/problems/backfill-difficulty', {});
+    assert.equal(again.status, 409);
+    assert.match(((await again.json()) as { error: string }).error, /正在进行/);
+
+    // 停止：在途请求立即中断，路由返回部分结果 + stopped
+    const stop = await postJson(base, '/api/problems/backfill-difficulty/stop', {});
+    assert.deepEqual(await stop.json(), { ok: true, stopped: true });
+    const firstBody = (await (await firstPending).json()) as {
+      ok: boolean;
+      stopped: boolean;
+      results: Array<{ platform: string; stopped?: boolean; failed: number }>;
+    };
+    assert.equal(firstBody.ok, true);
+    assert.equal(firstBody.stopped, true);
+    assert.equal(firstBody.results.find((r) => r.platform === 'luogu')!.stopped, true);
+
+    // 已落库的不受影响
+    const p1 = db.prepare("SELECT difficulty FROM problems WHERE problem_key='P1'").get() as { difficulty: number | null };
+    assert.equal(p1.difficulty, 2200, '停止前已回填的题必须留在库里（洛谷等级 5 → 2200）');
+
+    // 停完 /run 回到未运行；重复 /stop 幂等
+    const after = (await (await fetch(runUrl)).json()) as { run: { running: boolean } };
+    assert.equal(after.run.running, false);
+    assert.deepEqual(await (await postJson(base, '/api/problems/backfill-difficulty/stop', {})).json(), {
+      ok: true,
+      stopped: false,
+    });
+
+    // 再点一次继续：剩下的 P2 这次补上（分多次回填）
+    hangP2 = false;
+    const secondBody = (await (await postJson(base, '/api/problems/backfill-difficulty', {})).json()) as {
+      stopped: boolean;
+      unknownLeft: number;
+    };
+    assert.equal(secondBody.stopped, false);
+    const p2 = db.prepare("SELECT difficulty FROM problems WHERE problem_key='P2'").get() as { difficulty: number | null };
+    assert.equal(p2.difficulty, 1500, '第二次点击把剩下的题补完');
+    assert.equal(secondBody.unknownLeft, 0);
+  });
+  __resetBackfillRunForTest();
+  db.close();
 });

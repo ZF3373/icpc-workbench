@@ -35,6 +35,12 @@ import { DIFFICULTY_BUCKETS as DIFF_BUCKETS, type DifficultyBucket } from '../pr
 import { appendSortParams, sortFieldOf, sortFromAntd, sorterOrderOf, sortTooltip, type SortState } from '../problemSort'
 import { codeOptionsFromTags } from '../intentOptions'
 import { del, get, post, put } from '../api'
+import {
+  progressText,
+  resultText,
+  type BackfillResponse,
+  type BackfillRunStatus,
+} from '../backfillProgress'
 
 /** GET /api/knowledge/taxonomy 响应（服务端 taxonomy.json 结构） */
 interface TaxonomyDoc {
@@ -1727,33 +1733,74 @@ function BankTab({ onDone }: { onDone: () => void }) {
 function BackfillDifficultyCard() {
   const { message } = AntdApp.useApp()
   const [busy, setBusy] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [result, setResult] = useState<string>()
+  /** 服务端运行状态：刷新 / 换个标签页回来时，据此继续显示「回填进行中 N/M」并给出停止入口 */
+  const [run, setRun] = useState<BackfillRunStatus | null>(null)
 
-  const run = async () => {
+  const nameOf = (p: string): string => platformName(p as PlatformId)
+
+  const refreshRun = useCallback(async () => {
+    try {
+      const r = await get<{ ok: boolean; run: BackfillRunStatus }>('/api/problems/backfill-difficulty/run')
+      setRun(r.run)
+    } catch {
+      /* 状态接口失败不影响回填本身：保持上一次的按钮语义，不误报「没在跑」 */
+    }
+  }, [])
+
+  // 挂载先问一次：回填由**服务端**跑（关页面/刷新都不会停），本页可能只是重新打开
+  useEffect(() => {
+    void refreshRun()
+  }, [refreshRun])
+
+  // 运行中每 2s 刷新进度；未运行时不挂定时器
+  const active = busy || run?.running === true
+  useEffect(() => {
+    if (!active) return
+    const timer = setInterval(() => {
+      void refreshRun()
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [active, refreshRun])
+
+  const runBackfill = async () => {
     setBusy(true)
     setResult(undefined)
+    setStopping(false)
     try {
-      const r = await post<{
-        ok: boolean
-        results: Array<{
-          platform: string; scanned: number; filled: number; nativeFilled: number
-          repaired: number; missing: number; failed: number; capped: number; deferred: number
-          cached: number
-        }>
-        unknownLeft: number
-      }>('/api/problems/backfill-difficulty', {})
-      const parts = r.results.map((x) => {
-        const name = platformName(x.platform as PlatformId)
-        return `${name}：补难度 ${x.filled} 题、补原生难度 ${x.nativeFilled} 题、修标题/标签/难度值 ${x.repaired} 题${x.missing ? `、官方无难度 ${x.missing} 题` : ''}${x.cached ? `、${x.cached} 题维持「无官方难度」（已问过上游，不再重复查询）` : ''}${x.failed ? `、失败 ${x.failed} 题` : ''}${x.deferred ? `、跳过 ${x.deferred} 题（难度已有、仅缺原生值）` : ''}${x.capped ? `、本次上限外还有 ${x.capped} 题（再点一次继续）` : ''}`
-      })
-      setResult(parts.length ? parts.join('；') + `。全库剩余未知难度 ${r.unknownLeft} 题` : '库内没有待回填难度的题')
-      message.success('难度回填完成')
+      const r = await post<BackfillResponse>('/api/problems/backfill-difficulty', {})
+      setResult(resultText(r, nameOf))
+      message.success(r.stopped ? '已停止回填（已落库的不受影响，再点一次继续）' : '难度回填完成')
     } catch (e) {
       message.error((e as Error).message)
     } finally {
       setBusy(false)
+      setStopping(false)
+      void refreshRun()
     }
   }
+
+  /**
+   * 停止 = 让**服务端**中止（在途上游请求被立即打断、已提交的批次留在库里）。
+   * 只 abort 本页的 fetch 是做不到的：服务端的循环会照旧跑完并把结果写完。
+   */
+  const stopBackfill = async () => {
+    setStopping(true)
+    try {
+      const r = await post<{ ok: boolean; stopped: boolean }>('/api/problems/backfill-difficulty/stop', {})
+      if (!r.stopped) {
+        message.info('当前没有正在运行的回填')
+        setStopping(false)
+      }
+    } catch (e) {
+      message.error((e as Error).message)
+      setStopping(false)
+    }
+  }
+
+  const running = busy || run?.running === true
+  const progress = progressText(run, nameOf)
 
   return (
     <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #222831' }}>
@@ -1763,10 +1810,13 @@ function BackfillDifficultyCard() {
         只有洛谷仍需逐题查题目页。所有请求都走<b>全局按域名限速</b>：洛谷 ≥4 秒/题、
         牛客 ≥2 秒/页、AtCoder ≥2.5 秒、Codeforces ≥2 秒、力扣 / 计蒜客 / 代码源 ≥1.5 秒
         —— 这是<b>最快端</b>（牛客整表最多 200 页 ≈7 分钟、洛谷逐题上限 400 题 ≈27 分钟，
-        两者排在最后，整轮可能需要十几到三十分钟，请耐心等待；随时可以中断，已完成的题不会重做）；
-        想更稳可到「设置 → 拉取速度」把倍率调到 2×–5×，越慢越稳。连续失败会判定为风控并中止该平台。
+        两者排在最后，整轮可能需要十几到三十分钟）；想更稳可到「设置 → 拉取速度」把倍率调到 2×–5×。
+        连续失败会判定为风控并中止该平台。
+        <b>随时可以点「停止回填」</b>：在途请求立即中断，<b>已落库的题不受影响</b>，
+        再点一次「一键回填」就从库里剩下的缺口继续（可反复分多次补完）；停止期间页面刷新也不会
+        丢掉进度 —— 重新打开仍会显示「正在处理 平台 N/M」和停止按钮。
         <b>平台按实测成本升序处理</b>：QOJ（约 18 秒）、AtCoder、代码源、Codeforces 先完成，
-        牛客整表扫描垫底 —— 因此中途关掉页面 / 服务被重启时，前面的成果已经落库，而不会「等到最后 QOJ 还是空的」。
+        牛客整表扫描垫底 —— 因此中途停止时，前面的成果已经落库。
         回填按缺口优先级执行：<b>真缺难度</b>最优先，其次缺标签，最后才是「难度已有、只缺原生原文」；
         后一类只在洛谷默认跳过（结果里显示「跳过 N 题」），因此一次点击就能把真缺口补完。
         牛客同时修复历史遗留的标题混入标签问题。QOJ 的难度由 ICPC/CCPC 公开榜单
@@ -1775,7 +1825,15 @@ function BackfillDifficultyCard() {
         回填问过上游后会记下这个结论（列表里显示「无官方难度」而不是横杠），
         <b>一个月内不再对这些题重复发请求</b>，到期再自动重查一次（平台后来给出评级就会被采纳）。
       </p>
-      <Button loading={busy} onClick={run}>一键回填未知难度</Button>
+      <Space>
+        <Button loading={busy} disabled={stopping || run?.running === true} onClick={runBackfill}>
+          一键回填未知难度
+        </Button>
+        <Button danger loading={stopping} disabled={!running} onClick={stopBackfill}>
+          停止回填
+        </Button>
+      </Space>
+      {progress && <p style={{ marginTop: 12, color: '#8993a2' }}>{progress}</p>}
       {result && <p style={{ marginTop: 12 }}>{result}</p>}
     </div>
   )

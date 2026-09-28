@@ -15,6 +15,7 @@ import {
 } from '../adapters/problemBank.ts';
 import { asHttpClient, sleep } from '../adapters/http.ts';
 import { HOST_MIN_INTERVAL_MS } from '../net/hostThrottle.ts';
+import type { BackfillProgress } from './backfillRun.ts';
 import { purifyTags } from '../import/problemWritePolicy.ts';
 import { effectiveDataDir } from '../knowledge/store.ts';
 import {
@@ -36,6 +37,11 @@ export interface BackfillInfo {
   difficultyScale?: DifficultyScale | null;
   title: string | null;
   tags: string[] | null;
+  /**
+   * 上游**给了**标签 id、但一个都没能解析出名称（洛谷 tag 字典拉取失败/为空/缺项）。
+   * 这不是「上游没有标签」，而是「我没解析出来」—— 见 nextGapState 的负缓存规则。
+   */
+  tagsUnavailable?: boolean;
 }
 
 /** 缺口类型（决定回填优先级：真缺难度 > 缺标签 > 只缺原生值） */
@@ -109,6 +115,12 @@ export interface ProblemMeta {
   /** 上游给出的标签；null = 上游无标签来源（不覆盖库内已有标签） */
   tags: string[] | null;
   title: string | null;
+  /**
+   * 标签「解析不出来」（而不是「上游没有」）：
+   * 上游给了 tag id，但本地字典拿不到对应名称 → `tags` 为 null，但**不能**据此写下
+   * 「上游无标签」的负缓存结论（那会把题误锁 30 天）。见 nextGapState 规则 1。
+   */
+  tagsUnavailable?: boolean;
 }
 
 /** 单平台回填结果 */
@@ -141,6 +153,12 @@ export interface PlatformBackfillResult {
    * （没有本轮请求，也就没有本轮结果），但计入 `unknownLeft` 等库内统计与前端文案。
    */
   cached: number;
+  /**
+   * 本次运行被用户**中止**时该平台被中断（结果只覆盖已处理的部分）。
+   * 中止不是失败：已提交的批次保留在库里（见 backfillPlatform 的中止分支），
+   * 被中断的题仍是下次运行的目标 —— 因此 `failed` 不因中止而增加，负缓存也不会被写脏。
+   */
+  stopped?: boolean;
   /** 每题明细（problemKey → 说明） */
   details: Array<{ problemKey: string; action: 'filled' | 'repaired' | 'missing' | 'failed' | 'skipped'; note?: string }>;
 }
@@ -521,6 +539,18 @@ export async function fetchLgProblemInfo(
       return '';
     })
     .filter(Boolean);
+  /**
+   * 上游给了标签 id，却一个名字都解析不出来 → **本地字典不可信**（拉取失败 / 为空 / 缺项）。
+   * `fetchLuoguTagDict` 失败时是**静默**变成空字典的，此时逐题返回的 id 全被丢成空数组；
+   * 若照常记负缓存，这些题会被误锁 30 天。判据只认「上游给了 id」（`rawTags.length > 0`）：
+   * 上游压根没给标签（空数组）时是真结论，该照常记缓存，否则这些题每轮都会白问一次。
+   *
+   * 与另一种「净化后为空」区分开：上游只给了**非算法维度**标签（年份 / 赛事 / 来源，如
+   * 2013、USACO、洛谷原创、O2优化）时，名字**都解析出来了**，只是随后被 `purifyTags` 过滤成空
+   * —— 那是「上游确实没有可用的算法标签」，属于真结论，照常记负缓存（本机抽查 5 行被锁的洛谷题
+   * 全是这一类，不是本判据要救的对象）。
+   */
+  const tagsUnavailable = rawTags.length > 0 && tags.length === 0;
   return {
     problemKey,
     difficulty: mapped.difficulty ?? null,
@@ -528,6 +558,7 @@ export async function fetchLgProblemInfo(
     difficultyScale: mapped.difficultyScale,
     title,
     tags: tags.length > 0 ? tags : null,
+    tagsUnavailable,
   };
 }
 
@@ -888,7 +919,26 @@ function toMeta(info: BackfillInfo): ProblemMeta {
     difficultyScale: info.difficultyScale ?? null,
     tags: info.tags,
     title: info.title,
+    tagsUnavailable: info.tagsUnavailable,
   };
+}
+
+/**
+ * 把本次运行的**中止信号**并到每一次上游请求上（用户点「停止」时立即生效）。
+ *
+ * 为什么包在这一层：回填链路的上游请求最终都落到注入的 `fetchFn`（`fetchNowcoderBank` /
+ * `fetchWithChallenge` / `createIcpcRuntime` / `asHttpClient` 都只是它的包装），所以一处包装即可
+ * 覆盖整条链路。它必须包在 `createHttpClient` **之内**：那一层会用 `signal: AbortSignal.timeout(...)`
+ * 覆盖调用方传进来的 signal（见 adapters/http.ts），包在外层会被吃掉。
+ *
+ * 不这么做的代价：点「停止」后当前那道题仍会挂到单次请求超时（20–30s）才返回，
+ * 洛谷逐题场景下用户体感就是「点了没反应」。
+ */
+function withAbortSignal(fn: typeof fetch, signal: AbortSignal): typeof fetch {
+  return ((input: RequestInfo | URL, init?: RequestInit) => {
+    const merged = init?.signal ? AbortSignal.any([init.signal, signal]) : signal;
+    return fn(input, { ...init, signal: merged });
+  }) as typeof fetch;
 }
 
 // ---------- 回填服务 ----------
@@ -922,6 +972,10 @@ export function cleanNcTitle(title: string): string {
  *   不再进目标，题数计入 cached。`includeNativeOnly: true` 一并绕过它（运维强查口子）
  * - **平台按实测成本升序处理**（见 PLATFORM_ORDER）：qoj/atcoder 等几秒完成，牛客整表扫描垫底；
  *   这样中途被放弃或进程被杀时，先跑完的平台成果已经落库，而不会「等都等了、qoj 一行都没写」
+ * - **可中止**（`opts.signal`）：用户点「停止」→ 在途请求立即中断、循环尽快退出，
+ *   已提交的批次**留在库里**（见 backfillPlatform），被中断的题仍是下次运行的目标。
+ *   因此停止后重新点击即「接着补」，这就是「可分多次回填」
+ * - **进度可观测**（`opts.onProgress`）：每平台开始与每处理完一题上报一次（路由层转成 `GET /run`）
  * - 写库统一走 difficulty_source='backfill'（优先级 3）：难度、原生难度、标度、标题、标签
  *   都只在「库内为空 / 上游有值」时补齐，绝不覆盖已有手动值（manual）
  */
@@ -936,6 +990,13 @@ export async function backfillDifficulties(
      * 同时兼作**忽略负缓存**的运维强查口子：置 true 时连「上游已确认给不出」的维度也重新问一遍。
      */
     includeNativeOnly?: boolean;
+    /**
+     * 中止信号（用户点「停止回填」）：在途请求立即失败、循环在当前题边界退出。
+     * 已提交的批次保留，未处理的题留作下次运行的目标。
+     */
+    signal?: AbortSignal;
+    /** 进度回调：每个平台开始 + 每处理完一题上报一次（未处理的平台不上报） */
+    onProgress?: (p: BackfillProgress) => void;
   } = {},
 ): Promise<PlatformBackfillResult[]> {
   // 零请求收敛：可推导的原生值就地补齐（详见 deriveIdentityNative 注释）。
@@ -980,13 +1041,21 @@ export async function backfillDifficulties(
       byPlatform.set(platform, list.slice(0, limit));
     }
   }
+  const signal = opts.signal;
+  // 上游请求挂上本次运行的中止信号（见 withAbortSignal）→ 点「停止」时在途请求立即失败
+  const runFetch: typeof fetch = signal ? withAbortSignal(fetchFn, signal) : fetchFn;
   const ctx: BackfillCtx = {
-    fetchFn,
+    fetchFn: runFetch,
     tables: new Map(),
     wanted: new Map([...byPlatform].map(([p, list]) => [p, new Set(list.map((t) => t.problemKey))])),
-    icpc: createIcpcRuntime(fetchFn),
+    icpc: createIcpcRuntime(runFetch),
     gapCheckedAt: new Date().toISOString(),
   };
+
+  /** 本轮目标总数（跨平台）：进度文案里的「（本轮共 N 题）」 */
+  const totalTargets = [...byPlatform.values()].reduce((n, list) => n + list.length, 0);
+  /** 已完成平台的目标累计（当前平台内的进度由 backfillPlatform 上报，二者相加即全局进度） */
+  let doneTargets = 0;
 
   const results: PlatformBackfillResult[] = [];
   // 只被 deferred / 只命中负缓存的平台也要出结果：否则「本平台全部是仅缺原生值的行」时
@@ -996,10 +1065,23 @@ export async function backfillDifficulties(
     ...deferredByPlatform.keys(),
     ...cachedByPlatform.keys(),
   ])) {
+    // 平台边界即中止点：前面平台的成果都已提交，这里直接收尾（结果里带上 stopped）
+    if (signal?.aborted === true) break;
     const list = byPlatform.get(platform) ?? [];
     const r =
       list.length > 0
-        ? await backfillPlatform(db, platform, list, ctx)
+        ? await backfillPlatform(db, platform, list, ctx, {
+            signal,
+            onProgress: (platformDone) => {
+              opts.onProgress?.({
+                platform,
+                platformDone,
+                platformTotal: list.length,
+                done: doneTargets + platformDone,
+                total: totalTargets,
+              });
+            },
+          })
         : {
             platform: String(platform),
             scanned: 0,
@@ -1017,6 +1099,9 @@ export async function backfillDifficulties(
     r.deferred = deferredByPlatform.get(platform) ?? 0;
     r.cached = cachedByPlatform.get(platform) ?? 0;
     results.push(r);
+    // 被中止的平台不计入累计（它的目标并未全部处理完）
+    if (r.stopped === true) break;
+    doneTargets += list.length;
   }
   return results;
 }
@@ -1067,7 +1152,21 @@ async function backfillPlatform(
   platform: PlatformId,
   targets: BackfillTarget[],
   ctx: BackfillCtx,
+  opts: {
+    /** 中止信号：置位后不再发新请求，并把已处理的批次提交后返回 */
+    signal?: AbortSignal;
+    /** 进度回调：`(已处理题数, 本轮该平台目标数)`；进入即报 0，正常跑完报 targets.length */
+    onProgress?: (done: number, total: number) => void;
+  } = {},
 ): Promise<PlatformBackfillResult> {
+  const signal = opts.signal;
+  const report = (done: number): void => opts.onProgress?.(done, targets.length);
+  /**
+   * 是否已被中止。刻意用函数读取而不是直接 `signal?.aborted === true`：
+   * `aborted` 在类型上是 readonly，TS 会把循环顶部那次检查当成「此后恒为 false」，
+   * 于是 catch 里的同名比较会被判成「类型无交集」（而中止恰恰发生在 await 期间）。
+   */
+  const aborted = (): boolean => signal?.aborted === true;
   const limits = platformLimits(platform);
   const r: PlatformBackfillResult = {
     platform,
@@ -1123,6 +1222,8 @@ async function backfillPlatform(
   );
 
   let consecutiveFails = 0;
+  /** 本次平台被用户中止（见 opts.signal）：已提交批次保留，被中断的题留作下次目标 */
+  let stopped = false;
   /**
    * 写库分批提交。
    *
@@ -1158,7 +1259,16 @@ async function backfillPlatform(
   };
 
   try {
-    for (const t of targets) {
+    report(0);
+    for (let i = 0; i < targets.length; i += 1) {
+      // 进入第 i 轮时，前 i 题都已处理完（含计入 failed / 跳过的分支）→ 先如实推进度
+      if (i > 0) report(i);
+      // 用户点了「停止」：立即收尾（已处理的批次在下面 flushTx 提交，不丢成果）
+      if (aborted()) {
+        stopped = true;
+        break;
+      }
+      const t = targets[i]!;
       if (limits.failLimit !== null && consecutiveFails >= limits.failLimit) {
         r.failed += 1;
         r.details.push({ problemKey: t.problemKey, action: 'failed', note: '疑似触发风控，中止后续查询（可稍后重试）' });
@@ -1169,9 +1279,21 @@ async function backfillPlatform(
       try {
         meta = await fetchProblemMeta(platform, t.problemKey, ctx);
       } catch {
+        // 中止不是「上游失败」：在途请求是被我们的 signal 打断的（见 withAbortSignal），
+        // 计入 failed 会让界面显示一片失败、并让用户以为上游坏了
+        if (aborted()) {
+          stopped = true;
+          break;
+        }
         failed = true;
       }
       if (failed || meta === null) {
+        // 停止瞬间的「未命中」不能算上游失败：洛谷的 302 未登录分支、以及刚被打断的请求
+        // 都会走到这里，而用户只是点了停止 —— 这道题的下场留待下次运行判定（也就不会写负缓存）
+        if (aborted()) {
+          stopped = true;
+          break;
+        }
         // 未命中也可能是题号已废弃（如转私密），按单题缺失计，连续缺失也计入风控判定
         r.failed += 1;
         r.details.push({
@@ -1286,6 +1408,7 @@ async function backfillPlatform(
         oldCheckedAt: row.gap_checked_at,
         meta,
         tagsFromUpstream: tags,
+        tagsUnavailable: meta.tagsUnavailable === true,
         definitiveAbsence: false,
         checkedAt: ctx.gapCheckedAt,
         after,
@@ -1298,11 +1421,19 @@ async function backfillPlatform(
       }
       if (limits.delayMs > 0) await sleep(limits.delayMs);
     }
+    if (!stopped) report(targets.length); // 正常跑完：把进度推到「N/N」
     flushTx();
   } catch (e) {
+    // 中止也必须**提交**已处理的批次（用户要求：停止后已回填的不受影响），而不是回滚
+    if (aborted()) {
+      flushTx();
+      r.stopped = true;
+      return r;
+    }
     abortTx();
     throw e;
   }
+  r.stopped = stopped;
   return r;
 }
 
@@ -1316,6 +1447,11 @@ interface GapInput {
   meta: ProblemMeta | null;
   /** 上游标签经净化后的结果（null / 空数组 = 上游这道题没有可用标签） */
   tagsFromUpstream: string[] | null;
+  /**
+   * 标签是「解析不出来」而不是「上游没有」（见 ProblemMeta.tagsUnavailable）。
+   * 置位时**不记** tags 维度：把「我没拿到字典」当成「上游给不出」会把题误锁 30 天。
+   */
+  tagsUnavailable?: boolean;
   /** meta 为 null 时可否当定论（单次响应即完整公开题库的平台，见 ABSENCE_IS_DEFINITIVE） */
   definitiveAbsence: boolean;
   /** 本轮统一时刻（ISO） */
@@ -1330,6 +1466,9 @@ interface GapInput {
  * 三条规则：
  * 1. **只记查过且给不出的**：meta 有值但难度/标签为空 → 记；未命中且来源不是完整题库 → 不记；
  *    请求失败 → 调用方根本不会走到这里。宁可下轮多问一次，也不把「暂时没翻到」锁 30 天。
+ *    「解析不出来」也不算给不出：`tagsUnavailable`（上游给了 tag id 但本地字典没解析出名称）
+ *    时不记任何结论 —— 字典失败是静默的，照记会把题误锁 30 天（见 fetchLgProblemInfo）。
+ *    注意：标签**净化后为空**（上游只有赛事/来源/年份等非算法维度）不在此列，那是真结论。
  * 2. **补齐即退出**：这次上游给了难度（或加了标签），该维度立刻从集合里删掉 ——
  *    CF 赛后补评级、平台后来给题加标签都靠这条生效，不必等 TTL。
  * 3. **TTL 只随新判定顺延**：本轮没有新增判定时保留旧时刻，避免一个维度靠另一个维度的
@@ -1348,7 +1487,10 @@ export function nextGapState(i: GapInput): {
   if (i.meta !== null) {
     // 难度与原生原文一起记：上游给不出评级时两者必然同时无解（同一个 raw 值映射出来的）
     if (i.meta.difficulty === null && i.meta.nativeDifficulty === null) set.add('difficulty');
-    if (i.tagsFromUpstream === null || i.tagsFromUpstream.length === 0) set.add('tags');
+    // 「解析不出来」≠「上游给不出」：字典不可信时不记 tags，否则这些题 30 天内不再被查证
+    if (i.tagsUnavailable !== true && (i.tagsFromUpstream === null || i.tagsFromUpstream.length === 0)) {
+      set.add('tags');
+    }
   } else if (i.definitiveAbsence) {
     set.add('difficulty');
   }
