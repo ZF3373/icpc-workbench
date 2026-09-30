@@ -37,7 +37,9 @@ COPY package.json package-lock.json ./
 COPY client/package.json client/
 COPY server/package.json server/
 COPY shared/package.json shared/
-RUN npm ci --omit=dev
+# npm 会把依赖提升到根 node_modules；server/node_modules 通常不存在，
+# 但个别依赖冲突需要嵌套时会有内容——mkdir 兜底让 COPY 两种布局都成立
+RUN npm ci --omit=dev && mkdir -p server/node_modules
 
 # ---------- 4) Typst：下载官方 musl 二进制并做 SHA256 校验 ----------
 # 脚本自带 linux-amd64/arm64 资产表与哈希校验，产物落在 /app/server/vendor/typst
