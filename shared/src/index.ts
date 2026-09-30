@@ -480,22 +480,47 @@ export {
 /** CF 特殊题型标记（*special / *2200 等，非算法维度） */
 const CF_NOISE_PREFIX = '*';
 
-/** 赛事/来源/机构类关键词（洛谷 tag 字典"来源"分区 + 各地区赛事） */
+/**
+ * 赛事/来源/机构类关键词（洛谷 tag 字典"来源"分区 + 各地区赛事）。
+ * 子串匹配，只收无碰撞风险的词；两字母缩写（WF）与易撞英文词根的缩写分别走
+ * CONTEST_SOURCE_EXACT_TAGS 整词匹配、带全角括号的「XX（国家）」写法。
+ * 以真实库存活 tag 全集校准（2026-09-30 快照：dev 库 ∪ 内置题库共 631 个存活 tag）。
+ * 上一轮校准（2026-08 洛谷 117 tag）后题库扩充，梦熊比赛 / Google 系 / 国际 OI 缩写成批漏网，
+ * 其中「梦熊比赛」以 unmapped tag 身份冲进弱项 top（2026-09 用户反馈）。
+ */
 const CONTEST_SOURCE_KEYWORDS = [
-  '蓝桥杯', 'NOIP', 'NOI', '省选', '联赛', '洛谷', 'Codeforces', 'AtCoder',
+  '蓝桥杯', 'NOIP', 'NOI', '省选', '省赛', '联赛', '洛谷', 'Codeforces', 'AtCoder',
   'ABC', 'ARC', 'AGC', '牛客', 'GESP', 'USACO', 'IOI', 'ICPC', 'COCI', 'POI',
   'NERC', 'CERC', 'eJOI', 'Code+', '夏令营', '导刊', '青少年', '信息与未来',
+  // 洛谷"来源"分区：梦熊/校园/机构赛事（「杯」为杯赛族兜底，算法词汇中无含「杯」的标签）
+  '梦熊', 'Google', 'Kick Start', 'Code Jam', 'Olympiad', '杯',
+  '校赛', '省赛', '邀请赛', '月赛', '入门赛', '集训队', '活动',
+  'CSP-J', 'CSP-S', 'CCPC', 'THUPC', 'THUSC', 'THUWC', 'EC Final', 'CSPro',
+  'NWRRC', 'SEERC', 'SWERC', 'NAC', 'AGM', 'CCC',
+  // 国际 OI 家族：JOI（日本）/ ROI（俄罗斯）/ BalticOI（波罗的海）等
+  'JOI', 'KOI', 'UOI', 'ROI', 'BalticOI', 'NordicOI', 'MCC', 'KTSC',
+  'OI（', 'OI(', 'PA（', 'PO（', 'CCO（',
 ];
 
-/** 省份/地区名（洛谷 tag 字典中的地区分区） */
+/** 整词匹配的赛事缩写：子串匹配会误伤（如 WF），只认完整标签 */
+const CONTEST_SOURCE_EXACT_TAGS = new Set(['WF']);
+
+/** 省份/地区/承办城市名（洛谷 tag 字典中的地区分区 + 赛事承办地） */
 const REGION_TAGS = new Set([
   '北京', '天津', '安徽', '江苏', '湖南', '福建', '浙江', '上海', '广东',
   '四川', '重庆', '河北', '河南', '山东', '陕西', '湖北',
+  // 2026-09 校准补齐的省级行政区
+  '山西', '辽宁', '吉林', '黑龙江', '江西', '广西', '海南', '贵州',
+  '云南', '甘肃', '青海', '宁夏', '新疆', '西藏', '内蒙古', '台湾', '香港', '澳门',
+  // 常见承办城市（含海外：横浜=JAG、首尔=KOI 承办地）
+  '南京', '西安', '成都', '哈尔滨', '济南', '昆明', '青岛', '杭州', '横浜', '首尔',
 ]);
 
 /** 其他明确非算法能力维度的标签（题型事务/评分方式/教学分类） */
 const MISC_NOISE_TAGS = new Set([
   'O2优化', 'Special Judge', 'SPJ', '提交答案', '提答', '模板题', '入门',
+  // 洛谷/牛客入门练习场的进度分类（「通关/语言」栏目），非算法能力维度
+  '过关题目', '语言题',
 ]);
 
 /** 纯年份（如 1998 / 2026）：题目来源年份 */
@@ -515,6 +540,7 @@ export function isNoiseTag(tag: string): boolean {
   if (t.startsWith(CF_NOISE_PREFIX)) return true;
   if (isYearTag(t)) return true;
   if (isContestSourceTag(t)) return true;
+  if (CONTEST_SOURCE_EXACT_TAGS.has(t)) return true;
   if (REGION_TAGS.has(t)) return true;
   if (MISC_NOISE_TAGS.has(t)) return true;
   return false;
