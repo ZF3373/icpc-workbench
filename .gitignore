@@ -1,6 +1,8 @@
 node_modules/
 dist/
 server/data/
+# 根目录 data/：本地运行库与备份（icpc.db、backups、uploads），绝不入库
+data/
 server/config.json
 *.log
 .DS_Store
