@@ -181,6 +181,70 @@ test('洛谷：未配置 Cookie 明确报错；有 Cookie 时从 __INITIAL_STATE
   assert.equal(withCookie.sourceUrl, 'https://www.luogu.com.cn/problem/solution/P1422');
 });
 
+/**
+ * 2026-09-30 回归：洛谷风控对未通过人机校验的请求返回「302 → 自己 + 新 C3VK」，
+ * 普通自动跟随 fetch（无 Cookie Jar）耗尽重定向次数后抛 `TypeError: fetch failed`
+ * （cause: redirect count exceeded），异常一路炸进 /chat 外层 catch，整轮对话以
+ * 「AI 调用失败：fetch failed」告终。三个用例分别钉住：不抛错契约、C3VK 收敛、
+ * 登录态失效的精确报错。
+ */
+
+/** 复刻 undici 网络层失败的形态：message 只有「fetch failed」，真实原因在 cause */
+function boomFetch(): typeof fetch {
+  return (async () => {
+    const e: Error & { cause?: unknown } = new TypeError('fetch failed');
+    e.cause = new Error('redirect count exceeded');
+    throw e;
+  }) as unknown as typeof fetch;
+}
+
+test('回归：网络层异常不外抛，转成 error 文案（拼上 cause）', async () => {
+  const r = await executeFetchEditorial('https://atcoder.jp/contests/abc380', undefined, boomFetch());
+  assert.match(r.error ?? '', /fetch failed（redirect count exceeded）/);
+  assert.equal(r.content, undefined, '失败时绝不能带正文');
+});
+
+test('回归：洛谷 C3VK 挑战（302 → 自己 + 新挑战码）带上最新码重试后能读到题解', async () => {
+  const stateHtml = `<script>window.__INITIAL_STATE__={"a":{"content":"## 思路\\n按功率拆位即可：把每个电器看作二进制位上的贡献，逐位统计后取最小调整次数即可通过。"}};</script>`;
+  const FRESH = 'C3VK=8eb8e1';
+  let calls = 0;
+  const challengeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls += 1;
+    const cookie = String((init?.headers as Record<string, string> | undefined)?.Cookie ?? '');
+    if (!cookie.includes(FRESH)) {
+      // 挑战未通过：302 回自己，下发新挑战码（不带 Max-Age 走兜底 TTL）
+      return new Response(null, {
+        status: 302,
+        headers: { 'set-cookie': `${FRESH}; Path=/`, location: String(input) },
+      });
+    }
+    return new Response(stateHtml, { status: 200 });
+  }) as unknown as typeof fetch;
+  const r = await executeFetchEditorial(
+    'https://www.luogu.com.cn/problem/P1422',
+    { luogu: { cookie: '__client_id=abc; _uid=1' } },
+    challengeFetch,
+  );
+  assert.equal(r.error, undefined);
+  assert.match(r.content ?? '', /按功率拆位即可/);
+  assert.ok(calls >= 2, `挑战应至少重试一次，实际请求 ${calls} 次`);
+});
+
+test('回归：洛谷 302 且未下发新挑战码（登录态失效）→ 精确报 Cookie 失效而非炸掉', async () => {
+  const loginRedirect = (async () =>
+    new Response(null, {
+      status: 302,
+      headers: { location: 'https://www.luogu.com.cn/auth/login' },
+    })) as unknown as typeof fetch;
+  const r = await executeFetchEditorial(
+    'https://www.luogu.com.cn/problem/P1422',
+    { luogu: { cookie: '__client_id=stale' } },
+    loginRedirect,
+  );
+  assert.match(r.error ?? '', /Cookie 无效或已过期/);
+  assert.equal(r.content, undefined);
+});
+
 test('extractLuoguSolutions：只收 markdown 特征的长文本，剥掉页面噪声', () => {
   const html = `<script>window.__INITIAL_STATE__={"a":{"content":"## 思路\\n这是正题解，含 **加粗** 与代码块。"},"b":{"title":"太短不收"},"c":{"content":"这是一段没有 markdown 特征的很长的普通文本，虽然超过八十字符，但是没有标题加粗代码块等特征，因此不应被当作题解正文收进来，避免把页面杂讯误当成题解内容返回给模型使用。"}};</script>`;
   const out = extractLuoguSolutions(html);

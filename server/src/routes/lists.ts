@@ -3,7 +3,7 @@ import type { AiConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
-import { AiProvider } from '../ai/provider.ts';
+import { AiProvider, describeError } from '../ai/provider.ts';
 import { canonicalTag, coarseCategoryNames, TAG_ALIAS_TO_CANONICAL, type PlatformId } from '../../../shared/src/index.ts';
 import { getAdapter } from '../adapters/registry.ts';
 import { parseProblemListText } from '../problems/parseProblemList.ts';
@@ -584,7 +584,7 @@ export function listsRoutes(
         .run(reply, id);
       res.json({ reply, cached: false });
     } catch (e) {
-      res.status(502).json({ error: `AI 调用失败：${(e as Error).message}` });
+      res.status(502).json({ error: `AI 调用失败：${describeError(e)}` });
     }
   }));
 

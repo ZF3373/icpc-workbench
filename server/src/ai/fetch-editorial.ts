@@ -1,7 +1,8 @@
-import type { ToolDefinition } from './provider.ts';
+import { describeError, type ToolDefinition } from './provider.ts';
 import type { ToolResult, ToolContext } from './tools/registry.ts';
 import { registerTool, type PlatformCookies } from './tools/registry.ts';
 import { htmlToText, validatePublicFetchUrl } from './fetch-url.ts';
+import { fetchWithChallenge } from '../adapters/luogu.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
 
 /**
@@ -195,6 +196,22 @@ export async function executeFetchEditorial(
   cookies?: PlatformCookies,
   fetchFn: typeof fetch = EDITORIAL_TRANSPORT,
 ): Promise<EditorialResult> {
+  // 「不抛错」是本函数对工具注册表的硬契约：从这里抛出的异常会穿过 executeToolCall
+  // 一路炸进 /chat 外层 catch，整轮对话以「AI 调用失败：fetch failed」告终——而大模型
+  // 毫无问题（2026-09-30 洛谷 C3VK 重定向循环实测）。平台分支只处理业务失败，
+  // 网络层等未预料异常统一在这里转成 error 文案。
+  try {
+    return await dispatchEditorialByPlatform(url, cookies, fetchFn);
+  } catch (e) {
+    return { error: `网络异常：${describeError(e)}；可改用 web_search 搜索该题题解，或请用户粘贴题解。` };
+  }
+}
+
+async function dispatchEditorialByPlatform(
+  url: string,
+  cookies?: PlatformCookies,
+  fetchFn: typeof fetch = EDITORIAL_TRANSPORT,
+): Promise<EditorialResult> {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -284,7 +301,26 @@ export async function executeFetchEditorial(
       return { error: '洛谷题解区需要登录：请先在「设置」配置洛谷 Cookie，或用 web_search 搜索该题题解。' };
     }
     const solutionUrl = `https://www.luogu.com.cn/problem/solution/${path.split('/')[2]}`;
-    const solutionHtml = await fetchPage(solutionUrl, fetchFn, cookie);
+    // 必须走 C3VK 挑战处理（洛谷风控：302 → 自己 + 下发新挑战码）。普通 fetch 自动
+    // 跟随重定向且没有 Cookie Jar，永远带不上新码，undici 耗尽重定向次数后抛
+    // 「fetch failed」（cause: redirect count exceeded）——实测正是炸掉整轮对话的元凶。
+    // fetchWithChallenge 用 redirect:'manual' 原地重试并合并最新挑战码（用户 Cookie
+    // 的其余部分保留），语义对齐洛谷适配器的同步链路。
+    const res = await fetchWithChallenge(fetchFn, solutionUrl, cookie, undefined, {
+      'User-Agent': BROWSER_UA,
+      Accept: 'text/html,application/json',
+    });
+    if (res.status === 302 || res.status === 303) {
+      // 未放行的 302 = 登录态失效（洛谷重定向到登录页）
+      return { error: '洛谷题解区读取失败：Cookie 无效或已过期。请在「设置」更新洛谷 Cookie，或改用 web_search 搜索该题题解。' };
+    }
+    if (res.status === 504) {
+      return { error: '洛谷人机校验（C3VK）挑战重试超限，请稍后重试，或改用 web_search 搜索该题题解。' };
+    }
+    if (!res.ok) {
+      return { error: `洛谷题解区读取失败：HTTP ${res.status}。可改用 web_search 搜索该题题解。` };
+    }
+    const solutionHtml = await res.text();
     // 主路径：__INITIAL_STATE__ JSON 提取；拿不到再试整页转文本（须够长，避免
     // 把导航/页脚噪声当题解）；两者皆空才降级报错
     let content = extractLuoguSolutions(solutionHtml).trim();

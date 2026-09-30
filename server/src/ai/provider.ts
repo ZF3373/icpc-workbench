@@ -92,6 +92,22 @@ export function filesUrl(base: string): string {
   return `${trimmed}/files`;
 }
 
+/**
+ * 错误 → 可读文案：把 error.cause 拼进 message。
+ * Node undici 网络层失败的 message 只有一句「fetch failed」，真实原因（DNS 解析失败 /
+ * 连接被拒 / 重定向超限 / TLS 证书）全在 cause 里 —— 不拼上它，用户只能看到一句
+ * 无法定位的报错（联网搜索报「AI 调用失败：fetch failed」却查不到原因，2026-09-30）。
+ */
+export function describeError(e: unknown): string {
+  const err = e as Error & { cause?: unknown };
+  const main = err?.message || String(e);
+  const cause = err?.cause;
+  if (cause === undefined || cause === null) return main;
+  const causeMsg = cause instanceof Error ? cause.message : String(cause);
+  if (causeMsg === '' || main.includes(causeMsg)) return main;
+  return `${main}（${causeMsg}）`;
+}
+
 /** HTTP 错误信息友好化：524/504 网关超时给出可操作建议 */
 function friendlyHttpError(status: number, body: string): Error {
   if (status === 524 || status === 504) {

@@ -6,7 +6,7 @@ import type { AiConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
-import { AiProvider, type ChatContentBlock, type ChatMessage, type ToolCall, type TokenUsage } from '../ai/provider.ts';
+import { AiProvider, describeError, type ChatContentBlock, type ChatMessage, type ToolCall, type TokenUsage } from '../ai/provider.ts';
 import { estimateTokens, trimContext, summarizeContext, SUMMARIZE_THRESHOLD } from '../ai/context.ts';
 // 导入 search.ts 触发 web_search 工具注册（副作用导入，不需要直接使用导出）
 import '../ai/search.ts';
@@ -16,7 +16,7 @@ import '../ai/fetch-url.ts';
 import '../ai/fetch-editorial.ts';
 import { extractPdfText, truncatePdfText, isPdfContentType, isPdfFilename } from '../ai/pdf.ts';
 import { convertDocument, isDocumentFile } from '../ai/docConverter.ts';
-import { getToolDefinitions, executeToolCall, type ToolContext, type PlatformCookies } from '../ai/tools/registry.ts';
+import { getToolDefinitions, executeToolCall, type ToolResult, type ToolContext, type PlatformCookies } from '../ai/tools/registry.ts';
 import { buildTemplateLibrarySummary } from '../ai/templateContext.ts';
 import { listTemplateCategoryOptions } from '../templates/categories.ts';
 import { computeWeakness } from '../analysis/weakness.ts';
@@ -753,8 +753,22 @@ export function aiRoutes(
               }
             }
 
-            // 通过注册表执行工具
-            const result = await executeToolCall(tc.function.name, args, toolCtx);
+            // 通过注册表执行工具。工具的业务失败走 result.content 的 error 文案；但
+            // 网络层异常（undici「fetch failed」等）仍可能从工具内部抛出 —— 这里必须兜住：
+            // 否则异常一路炸到外层 catch，整轮对话以「AI 调用失败：fetch failed」告终，
+            // 而大模型本身毫无问题（2026-09-30 洛谷 C3VK 重定向循环实测）。转成 tool
+            // 结果让 AI 据此降级（标注推断 / 换路径重试），对话继续。
+            let result: ToolResult;
+            try {
+              result = await executeToolCall(tc.function.name, args, toolCtx);
+            } catch (eTool) {
+              console.error('[AI chat] 工具执行异常:', tc.function.name, describeError(eTool));
+              result = {
+                content:
+                  `工具 ${tc.function.name} 执行失败：${describeError(eTool)}。` +
+                  '没有工具结果佐证时，不要给出看似确定的结论，明确标注哪些是推断，或换一条路径重试。',
+              };
+            }
 
             // 工具元数据（如搜索来源）发给前端展示
             if (result.metadata && Array.isArray(result.metadata)) {
@@ -784,7 +798,7 @@ export function aiRoutes(
               if (!res.writableEnded) res.write(`data: ${JSON.stringify({ delta })}\n\n`);
             }
           } catch (eN) {
-            const msg = (eN as Error).message || String(eN);
+            const msg = describeError(eN);
             console.error('[AI chat] 轮次', round + 2, '失败:', msg);
             if (!res.writableEnded) {
               res.write(`data: ${JSON.stringify({ error: `AI 调用失败：${msg}` })}\n\n`);
@@ -826,7 +840,7 @@ export function aiRoutes(
       }
       // 流开始后出错：写一个错误事件让前端感知（headers 已发，不能再 JSON 502）
       if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify({ error: `AI 调用失败：${(e as Error).message}` })}\n\n`);
+        res.write(`data: ${JSON.stringify({ error: `AI 调用失败：${describeError(e)}` })}\n\n`);
         res.end();
       }
     }
