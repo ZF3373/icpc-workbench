@@ -123,6 +123,34 @@ CI 的 nightly 预发布版随 Windows 三件套一起发布 `.dmg`（Apple Sili
 - 用户数据存放在 `~/Library/Application Support/icpc-workbench/data`（**不在 app 包内**：写包内会让签名失效导致「已损坏」，且覆盖安装新版会丢数据）；老 nightly 写在包内的数据会在首次启动时自动搬出来
 - macOS 暂不支持应用内一键更新（该功能仅 Windows），更新请到 Releases 页手动下载覆盖
 
+## Docker 部署（Web 服务器 / NAS）
+
+把工作台跑成容器服务，适合部署到 Linux 服务器或 NAS 上长期使用。单容器单进程：后端 API、前端静态页面、widget 页面同端口服务。
+
+**方式一：本地构建（仓库内已有 `Dockerfile` + `docker-compose.yml`）**
+
+```bash
+git clone <本仓库> && cd icpc-workbench
+docker compose up -d      # 构建镜像并启动
+```
+
+**方式二：预构建镜像（CI 自动发布，amd64 + arm64）**
+
+```bash
+docker run -d --name icpc-workbench \
+  -p 127.0.0.1:3080:3001 \
+  -v icpc-data:/app/server/data \
+  ghcr.io/ZF3373/icpc-workbench:latest
+```
+
+两种方式启动后访问 `http://127.0.0.1:3080`。
+
+- **数据持久化**：数据库（WAL）、上传图片、知识点、每日备份全部在 `/app/server/data`，对应 compose 里的 `icpc-data` 卷；换镜像升级数据不丢（schema 迁移幂等，旧卷可跨版本复用）
+- **配置**：`PORT`/`TZ` 已有默认值；`AI_API_KEY`、`SEARCH_API_KEY` 可用环境变量注入，也可在「设置」页配置（存库随卷持久化）；其余配置可选挂载 `server/config.json` 覆盖
+- **升级**：`docker compose pull && docker compose up -d`（或拉新镜像重建容器）。容器内应用内「软件更新」不生效——容器版本的版本号固定为 `dev`，不会提示更新，更新一律通过换镜像完成
+- **健康检查**：镜像内置 `HEALTHCHECK` 探测 `/api/health`，`docker ps` 可见 healthy 状态
+- **安全（务必阅读）**：应用本身无任何认证，`-p 127.0.0.1:3080:3001` 默认只绑宿主机回环，仅本机可访问。如需局域网/公网使用，请改为 `-p 3080:3001` 并自行加装反向代理 + 认证 + TLS——直接暴露等同公开你的练习数据与 AI API Key
+
 ## 浏览器模式单文件 exe 打包（兼容保留）
 
 ```bash

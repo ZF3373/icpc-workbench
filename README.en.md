@@ -123,6 +123,34 @@ The CI nightly pre-release publishes a `.dmg` alongside the Windows set (Apple S
 - User data lives in `~/Library/Application Support/icpc-workbench/data`, **outside the app bundle** (writing inside the bundle invalidates the signature, and reinstalling would discard the data). Data written inside the bundle by older nightlies is migrated out automatically on first launch
 - macOS does not support in-app one-click update (Windows only); to update, manually download from the Releases page and overwrite
 
+## Docker Deployment (Web Server / NAS)
+
+Run the workbench as a containerized service on a Linux server or NAS. Single container, single process: the API, the static frontend, and the widget page are all served on one port.
+
+**Option A: build locally (a `Dockerfile` and `docker-compose.yml` ship with the repo)**
+
+```bash
+git clone <this-repo> && cd icpc-workbench
+docker compose up -d      # build the image and start
+```
+
+**Option B: prebuilt image (published by CI, amd64 + arm64)**
+
+```bash
+docker run -d --name icpc-workbench \
+  -p 127.0.0.1:3080:3001 \
+  -v icpc-data:/app/server/data \
+  ghcr.io/ZF3373/icpc-workbench:latest
+```
+
+Either way, open `http://127.0.0.1:3080` afterwards.
+
+- **Data persistence**: the database (WAL), uploaded images, knowledge data, and daily backups all live under `/app/server/data` — the `icpc-data` volume in compose. Upgrading the image keeps the data (schema migrations are idempotent; the same volume works across versions)
+- **Configuration**: `PORT`/`TZ` have sensible defaults; `AI_API_KEY` and `SEARCH_API_KEY` can be injected as environment variables or configured in the Settings page (stored in the DB, persisted with the volume); optionally mount a custom `server/config.json`
+- **Upgrades**: `docker compose pull && docker compose up -d` (or pull a new image and recreate the container). The in-app "Software Update" does not apply to containers — the container build reports version `dev` and never prompts for updates; upgrade by switching images
+- **Health check**: the image ships with a `HEALTHCHECK` probing `/api/health`; `docker ps` shows a healthy status
+- **Security (read this)**: the app has no authentication at all, and `-p 127.0.0.1:3080:3001` binds the host loopback only. For LAN/public access, switch to `-p 3080:3001` and put your own reverse proxy with authentication and TLS in front — exposing it directly is equivalent to publishing your practice data and AI API key
+
 ## Browser-Mode Single-File EXE Packaging (Legacy, Retained)
 
 ```bash

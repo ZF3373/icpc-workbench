@@ -98,7 +98,10 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
   }
 
   const app = express();
-  app.use(express.json({ limit: '2mb' }));
+  // 12 MiB：与 index.ts 对齐——/api/ai/chat 允许每条消息带 8 个附件、单个 textContent 上限
+  // 1 MiB，加整封对话历史上行；2mb 会让这类合法请求在进入路由前就被 body-parser 拒掉。
+  // （sea.ts 的非 SEA 分支也是 Docker 镜像的运行入口，Docker 部署走同一条限制）
+  app.use(express.json({ limit: '12mb' }));
   app.use(securityHeaders);
 
   app.use('/api/import', importRoutes(db));
@@ -253,8 +256,12 @@ if (isSea()) {
   }
 } else {
   const { app, port } = startServer();
-  app.listen(port, '127.0.0.1', () => {
-    console.log(`[server] listening on http://localhost:${port}`);
+  // 默认只绑回环，维持「本地单用户应用不默认暴露局域网」的安全边界；
+  // HOST 供容器部署显式覆盖（Docker 里必须绑 0.0.0.0，端口映射才对外可达）
+  const host = process.env.HOST ?? '127.0.0.1';
+  app.listen(port, host, () => {
+    const displayHost = host === '0.0.0.0' ? 'localhost' : host;
+    console.log(`[server] listening on http://${displayHost}:${port}`);
     console.log(`[server] widget page: http://localhost:${port}/widget`);
   });
 }

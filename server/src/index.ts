@@ -100,8 +100,10 @@ app.get('/api/health', (_req, res) => {
 app.use(errorHandler);
 
 const port = Number(process.env.PORT ?? config.port);
-// 这是本地单用户应用：绝不默认暴露到局域网。若以后需要远程访问，应单独
+// 这是本地单用户应用：默认只绑 127.0.0.1，绝不默认暴露到局域网。若以后需要远程访问，应单独
 // 设计认证和 TLS，而不是通过修改此处的默认行为绕过安全边界。
+// HOST 环境变量是容器部署的显式出口（Docker 镜像里设 HOST=0.0.0.0，端口映射才对外可达）；
+// 本地/桌面运行不设置该变量，行为不变。
 //
 // ⚠ 顺序很重要：**先 listen，再做启动期初始化**（见文件末尾的知识点索引重建）。
 // 端口绑定是同步的，而初始化的代码是同步阻塞的，所以"先 listen"只会把端口
@@ -110,8 +112,10 @@ const port = Number(process.env.PORT ?? config.port);
 // 实测（node 直接跑本文件，PORT=4102）：端口可连接 1.57s / 首个 200 返回 1.67s，
 // 其中索引重建只占约 0.1s —— 启动开销主要在进程引导（import + 打开 DB + 适配器），
 // 不在重建。所以这里改的是"把失败窗口压到最小"，而不是消除那 1.5s 引导时间。
-const server: Server = app.listen(port, '127.0.0.1', () => {
-  console.log(`[server] listening on http://localhost:${port}`);
+const host = process.env.HOST ?? '127.0.0.1';
+const server: Server = app.listen(port, host, () => {
+  const displayHost = host === '0.0.0.0' ? 'localhost' : host;
+  console.log(`[server] listening on http://${displayHost}:${port}`);
   console.log(`[server] widget page: http://localhost:${port}/widget`);
 });
 server.on('error', (e: NodeJS.ErrnoException) => {

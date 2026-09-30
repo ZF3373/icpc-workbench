@@ -1,0 +1,25 @@
+# 一条命令部署：docker compose up -d
+# 浏览器访问 http://127.0.0.1:3080
+services:
+  workbench:
+    build: .
+    image: icpc-workbench:local
+    container_name: icpc-workbench
+    ports:
+      # 默认只绑宿主机回环：应用本身无认证，暴露到局域网等同公开你的练习数据
+      # 与 AI API Key。确认要局域网访问时改为 "3080:3001"，并自行加反代 + 认证。
+      - "127.0.0.1:3080:3001"
+    volumes:
+      # 全部运行时数据（数据库/上传/知识点/备份）都在这一卷里
+      - icpc-data:/app/server/data
+      # 可选：挂载自定义配置（端口/AI 配置等），参考 server/config.example.json
+      # - ./server/config.json:/app/server/config.json:ro
+    environment:
+      # AI 也可改在应用「设置」页里配置（随数据卷持久化）
+      # AI_API_KEY: sk-xxx
+      # SEARCH_API_KEY: tvly-xxx
+      TZ: Asia/Shanghai
+    restart: unless-stopped
+
+volumes:
+  icpc-data:

@@ -1,0 +1,31 @@
+# 依赖与构建产物：镜像内按阶段重建，绝不从宿主机拷入
+**/node_modules
+client/dist
+server/dist
+server/release/
+server/vendor/
+
+# 运行时数据：一律走卷（/app/server/data），绝不烤进镜像
+data/
+server/data/
+
+# 本地敏感与无关内容：签名证书（含私钥）、本机专属配置、桌面壳、本地素材与工具目录
+server/certs/
+server/config.json
+server/tmp-*
+desktop/
+videos/
+docs/
+.github/
+.git/
+.scratch/
+.superpowers/
+.workbuddy/
+.dsh-uploads/
+.probe/
+.zcode/
+**/undefined/
+
+# 大体积本地文档（镜像内保留 LICENSE/CREDITS.md 以符合 GPL 分发要求）
+README*.md
+icpc-workbench-*.md
