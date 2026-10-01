@@ -70,6 +70,8 @@ interface ImportPreviewResp {
     newSubmissions: number
     duplicateSkips: number
     manualSkips: number
+    /** 命中删除墓碑（回收站）且非 manual: 来源：实际导入会静默丢弃这些行 */
+    tombstoneSkips: number
     problemCreates: number
     problemUpdates: number
   }
@@ -258,6 +260,11 @@ export default function Problems() {
   // 只允许「最新一次请求」落地：连点筛选/翻页时多个请求在途，晚到的旧响应若照常写回，
   // 会把旧条件的行连同它的 total/page 一起盖上去，之后没有新请求来自愈（界面长期停在错数据上）
   const reqSeq = useRef(0)
+  // 分面统计各自一个序号：它们与列表是两个独立请求（分面按筛选条件、分布图只按 includeBank），
+  // 共用 reqSeq 会互相作废。缺护栏时后到的旧响应会把侧栏计数盖成上一个条件的口径，
+  // 而「共 N 题」来自当前条件 —— 同一屏两个数互相矛盾且不再自愈
+  const facetsSeq = useRef(0)
+  const unfilteredFacetsSeq = useRef(0)
 
   const load = useCallback((nextPage: number) => {
     const seq = (reqSeq.current += 1)
@@ -292,9 +299,12 @@ export default function Problems() {
 
   // 分面统计：侧边栏标签计数随筛选联动；右侧分布图始终按全部题目口径
   const reloadFacets = useCallback(() => {
+    const seq = (facetsSeq.current += 1)
     const params = buildFilterParams()
     get<ProblemsFacets>(`/api/problems/facets?${params.toString()}`)
-      .then(setFacets)
+      .then((res) => {
+        if (seq === facetsSeq.current) setFacets(res)
+      })
       .catch(() => { /* 服务端未升级时静默：分面缺失仅影响侧栏计数 */ })
   }, [buildFilterParams])
 
@@ -307,8 +317,11 @@ export default function Problems() {
   // 分布合计会与「共 N 题」对不上（默认 includeBank=true，差异约 1.8 万）。
   // 提取成函数：删除/清洗会改变全库口径的计数，须与 reloadFacets 一并刷新
   const reloadUnfilteredFacets = useCallback(() => {
+    const seq = (unfilteredFacetsSeq.current += 1)
     get<ProblemsFacets>(`/api/problems/facets${includeBank ? '?bank=1' : ''}`)
-      .then(setUnfilteredFacets)
+      .then((res) => {
+        if (seq === unfilteredFacetsSeq.current) setUnfilteredFacets(res)
+      })
       .catch(() => { /* 同上 */ })
   }, [includeBank])
 
@@ -807,7 +820,10 @@ export default function Problems() {
                 <p>共 {pv.total} 行：合法 {pv.valid} 行，非法 {pv.invalid.length} 行</p>
                 <ul style={{ paddingLeft: 18, margin: '4px 0' }}>
                   <li>将新增提交：<b>{pv.preview.newSubmissions}</b> 条</li>
-                  <li>重复跳过：{pv.preview.duplicateSkips} 条；同题同结果跳过：{pv.preview.manualSkips} 条</li>
+                  <li>
+                    重复跳过：{pv.preview.duplicateSkips} 条；同题同结果跳过：{pv.preview.manualSkips} 条
+                    {pv.preview.tombstoneSkips > 0 && <>；已被删除（回收站）跳过：{pv.preview.tombstoneSkips} 条</>}
+                  </li>
                   <li>题目新建 {pv.preview.problemCreates} 个 / 更新 {pv.preview.problemUpdates} 个</li>
                 </ul>
                 {pv.invalid.length > 0 && (

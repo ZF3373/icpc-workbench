@@ -71,9 +71,14 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     () =>
       new Promise<boolean>((resolve) => {
         stopPolling()
+        // 连续失败上限：后端进程被替换/崩溃后 /progress 会一直失败，无上限的「单次忽略」
+        // 会让轮询永不 settle、busy 永真、按钮永久 loading（15 拍 ≈ 12s，短暂网络抖动仍能容忍）
+        const MAX_CONSECUTIVE_FAILURES = 15
+        let failures = 0
         timer.current = setInterval(async () => {
           try {
             const p = await get<UpdateProgress>('/api/update/progress')
+            failures = 0
             setPhase(p.phase)
             setPercent(p.total > 0 ? Math.min(99, Math.round((p.received / p.total) * 100)) : 0)
             if (p.phase === 'staged') {
@@ -84,7 +89,12 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
               resolve(false)
             }
           } catch {
-            /* 单次轮询失败忽略，等下一拍 */
+            failures += 1
+            if (failures >= MAX_CONSECUTIVE_FAILURES) {
+              stopPolling()
+              resolve(false)
+            }
+            /* 其余单次轮询失败忽略，等下一拍 */
           }
         }, 800)
       }),

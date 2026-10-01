@@ -5,6 +5,7 @@
  * 对 AI 完全不可见 —— 用户说「记到 XX 标签下」时，AI 只能回「没有这个分类」。
  * 这里把「自建标签必须出现在提示词里（含一个模板都没有的空标签）」固定住。
  */
+import { listenForTest } from './test-listen.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
@@ -39,8 +40,7 @@ async function withServers(
       }),
     }),
   );
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   const root = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
   try {
     await fn({ aiBase: `${root}/api/ai`, tplBase: `${root}/api/templates`, db, systems });

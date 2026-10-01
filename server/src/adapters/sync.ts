@@ -112,6 +112,23 @@ function isAscendingPlatform(platform: PlatformId): boolean {
  */
 const SYNC_IN_FLIGHT = new Set<PlatformId>();
 
+/** 互斥锁拒绝重复触发时返回的固定文案（调度器据此识别「被跳过」并原样重排本轮） */
+export const SYNC_BUSY_MESSAGE = (platform: PlatformId): string =>
+  `平台 ${platform} 正在同步中：已跳过本次重复触发（同平台串行执行，请等待当前同步结束）`;
+
+/**
+ * 该结果是否为「同平台已在同步、本次被互斥锁跳过」：它没有发出任何平台请求、
+ * 也不是同步失败（见互斥锁注释），后台续拉调度器据此把它与真实失败区分开。
+ */
+export function isSyncBusyResult(result: SyncResult): boolean {
+  return (
+    result.imported === 0 &&
+    result.skipped === 0 &&
+    result.errors.length === 1 &&
+    result.errors[0] === SYNC_BUSY_MESSAGE(result.platform)
+  );
+}
+
 /**
  * 会抢占后台续拉队列的触发来源：**用户主动发起的完整同步**（manual 手动点同步 / all 一键全同步 /
  * retry 失败重试）。只有它们接管队列——它们会完整走一遍「拉取 → 写 platform_accounts →
@@ -162,7 +179,7 @@ export async function syncPlatform(
       handle,
       imported: 0,
       skipped: 0,
-      errors: [`平台 ${platform} 正在同步中：已跳过本次重复触发（同平台串行执行，请等待当前同步结束）`],
+      errors: [SYNC_BUSY_MESSAGE(platform)],
     };
   }
   SYNC_IN_FLIGHT.add(platform);

@@ -83,9 +83,16 @@ const loadProgress = (db: Db): Map<string, ProgressEntry> => {
 };
 
 const loadContent = (db: Db): Map<string, ContentRow> => {
+  // 「这条有内容」的判据必须是四列**任一**非 NULL，而不是 code IS NOT NULL：
+  // 写入端把空串落成 NULL（`code || null`），用户只填「思路」或只填「复杂度/链接」时
+  // code 就是 NULL —— 旧判据会整行滤掉，于是保存成功（PUT 返回 hasContent:true）却读不回内容，
+  // 界面显示「暂无内容」、导出也不含它；用户重开编辑框（草稿由 API 的 null 播种）再保存，
+  // 就把思路一起写成 NULL，**永久丢失**
   const rows = db
     .prepare(
-      `SELECT template_id, ${CONTENT_FIELDS} FROM template_progress WHERE user_id = ? AND code IS NOT NULL`,
+      `SELECT template_id, ${CONTENT_FIELDS} FROM template_progress
+        WHERE user_id = ?
+          AND (code IS NOT NULL OR idea IS NOT NULL OR complexity IS NOT NULL OR url IS NOT NULL)`,
     )
     .all(DEFAULT_USER_ID) as unknown as Array<{ template_id: string } & ContentRow>;
   const map = new Map<string, ContentRow>();
@@ -633,14 +640,26 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
   r.delete('/custom/:id', (req, res) => {
     const dbId = Number(req.params.id);
     if (!Number.isInteger(dbId)) return res.status(400).json({ error: 'id 非法' });
-    const result = db
-      .prepare('DELETE FROM custom_templates WHERE id = ? AND user_id = ?')
-      .run(dbId, DEFAULT_USER_ID);
-    if (result.changes === 0) return res.status(404).json({ error: '自建模板不存在' });
-    db.prepare('DELETE FROM template_progress WHERE template_id = ? AND user_id = ?').run(
-      customId(dbId),
-      DEFAULT_USER_ID,
-    );
+    // 两步写包进事务（与「删除标签连带删模板+进度」同款）：第二步失败会留下
+    // c-<id> 的孤儿进度行指向已删除的模板
+    db.exec('BEGIN');
+    try {
+      const result = db
+        .prepare('DELETE FROM custom_templates WHERE id = ? AND user_id = ?')
+        .run(dbId, DEFAULT_USER_ID);
+      if (result.changes === 0) {
+        db.exec('ROLLBACK');
+        return res.status(404).json({ error: '自建模板不存在' });
+      }
+      db.prepare('DELETE FROM template_progress WHERE template_id = ? AND user_id = ?').run(
+        customId(dbId),
+        DEFAULT_USER_ID,
+      );
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
     res.json({ ok: true });
   });
 

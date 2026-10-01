@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDb, type Db } from '../src/db/index.ts';
 import { register } from '../src/adapters/registry.ts';
-import { syncPlatform } from '../src/adapters/sync.ts';
+import { syncPlatform, SYNC_BUSY_MESSAGE } from '../src/adapters/sync.ts';
 import {
   __resetSyncSchedulerForTest,
   cancelAutoContinue,
@@ -113,6 +113,39 @@ test('续拉：任一轮报错（鉴权/限流）立即停止，不再排期', a
   await timers[0].fn();
   assert.equal(calls, 1);
   assert.equal(timers.length, 1); // 失败 → 不再排期
+  assert.equal(listAutoContinue().length, 0);
+  db.close();
+});
+
+test('续拉：非抢占来源持有互斥锁（busy 跳过）→ 本轮原样重排，队列不死', async () => {
+  // days 窗口 / 模板页例题同步不抢占续拉队列却同样持锁；续拉定时器恰在窗口内触发会拿到
+  // 互斥锁的 busy 结果——把它的 errors 当失败会静默杀死整条续拉链（2026-10 审查修复）
+  __resetSyncSchedulerForTest();
+  const db = createDb(':memory:');
+  const timers: Array<{ fn: () => void; ms: number }> = [];
+  let calls = 0;
+  configureSyncScheduler({
+    db,
+    now: () => Date.parse('2026-09-15T00:00:00.000Z'),
+    schedule: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    cancelTimer: () => {},
+    run: async (platform, handle) => {
+      calls += 1;
+      if (calls === 1) {
+        return { platform, handle, imported: 0, skipped: 0, errors: [SYNC_BUSY_MESSAGE(platform)] };
+      }
+      return { platform, handle, imported: 1, skipped: 0, errors: [], truncated: false };
+    },
+  });
+  bindAccount(db, 'luogu', 'u');
+  const st = scheduleAutoContinue(db, 'luogu', 'u');
+  assert.ok(st);
+  await timers[0].fn(); // 第 1 轮：busy 被跳过
+  assert.equal(calls, 1);
+  assert.equal(listAutoContinue().length, 1, 'busy 跳过不得清掉续拉队列');
+  assert.equal(listAutoContinue()[0].round, 1, '被跳过的轮次不推进');
+  assert.equal(timers.length, 2, '原样重排下一个执行窗口');
+  await timers[1].fn(); // 第 2 轮：正常执行，自然结束
   assert.equal(listAutoContinue().length, 0);
   db.close();
 });

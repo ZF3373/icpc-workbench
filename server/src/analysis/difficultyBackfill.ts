@@ -806,7 +806,9 @@ async function fetchLeetcodeTable(ctx: BackfillCtx): Promise<Map<string, Problem
         }),
       );
     }
-    if (wanted && wanted.size > 0 && [...wanted].every((k) => table.has(k))) break; // 目标题已齐 → 提前结束
+    // 早停与查询侧（fetchProblemMeta）同口径做小写归一：表键是 titleSlug.toLowerCase()，
+    // 库内万一有大写形态的键，不归一则「目标题已齐」永不触发、每轮翻满全表
+    if (wanted && wanted.size > 0 && [...wanted].every((k) => table.has(k.toLowerCase()))) break; // 目标题已齐 → 提前结束
     if (list.questions.length < LEETCODE_BANK_PAGE) break;
     await sleep(SCAN_DELAY_MS.leetcode);
   }
@@ -914,9 +916,16 @@ export function ncProblemIdFromKey(key: string): string {
  * 几百页的白扫，而且实测整表按题号**降序**、翻页上限内根本到不了小题号（16593 那批）。
  */
 async function fetchNowcoderTable(ctx: BackfillCtx): Promise<Map<string, ProblemMeta>> {
+  const ncWanted = ctx.wanted.get('nowcoder');
   const bank = await fetchNowcoderBank(ctx.fetchFn, {
-    // 库内目标通常几百行：全部命中即停，避免为几道题扫完整表（见 BankFetchOptions.wantKeys）
-    wantKeys: ctx.wanted.get('nowcoder'),
+    // 库内目标通常几百行：全部命中即停，避免为几道题扫完整表（见 BankFetchOptions.wantKeys）。
+    // 目标键必须先做 NC 前缀归一：wanted 直接来自库内 problem_key，混有展示形态（NC20000，
+    // 见 ncProblemIdFromKey 注释），而 bank 侧整表解析出的题号是纯数字——不归一则
+    // 「全部命中即停」与「最小题号精确早停」双双失效，每轮固定翻满页上限（2026-10 审查修复）
+    wantKeys:
+      ncWanted === undefined
+        ? undefined
+        : new Set([...ncWanted].map((k) => ncProblemIdFromKey(k))),
     // 页间兜底间隔 = 主机安全下限（见 FLOOR_MS）：不走全局节流层时也不会 0.5s/页 连发
     pageDelayMs: FLOOR_MS.nowcoder,
     max: 20000,
@@ -1487,6 +1496,10 @@ async function backfillPlatform(
       }
       let meta: ProblemMeta | null = null;
       let failed = false;
+      // 任何 await 之前先提交未满批次：node:sqlite 是单连接同步执行，事务一旦开着让出事件
+      // 循环，其他请求（打卡/改计划/同步写库）的写入会卷进本事务——回填异常时 ROLLBACK
+      // 会把它们一并回滚丢掉。WRITE_BATCH 注释声称「事务不横跨网络往返」，这里落实它。
+      flushTx();
       try {
         meta = await fetchProblemMeta(platform, t.problemKey, ctx);
       } catch {
@@ -1520,6 +1533,7 @@ async function backfillPlatform(
          */
         let definitive = false;
         if (!failed && meta === null && ABSENCE_IS_DEFINITIVE.has(platform)) {
+          flushTx(); // await 前提交未满批次（同上：事务不跨网络往返）
           definitive = await absenceIsDefinitive(platform, t.problemKey, ctx);
           if (!definitive) note = `${note}（题号形态可疑，未记「无官方难度」定论）`;
         }
@@ -1527,7 +1541,10 @@ async function backfillPlatform(
         r.failed += 1;
         r.details.push({ problemKey: t.problemKey, action: 'failed', note });
         consecutiveFails += 1;
-        if (perProblemDelayMs > 0) await sleep(perProblemDelayMs);
+        if (perProblemDelayMs > 0) {
+          flushTx(); // await 前提交未满批次
+          await sleep(perProblemDelayMs);
+        }
         if (definitive) {
           const miss = before.get(platform, t.problemKey) as GapColumns | undefined;
           if (miss) {
@@ -1568,7 +1585,10 @@ async function backfillPlatform(
           });
           if (g.changed) writeGap.run(g.state, g.checkedAt, platform, t.problemKey);
         }
-        if (perProblemDelayMs > 0) await sleep(perProblemDelayMs);
+        if (perProblemDelayMs > 0) {
+          flushTx(); // await 前提交未满批次
+          await sleep(perProblemDelayMs);
+        }
         continue;
       }
 
@@ -1670,7 +1690,10 @@ async function backfillPlatform(
         batchedWrites += 1;
         if (batchedWrites >= WRITE_BATCH) flushTx();
       }
-      if (perProblemDelayMs > 0) await sleep(perProblemDelayMs);
+      if (perProblemDelayMs > 0) {
+        flushTx(); // await 前提交未满批次（洛谷 4s/题的 sleep 曾让事务开着跨越整个窗口）
+        await sleep(perProblemDelayMs);
+      }
     }
     if (!stopped) report(targets.length); // 正常跑完：把进度推到「N/N」
     flushTx();

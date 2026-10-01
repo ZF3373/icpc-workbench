@@ -159,7 +159,9 @@ test('jisuanke: fetch maps verdicts per contest, builds urls, skips judging rows
   assert.equal(subs[3].verdict, 'WA'); // 二元结果制 status=0
 });
 
-test('jisuanke: incremental stops at first fully-known contest', async () => {
+test('jisuanke: incremental 早停需连续 2 场整场已知——第 1 场已知时更旧的开场仍要拉（补题场景）', async () => {
+  // 比赛按开赛时间排序，「较新的 201 全已知」不代表「较旧的 202 没有新补题」；
+  // 旧实现只看第 1 场就早停，长期开放补题的训练赛里的新提交会持续漏拉
   const fetchFn = router({
     'hasParticipated=true': JSON.stringify([
       { contestId: 201, startTime: bjTime(Date.UTC(2026, 7, 1)) },
@@ -169,8 +171,28 @@ test('jisuanke: incremental stops at first fully-known contest', async () => {
       submissionRow({ hashId: 'known1', time: 100 }),
       submissionRow({ hashId: 'known2', time: 90 }),
     ]),
-    'api/contest/submissions?contestId=202': () => {
-      throw new Error('should not fetch older contest');
+    'api/contest/submissions?contestId=202': JSON.stringify([submissionRow({ hashId: 'late-pp', time: 40, status: 'AC' })]),
+  });
+  const adapter = createJisuankeAdapter(fetchFn);
+  const subs = await adapter.fetchUserSubmissions('nick', {
+    cookie: COOKIE,
+    knownExternalIds: new Set(['known1', 'known2']),
+    pageDelayMs: 0,
+  });
+  assert.deepEqual(subs.map((s) => s.externalId), ['late-pp']);
+});
+
+test('jisuanke: incremental 连续 2 场整场已知 → 早停，更早的比赛不再拉', async () => {
+  const fetchFn = router({
+    'hasParticipated=true': JSON.stringify([
+      { contestId: 201, startTime: bjTime(Date.UTC(2026, 7, 1)) },
+      { contestId: 202, startTime: bjTime(Date.UTC(2026, 6, 1)) },
+      { contestId: 203, startTime: bjTime(Date.UTC(2026, 5, 1)) },
+    ]),
+    'api/contest/submissions?contestId=201': JSON.stringify([submissionRow({ hashId: 'known1', time: 100 })]),
+    'api/contest/submissions?contestId=202': JSON.stringify([submissionRow({ hashId: 'known2', time: 90 })]),
+    'api/contest/submissions?contestId=203': () => {
+      throw new Error('should not fetch older contest after 2 consecutive fully-known');
     },
   });
   const adapter = createJisuankeAdapter(fetchFn);
@@ -374,15 +396,16 @@ test('jisuanke: 练习增量——整页已知且 total 已覆盖则跳过该题
   assert.deepEqual(out.map((s) => s.externalId), ['new-2', 'new-3']);
 });
 
-test('jisuanke: 练习分批——单次最多 40 题，回写负数游标，下一轮从游标续拉', async () => {
+test('jisuanke: 练习分批——单次最多 40 题，回写 problemId 锚定的负数游标，下一轮从游标续拉', async () => {
   const TOTAL = 45;
-  const all = Array.from({ length: TOTAL }, (_, i) => ({
-    problemId: 9001 + i,
-    problemIdentifier: `T${9001 + i}`,
-    title: `题 ${9001 + i}`,
+  const makeProblem = (id: number) => ({
+    problemId: id,
+    problemIdentifier: `T${id}`,
+    title: `题 ${id}`,
     difficultyType: 'level1',
     problemTags: [],
-  }));
+  });
+  let all = Array.from({ length: TOTAL }, (_, i) => makeProblem(9001 + i));
   const requested: number[] = [];
   const fetchFn = (async (input: string | URL) => {
     const u = String(input);
@@ -390,7 +413,7 @@ test('jisuanke: 练习分批——单次最多 40 题，回写负数游标，下
     if (u.includes('/api/problems')) {
       const page = Number(url.searchParams.get('page'));
       if (url.searchParams.get('status') !== 'passed') return jsonRes({ total: 0, problems: [] });
-      return jsonRes({ total: TOTAL, problems: all.slice((page - 1) * 20, page * 20) });
+      return jsonRes({ total: all.length, problems: all.slice((page - 1) * 20, page * 20) });
     }
     if (u.includes('/api/problem/submissions')) {
       const problemId = Number(url.searchParams.get('problemId'));
@@ -406,11 +429,14 @@ test('jisuanke: 练习分批——单次最多 40 题，回写负数游标，下
   assert.equal(first.length, 40); // 单次处理题目数上限
   assert.equal(requested.length, 40);
   assert.equal(opts.truncated, true);
-  assert.equal(opts.backfillReachedPage, -40); // 负数 = 练习题目序号（与比赛序号区分）
+  // 游标 = 最后处理那道题的 problemId 取负（下标会因两轮之间列表重排而错位跳题）
+  assert.equal(opts.backfillReachedPage, -9040);
 
-  // 第二轮：从游标续拉（-40 → 第 40 题起），已入库的题按已知跳过
+  // 第二轮：列表在两轮之间发生变化——T9005 被移除（进度重置），位于游标之前的
+  // 条目少了一条；problemId 锚定仍能从 T9040 后继续，不会像纯下标那样把 T9041 跳过
+  all = all.filter((p) => p.problemId !== 9005);
   const opts2: FetchOptions = {
-    cookie: COOKIE, pageDelayMs: 0, backfill: true, backfillFromPage: -40,
+    cookie: COOKIE, pageDelayMs: 0, backfill: true, backfillFromPage: -9040,
     knownExternalIds: new Set(first.map((s) => s.externalId)),
   };
   const second = await adapter.fetchUserSubmissions('u', opts2);
@@ -586,10 +612,15 @@ test('jisuanke: toJisuankeContest normalizes beijing start / seconds duration / 
   assert.equal(c.durationMinutes, 120); // 秒 → 分钟
   assert.equal(c.url, 'https://www.jisuanke.com/contest/37176');
 
-  // 数字 startTime（unix 秒）与毫秒 duration 防御；无 contestId → null
-  const c2 = toJisuankeContest({ contestId: 1, startTime: 1796000000, duration: 5400000 });
+  // 数字 startTime（unix 秒）与毫秒 duration 防御（仅 >1e7 才视为毫秒——秒制下 1e7 = 115 天，
+  // 更小的值可能是多日赛事的合法秒数，不能误除）；无 contestId → null
+  const c2 = toJisuankeContest({ contestId: 1, startTime: 1796000000, duration: 54000000 });
   assert.equal(c2?.startTimeIso, new Date(1796000000 * 1000).toISOString());
-  assert.equal(c2?.durationMinutes, 90);
+  assert.equal(c2?.durationMinutes, 900);
+
+  // 回归（2026-10 审查）：多日训练赛的合法秒值（2 天 = 172800）曾被旧阈值 1e5 误判为毫秒缩成 3 分钟
+  const c3 = toJisuankeContest({ contestId: 2, startTime: 1796000000, duration: 172800 });
+  assert.equal(c3?.durationMinutes, 2880);
   assert.equal(toJisuankeContest({ title: 'x' }), null);
   assert.equal(classifyJisuankeContest('新手入门赛', '', 'IOI'), '新手赛');
 });

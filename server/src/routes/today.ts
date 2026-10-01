@@ -122,7 +122,9 @@ export function todayRoutes(db: Db): Router {
     const exclude = new Set<number>();
     const loosest = SUPPRESSION_TIERS.length - 1;
     const bands = BAND_KEYS.map((key) => {
-      const q = Number(req.query[key]);
+      // 空串不算显式 0：?core= 是「没给值」（取默认档量），Number('') === 0 会把该档悄悄清空
+      const raw = req.query[key];
+      const q = raw === undefined || raw === '' ? NaN : Number(raw);
       const count = Number.isInteger(q) && q >= 0 && q <= 6 ? q : DEFAULT_COUNTS[key];
       const pickAt = (tierIndex: number) => {
         const excl = new Set(exclude);

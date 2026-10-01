@@ -171,55 +171,74 @@ export async function chatWithAssistantStream(
   let usage: TokenUsage | null = null;
   const sources: Array<{ title: string; url: string }> = [];
 
+  /** 处理一个 SSE 帧；返回 true = 流已结束（[DONE]）。
+   *  单帧多行时只认 data: 行——本服务的帧恒为单行 data:，多行为注释/保留兼容 */
+  const handleFrame = (rawFrame: string): boolean => {
+    const line = rawFrame.trim();
+    if (!line.startsWith('data:')) return false;
+    const payload = line.slice(5).trim();
+    if (payload === '[DONE]') return true;
+    try {
+      const obj = JSON.parse(payload) as {
+        delta?: string;
+        reasoning?: string;
+        error?: string;
+        debug?: string;
+        truncated?: boolean;
+        contextTrimmed?: number;
+        summarized?: boolean;
+        droppedCount?: number;
+        searching?: boolean;
+        query?: string;
+        /** 正在执行的工具（name/detail），用于显示生成进度 */
+        tool?: { name?: string; detail?: string };
+        sources?: Array<{ title: string; url: string }>;
+        usage?: TokenUsage;
+      };
+      if (obj.delta) onDelta(obj.delta);
+      if (obj.reasoning && onReasoning) onReasoning(obj.reasoning);
+      if (obj.error) throw new Error(obj.error);
+      if (obj.debug) console.warn('[AI debug]', obj.debug);
+      if (obj.tool && onToolStatus) {
+        onToolStatus({ name: obj.tool.name ?? '', ...(obj.tool.detail ? { detail: obj.tool.detail } : {}) });
+      }
+      if (obj.truncated) truncated = true;
+      if (typeof obj.contextTrimmed === 'number') contextTrimmed = obj.contextTrimmed;
+      if (obj.summarized) summarized = true;
+      if (typeof obj.droppedCount === 'number') droppedCount = obj.droppedCount;
+      if (Array.isArray(obj.sources)) sources.push(...obj.sources);
+      if (obj.usage) usage = obj.usage;
+    } catch (e) {
+      if (e instanceof SyntaxError) return false; // 半截 JSON：等下一块数据拼完整再解析
+      throw e;
+    }
+    return false;
+  };
+
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      // 统一 CRLF → LF：SSE 规范允许 \r\n\r\n 分帧，中间若有反代改写分帧符，
+      // 只认 \n\n 会让帧切不开、JSON.parse 全部静默失败（payload 内的 CRLF 已被 JSON 转义，不受影响）。
+      // ⚠ 归一化必须作用在**拼接后的缓冲区**上：\r\n 可能正好被切在两个 chunk 之间
+      //（chunk1 以 \r 结尾、chunk2 以 \n 开头），只归一化本次新到的文本会留下一个跨块 CRLF，
+      // 于是 indexOf('\n\n') 找不到帧边界、相邻两帧被粘成一块，JSON.parse 必然 SyntaxError
+      // 并被当作「半截 JSON」丢掉——整个流式回复静默少字（回归用例见 test/apiStream.test.ts）
+      buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, '\n');
 
       let idx: number;
       while ((idx = buffer.indexOf('\n\n')) !== -1) {
         const frame = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 2);
-        const line = frame.trim();
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (payload === '[DONE]') return { truncated, contextTrimmed, summarized, droppedCount, sources, usage };
-        try {
-          const obj = JSON.parse(payload) as {
-            delta?: string;
-            reasoning?: string;
-            error?: string;
-            debug?: string;
-            truncated?: boolean;
-            contextTrimmed?: number;
-            summarized?: boolean;
-            droppedCount?: number;
-            searching?: boolean;
-            query?: string;
-            /** 正在执行的工具（name/detail），用于显示生成进度 */
-            tool?: { name?: string; detail?: string };
-            sources?: Array<{ title: string; url: string }>;
-            usage?: TokenUsage;
-          };
-          if (obj.delta) onDelta(obj.delta);
-          if (obj.reasoning && onReasoning) onReasoning(obj.reasoning);
-          if (obj.error) throw new Error(obj.error);
-          if (obj.debug) console.warn('[AI debug]', obj.debug);
-          if (obj.tool && onToolStatus) {
-            onToolStatus({ name: obj.tool.name ?? '', ...(obj.tool.detail ? { detail: obj.tool.detail } : {}) });
-          }
-          if (obj.truncated) truncated = true;
-          if (typeof obj.contextTrimmed === 'number') contextTrimmed = obj.contextTrimmed;
-          if (obj.summarized) summarized = true;
-          if (typeof obj.droppedCount === 'number') droppedCount = obj.droppedCount;
-          if (Array.isArray(obj.sources)) sources.push(...obj.sources);
-          if (obj.usage) usage = obj.usage;
-        } catch (e) {
-          if (e instanceof SyntaxError) continue;
-          throw e;
+        if (handleFrame(frame)) {
+          return { truncated, contextTrimmed, summarized, droppedCount, sources, usage };
         }
       }
+    }
+    // 流结束但最后一帧没有以空行收尾（SSE 允许）：残帧里可能还有 delta/usage，丢弃即丢内容
+    if (buffer.trim() !== '') {
+      handleFrame(buffer);
     }
   } finally {
     reader.releaseLock();

@@ -7,7 +7,7 @@ import type {
 import { difficultyFields } from '../../../shared/src/difficulty.ts';
 import type { PlatformAdapter } from './types.ts';
 import { asHttpClient, sleep, type HttpInit } from './http.ts';
-import { recordWait, BACKFILL_KNOWN_PAGE_LIMIT } from './pagination.ts';
+import { recordWait } from './pagination.ts';
 
 const API_BASE = 'https://codeforces.com/api';
 const PAGE_SIZE = 1000;
@@ -77,8 +77,11 @@ function splitKey(key: string): { contestId?: string; index: string } {
  * Codeforces 适配器：官方公开 API user.status（无需登录）。
  * 提交按新到旧返回：同步层注入库中已知提交号后，整页已知即提前终止分页（增量），
  * 已知条目直接跳过；首刷无已知集合时全量分页，去重交由同步层按 externalId 处理。
- * 分批防封号：单次同步受 maxSubmissions 新增上限与页数预算约束，触及即停（opts.truncated），
- * 下次同步通过 knownExternalIds 跳过已拉页继续向更旧补全（from 偏移天然可恢复，无需游标）。
+ * 分批防封号：单次同步受 maxSubmissions 新增上限与页数预算约束，触及即停（opts.truncated）。
+ * 补全续拉：backfill_page 记录已拉到的最深页（下一页起点），下次回退至多 2 页续拉（CF 列表
+ * 只在头部增长，旧行只会后移，从游标页继续不会跳过未知行）——CF 必须穿过任意长的已知前缀
+ * 走向更旧，「连续 N 页整页已知即收尾」对无游标直穿的场景会把更早历史永久锁死，故补全模式
+ * 不设该判据。**重叠页必须小于页数预算**（否则「每轮推进 = 预算 - 重叠 = 0」，游标原地打转）。
  */
 export function createCodeforcesAdapter(
   fetchFn: HttpInit = fetch,
@@ -97,11 +100,25 @@ export function createCodeforcesAdapter(
           ? Math.min(Math.ceil(maxSubmissions / PAGE_SIZE) * 2, PER_SYNC_MAX_PAGES)
           : PER_SYNC_MAX_PAGES;
       const out: NormalizedSubmission[] = [];
-      let from = 1;
+      // 补全续拉游标（backfill_page，1 起的页码）：CF 列表只会在头部增长（旧行只会后移），
+      // 从游标页继续不会跳过任何未知行；回退 OVERLAP_PAGES 页覆盖轮间新增的提交——
+      // 已知行由 knownExternalIds 去重，代价每轮仅几次重复请求。轮间新增超过 2 整页的
+      // 部分推迟到补全结束后由增量同步补上（不丢，只是晚到）。
+      const OVERLAP_PAGES = 2;
+      const cursorPage =
+        opts?.backfill && Number.isInteger(opts.backfillFromPage) && (opts.backfillFromPage as number) > 0
+          ? (opts.backfillFromPage as number)
+          : 0;
+      // 重叠页不得吃掉整个页数预算：预算是「本次最多请求的页数」，若重叠 ≥ 预算，每轮
+      // 净推进 = 预算 - 重叠 ≤ 0，游标原地打转（默认 maxSubmissions=300 → 预算 2 页，
+      // 与回退 2 页相抵，实测每轮都只请求 from=1,1001，第 3 页永远到不了 —— 死端没被修掉，
+      // 只是从「已知前缀收尾」换成了「游标不推进」）。上限取 预算-1，保证每轮至少推进 1 页。
+      const overlapPages = Math.min(OVERLAP_PAGES, Math.max(0, budget - 1));
+      const startPage = cursorPage > 0 ? Math.max(1, cursorPage - overlapPages) : 1;
+      let from = (startPage - 1) * PAGE_SIZE + 1;
       let naturalEnd = false;
       let caughtUp = false;
       let rowCapped = false;
-      let knownRun = 0;
       for (let n = 0; n < budget; n += 1) {
         const url = `${API_BASE}/user.status?handle=${encodeURIComponent(handle)}&from=${from}&count=${PAGE_SIZE}`;
         const res = await http.fetch(url, {}, {
@@ -132,27 +149,28 @@ export function createCodeforcesAdapter(
           naturalEnd = true; // 最后一页
           break;
         }
-        if (known && unknownInPage === 0) {
-          // 补全模式下「整页已知」不代表已到尽头 —— 更旧的历史本来就还没进过库。
-          // 与 pagination.ts 同口径：跳过该页继续向更旧，连续 BACKFILL_KNOWN_PAGE_LIMIT 页
-          // 整页已知才认「补到尽头」。少了这一支，补全会在第 1 页就停手并回传「未截断」，
-          // 同步层随即清掉 sync_truncated，更早的提交永远拉不回来。
-          if (opts?.backfill && knownRun + 1 < BACKFILL_KNOWN_PAGE_LIMIT) {
-            knownRun += 1;
-            from += PAGE_SIZE;
-            await sleep(PAGE_DELAY_MS);
-            continue;
-          }
-          caughtUp = true; // 整页已知：更旧的提交也已在库，增量终止
+        if (known && unknownInPage === 0 && !opts?.backfill) {
+          // 增量模式「整页已知」：后续页必然已知，立即终止。
+          // 补全模式**不能**用「连续 N 页整页已知」收尾——CF 没有服务端游标、必须穿过
+          // 任意长的已知前缀走向更旧，库里只要覆盖了最新 N 整页（重度用户 2000 条很常见），
+          // 该判据就会把更早的历史永久锁在 N 页之外（2026-10 审查确认的补全死端）。
+          // 补全的收尾只认自然结束（短页）或页数预算，配合上面的游标续拉保证推进。
+          caughtUp = true;
           break;
         }
-        knownRun = 0; // 本页出现过新行 → 仍在有效补全区段，重新计数
         from += PAGE_SIZE;
         await sleep(PAGE_DELAY_MS); // CF 建议 <= 2 req/s
       }
-      // 截断：触及上限，或页数预算耗尽（未自然结束/未增量早停）且有新增 → 仍有更早历史待补全
-      const truncated = rowCapped || (!naturalEnd && !caughtUp && out.length > 0);
-      if (truncated && opts) opts.truncated = true;
+      // 截断：触及上限，或页数预算耗尽（未自然结束/未增量早停）。
+      // 补全模式下即使 0 新增（预算全花在穿越已知前缀）也要如实回传截断并回写游标——
+      // 否则同步层清掉 sync_truncated/backfill_page，已知前缀之后的更早历史被永久放弃。
+      // from 此刻指向下一页起点；rowCapped 中断时仍指向正在处理的页——两种情况
+      // 「从这一页重新开始」都是安全的（已知行被 knownExternalIds 去重）。
+      const truncated = rowCapped || (!naturalEnd && !caughtUp);
+      if (truncated && opts) {
+        opts.truncated = true;
+        opts.backfillReachedPage = Math.floor((from - 1) / PAGE_SIZE) + 1;
+      }
       return out;
     },
 

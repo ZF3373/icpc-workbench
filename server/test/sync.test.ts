@@ -1,3 +1,4 @@
+import { listenForTest } from './test-listen.ts';
 import { test, beforeEach, afterEach } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import assert from 'node:assert/strict';
@@ -404,8 +405,7 @@ test('POST /api/sync/all syncs every bound account and reports incremental', asy
   const app = express();
   app.use(express.json());
   app.use('/api/sync', syncRoutes(db));
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/sync`;
 
   try {

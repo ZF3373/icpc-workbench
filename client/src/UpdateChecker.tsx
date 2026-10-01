@@ -2,31 +2,30 @@ import { useEffect, useState } from 'react'
 import { Alert, Button, Popconfirm, Space } from 'antd'
 import { openExternal } from './externalLinks'
 import { useSoftwareUpdate } from './updateContext'
+import { nextUpdateCheckAt, shouldCheckUpdate } from './updateThrottle'
 
 const LAST_CHECK_KEY = 'update.lastCheckAt'
 const DISMISS_KEY = 'update.dismissed'
-const CHECK_INTERVAL = 24 * 60 * 60 * 1000
-/** 检查失败时的重试间隔：网络抖动/限流不该把下次静默检查推迟整整一天 */
-const RETRY_INTERVAL = 30 * 60 * 1000
 
 /**
  * 应用打开时静默检查更新（24 小时一次，localStorage 节流），
  * 有新版本或新提交构建且用户未忽略时，在页面顶部显示横幅。
  * 支持自更新时提供一键更新；检查失败完全静默，不打扰使用。
+ *
+ * 节流判定与写戳都走 updateThrottle（存「下次允许检查的时刻」）：
+ * 成功 → 24 小时；失败 → 30 分钟。见该模块注释里的历史缺陷。
  */
 export default function UpdateChecker() {
   const { info, check, busy, runUpdate, hasUpdate } = useSoftwareUpdate()
   const [hidden, setHidden] = useState(true)
 
   useEffect(() => {
-    const last = Number(localStorage.getItem(LAST_CHECK_KEY) ?? 0)
-    if (Date.now() - last < RETRY_INTERVAL) return
+    if (!shouldCheckUpdate(Date.now(), localStorage.getItem(LAST_CHECK_KEY))) return
     let cancelled = false
     void check().then((info) => {
       if (cancelled) return
-      // 仅检查成功才记满 24h 节流；失败 30 分钟后即可重试（本地时间回拨写成负偏移同样成立）
-      const stamp = info?.ok ? Date.now() : Date.now() - CHECK_INTERVAL + RETRY_INTERVAL
-      localStorage.setItem(LAST_CHECK_KEY, String(stamp))
+      // 成功记满 24 小时节流；失败 30 分钟后才允许重试
+      localStorage.setItem(LAST_CHECK_KEY, String(nextUpdateCheckAt(Date.now(), info?.ok === true)))
     })
     return () => {
       cancelled = true

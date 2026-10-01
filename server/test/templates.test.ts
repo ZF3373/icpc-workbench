@@ -1,3 +1,4 @@
+import { listenForTest } from './test-listen.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
@@ -57,8 +58,7 @@ async function withServer(fn: (base: string) => Promise<void>): Promise<void> {
   const app = express();
   app.use(express.json());
   app.use('/api/templates', templatesRoutes(db));
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/templates`;
   try {
     await fn(base);
@@ -170,5 +170,52 @@ test('templates API: rejects unknown id and invalid status', async () => {
       body: JSON.stringify({ status: 'done' }),
     });
     assert.equal(bad2.status, 400);
+  });
+});
+
+/**
+ * 「这条有内容」必须是四列任一非 NULL：写入端把空串落成 NULL（`code || null`），
+ * 用户只填「思路」（代码留空）时 code 就是 NULL。旧判据 `code IS NOT NULL` 会整行滤掉，
+ * 于是 PUT 返回 hasContent:true 却读不回内容（列表 content:null、界面「暂无内容」、导出也不含它）；
+ * 用户以为没存上，编辑器按 API 的 null 播种后再保存，就把思路真写成 NULL —— 永久丢失。
+ */
+test('templates API: 只填思路（代码留空）也必须读得回来，再次保存不得清空', async () => {
+  await withServer(async (base) => {
+    const target = CURRICULUM[0].templates[0];
+    const put1 = await fetch(`${base}/${target.id}/content`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idea: '关键思路：二分答案' }),
+    });
+    assert.deepEqual(await put1.json(), { ok: true, hasContent: true });
+
+    interface ContentShape {
+      code: string | null;
+      idea: string | null;
+    }
+    const readContent = async (): Promise<ContentShape | null> => {
+      const body = (await (await fetch(base)).json()) as {
+        categories: Array<{ templates: Array<{ id: string; content: ContentShape | null }> }>;
+      };
+      for (const c of body.categories) {
+        const hit = c.templates.find((x) => x.id === target.id);
+        if (hit) return hit.content;
+      }
+      return null;
+    };
+
+    const first = await readContent();
+    assert.ok(first, '只写思路的条目必须在列表里带回 content（修复前为 null）');
+    assert.equal(first.idea, '关键思路：二分答案');
+
+    // 编辑器按 API 取回的内容原样回写（代码仍留空）：思路不得被清空
+    const put2 = await fetch(`${base}/${target.id}/content`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: '', idea: first.idea ?? '', complexity: 'O(log n)' }),
+    });
+    assert.deepEqual(await put2.json(), { ok: true, hasContent: true });
+    const second = await readContent();
+    assert.equal(second?.idea, '关键思路：二分答案', '二次保存不得把思路写成 NULL');
   });
 });

@@ -1,3 +1,4 @@
+import { listenForTest } from './test-listen.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -90,8 +91,7 @@ async function withServer(
     // 同上：/chat 的赛事日历一律打桩，单测不碰外网
     fetchContests: async () => ({ contests: [], failures: {} }),
   }));
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   const root = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
   try {
     await fn(db, root);
@@ -216,8 +216,7 @@ async function withChatCapture(
       }),
     }),
   );
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   const root = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
   try {
     await fn(root, captured);

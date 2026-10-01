@@ -1,3 +1,4 @@
+import { listenForTest } from './test-listen.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
@@ -50,7 +51,7 @@ test('checkins streak: 本机时区能区分 UTC 日界时，凌晨打卡按本�
   const app = express();
   app.use(express.json());
   app.use('/api/checkins', checkinsRoutes(db));
-  const srv = app.listen(0);
+  const srv = await listenForTest(app);
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/checkins`;
   try {
     // 本地「今天」与「昨天」各打卡一题：本地口径下 current = 2；

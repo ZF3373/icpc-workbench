@@ -24,17 +24,22 @@ const BAND_TONE: Record<TodayBandKey, string> = {
   challenge: '#ffbd61',
 }
 
-/** 换一批的进度按天存：刷新页面不该退回第一批，换日自动归零 */
+/** 换一批的进度按**本地日**存：刷新页面不该退回第一批，换日自动归零。
+ *  不能用 toISOString()（UTC 日）——UTC+8 用户本地 0–8 点会拿到「昨天」，换日不归零，
+ *  与服务端 recommended_on 的本地日口径错位（ Reminder.tsx 同款结论） */
 const ROTATE_KEY = 'today.rotate.v1'
 
-const utcToday = () => new Date().toISOString().slice(0, 10)
+const localToday = () => {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 function readStoredRotate(): number {
   try {
     const raw = localStorage.getItem(ROTATE_KEY)
     if (!raw) return 0
     const s = JSON.parse(raw) as { date?: unknown; rotate?: unknown }
-    return s.date === utcToday() && Number.isInteger(s.rotate) && (s.rotate as number) > 0
+    return s.date === localToday() && Number.isInteger(s.rotate) && (s.rotate as number) > 0
       ? Math.min(500, s.rotate as number) // 与服务端 rotate 上限一致，防止 localStorage 无界增长
       : 0
   } catch {
@@ -44,7 +49,7 @@ function readStoredRotate(): number {
 
 function writeStoredRotate(rotate: number): void {
   try {
-    localStorage.setItem(ROTATE_KEY, JSON.stringify({ date: utcToday(), rotate }))
+    localStorage.setItem(ROTATE_KEY, JSON.stringify({ date: localToday(), rotate }))
   } catch {
     /* 隐私模式下写不了 localStorage，换一批照样能用 */
   }

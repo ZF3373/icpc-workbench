@@ -46,8 +46,12 @@ import { asHttpClient, sleep, type HttpInit } from './http.ts';
  * verdict 复用 mapJisuankeVerdict；time 是 "YYYY-MM-DD HH:MM:SS" 北京时间字符串。
  *
  * 续拉游标（platform_accounts.backfill_page，单一整数字段）承载两个序号空间：
- * **负数 = 练习题目序号（取绝对值）；正数 = 比赛序号**；0/缺省 = 从头开始。
- * 练习段先于比赛段执行，任一来源截断都不会覆盖另一个的游标。
+ * **负数 = 练习段续拉（绝对值 = 上次最后一道已处理练习题的 problemId；用 problemId 锚定
+ * 而非列表下标——两轮之间练习列表会因过题/排序变化而重排，下标会错位跳题）；
+ * 正数 = 比赛段续拉（比赛序号）**；0/缺省 = 从头开始。
+ * 练习段先于比赛段执行；**游标为正数（比赛段补全中）时练习段整段跳过**——练习题多于
+ * 单轮预算时重扫必然再次截断并把正数比赛游标覆写回负数练习游标，第 N 场之后的比赛
+ * 永远轮不到（2026-10 审查修复的死端）。
  */
 
 const BASE = 'https://www.jisuanke.com';
@@ -421,21 +425,35 @@ export function createJisuankeAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
       // 请求间隔：pageDelayMs=0 仅测试用（跳过限速），缺省 PAGE_DELAY_MS
       const delayMs = opts?.pageDelayMs ?? PAGE_DELAY_MS;
 
-      // 续拉游标解码：负数 = 练习题目序号，正数 = 比赛序号（见文件头「续拉游标」说明）
+      // 续拉游标解码：负数 = 练习段（绝对值 = 上次最后一道已处理练习题的 problemId），
+      // 正数 = 比赛段（比赛序号）；0/缺省 = 从头开始（见文件头「续拉游标」说明）
       const cursor = opts?.backfill && opts?.backfillFromPage ? opts.backfillFromPage : 0;
-      const practiceStartIndex = cursor < 0 ? Math.max(1, -cursor) : 1;
       const contestStartIndex = cursor > 0 ? Math.max(1, cursor) : 1;
+      const practiceResumeId = cursor < 0 ? Math.abs(cursor) : null;
 
       // ---------- 练习（题库）提交：默认开启，见 settings['jisuanke.practiceSync'] ----------
       // days 窗口模式（windowSince 仅该模式注入）不跑练习段：窗口模式不注入 knownExternalIds，
       // 也没有可持久化的游标（同步层不改 platform_accounts），逐题全量翻页代价过大且会导入
       // 窗口外的历史提交；同时它是补充拉取，不应挤掉比赛段的请求预算。窗口模式维持旧行为（仅比赛段）。
       let hasPracticeSource = false;
-      if (opts?.practiceSync !== false && !opts?.windowSince) {
+      // 游标为正数 = 练习段在之前的轮次已完整扫过、比赛段补全进行中：练习段此时不能重扫。
+      // 练习题多于单轮预算（PER_SYNC_MAX_PRACTICE_PROBLEMS）时重扫必然再次截断并把正数
+      // 比赛游标覆写回负数练习游标——第 N 场之后的比赛永远轮不到，每轮还白烧整段练习预算。
+      // 比赛段扫完（未截断、游标清零）后，下次同步自然重扫练习段增量。
+      const runPractice = cursor <= 0 && opts?.practiceSync !== false && !opts?.windowSince;
+      if (runPractice) {
         const scan = await fetchJisuankePracticeProblems(fetchFn, cookie, {
           pageDelayMs: opts?.pageDelayMs ?? PAGE_DELAY_MS,
         });
         hasPracticeSource = scan.problems.length > 0;
+        // 练习游标按 problemId 锚定：从该题在**本轮新列表**里的位置继续（该题已处理过，
+        // 重扫一次仅多 1 次请求、由 knownExternalIds 去重）；题目已不在列表（进度重置等）
+        // 时退回从头——已知题都是 1 次请求即跳过，代价可控。
+        let practiceStartIndex = 1;
+        if (practiceResumeId !== null) {
+          const resumeIdx = scan.problems.findIndex((p) => p.problemId === practiceResumeId);
+          practiceStartIndex = resumeIdx >= 0 ? resumeIdx + 1 : 1;
+        }
         let processed = 0;
         let budgetExhausted = false;
         for (let i = practiceStartIndex - 1; i < scan.problems.length; i += 1) {
@@ -507,12 +525,20 @@ export function createJisuankeAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
           await sleepTracked(delayMs);
         }
 
-        // 练习段被截断（题目预算耗尽 / 触及新增上限）：本轮到此为止，回写「练习题目序号」游标
-        // （负数，与比赛序号区分）；比赛段留到后续轮次，避免一次同步叠加两段请求预算
+        // 练习段被截断（题目预算耗尽 / 触及新增上限）：本轮到此为止，回写「练习题目游标」
+        // （取最后处理那道题的 problemId 取负，与比赛序号空间区分）；比赛段留到后续轮次，
+        // 避免一次同步叠加两段请求预算
         if (budgetExhausted || rowCapped) {
           if (opts) {
             opts.truncated = true;
-            opts.backfillReachedPage = -(practiceStartIndex - 1 + processed);
+            // 最后处理那道题（0 基下标 practiceStartIndex + processed - 2）：rowCapped 时
+            // 该题可能处理到一半，重扫它由 knownExternalIds 去重兜底。游标锚定 problemId
+            // 而非下标——两轮之间练习列表会重排（过题移区段、排序变化），下标会错位跳题
+            const lastProcessed = scan.problems[practiceStartIndex + processed - 2];
+            if (processed > 0 && lastProcessed) {
+              opts.backfillReachedPage = -lastProcessed.problemId;
+            }
+            // processed === 0 时不下发游标：同步层把 backfill_page 清空，下轮从头重扫（安全降级）
           }
           return out;
         }
@@ -530,7 +556,8 @@ export function createJisuankeAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
 
       const startIndex = contestStartIndex;
       let processed = 0;
-      let caughtUp = false; // 增量模式：整场提交全部已知 → 更早的比赛都在库中
+      let caughtUp = false; // 增量模式：连续 2 场提交全部已知 → 更早的比赛都在库中
+      let knownContestRun = 0; // 连续「整场已知」计数
       const outBeforeContests = out.length; // 截断判定只看比赛段新增（练习段行数不算在内）
 
       for (let i = startIndex - 1; i < contests.length; i += 1) {
@@ -624,17 +651,19 @@ export function createJisuankeAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
             break;
           }
         }
-        // 整场全部已知（且确有可入库的行）：增量模式早停——更早的比赛都在库中；
-        // 补全模式不早停，跳过已知场继续向更早翻页（与 pagedFetch 语义一致）
-        if (
-          !opts?.backfill &&
-          opts?.knownExternalIds &&
-          storedOrSkipped > 0 &&
-          knownInContest === storedOrSkipped &&
-          !rowCapped
-        ) {
-          caughtUp = true;
-          break;
+        // 整场全部已知（且确有可入库的行）：增量模式早停；补全模式不早停，跳过已知场
+        // 继续向更早翻页（与 pagedFetch 语义一致）。
+        // 早停要求**连续 2 场**整场已知（与 pagination.ts 的 BACKFILL_KNOWN_PAGE_LIMIT 同口径）：
+        // 比赛按开赛时间排序，「较新的比赛全已知」不代表「较旧的比赛没有新补题」——长期开放
+        // 补题的训练赛里刚补的提交会因此持续漏拉，只认第 1 场就停手太激进
+        if (!opts?.backfill && opts?.knownExternalIds && storedOrSkipped > 0 && knownInContest === storedOrSkipped) {
+          knownContestRun += 1;
+          if (knownContestRun >= 2 && !rowCapped) {
+            caughtUp = true;
+            break;
+          }
+        } else {
+          knownContestRun = 0; // 本场有新增/有未知行 → 仍在有效区段，重新计数
         }
         if (rowCapped) break;
         await sleepTracked(delayMs);

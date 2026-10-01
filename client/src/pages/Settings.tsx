@@ -100,9 +100,9 @@ export default function Settings() {
   const [aiTestResult, setAiTestResult] = useState<{ ok: boolean; message: string } | null>(null)
   const [modelsLoading, setModelsLoading] = useState(false)
   const [modelOptions, setModelOptions] = useState<{ value: string }[]>([])
-  const [syncMax, setSyncMax] = useState(500)
+  const [syncMax, setSyncMax] = useState<number | null>(500)
   /** 后台续拉轮数上限（0 = 关闭；服务端默认 3）；字段可能来自旧版服务端，故可空 */
-  const [syncRounds, setSyncRounds] = useState(6)
+  const [syncRounds, setSyncRounds] = useState<number | null>(6)
   /** 计蒜客「同步自由练题提交」开关（键缺失 = 默认开启） */
   const [practiceSync, setPracticeSync] = useState(true)
   /** 拉取速度全局倍率（1× = 安全下限/最快，越大越慢越稳）；拖动滑块即时预览，松手才落库 */
@@ -114,6 +114,11 @@ export default function Settings() {
   /** onChange 防抖补提交的定时器：rc-slider 只在 document 监听 mouseup（无指针捕获），
    *  鼠标在浏览器窗口外松开时 onChangeComplete 丢失、拖到的值不落库——用防抖兜底。 */
   const scaleSaveTimer = useRef<number | null>(null)
+  /** 服务端已落库的同步上限/续拉轮数：数字框「停手才落库」，清空（null）时用它恢复显示而不是误存 */
+  const savedSyncMax = useRef(300)
+  const savedSyncRounds = useRef(3)
+  const syncMaxTimer = useRef<number | null>(null)
+  const syncRoundsTimer = useRef<number | null>(null)
 
   const load = () => {
     get<SettingsData>('/api/settings')
@@ -126,11 +131,18 @@ export default function Settings() {
         // Cookie 不会回传到前端；保留空输入框，用户可显式更新或清除。
         setHandleInputs(handles)
         setCookieInputs(cookies)
+        // ⚠ 输入框被整体清空，必须同时清掉「已改动」标记，否则会留下「脏但空」的状态：
+        // 用户粘贴凭据后触发了任意一次 load()（翻平台开关/绑账号/存 AI 配置/改提醒时间等 10 处），
+        // 输入框空了而字段仍是 dirty，再点「保存」就把空串当「显式清除」提交，
+        // 静默删掉服务端已存凭据（提示还写「未填写的字段保持原值」，用户以为新凭据存上了）
+        setDirtyFields({})
         setReminderEnabled(d.reminder.enabled)
         setReminderTime(dayjs(d.reminder.time, 'HH:mm'))
         setContestReminder(d.contestReminder)
         setSyncMax(d.sync?.maxSubmissions ?? 300)
         setSyncRounds(d.sync?.autoContinueRounds ?? 3)
+        savedSyncMax.current = d.sync?.maxSubmissions ?? 300
+        savedSyncRounds.current = d.sync?.autoContinueRounds ?? 3
         setPracticeSync(d.sync?.jisuankePracticeSync !== false)
         setSyncScale(d.sync?.requestIntervalScale ?? 1)
         savedScale.current = d.sync?.requestIntervalScale ?? 1
@@ -264,36 +276,61 @@ export default function Settings() {
     }
   }
 
-  const saveSyncMax = async (v: number | null) => {
-    const n = v ?? 500
+  /** 落库单次同步上限。onChange 只即时回显，停手 600ms 才提交——逐键 POST 会把打字中间值
+   *  （必然经过 <100 的前缀）发给服务端吃 400 连环报错，还会把响应值写回输入框导致跳字 */
+  const commitSyncMax = async (n: number) => {
     try {
       const r = await post<{ maxSubmissions: number }>('/api/settings/sync', { maxSubmissions: n })
+      savedSyncMax.current = r.maxSubmissions
       setSyncMax(r.maxSubmissions)
     } catch (e) {
       message.error((e as Error).message)
+      setSyncMax(savedSyncMax.current)
     }
   }
+  const saveSyncMax = (v: number | null) => {
+    setSyncMax(v)
+    if (syncMaxTimer.current !== null) window.clearTimeout(syncMaxTimer.current)
+    syncMaxTimer.current = window.setTimeout(() => {
+      syncMaxTimer.current = null
+      // 清空输入框不落库：恢复服务端已落库值（旧行为会误把 500 存进去）
+      if (v == null) setSyncMax(savedSyncMax.current)
+      else void commitSyncMax(v)
+    }, 600)
+  }
 
-  /** 保存后台续拉轮数（0 = 关闭）。POST /api/settings/sync 要求 maxSubmissions 必填，故一并带上当前值 */
-  const saveSyncRounds = async (v: number | null) => {
-    if (v == null) return // 清空输入框不落库，保留原值（避免误把轮数写成 0 = 关闭）
+  /** 保存后台续拉轮数（0 = 关闭）。POST /api/settings/sync 要求 maxSubmissions 必填，
+   *  故带上服务端已落库的上限值（而不是正在编辑中的本地值）；同样停手才提交 */
+  const commitSyncRounds = async (v: number) => {
     try {
       const r = await post<{ autoContinueRounds: number }>('/api/settings/sync', {
-        maxSubmissions: syncMax,
+        maxSubmissions: savedSyncMax.current,
         autoContinueRounds: v,
       })
+      savedSyncRounds.current = r.autoContinueRounds ?? v
       setSyncRounds(r.autoContinueRounds ?? v)
       message.success(v === 0 ? '后台续拉已关闭' : `后台续拉轮数已保存：最多 ${r.autoContinueRounds ?? v} 轮`)
     } catch (e) {
       message.error((e as Error).message)
+      setSyncRounds(savedSyncRounds.current)
     }
+  }
+  const saveSyncRounds = (v: number | null) => {
+    setSyncRounds(v)
+    if (syncRoundsTimer.current !== null) window.clearTimeout(syncRoundsTimer.current)
+    syncRoundsTimer.current = window.setTimeout(() => {
+      syncRoundsTimer.current = null
+      // 清空输入框不落库，保留原值（避免误把轮数写成 0 = 关闭）
+      if (v == null) setSyncRounds(savedSyncRounds.current)
+      else void commitSyncRounds(v)
+    }, 600)
   }
 
   /** 计蒜客「同步自由练题提交」开关：落库 settings['jisuanke.practiceSync']（'true'/'false'） */
   const savePracticeSync = async (v: boolean) => {
     try {
       const r = await post<{ jisuankePracticeSync: boolean }>('/api/settings/sync', {
-        maxSubmissions: syncMax,
+        maxSubmissions: savedSyncMax.current,
         jisuankePracticeSync: v,
       })
       setPracticeSync(r.jisuankePracticeSync !== false)
@@ -310,7 +347,7 @@ export default function Settings() {
     savedScale.current = v
     try {
       const r = await post<{ requestIntervalScale: number }>('/api/settings/sync', {
-        maxSubmissions: syncMax,
+        maxSubmissions: savedSyncMax.current,
         requestIntervalScale: v,
       })
       const applied = r.requestIntervalScale ?? v

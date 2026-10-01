@@ -248,6 +248,29 @@ function mergeSlashedCfKeys(db: Db): void {
        AND NOT EXISTS (SELECT 1 FROM review_items r WHERE r.user_id = review_items.user_id AND r.problem_id = ?)`,
   );
   const dropReviews = db.prepare('DELETE FROM review_items WHERE problem_id = ?');
+  // 今日训练推荐 (user_id, problem_id) 是主键、外键无 ON DELETE：与复习条目同款处理，
+  // 保留行已有同一用户的推荐时丢弃被合并行的，再清掉剩下的。漏掉它，下面的
+  // DELETE FROM problems 同样会抛 FOREIGN KEY constraint failed —— 迁移回滚、createDb 抛错，
+  // 应用再也打不开（与 repointIntents 注释里那条失效模式完全一致）
+  const repointRecos = db.prepare(
+    `UPDATE today_recommendations SET problem_id = ? WHERE problem_id = ?
+       AND NOT EXISTS (SELECT 1 FROM today_recommendations t WHERE t.user_id = today_recommendations.user_id AND t.problem_id = ?)`,
+  );
+  const dropRecos = db.prepare('DELETE FROM today_recommendations WHERE problem_id = ?');
+  // 题单条目按 (platform, problem_key) 存**串**，不是行 id：改键并对齐保留行的链接/标题
+  //（与 problemMerge.ts 同款）。漏掉它，题单里该条目会永久指向已被删掉的斜杠题号，
+  // 而题单页的难度/标签/已 AC 全靠 LEFT JOIN problems ON key 匹配 —— 同一道题也永远显示「未做」
+  const repointListItems = db.prepare(
+    `UPDATE problem_list_items SET problem_key = ?, title = ?, url = ?
+      WHERE platform = ? AND problem_key = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM problem_list_items i
+           WHERE i.list_id = problem_list_items.list_id
+             AND i.platform = problem_list_items.platform
+             AND i.problem_key = ?)`,
+  );
+  const dropListItems = db.prepare('DELETE FROM problem_list_items WHERE platform = ? AND problem_key = ?');
+  const keepMeta = db.prepare('SELECT title, url FROM problems WHERE id = ?');
   const dropProblem = db.prepare('DELETE FROM problems WHERE id = ?');
 
   db.exec('BEGIN');
@@ -264,6 +287,21 @@ function mergeSlashedCfKeys(db: Db): void {
       repointIntents.run(keep.id, row.id);
       repointReviews.run(keep.id, row.id, keep.id);
       dropReviews.run(row.id);
+      repointRecos.run(keep.id, row.id, keep.id);
+      dropRecos.run(row.id);
+      // 键型引用（题单条目）同样要改键，否则条目永久指向已删除的斜杠题号
+      const keepMetaRow = keepMeta.get(keep.id) as { title: string; url: string | null } | undefined;
+      if (keepMetaRow) {
+        repointListItems.run(
+          canonicalKey,
+          keepMetaRow.title,
+          keepMetaRow.url,
+          'codeforces',
+          row.problem_key,
+          canonicalKey,
+        );
+      }
+      dropListItems.run('codeforces', row.problem_key);
       // 被合并键的知识点标注行随之失效（无外键约束，留着即孤儿行）；JSONL 源真相不变
       db.prepare('DELETE FROM problem_keypoints WHERE platform = ? AND problem_key = ?').run(
         'codeforces',
@@ -345,20 +383,10 @@ function fixLuoguLanguageIds(db: Db): void {
  * SQLite 无法修改约束，按「建新表 → 迁数据 → 换名」重建；索引随旧表删除后重建。
  */
 function rebuildSubmissionsForMultiAccount(db: Db): void {
-  db.exec(`
-    CREATE TABLE submissions_new (
-      id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id      INTEGER NOT NULL REFERENCES users(id),
-      platform     TEXT NOT NULL REFERENCES platforms(id),
-      account      TEXT NOT NULL DEFAULT '',
-      problem_id   INTEGER NOT NULL REFERENCES problems(id),
-      verdict      TEXT NOT NULL,
-      language     TEXT,
-      submitted_at TEXT NOT NULL,
-      external_id  TEXT,
-      context      TEXT,
-      UNIQUE (user_id, platform, account, external_id)
-    )`);
+  // 残留的 submissions_new 只可能来自「上一次重建中途被杀」：此刻 submissions 仍是未被动过的
+  // 源表（DROP 在拷贝之后），残留的只是一份不完整拷贝 —— 丢掉重做即可。没有这一句，
+  // 下次启动的 CREATE TABLE 会以 "table submissions_new already exists" 让应用**再也起不来**。
+  db.exec('DROP TABLE IF EXISTS submissions_new');
   // 老数据的归属：该平台当前唯一绑定的 handle（多账号上线前每平台至多一个账号，
   // 库中提交即它的数据）；平台从未绑定过账号（仅手动导入）则为空串 ''（无账号来源）。
   const handleByPlatform = new Map<string, string>(
@@ -384,13 +412,32 @@ function rebuildSubmissionsForMultiAccount(db: Db): void {
     external_id: string | null;
     context: string | null;
   }>;
-  const ins = db.prepare(
-    `INSERT INTO submissions_new
-       (id, user_id, platform, account, problem_id, verdict, language, submitted_at, external_id, context)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
+  // 建表 → 拷数据 → 换名 → 重建索引，整段收进**同一个事务**。SQLite 的 DDL 本身是事务性的，
+  // 而原实现把 CREATE TABLE 放在 BEGIN 之前、把 DROP/RENAME 放在 COMMIT 之后，于是：
+  //  - 拷贝期被杀：被隐式提交的 submissions_new 回滚不掉，下次启动 "already exists"，应用再也打不开；
+  //  - DROP 与 RENAME 之间被杀：submissions 消失，schema.sql 会重建出一张**空**表，而重建守卫
+  //    （缺 account 列）此时为假、不再重建 —— 用户全部提交记录静默留在孤儿表里，界面显示 0 条。
   db.exec('BEGIN');
   try {
+    db.exec(`
+      CREATE TABLE submissions_new (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id      INTEGER NOT NULL REFERENCES users(id),
+        platform     TEXT NOT NULL REFERENCES platforms(id),
+        account      TEXT NOT NULL DEFAULT '',
+        problem_id   INTEGER NOT NULL REFERENCES problems(id),
+        verdict      TEXT NOT NULL,
+        language     TEXT,
+        submitted_at TEXT NOT NULL,
+        external_id  TEXT,
+        context      TEXT,
+        UNIQUE (user_id, platform, account, external_id)
+      )`);
+    const ins = db.prepare(
+      `INSERT INTO submissions_new
+         (id, user_id, platform, account, problem_id, verdict, language, submitted_at, external_id, context)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
     for (const r of rows) {
       ins.run(
         r.id,
@@ -405,18 +452,18 @@ function rebuildSubmissionsForMultiAccount(db: Db): void {
         r.context,
       );
     }
+    db.exec('DROP TABLE submissions');
+    db.exec('ALTER TABLE submissions_new RENAME TO submissions');
+    // 索引随旧表一起被 DROP，按新口径重建（与 schema.sql 保持一致）
+    db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_platform ON submissions(user_id, platform)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_problem ON submissions(problem_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_time ON submissions(user_id, submitted_at)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_account ON submissions(user_id, platform, account)');
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
   }
-  db.exec('DROP TABLE submissions');
-  db.exec('ALTER TABLE submissions_new RENAME TO submissions');
-  // 索引随旧表一起被 DROP，按新口径重建（与 schema.sql 保持一致）
-  db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_platform ON submissions(user_id, platform)');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_problem ON submissions(problem_id)');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_time ON submissions(user_id, submitted_at)');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_account ON submissions(user_id, platform, account)');
 }
 
 /**
@@ -438,25 +485,36 @@ function rebuildAccountsForMultiAccount(db: Db): void {
     return cols.length === 2 && cols.includes('user_id') && cols.includes('platform');
   });
   if (!isOldUnique) return;
-  db.exec(`
-    CREATE TABLE platform_accounts_new (
-      id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id         INTEGER NOT NULL REFERENCES users(id),
-      platform        TEXT NOT NULL REFERENCES platforms(id),
-      handle          TEXT NOT NULL,
-      last_sync_at    TEXT,
-      enabled         INTEGER NOT NULL DEFAULT 1,
-      sync_truncated  INTEGER NOT NULL DEFAULT 0,
-      backfill_page   INTEGER,
-      UNIQUE (user_id, platform, handle)
-    )`);
-  db.exec(`
-    INSERT INTO platform_accounts_new
-      (id, user_id, platform, handle, last_sync_at, enabled, sync_truncated, backfill_page)
-    SELECT id, user_id, platform, handle, last_sync_at, enabled, sync_truncated, backfill_page
-      FROM platform_accounts`);
-  db.exec('DROP TABLE platform_accounts');
-  db.exec('ALTER TABLE platform_accounts_new RENAME TO platform_accounts');
+  // 与 submissions 重建同款：残留的 _new 表会让应用再也起不来；整段重建必须原子 ——
+  // 否则 DROP 与 RENAME 之间被杀会让 schema.sql 重建出一张空的 platform_accounts，
+  // 用户所有账号绑定静默消失（而 isOldUnique 随之变假，再也无人纠正）
+  db.exec('DROP TABLE IF EXISTS platform_accounts_new');
+  db.exec('BEGIN');
+  try {
+    db.exec(`
+      CREATE TABLE platform_accounts_new (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id         INTEGER NOT NULL REFERENCES users(id),
+        platform        TEXT NOT NULL REFERENCES platforms(id),
+        handle          TEXT NOT NULL,
+        last_sync_at    TEXT,
+        enabled         INTEGER NOT NULL DEFAULT 1,
+        sync_truncated  INTEGER NOT NULL DEFAULT 0,
+        backfill_page   INTEGER,
+        UNIQUE (user_id, platform, handle)
+      )`);
+    db.exec(`
+      INSERT INTO platform_accounts_new
+        (id, user_id, platform, handle, last_sync_at, enabled, sync_truncated, backfill_page)
+      SELECT id, user_id, platform, handle, last_sync_at, enabled, sync_truncated, backfill_page
+        FROM platform_accounts`);
+    db.exec('DROP TABLE platform_accounts');
+    db.exec('ALTER TABLE platform_accounts_new RENAME TO platform_accounts');
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
 }
 
 /**

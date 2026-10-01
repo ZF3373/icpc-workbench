@@ -133,6 +133,9 @@ test('backoffDelayMs: 指数增长、受上限约束、且不低于 Retry-After'
   assert.ok(backoffDelayMs(10, 800, 8000, null, noJitter) <= 8000, '不超过上限');
   // Retry-After 比退避更长时以 Retry-After 为准
   assert.equal(backoffDelayMs(1, 800, 8000, 5000, noJitter), 5000);
+  // Retry-After 不被 maxMs 钳制：限流窗口（30s）比本地退避上限（8s）长时必须等满，
+  // 否则每次重试都撞回 429、把重试次数烧光（2026-10 审查修复）
+  assert.equal(backoffDelayMs(1, 800, 8000, 30_000, noJitter), 30_000);
 });
 
 test('asHttpClient / isHttpClient: 既有 typeof fetch 注入可无感接入', () => {

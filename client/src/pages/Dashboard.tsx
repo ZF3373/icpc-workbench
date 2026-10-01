@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { Button, Card, Col, Empty, Row, Spin, App as AntdApp, Tooltip as AntTooltip } from 'antd'
+import { Alert, Button, Card, Col, Empty, Row, Spin, App as AntdApp, Tooltip as AntTooltip } from 'antd'
 import {
   CheckCircleOutlined,
   HolderOutlined,
@@ -133,6 +133,8 @@ export default function Dashboard() {
   const [weak, setWeak] = useState<WeaknessProfile | null>(null)
   const [trend, setTrend] = useState<TrendPoint[] | null>(null)
   const [loading, setLoading] = useState(true)
+  /** 统计接口加载失败的原因：与「确实没有数据」分开渲染，不能让失败伪装成空态 */
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [platformOrder, setPlatformOrder] = useState<string[] | null>(getPlatformOrder)
   const [dragPlatform, setDragPlatform] = useState<PlatformId | null>(null)
@@ -157,19 +159,27 @@ export default function Dashboard() {
 
   const load = useCallback(() => {
     setLoading(true)
-    Promise.all([
+    setLoadError(null)
+    // 三个统计接口彼此独立，用 allSettled 分别落地。旧实现是 Promise.all「全成功才落地」
+    // 且 catch 只 console.error：任一接口失败（弱项统计是重查询、最易超时）就让三个结果全不落地，
+    // 整页退化成「暂无刷题数据 —— 去绑定平台账号」，有数千条提交的用户被告知没数据，
+    // 而屏幕上没有任何报错提示（只有 DevTools console）
+    Promise.allSettled([
       get<OverallStats>('/api/stats'),
       get<WeaknessProfile>('/api/stats/weakness'),
       get<TrendPoint[]>('/api/stats/trend?weeks=12'),
     ])
       .then(([s, w, t]) => {
-        setStats(s)
-        setWeak(w)
-        setTrend(t)
+        if (s.status === 'fulfilled') setStats(s.value)
+        if (w.status === 'fulfilled') setWeak(w.value)
+        if (t.status === 'fulfilled') setTrend(t.value)
+        const failed = [s, w, t].find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined
+        const msg = failed ? ((failed.reason as Error)?.message ?? '统计数据加载失败') : null
+        setLoadError(msg)
+        if (msg) message.error(`统计数据加载失败：${msg}`)
       })
-      .catch((e: Error) => console.error(e))
       .finally(() => setLoading(false))
-  }, [])
+  }, [message])
 
   useEffect(() => {
     load()
@@ -334,6 +344,29 @@ export default function Dashboard() {
   )
 
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />
+  if (!stats && loadError) {
+    // 加载失败 ≠ 没有数据：旧实现把两者合并成同一个空态，等于给有数据的用户
+    // 下「你还没绑定账号」的结论。这里给可重试的错误态，而不是误导性的空态。
+    return (
+      <div>
+        <PageHeader title="数据概览" description="追踪你的训练进度和薄弱环节" extra={syncButton} />
+        <SyncStatusCard />
+        <Card>
+          <Alert
+            type="error"
+            showIcon
+            message="统计数据加载失败"
+            description={loadError}
+            action={
+              <Button size="small" onClick={load}>
+                重试
+              </Button>
+            }
+          />
+        </Card>
+      </div>
+    )
+  }
   if (!stats || stats.attempts === 0) {
     return (
       <div>

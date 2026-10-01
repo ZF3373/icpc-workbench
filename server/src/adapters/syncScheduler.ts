@@ -13,7 +13,7 @@ import type { SyncResult } from '../../../shared/src/index.ts';
 import type { PlatformId } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
-import { syncPlatform } from './sync.ts';
+import { syncPlatform, isSyncBusyResult } from './sync.ts';
 
 /**
  * 平台续拉间隔（毫秒）：本次整体翻倍（原 20s–90s → 40s–180s）。
@@ -148,6 +148,15 @@ async function runRound(platform: PlatformId): Promise<void> {
   }
   // 执行期间任务可能已被取消（手动同步抢占 / __resetSyncSchedulerForTest）：不再排期
   if (jobs.get(platform) !== job) return;
+  const delay = AUTO_CONTINUE_DELAY_MS[platform] ?? 60_000;
+  if (result !== null && isSyncBusyResult(result)) {
+    // 非抢占来源（days 窗口 / 模板页例题同步）正持有同平台互斥锁：本轮没跑成但队列不能死——
+    // DB 里仍是 sync_truncated=1，用户被告知「再次点击同步可继续补全」。把 errors 当失败
+    // 处理会静默杀死整条续拉链（2026-10 审查修复）：原轮次（round 不推进）重排等下一个窗口
+    job.state = { ...job.state, running: false, nextAt: new Date(deps!.now() + delay).toISOString() };
+    job.timer = deps!.schedule(() => void runRound(platform), delay);
+    return;
+  }
   const failed = result === null || result.errors.length > 0;
   const truncated = result?.truncated === true;
   const round = job.state.round + 1;
@@ -155,7 +164,6 @@ async function runRound(platform: PlatformId): Promise<void> {
     jobs.delete(platform); // 失败（含鉴权/限流）、补全完成、轮次耗尽 → 停止该平台续拉
     return;
   }
-  const delay = AUTO_CONTINUE_DELAY_MS[platform] ?? 60_000;
   job.state = {
     ...job.state,
     round,

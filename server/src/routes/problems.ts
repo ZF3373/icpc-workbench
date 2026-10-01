@@ -589,6 +589,13 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
           db.prepare('UPDATE submissions SET problem_id = ? WHERE problem_id = ?').run(g.keep.id, dup.id);
           db.prepare('UPDATE submission_intents SET problem_id = ? WHERE problem_id = ?').run(g.keep.id, dup.id);
           db.prepare('UPDATE plan_tasks SET problem_id = ? WHERE problem_id = ?').run(g.keep.id, dup.id);
+          // today_recommendations (user_id, problem_id) 唯一、外键无级联：与 problemMerge 同款——
+          // 保留行已有同一用户的推荐条目时丢弃重复行；漏了它整个去重事务会因外键失败 500
+          db.prepare(
+            `UPDATE today_recommendations SET problem_id = ? WHERE problem_id = ?
+               AND NOT EXISTS (SELECT 1 FROM today_recommendations t WHERE t.user_id = today_recommendations.user_id AND t.problem_id = ?)`,
+          ).run(g.keep.id, dup.id, g.keep.id);
+          db.prepare('DELETE FROM today_recommendations WHERE problem_id = ?').run(dup.id);
           // 复习条目 (user_id, problem_id) 唯一：保留行已有同一用户的复习条目时丢弃重复行的
           db.prepare(
             `UPDATE review_items SET problem_id = ? WHERE problem_id = ?
@@ -597,6 +604,21 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
           db.prepare('DELETE FROM review_items WHERE problem_id = ?').run(dup.id);
           db.prepare('DELETE FROM problem_keypoints WHERE platform = ? AND problem_key = ?').run(g.platform, dup.problemKey);
           db.prepare('DELETE FROM knowledge_queue WHERE platform = ? AND problem_key = ?').run(g.platform, dup.problemKey);
+          // 题单条目按 (platform, problem_key) 存**串**而不是行 id：不一起改键，条目就永久指向
+          // 已删除的题号 —— 题单页的难度/标签/已 AC 全靠 LEFT JOIN problems ON key 匹配
+          //（见 routes/lists.ts），同一道题刚 AC 过也会永远显示「未做/难度未知」，且无自愈路径。
+          // 与 problemMerge.ts 同一处理（那里早就做了，这里是漏做）
+          const keepRow = problemById.get(g.keep.id) as NonNullable<ReturnType<typeof problemById.get>>;
+          db.prepare(
+            `UPDATE problem_list_items SET problem_key = ?, title = ?, url = ?
+              WHERE platform = ? AND problem_key = ?
+                AND NOT EXISTS (
+                  SELECT 1 FROM problem_list_items i
+                   WHERE i.list_id = problem_list_items.list_id
+                     AND i.platform = problem_list_items.platform
+                     AND i.problem_key = ?)`,
+          ).run(keepRow.problem_key, keepRow.title, keepRow.url, g.platform, dup.problemKey, keepRow.problem_key);
+          db.prepare('DELETE FROM problem_list_items WHERE platform = ? AND problem_key = ?').run(g.platform, dup.problemKey);
           const dupRow = problemById.get(dup.id) as NonNullable<ReturnType<typeof problemById.get>>;
           db.prepare('DELETE FROM problems WHERE id = ?').run(dup.id);
           // 重复行多来自题库（如带空格的脏题号），不记墓碑则下次拉题库/播种原样复活；
@@ -869,6 +891,9 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       db.prepare('DELETE FROM submissions WHERE problem_id = ?').run(id);
       db.prepare('DELETE FROM review_items WHERE problem_id = ?').run(id);
       db.prepare('UPDATE plan_tasks SET problem_id = NULL WHERE problem_id = ?').run(id);
+      // today_recommendations 外键无级联（problem_id NOT NULL）：漏删会让删除直接抛
+      // FOREIGN KEY constraint failed——凡被「今日训练」推荐过的题永远删不掉（500，重试无效）
+      db.prepare('DELETE FROM today_recommendations WHERE problem_id = ?').run(id);
       db.prepare('DELETE FROM problem_keypoints WHERE platform = ? AND problem_key = ?').run(
         problem.platform,
         problem.problem_key,

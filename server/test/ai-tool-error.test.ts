@@ -4,6 +4,7 @@
  * 告终——而大模型第一轮已正常流出（用户看到思考 + 半截正文后报错，误以为大模型 API
  * 有问题）。修复后：路由层把工具异常转成 tool 结果消息，AI 据此降级，对话继续。
  */
+import { listenForTest } from './test-listen.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
@@ -75,8 +76,7 @@ test('工具抛网络层异常 → 转 tool 结果继续对话，不再整轮报
       }),
     }),
   );
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   try {
     const res = await fetch(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/ai/chat`, {
       method: 'POST',

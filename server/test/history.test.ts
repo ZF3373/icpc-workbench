@@ -1,3 +1,4 @@
+import { listenForTest } from './test-listen.ts';
 import { test } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import assert from 'node:assert/strict';
@@ -40,8 +41,7 @@ function seed(
 async function withServer<T>(db: Db, run: (base: string) => Promise<T>): Promise<T> {
   const app = express();
   app.use('/api/history', historyRoutes(db));
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   try {
     return await run(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/history`);
   } finally {

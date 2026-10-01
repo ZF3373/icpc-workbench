@@ -1,3 +1,4 @@
+import { listenForTest } from './test-listen.ts';
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -34,8 +35,7 @@ async function withServer(fn: (base: string) => Promise<void>): Promise<void> {
   const app = express();
   app.use(express.json());
   app.use('/api/problems', problemsRoutes(d));
-  const srv = app.listen(0);
-  await new Promise<void>((r) => srv.once('listening', r));
+  const srv = await listenForTest(app);
   try {
     await fn(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/problems`);
   } finally {
@@ -104,6 +104,24 @@ test('DELETE: 不存在的 id 返回 404，非法 id 返回 400', async () => {
 
     const invalid = await fetch(`${base}/abc`, { method: 'DELETE' });
     assert.equal(invalid.status, 400);
+  });
+});
+
+test('DELETE: 被「今日训练」推荐过的题也能删除（today_recommendations 外键清理，回归 2026-10 审查）', async () => {
+  await withServer(async (base) => {
+    const d = db!;
+    // GET /api/today 会给每道实际展示的推荐题写一行 (user_id, problem_id)；
+    // 外键无级联，漏清理会让 DELETE 直接抛 FOREIGN KEY constraint failed（500，重试无效）
+    d.prepare(
+      "INSERT INTO today_recommendations (user_id, problem_id, recommended_on, band) VALUES (1, 1, '2026-10-01', 'core')",
+    ).run();
+    const res = await fetch(`${base}/1`, { method: 'DELETE' });
+    assert.equal(res.status, 200);
+    assert.equal(
+      (d.prepare('SELECT COUNT(*) c FROM today_recommendations').get() as { c: number }).c,
+      0,
+      '推荐条目应随题目一并清理',
+    );
   });
 });
 

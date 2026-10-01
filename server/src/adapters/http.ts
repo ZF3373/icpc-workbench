@@ -89,7 +89,10 @@ export function backoffDelayMs(
 ): number {
   const exp = Math.min(maxMs, baseMs * 2 ** (attempt - 1));
   const jittered = exp / 2 + random() * (exp / 2); // 半抖动：避免同刻集中重试
-  return Math.min(maxMs, Math.max(jittered, retryAfterMs ?? 0));
+  // 服务端下发的 Retry-After 不被 maxMs 钳制：限流窗口（如 30s）比本地退避上限（8s）长时，
+  // 只等 8s 就重试会全部撞回 429、把重试次数烧光（与函数注释「取二者较大值」一致）
+  if (retryAfterMs !== null) return Math.max(jittered, retryAfterMs);
+  return Math.min(maxMs, jittered);
 }
 
 /**

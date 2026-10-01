@@ -1,3 +1,4 @@
+import { listenForTest } from './test-listen.ts';
 import { test, beforeEach, afterEach } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
@@ -21,7 +22,7 @@ beforeEach(async () => {
   db = createDb(':memory:');
   const app = express();
   app.use('/api/today', todayRoutes(db));
-  server = app.listen(0);
+  server = await listenForTest(app);
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 

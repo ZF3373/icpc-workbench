@@ -9,15 +9,21 @@
  * 本测试锁住两条不变量：
  *  1. 注入的内容是权威 —— 磁盘上有什么都不影响结果；
  *  2. `rulesVersion()` 不为「先读盘、后注入」留窗口（注入后不得再用磁盘结果）。
+ *
+ * ⚠️ 磁盘操作全部落在临时目录的 rules.json 副本上（`setRulesPathForTest` 重定向）：
+ * 旧实现直接改写 src/knowledge/rules.json —— node --test 并发跑多个测试进程，
+ * 「写成空规则/非法 JSON 再恢复」的窗口期会让并发读取该文件的知识点测试
+ * （classifyTitle 等）随机拿到空规则或 SyntaxError，整条测试流水线假失败。
  */
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { setRulesJson, rulesVersion, loadRules } from '../src/knowledge/ruleEngine.ts';
+import { setRulesJson, setRulesPathForTest, rulesVersion, loadRules } from '../src/knowledge/ruleEngine.ts';
 
-const RULES_PATH = path.resolve(
+const REAL_RULES_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
   'src',
@@ -25,20 +31,28 @@ const RULES_PATH = path.resolve(
   'rules.json',
 );
 
-let original: string;
+/** 真实文件的只读快照：作为临时副本的初始内容（对「磁盘」而言即正常的生产规则表） */
+const realRulesJson = fs.readFileSync(REAL_RULES_PATH, 'utf8');
+
+let tmpDir: string;
+const diskRulesPath = (): string => path.join(tmpDir, 'rules.json');
 
 beforeEach(() => {
-  original = fs.readFileSync(RULES_PATH, 'utf8');
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rules-sea-'));
+  fs.writeFileSync(diskRulesPath(), realRulesJson, 'utf8');
+  setRulesPathForTest(diskRulesPath());
+  setRulesJson(null); // 从磁盘读取模式开始，与 SEA 故障现场（无注入）一致
 });
 
 afterEach(() => {
-  fs.writeFileSync(RULES_PATH, original, 'utf8');
   setRulesJson(null); // 恢复磁盘读取模式，避免影响后续测试
+  setRulesPathForTest(null);
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 test('rulesVersion: 注入的内容优先于磁盘（SEA 下磁盘根本没有该文件）', () => {
   // 磁盘版本 1；注入版本 999 —— 结果必须是 999
-  fs.writeFileSync(RULES_PATH, JSON.stringify({ version: 1, rules: [] }), 'utf8');
+  fs.writeFileSync(diskRulesPath(), JSON.stringify({ version: 1, rules: [] }), 'utf8');
   setRulesJson(JSON.stringify({ version: 999, rules: [] }));
   assert.equal(
     rulesVersion(),
@@ -49,14 +63,14 @@ test('rulesVersion: 注入的内容优先于磁盘（SEA 下磁盘根本没有�
 
 test('rulesVersion: 为「先读盘、后注入」不留窗口', () => {
   // 磁盘上放**非法 JSON**：正确实现根本不读它，读盘则抛错
-  fs.writeFileSync(RULES_PATH, '这不是 JSON', 'utf8');
+  fs.writeFileSync(diskRulesPath(), '这不是 JSON', 'utf8');
   setRulesJson(JSON.stringify({ version: 7, rules: [] }));
   assert.equal(rulesVersion(), 7);
 });
 
 test('loadRules: 注入的规则优先于磁盘', () => {
   fs.writeFileSync(
-    RULES_PATH,
+    diskRulesPath(),
     JSON.stringify({ version: 1, rules: [{ id: 'x', pattern: '磁盘规则', code: 'basic.greedy', confidence: 0.9 }] }),
     'utf8',
   );

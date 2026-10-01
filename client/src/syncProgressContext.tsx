@@ -55,10 +55,14 @@ export function SyncProgressProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let stopped = false
+    // 请求序号：轮询不等待上一次 load 完成，接口偶发 >1 个轮询周期时旧响应会晚到，
+    // 无序号护栏会把快照回跳一拍（「已用时/已请求次数」短暂倒退）
+    let seq = 0
     const load = async (): Promise<void> => {
+      const my = ++seq
       try {
         const s = await get<SyncProgressSnapshot>('/api/sync/progress')
-        if (!stopped) setSnapshot(s ?? EMPTY)
+        if (!stopped && my === seq) setSnapshot(s ?? EMPTY)
       } catch {
         // 服务端未升级 / 暂时不可用：静默保持上一次快照，不影响同步本体
       }
@@ -66,7 +70,7 @@ export function SyncProgressProvider({ children }: { children: ReactNode }) {
       if (running) return
       try {
         const st = await get<{ statuses: SyncPlatformStatusView[] }>('/api/sync/status')
-        if (!stopped) setStatuses(st.statuses ?? [])
+        if (!stopped && my === seq) setStatuses(st.statuses ?? [])
       } catch {
         /* 同上：静默 */
       }

@@ -19,3 +19,32 @@ function apiPrefixes(file: string): string[] {
 test('sea.ts registers the same /api prefixes as index.ts', () => {
   assert.deepEqual(apiPrefixes('sea.ts'), apiPrefixes('index.ts'));
 });
+
+/**
+ * 启动副作用一致性：index.ts（tsx 开发）与 sea.ts（SEA 打包版；Docker 镜像的非 SEA 分支同样
+ * 走这个入口）必须调用同一组「启动即生效」的副作用。sea.ts 曾漏掉其中 4 项——
+ * applyPendingRestore（恢复点重启生效）、maybeDailyBackup（每日自动备份）、
+ * configureSyncScheduler（截断同步的后台续拉）、setRequestIntervalScale（限速倍率下发）——
+ * 开发模式一切正常、打包版静默失效。同一类遗漏由本用例从源头堵住。
+ * 新增「启动即生效」的副作用时，把函数名补进这份清单（两个入口都要有）。
+ */
+const STARTUP_CALLS = [
+  'applyPendingRestore(',
+  'seedBuiltinBank(',
+  'initAdapters(',
+  'configureSyncScheduler(',
+  'setRequestIntervalScale(',
+  'initKnowledgeStore(',
+  'maybeDailyBackup(',
+  'purgeAiAnnotations(',
+  'loadAnnotationsIntoDb(',
+];
+
+test('sea.ts runs the same startup side effects as index.ts', () => {
+  const indexSrc = fs.readFileSync(path.join(srcDir, 'index.ts'), 'utf8');
+  const seaSrc = fs.readFileSync(path.join(srcDir, 'sea.ts'), 'utf8');
+  for (const call of STARTUP_CALLS) {
+    assert.ok(indexSrc.includes(call), `index.ts 未调用 ${call}（清单过期，请同步维护）`);
+    assert.ok(seaSrc.includes(call), `sea.ts 未调用 ${call}——打包版/Docker 会静默失效`);
+  }
+});

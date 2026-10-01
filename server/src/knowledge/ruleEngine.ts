@@ -37,6 +37,7 @@ export interface RuleMatch {
 
 let cache: CompiledRule[] | null = null;
 let jsonOverride: string | null = null;
+let rulesPathOverride: string | null = null;
 
 /** SEA 单文件分发时由入口注入 JSON 文本（不再读磁盘）；传 null 恢复磁盘读取 */
 export function setRulesJson(json: string | null): void {
@@ -45,8 +46,19 @@ export function setRulesJson(json: string | null): void {
   versionCache = null;
 }
 
+/** 测试专用：重定向磁盘读取路径（模拟 SEA 的「磁盘无此文件/文件损坏」）；传 null 恢复默认。
+ *  有了它，相关测试改写临时副本即可，不必改写 src/ 下的真实 rules.json —— 那份文件
+ *  是所有并发测试进程的共享读取源，被临时改坏的窗口期会让别的测试随机拿到空规则 */
+export function setRulesPathForTest(p: string | null): void {
+  rulesPathOverride = p;
+  cache = null;
+  versionCache = null;
+}
+
 function readRulesFile(): { version: number; rules: RuleDef[] } {
-  return JSON.parse(jsonOverride ?? fs.readFileSync(RULES_PATH, 'utf8')) as { version: number; rules: RuleDef[] };
+  return JSON.parse(
+    jsonOverride ?? fs.readFileSync(rulesPathOverride ?? RULES_PATH, 'utf8'),
+  ) as { version: number; rules: RuleDef[] };
 }
 
 export function loadRules(): CompiledRule[] {

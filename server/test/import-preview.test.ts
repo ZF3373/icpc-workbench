@@ -1,3 +1,4 @@
+import { listenForTest } from './test-listen.ts';
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
@@ -32,13 +33,24 @@ function sub(key: string, externalId: string, verdict = 'AC'): NormalizedSubmiss
   };
 }
 
-test('previewImport：新增 / external_id 重复 / 同题同结果协调 / 题目新建与更新', () => {
+test('previewImport：新增 / external_id 重复 / 同题同结果协调 / 墓碑跳过 / 题目新建与更新', () => {
   insertNormalized(db, 1, [sub('1A', 'e1'), sub('1B', 'e2')]);
+  // 制造墓碑：删除 1D 的题目行（模拟用户在回收站删除过这道题）
+  db.prepare(
+    `INSERT INTO problems (platform, problem_key, title) VALUES ('codeforces', '1D', 'D')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO deleted_problems (platform, problem_key, normalized_key, title)
+     SELECT platform, problem_key, LOWER(REPLACE(problem_key, ' ', '')), title
+       FROM problems WHERE platform = 'codeforces' AND problem_key = '1D'`,
+  ).run();
+  db.prepare(`DELETE FROM problems WHERE platform = 'codeforces' AND problem_key = '1D'`).run();
   const preview = previewImport(db, 1, [
     sub('1A', 'e1'), // external_id 已存在 → duplicateSkips
     sub('1A', 'manual:codeforces:1A:WA', 'WA'), // 新提交（不同结果）
     sub('1A', 'manual:codeforces:1A:AC'), // 同题同结果已存在 → manualSkips
     sub('1C', 'e3'), // 新提交 + 题目新建
+    sub('1D', 'e4'), // 命中墓碑的非 manual 行 → 实际导入会静默丢弃（题与提交都不入库）
   ]);
   assert.deepEqual(
     { ...preview },
@@ -46,7 +58,8 @@ test('previewImport：新增 / external_id 重复 / 同题同结果协调 / 题�
       newSubmissions: 2,
       duplicateSkips: 1,
       manualSkips: 1,
-      problemCreates: 1, // 1C
+      tombstoneSkips: 1,
+      problemCreates: 1, // 1C（1D 全行被墓碑挡下，不计新建）
       problemUpdates: 1, // 1A（1B 不在本批导入中）
     },
   );
@@ -77,8 +90,7 @@ test('POST /api/import/preview 返回分类结果，且预览不写库', async (
   const app = express();
   app.use(express.json());
   app.use('/api/import', importRoutes(db));
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/import`;
   try {
     const res = await fetch(`${base}/preview`, {
@@ -113,4 +125,29 @@ test('POST /api/import/preview 返回分类结果，且预览不写库', async (
   } finally {
     srv.close();
   }
+});
+
+test('previewImport：去重按 account 分桶 —— 别的账号已有同一提交号，并不代表本次导入会跳过', () => {
+  // 平台同步来的数据归属账号 alice；手动导入是无账号来源（account=''）。
+  // submissions 的唯一键是 (user_id, platform, account, external_id)，两者并不冲突。
+  insertNormalized(db, 1, [sub('1E', 'e9')], { account: 'alice' });
+  const rows = [sub('1E', 'e9')];
+  const preview = previewImport(db, 1, rows);
+  const actual = insertNormalized(db, 1, rows);
+  assert.equal(preview.duplicateSkips, 0, '别的账号的提交号不构成本次导入的去重命中');
+  assert.equal(preview.newSubmissions, 1);
+  assert.equal(actual.imported, preview.newSubmissions, '预览的新增数必须与真实导入数一致');
+});
+
+test('previewImport：manual 行同时命中两条跳过规则时，归因与 insertNormalized 的分支顺序一致', () => {
+  insertNormalized(db, 1, [sub('1F', 'manual:codeforces:1F:AC')]);
+  // 重复导入同一条 manual 记录：external_id 已存在，且「同平台同题同结果」也已存在
+  const rows = [sub('1F', 'manual:codeforces:1F:AC')];
+  const preview = previewImport(db, 1, rows);
+  const actual = insertNormalized(db, 1, rows);
+  assert.equal(preview.newSubmissions, 0);
+  assert.equal(actual.imported, 0);
+  // insertNormalized 先判 manualDup、再走 INSERT OR IGNORE → 归因是「同题同结果跳过」
+  assert.equal(preview.manualSkips, 1);
+  assert.equal(preview.duplicateSkips, 0);
 });

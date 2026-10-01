@@ -44,9 +44,10 @@ export function toJisuankeContest(c: JisuankeContestItem): ContestInfo | null {
   } else {
     startMs = parseJisuankeTime(c.startTime);
   }
-  // duration 实测为秒；>1e5 视为毫秒（防御）
+  // duration 实测为秒；>1e7 才可能是毫秒（秒制下 1e7 = 115 天，真实赛事不可能这么长；
+  // 旧阈值 1e5 只有 27.8 小时，多日训练赛的合法秒值 172800 会被错除以 1000 缩成 3 分钟）
   let durationSeconds = typeof c.duration === 'number' ? c.duration : 0;
-  if (durationSeconds > 1e5) durationSeconds = Math.round(durationSeconds / 1000);
+  if (durationSeconds > 1e7) durationSeconds = Math.round(durationSeconds / 1000);
   return {
     id: `jsk-${c.contestId}`,
     platform: 'jisuanke' as PlatformId,

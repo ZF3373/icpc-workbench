@@ -61,9 +61,14 @@ export function createAtcoderAdapter(
   ): Promise<unknown> {
     const cachePath = cacheDir ? path.join(cacheDir, `${cacheKey}.json`) : '';
     if (cachePath && fs.existsSync(cachePath)) {
-      const age = Date.now() - fs.statSync(cachePath).mtimeMs;
-      if (age < RESOURCES_TTL_MS) {
-        return JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+      try {
+        const age = Date.now() - fs.statSync(cachePath).mtimeMs;
+        if (age < RESOURCES_TTL_MS) {
+          return JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+        }
+      } catch {
+        // 缓存损坏（进程写入中途被杀留下的半截 JSON）或 stat 竞态（文件刚被删）：
+        // 视为未命中重拉——没有这个兜底，一次损坏会让同步在整整一个 TTL（24h）内每次都炸
       }
     }
     const res = await http.fetch(url, {}, { timeoutMs: 20000 });
@@ -73,7 +78,10 @@ export function createAtcoderAdapter(
     const data: unknown = await res.json();
     if (cachePath) {
       fs.mkdirSync(path.dirname(cachePath), { recursive: true });
-      fs.writeFileSync(cachePath, JSON.stringify(data));
+      // 先写临时文件再 rename：写入中途被杀不会留下半截 JSON 占着 TTL 位置
+      const tmpPath = `${cachePath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(data));
+      fs.renameSync(tmpPath, cachePath);
     }
     return data;
   }

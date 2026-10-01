@@ -22,6 +22,8 @@ import { aiConfigFromDb, loadConfig, DEFAULT_CONFIG, type AppConfig } from './co
 import { tryLaunchWidget } from './widget-launcher.ts';
 import { createDb } from './db/index.ts';
 import { applyPendingRestore, createBackup, maybeDailyBackup } from './backup.ts';
+import { configureSyncScheduler } from './adapters/syncScheduler.ts';
+import { setRequestIntervalScale } from './net/hostThrottle.ts';
 import { backupsRoutes } from './routes/backups.ts';
 import { initAdapters } from './adapters/index.ts';
 import { errorHandler, securityHeaders } from './middleware.ts';
@@ -75,11 +77,31 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
   setTaxonomyJson(readTextAsset('src/knowledge/taxonomy.json'));
   setRulesJson(readTextAsset('src/knowledge/rules.json'));
 
+  // 恢复点回滚：必须在 createDb 之前应用（覆盖数据库文件）——与 index.ts 同序，
+  // 漏了它 SEA 版「设置 → 备份 → 恢复」的重启生效永远不发生，且 pending 标记残留导致该备份无法删除
+  applyPendingRestore(config.dbPath);
   const db = createDb(config.dbPath);
   seedBuiltinBank(db); // 内置题库播种：版本变化时 upsert 一次，日常启动零开销
   initAdapters(config.dataDir);
+  // 后台分批续拉调度器：截断的同步按平台节奏自动续拉下一批。SEA 与 Docker（非 SEA 分支）
+  // 都走本入口，漏装配会让「已截断、待续拉」的同步永远停在第一轮
+  configureSyncScheduler({ db });
+  // 拉取速度全局倍率：从设置恢复（缺失/越界 → 收敛为默认 1× = 安全下限）。
+  // 节流层每次请求实时读取该值，此处一次下发即对整个进程生效
+  const intervalScaleRow = db
+    .prepare('SELECT value FROM settings WHERE key = ?')
+    .get('sync.requestIntervalScale') as { value: string } | undefined;
+  setRequestIntervalScale(Number(intervalScaleRow?.value));
   // 知识点管线：JSONL 源真相 → SQLite 索引幂等重建（无 JSONL 时零开销）
   initKnowledgeStore(config.dataDir);
+  // 每日首次启动自动备份（settings 键幂等）；失败不阻塞启动——与 index.ts 同口径，
+  // 漏了它 SEA 版永远没有每日备份
+  try {
+    const daily = maybeDailyBackup(db);
+    if (daily.created) console.log(`[backup] 已创建每日备份 ${daily.file}`);
+  } catch (e) {
+    console.error(`[backup] 每日备份失败（不影响启动）: ${(e as Error).message}`);
+  }
   try {
     const purged = purgeAiAnnotations(db, { dataDir: config.dataDir });
     if (purged.deleted > 0 || purged.tombstones > 0) {

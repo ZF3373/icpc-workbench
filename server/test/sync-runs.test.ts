@@ -1,3 +1,4 @@
+import { listenForTest } from './test-listen.ts';
 import { test, beforeEach, afterEach } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import assert from 'node:assert/strict';
@@ -200,8 +201,7 @@ test('GET /api/sync/runs、/status、/diagnostics', async () => {
 
   const app = express();
   app.use('/api/sync', syncRoutes(db));
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/sync`;
   try {
     const runs = (await (await fetch(`${base}/runs`)).json()) as Array<Record<string, unknown>>;

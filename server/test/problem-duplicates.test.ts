@@ -1,3 +1,4 @@
+import { listenForTest } from './test-listen.ts';
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
@@ -35,8 +36,7 @@ async function withServer(fn: (base: string) => Promise<void>): Promise<void> {
   const app = express();
   app.use(express.json());
   app.use('/api/problems', problemsRoutes(d));
-  const srv = app.listen(0);
-  await new Promise<void>((r) => srv.once('listening', r));
+  const srv = await listenForTest(app);
   try {
     await fn(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/problems`);
   } finally {
@@ -86,6 +86,13 @@ test('clean-tags: 删除重复题并把提交/计划任务并入保留行，复�
       "INSERT INTO review_items (user_id,problem_id,next_due_on,note) VALUES (1,2,'2024-01-11','保留行的笔记')",
     ).run();
 
+    // 题单条目按 (platform, problem_key) 存串：去重时必须一起改键，否则条目永久指向被删的 '1a'，
+    // 题单页的难度/标签/已 AC 全靠 key 匹配 → 同一道题也永远显示「未做/难度未知」
+    d.prepare("INSERT INTO problem_lists (id,user_id,title) VALUES (1,1,'我的题单')").run();
+    d.prepare(
+      "INSERT INTO problem_list_items (list_id,platform,problem_key,title) VALUES (1,'codeforces','1a','Two Sum')",
+    ).run();
+
     const res = await fetch(`${base}/clean-tags`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     assert.equal(res.status, 200);
     const body = (await res.json()) as { ok: boolean; duplicatesRemoved: number };
@@ -103,6 +110,12 @@ test('clean-tags: 删除重复题并把提交/计划任务并入保留行，复�
     assert.equal(
       (d.prepare('SELECT problem_id FROM plan_tasks WHERE id = 1').get() as { problem_id: number | null }).problem_id,
       2,
+    );
+    // 键型引用（题单条目）同样改键到保留行，而不是留在被删的 '1a' 上
+    assert.equal(
+      (d.prepare('SELECT problem_key FROM problem_list_items WHERE list_id = 1').get() as { problem_key: string })
+        .problem_key,
+      ' 1A',
     );
     // 复习条目冲突（保留行已有同一用户的）：丢弃重复行的，保留行的原样保留
     const reviews = d.prepare('SELECT problem_id, note FROM review_items ORDER BY id').all() as Array<{ problem_id: number; note: string }>;

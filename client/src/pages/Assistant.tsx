@@ -500,6 +500,11 @@ export default function Assistant() {
       message.warning(`不支持的文件：${unsupported.map((f) => f.name).join('、')}（支持图片、文本/代码、PDF、Word、Excel、PPT、HTML、CSV、JSON、XML、EPub）`)
     }
 
+    // 三个分支共享 8 个配额：pendingAtts 是本次调用开始时的渲染闭包快照，前一个分支
+    // setPendingAtts 之后后一个分支仍按旧值算 room——一次混选 5 文本 + 5 图片能加到 13 个，
+    // 故用本地计数器跨分支累计（分支间还有 await，不能指望 state 刷新）
+    let usedSlots = pendingAtts.length
+
     // 文本文件：读取内容作为附件（与图片统一管理，显示为可删除标签）
     if (texts.length > 0) {
       const textAtts: ChatFileAttachment[] = []
@@ -521,10 +526,11 @@ export default function Assistant() {
         }
       }
       if (textAtts.length > 0) {
-        const room = 8 - pendingAtts.length
+        const room = 8 - usedSlots
         const picked = textAtts.slice(0, room)
         if (picked.length < textAtts.length) message.warning('每条消息最多附带 8 个文件')
         if (picked.length > 0) {
+          usedSlots += picked.length
           setPendingAtts((prev) => [...prev, ...picked])
           message.success(`已添加 ${picked.length} 个文本文件`)
         }
@@ -559,10 +565,11 @@ export default function Assistant() {
           }
         }
         if (docAtts.length > 0) {
-          const room = 8 - pendingAtts.length
+          const room = 8 - usedSlots
           const picked = docAtts.slice(0, room)
           if (picked.length < docAtts.length) message.warning('每条消息最多附带 8 个文件')
           if (picked.length > 0) {
+            usedSlots += picked.length
             setPendingAtts((prev) => [...prev, ...picked])
             message.success(`已提取 ${picked.length} 个文档文件`)
           }
@@ -577,7 +584,7 @@ export default function Assistant() {
       if (fileInputRef.current) fileInputRef.current.value = ''
       return
     }
-    const room = 8 - pendingAtts.length
+    const room = 8 - usedSlots
     const picked = images.slice(0, room)
     if (picked.length < images.length) message.warning('每条消息最多附带 8 个文件')
     if (picked.length === 0) {
@@ -596,6 +603,7 @@ export default function Assistant() {
         }
       }
       if (uploaded.length > 0) {
+        usedSlots += uploaded.length
         setPendingAtts((prev) => [...prev, ...uploaded])
         message.success(`已上传 ${uploaded.length} 个图片`)
       }
@@ -1000,6 +1008,11 @@ export default function Assistant() {
           })
       }
     } catch (e) {
+      // ⚠ 先把缓冲里剩下的字落库，再写「已停止/报错」的收尾标记。JS 保证 catch 先于 finally 执行，
+      // 而 dispose() 就是 flush：留在 finally 里会把停止前最后几十毫秒收到的正文追加到标记**之后**
+      //（看起来像「停止之后还在续写」）；错误分支更糟 —— ⚠️ 消息刚被追加成最后一条，
+      // 残留正文会被 append 进那个错误气泡里。成功路径同理，见上面 stream 结束处的 buf.flush()。
+      buf.dispose()
       // 用户主动停止生成：保留已收到内容，不报错
       if (ac.signal.aborted) {
         patchActiveSessionMessages(sessionId, (msgs) => {
@@ -1025,7 +1038,8 @@ export default function Assistant() {
         })
       }
     } finally {
-      // 异常/中止路径也要把缓冲里的字送出去，保证"停止生成"时看到的内容是完整的
+      // 兜底：正常路径已在 stream 结束处 flush、异常/中止路径已在 catch 开头 dispose，
+      // 这里对空缓冲是 no-op（保留它以免将来新增分支漏掉收尾）
       buf.dispose()
       sessionAbortControllers.delete(sessionId)
       setToolStatus((cur) => (cur && cur.sessionId === sessionId ? null : cur))
@@ -1232,24 +1246,34 @@ export default function Assistant() {
   const editUserMessage = (msgIndex: number) => {
     const userMsg = messages[msgIndex]
     if (!userMsg || userMsg.role !== 'user') return
+    // 流式生成中禁止编辑：在途流按「最后一条 assistant 消息」追加增量，截断后它会把
+    // 剩余 delta/usage/停止提示全部写进更早的历史回复（或空数组上静默丢失）
+    if (sending) {
+      message.warning('AI 正在生成回复：请先停止生成，再编辑历史消息')
+      return
+    }
     const content = userMsg.content ?? ''
     const atts = userMsg.attachments ?? []
 
     // 回填该消息的附件（图片附件缺 file-api 引用有效性，仍按原样回填；
     // 文本附件内容由会话缓存兜底，重发时仍带全文）
     if (atts.length > 0) {
-      setPendingAtts((prev) => {
-        const existing = new Set(prev.map((a) => a.fileId))
-        const restored = atts
-          .filter((a) => !existing.has(a.fileId))
-          .map((a) => ({
-            fileId: a.fileId,
-            filename: a.filename,
-            bytes: a.bytes,
-            textContent: getSessionFileText(activeId, a.fileId),
-          }))
-        return [...prev, ...restored]
-      })
+      const existingIds = new Set(pendingAtts.map((a) => a.fileId))
+      const restored = atts
+        .filter((a) => !existingIds.has(a.fileId))
+        .map((a) => ({
+          fileId: a.fileId,
+          filename: a.filename,
+          bytes: a.bytes,
+          textContent: getSessionFileText(activeId, a.fileId),
+        }))
+      // 与 handlePickFiles 三条分支同一配额：回填不截断就可能凑出 9+ 个附件，
+      // send() 原样作为该 user 消息的 attachments 下发，服务端按「每条消息 1-8 个」整单 400
+      //（实测提示为 attachments 需为 1-8 个的数组）——消息发不出去，用户不知道是附件多了一个
+      const room = Math.max(0, 8 - pendingAtts.length)
+      if (restored.length > room) message.warning('每条消息最多附带 8 个文件')
+      const picked = restored.slice(0, room)
+      if (picked.length > 0) setPendingAtts((prev) => [...prev, ...picked])
     }
 
     // 截断该用户消息及其后所有消息（含成功/失败回复）

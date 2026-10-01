@@ -7,6 +7,7 @@
  * 3. 写入后实时下发到节流层（getRequestIntervalScale 同步变化），无需重启；
  * 4. 非法值（越界 / 非 number）一律 400 且不改动已存值。
  */
+import { listenForTest } from './test-listen.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
@@ -28,8 +29,7 @@ async function withServer(fn: (db: Db, base: string) => Promise<void>): Promise<
   const app = express();
   app.use(express.json());
   app.use('/api/settings', settingsRoutes(db, DEFAULT_CONFIG));
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/settings`;
   try {
     await fn(db, base);

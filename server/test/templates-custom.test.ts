@@ -1,3 +1,4 @@
+import { listenForTest } from './test-listen.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
@@ -11,8 +12,7 @@ async function withServer(fn: (base: string) => Promise<void>): Promise<void> {
   const app = express();
   app.use(express.json());
   app.use('/api/templates', templatesRoutes(db));
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/templates`;
   try {
     await fn(base);
@@ -349,8 +349,7 @@ test('examples: ac status reflects synced submissions', async () => {
   const app = express();
   app.use(express.json());
   app.use('/api/templates', templatesRoutes(db));
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/templates`;
   try {
     const example = CURRICULUM[0].templates[0].examples[0];

@@ -10,6 +10,7 @@
  *   2. 超过 MAX_TURNS(60) → 从最早开始裁剪，并告知前端（不再 400）；
  *   3. 全部轮次为空 / 超过硬上限 → 400，且错误文案能区分原因。
  */
+import { listenForTest } from './test-listen.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
@@ -53,8 +54,7 @@ async function withServer(
       }),
     }),
   );
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/ai`;
   try {
     await fn({ base, capture });

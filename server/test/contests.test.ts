@@ -1,3 +1,4 @@
+import { listenForTest } from './test-listen.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ContestInfo } from '../../shared/src/index.ts';
@@ -228,7 +229,7 @@ test('contests route: type=running 只返回进行中的比赛（express 路由�
   const app = express();
   const { createDb } = await import('../src/db/index.ts');
   app.use('/api/contests', contestsRoutes(createDb(':memory:'), fetchStub));
-  const srv = app.listen(0);
+  const srv = await listenForTest(app);
   const port = (srv.address() as import('node:net').AddressInfo).port;
   const base = `http://127.0.0.1:${port}/api/contests`;
   try {

@@ -206,3 +206,117 @@ test('backfill: 整页已知不得当作补全到头（否则更早的历史永�
   assert.deepEqual(rows.map((r) => r.externalId).sort(), ['29', '30']);
   assert.equal(opts.truncated, undefined, '走到最后一页（短页）= 自然结束，不该留补全标记');
 });
+
+test('backfill: 已知前缀 ≥ 2 整页也要穿过（旧「连续 2 页已知即收尾」会把重度用户锁死）', async () => {
+  // 库已覆盖最新 2000 条（第 1、2 页整页已知），第 3 页还有更旧的历史：
+  // 旧实现走完第 2 页就宣告 caughtUp 并清掉 sync_truncated，第 2001 条及更早的提交永久不可达
+  const known = new Set<string>();
+  for (let i = 0; i < 2000; i++) known.add(String(2_000_000 + i));
+  const pages = [
+    Array.from({ length: 1000 }, (_, i) => ({ id: 2_000_000 + i })),
+    Array.from({ length: 1000 }, (_, i) => ({ id: 2_001_000 + i })),
+    [{ id: 30 }, { id: 29 }], // 更旧的历史
+  ];
+  const requested: number[] = [];
+  const adapter = createCodeforcesAdapter(async () => {
+    const page = pages[requested.length] ?? [];
+    requested.push(requested.length);
+    return cfRes({ status: 'OK', result: page.map((s) => submission(s)) });
+  });
+  const opts: { knownExternalIds?: Set<string>; backfill?: boolean; truncated?: boolean } = {
+    knownExternalIds: known,
+    backfill: true,
+  };
+  const rows = await adapter.fetchUserSubmissions('u', opts);
+  assert.equal(requested.length, 3, '补全模式必须穿过已知前缀走到第 3 页');
+  assert.deepEqual(rows.map((r) => r.externalId).sort(), ['29', '30']);
+  assert.equal(opts.truncated, undefined);
+});
+
+test('backfill: 从 backfillFromPage 游标续拉，不再从头重扫', async () => {
+  const froms: number[] = [];
+  const adapter = createCodeforcesAdapter(async (input) => {
+    froms.push(Number(new URL(String(input)).searchParams.get('from')));
+    return cfRes({ status: 'OK', result: [submission({ id: 30 }), submission({ id: 29 })] }); // 短页 = 自然结束
+  });
+  const opts: { backfill?: boolean; backfillFromPage?: number } = { backfill: true, backfillFromPage: 5 };
+  await adapter.fetchUserSubmissions('u', opts);
+  assert.equal(froms[0], 2001, '游标页 5 回退 2 页重叠 → 从第 3 页起（from=(3-1)*1000+1）');
+});
+
+test('backfill: 预算耗尽在已知前缀内（0 新增）也要截断并回写游标，下一轮从更深处续拉', async () => {
+  const known = new Set<string>();
+  for (let i = 0; i < 2000; i++) known.add(String(2_000_000 + i)); // 前 2 整页已知
+  const pages = [
+    Array.from({ length: 1000 }, (_, i) => ({ id: 2_000_000 + i })),
+    Array.from({ length: 1000 }, (_, i) => ({ id: 2_001_000 + i })),
+    Array.from({ length: 1000 }, (_, i) => ({ id: 2_002_000 + i })), // 预算 2 页，走不到这里
+  ];
+  const requested: number[] = [];
+  const adapter = createCodeforcesAdapter(async () => {
+    const page = pages[requested.length] ?? [];
+    requested.push(requested.length);
+    return cfRes({ status: 'OK', result: page.map((s) => submission(s)) });
+  });
+  // maxSubmissions=100 → 页数预算 = ceil(100/1000)*2 = 2 页
+  const opts: { knownExternalIds?: Set<string>; backfill?: boolean; maxSubmissions?: number; truncated?: boolean; backfillReachedPage?: number } = {
+    knownExternalIds: known,
+    backfill: true,
+    maxSubmissions: 100,
+  };
+  const rows = await adapter.fetchUserSubmissions('u', opts);
+  assert.equal(rows.length, 0);
+  assert.equal(opts.truncated, true, '0 新增也要截断：否则 sync_truncated 被清掉、更早历史永久放弃');
+  assert.equal(opts.backfillReachedPage, 3, '游标停在已扫过的最深页之后');
+});
+
+test('backfill: 逐轮续拉必须净推进（预算 2 页时重叠页不得吃掉全部预算、游标原地打转）', async () => {
+  // 回归（2026-10 复审实测发现）：默认 maxSubmissions=300 → 页数预算 = ceil(300/1000)*2 = 2 页。
+  // 若回退重叠同样取 2 页，「每轮净推进 = 预算 - 重叠 = 0」——每轮都只请求 from=1,1001，
+  // 第 3 页（第 2001 条及更早的提交）永远拉不到：死端只是从「已知前缀收尾」换成了
+  // 「游标原地打转」，修复并未生效。重叠页上限必须收敛到 预算-1。
+  const known = new Set<string>();
+  for (let i = 0; i < 2000; i++) known.add(String(2_000_000 + i)); // 库覆盖最新 2000 条（前 2 整页）
+  const requestedFroms: number[] = [];
+  const adapter = createCodeforcesAdapter(async (input) => {
+    const from = Number(new URL(String(input)).searchParams.get('from'));
+    requestedFroms.push(from);
+    if (from <= 1000) {
+      return cfRes({ status: 'OK', result: Array.from({ length: 1000 }, (_, i) => submission({ id: 2_000_000 + i })) });
+    }
+    if (from <= 2000) {
+      return cfRes({ status: 'OK', result: Array.from({ length: 1000 }, (_, i) => submission({ id: 2_001_000 + i })) });
+    }
+    if (from <= 3000) {
+      return cfRes({ status: 'OK', result: [submission({ id: 30 }), submission({ id: 29 })] }); // 短页 = 自然结束
+    }
+    return cfRes({ status: 'OK', result: [] });
+  });
+
+  const round1: {
+    knownExternalIds?: Set<string>;
+    backfill?: boolean;
+    maxSubmissions?: number;
+    truncated?: boolean;
+    backfillReachedPage?: number;
+  } = { knownExternalIds: known, backfill: true, maxSubmissions: 300 };
+  assert.deepEqual(await adapter.fetchUserSubmissions('u', round1), [], '前两页整页已知 → 本轮 0 新增');
+  assert.equal(round1.truncated, true, '预算耗尽在已知前缀内 → 如实截断，游标交给下一轮');
+  const cursor = round1.backfillReachedPage;
+  assert.equal(cursor, 3, '游标指向下一页起点（第 3 页）');
+
+  const round2: {
+    knownExternalIds?: Set<string>;
+    backfill?: boolean;
+    maxSubmissions?: number;
+    truncated?: boolean;
+    backfillFromPage?: number;
+  } = { knownExternalIds: known, backfill: true, maxSubmissions: 300, backfillFromPage: cursor as number };
+  const rows = await adapter.fetchUserSubmissions('u', round2);
+  assert.ok(
+    requestedFroms.includes(2001),
+    `第二轮必须推进到第 3 页，实际请求 from=[${requestedFroms.join(',')}]`,
+  );
+  assert.deepEqual(rows.map((r) => r.externalId).sort(), ['29', '30'], '第 2001 条及更早的历史必须能拉到');
+  assert.equal(round2.truncated, undefined, '走到短页 = 自然结束，补全收尾（同步层据此清空游标）');
+});

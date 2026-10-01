@@ -5,6 +5,7 @@
  * - 同步期间能读到 job（模式/阶段/已用时/站点请求数/心跳），结束后立即为空；
  * - /api/sync/all 期间给出 platforms / current / completed（含失败原因），结束后批次清空。
  */
+import { listenForTest } from './test-listen.ts';
 import { test, beforeEach, afterEach } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import assert from 'node:assert/strict';
@@ -101,8 +102,7 @@ async function withServer(fn: (base: string) => Promise<void>): Promise<void> {
   const app = express();
   app.use(express.json());
   app.use('/api/sync', syncRoutes(db));
-  const srv = app.listen(0);
-  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const srv = await listenForTest(app);
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/sync`;
   try {
     await fn(base);

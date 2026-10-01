@@ -1,3 +1,4 @@
+import { listenForTest } from './test-listen.ts';
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
@@ -16,8 +17,7 @@ async function withServer(fn: (base: string) => Promise<void>): Promise<void> {
   const app = express();
   app.use(express.json());
   app.use('/api/problems', problemsRoutes(d));
-  const srv = app.listen(0);
-  await new Promise<void>((r) => srv.once('listening', r));
+  const srv = await listenForTest(app);
   try {
     await fn(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/problems`);
   } finally {
