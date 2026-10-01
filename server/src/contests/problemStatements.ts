@@ -282,8 +282,9 @@ async function fetchPage(url: string, fetchFn: typeof fetch, cookie?: string): P
  * 首请求 302 回自身并 Set-Cookie 下发新 C3VK（5 分钟有效），带新值重试即 200；
  * `redirect: 'manual'` 是硬要求 —— 跟随的话 302 循环会耗尽 fetch 重定向次数直接抛 fetch failed
  * （实测匿名直连 `https://www.luogu.com.cn/problem/P1001` 就是 fetch failed）。
+ * 导出复用：参赛记录的洛谷比赛题目集抓取（participationSources）走同一套反爬协议。
  */
-async function fetchLuoguPage(url: string, fetchFn: typeof fetch, cookie: string): Promise<string> {
+export async function fetchLuoguPage(url: string, fetchFn: typeof fetch, cookie: string): Promise<string> {
   let current = cookie;
   for (let attempt = 0; attempt <= 2; attempt += 1) {
     if (attempt > 0) await sleep(300); // 重试间限速，避免毫秒级连发触发风控

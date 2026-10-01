@@ -6,6 +6,7 @@ import { DEFAULT_USER_ID } from '../constants.ts';
 import type { Db } from '../db/index.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
 import { calendarIndex, contestUrl } from './participated.ts';
+import { fetchLuoguPage } from './problemStatements.ts';
 
 /**
  * 「参加过的比赛」权威数据源：从平台侧拉取用户的参赛记录，落库持久化 +
@@ -73,6 +74,11 @@ export interface ParticipationSources {
 }
 
 const FETCH_TIMEOUT_MS = 15_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
 /** 单次拉取的分页上限（防异常响应导致无限翻页；触顶后下次拉取继续向后补全） */
 const DEFAULT_MAX_PAGES = 30;
 /** 参赛记录刷新间隔：30 分钟内重复打开直接读库，过期平台后台增量刷新 */
@@ -185,6 +191,10 @@ export async function fetchAtcoderParticipation(
       : null;
     if (!slug) continue;
     const endMs = Number(r.EndTimeStamp) * 1000;
+    // 日历命中即取官方赛名：history 的 ContestName 偶有脏值（实测 ARC219 为
+    // 「AtCoder Regular Contest-- 219」），而日历条目（官方 contests 页解析）恒为规范名；
+    // 未命中日历（太久远的场次）才回退 ContestName / slug
+    const calendarEntry = cal.get(`atcoder:${slug}`);
     const win =
       windowFromCalendar(cal, 'atcoder', slug) ??
       (Number.isFinite(endMs) ? windowFromEnd(endMs) : null);
@@ -194,7 +204,7 @@ export async function fetchAtcoderParticipation(
     out.push({
       platform: 'atcoder',
       contestId: slug,
-      name: typeof r.ContestName === 'string' ? r.ContestName : slug,
+      name: calendarEntry?.name ?? (typeof r.ContestName === 'string' ? r.ContestName : slug),
       url: `https://atcoder.jp/contests/${slug}`,
       startTimeMs: win?.startTimeMs ?? null,
       endTimeMs: win?.endTimeMs ?? null,
@@ -420,6 +430,72 @@ async function fetchNowcoderProblems(
   }
 }
 
+/**
+ * 洛谷比赛题目集：比赛详情页内嵌 JSON 的 `contestProblems` 数组（实测公开赛匿名可抓，
+ * 过 C3VK 反爬即可；团队赛/重现赛需要登录 Cookie，随参赛同步的 Cookie 传入）。
+ * 每项形如 `{"score":100,"problem":{"pid":"P17538","type":"P","name":"音符方阵",…},"no":"A"}`。
+ *
+ * 为什么必须抓题目集：洛谷比赛题赛后转正 T→P（数字会变、无映射可反查），窗口内按
+ * 「T 号才认」的旧口径会把已转正场次的提交统计清零，而放开 P 号又会把比赛进行时
+ * 刷的练习题误归进场。题目集给出该场**当前键**（转正后即 P 号）的精确名单，
+ * 「窗口内 + 属于该场」的归因才既不漏也不滥。拉取失败返回 null → 归因退回 T 号 × 窗口。
+ */
+export async function fetchLuoguContestProblems(
+  contestId: string,
+  cookie: string,
+  fetchFn: typeof fetch,
+): Promise<ContestProblemRef[] | null> {
+  try {
+    const html = await fetchLuoguPage(
+      `https://www.luogu.com.cn/contest/${encodeURIComponent(contestId)}`,
+      fetchFn,
+      cookie,
+    );
+    const key = '"contestProblems":';
+    const start = html.indexOf(key);
+    if (start < 0) return null;
+    // 括号配对提取数组（字符串感知：题目名里的引号/转义不能截断扫描）
+    let i = start + key.length;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (; i < html.length; i += 1) {
+      const c = html[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === '[') depth += 1;
+      else if (c === ']') {
+        depth -= 1;
+        if (depth === 0) {
+          i += 1;
+          break;
+        }
+      }
+    }
+    if (depth !== 0) return null;
+    const arr = JSON.parse(html.slice(start + key.length, i)) as Array<Record<string, unknown>>;
+    if (!Array.isArray(arr)) return null;
+    const refs: ContestProblemRef[] = [];
+    for (const row of arr) {
+      const problem = row?.problem as Record<string, unknown> | undefined;
+      if (typeof problem?.pid !== 'string' || problem.pid === '') continue;
+      refs.push({
+        id: problem.pid,
+        index: typeof row.no === 'string' ? row.no : undefined,
+        title: typeof problem.name === 'string' ? problem.name : undefined,
+      });
+    }
+    return refs.length > 0 ? refs : null;
+  } catch {
+    return null; // 拉取失败 → 归因退回 T 号 × 窗口（不阻断参赛同步）
+  }
+}
+
 /** 计蒜客：复用适配器的「已参加比赛」列表（补赛名/开始时间；Cookie 失效时计入 failures） */
 export async function fetchJisuankeParticipation(
   cookie: string,
@@ -642,8 +718,11 @@ function readSetting(db: Db, key: string): string {
 
 // ---------- 聚合入口 ----------
 
-/** 同一平台的拉取进行中时复用（GET 后台刷新与 chat 同步刷新不会重复打外网） */
-const inFlight = new Map<PlatformId, Promise<void>>();
+/** 同一平台的拉取进行中时复用（GET 后台刷新与 chat 同步刷新不会重复打外网）。
+ *  每平台是一个**集合**：force 刷新与后台刷新可以并存——用单槽 Map 时 force 会覆盖
+ *  在跑的条目，先完成方 finally 里的 delete 会把对方条目一起删掉，后续非 force 调用
+ *  查不到 in-flight 就会再起一个并发拉取打外网 */
+const inFlight = new Map<PlatformId, Set<Promise<void>>>();
 
 /** 题目集是否为富引用（带比赛内题号）——旧格式纯 id 集合需要重新拉取升级 */
 export function problemsAreRich(refs: ContestProblemRef[] | null | undefined): boolean {
@@ -651,23 +730,25 @@ export function problemsAreRich(refs: ContestProblemRef[] | null | undefined): b
 }
 
 /**
- * 牛客题目集按需补齐：仅对「窗口内确有本平台提交、且还没有**富**题目集」的场次发请求
+ * 题目集按需补齐：仅对「窗口内确有本平台提交、且还没有**富**题目集」的场次发请求
  * （有窗口内提交才存在归因歧义；题目集取到一次即随参赛记录持久化，不再重取；
  * 旧格式纯 id 集合视为未拉取，借下一次同步升级出题号/题名）。
  *
- * **只处理牛客**：本函数抓的是牛客题目集接口。历史上这里漏了平台判断，
- * 而它被每个平台的同步流程共用 —— 于是 Codeforces 的数字 contestId 被拿去查
- * 「牛客同号比赛」，把牛客题目集写进了 CF 场次（真实事故：CF 2241 存进 20 道
- * 牛客「小乐乐」题，导致赛事中心显示 20 题、复盘列出并不存在的未提交题）。
+ * **按平台分派**：牛客内联抓（题目集接口轻）；洛谷**不内联**——返回候选场清单，
+ * 由调用方在全部同步任务结束后交给后台预取（kickLuoguProblemSetPrefetch）。
+ * 历史上这里漏了平台判断，而它被每个平台的同步流程共用 —— 于是 Codeforces 的数字
+ * contestId 被拿去查「牛客同号比赛」，把牛客题目集写进了 CF 场次（真实事故：CF 2241
+ * 存进 20 道牛客「小乐乐」题，导致赛事中心显示 20 题、复盘列出并不存在的未提交题）。
  */
 async function enrichProblems(
   db: Db,
   items: AuthoritativeContest[],
   storedById: Map<string, ContestProblemRef[] | null>,
   fetchFn: typeof fetch,
-): Promise<void> {
+): Promise<AuthoritativeContest[]> {
+  const luoguCandidates: AuthoritativeContest[] = [];
   for (const item of items) {
-    if (item.platform !== 'nowcoder') continue; // 牛客题目集接口不得用于其它平台
+    if (item.platform !== 'nowcoder' && item.platform !== 'luogu') continue;
     if (item.problems || problemsAreRich(storedById.get(item.contestId))) continue;
     if (item.startTimeMs === null || item.endTimeMs === null) continue;
     const candidate = db
@@ -681,8 +762,75 @@ async function enrichProblems(
         new Date(item.endTimeMs).toISOString(),
       );
     if (!candidate) continue;
-    item.problems = await fetchNowcoderProblems(item.contestId, fetchFn);
+    if (item.platform === 'nowcoder') {
+      item.problems = await fetchNowcoderProblems(item.contestId, fetchFn);
+    } else {
+      luoguCandidates.push(item);
+    }
   }
+  return luoguCandidates;
+}
+
+/** 每轮预取的场次上限：剩余场等下一轮同步（30 分钟周期）继续，避免首刷连发打疼洛谷 */
+const LUOGU_SET_PREFETCH_PER_CYCLE = 3;
+/** 场间间隔：洛谷风控全平台最严（hostThrottle 4s 档）之上再放宽一档 */
+const LUOGU_SET_PREFETCH_SPACING_MS = 3_000;
+let luoguPrefetchSpacingMs = LUOGU_SET_PREFETCH_SPACING_MS;
+/** 后台预取去重：上一轮没跑完时不叠加（剩余场次等下一轮同步再入队） */
+let luoguPrefetchInFlight: Promise<void> | null = null;
+
+/** 题目集落库（与 fetchContestProblemSet 同一持久化；预取成功即写，下次读库可见） */
+function persistProblemSet(db: Db, platform: PlatformId, contestId: string, refs: ContestProblemRef[]): void {
+  db.prepare(
+    `UPDATE participated_contests SET problem_ids = ?, problem_set_state = 'ok'
+     WHERE user_id = ? AND platform = ? AND contest_id = ?`,
+  ).run(JSON.stringify(refs), DEFAULT_USER_ID, platform, contestId);
+}
+
+/**
+ * 洛谷题目集后台预取：**必须在同步任务全部结束之后启动**。
+ * 绝不能内联进同步任务：每场要过 C3VK 两连请求，走 hostThrottle 的 4s/请求最严档，
+ * 连发多场会长时间占住洛谷 host 队列——每个请求的 15s 超时从入队起算，此时若有
+ * 并发同步（用户点「刷新」的 force 不等后台刷新）把 joinedContests 请求排到队尾，
+ * 只会在排队中超时（2026-10 实测：洛谷参赛记录拉取失败 abort timeout）。因此：
+ * - 同步任务只收集候选场，全部结束后才在此处脱离执行；
+ * - 每轮限量 + 场间间隔；任何同步开始打洛谷（in-flight 非空）立即让路；
+ * - 结果直接落库，下次 GET/轮询即可见，无需等下一轮同步的 upsert。
+ */
+function kickLuoguProblemSetPrefetch(
+  db: Db,
+  candidates: AuthoritativeContest[],
+  cookie: string,
+  fetchFn: typeof fetch,
+): void {
+  if (candidates.length === 0 || luoguPrefetchInFlight) return;
+  luoguPrefetchInFlight = (async () => {
+    let fetched = 0;
+    for (const item of candidates) {
+      if (fetched >= LUOGU_SET_PREFETCH_PER_CYCLE) break; // 剩余场等下一轮同步
+      if ((inFlight.get('luogu')?.size ?? 0) > 0) break; // 同步开始打洛谷：让路
+      const refs = await fetchLuoguContestProblems(item.contestId, cookie, fetchFn);
+      if (refs) {
+        persistProblemSet(db, 'luogu', item.contestId, refs);
+        fetched += 1;
+      }
+      await sleep(luoguPrefetchSpacingMs);
+    }
+  })()
+    .catch(() => undefined) // 预取失败不外泄：题目集缺失只是归因退回 T 号 × 窗口
+    .finally(() => {
+      luoguPrefetchInFlight = null;
+    });
+}
+
+/** 测试用：调整预取间隔（默认 3s，测试改 0 免拖节奏） */
+export function __setLuoguProblemSetPrefetchForTest(spacingMs: number): void {
+  luoguPrefetchSpacingMs = spacingMs;
+}
+
+/** 测试用：等待在跑的洛谷题目集预取结束（未在跑则立即返回） */
+export function __flushLuoguProblemSetPrefetchForTest(): Promise<void> {
+  return luoguPrefetchInFlight ?? Promise.resolve();
 }
 
 /**
@@ -755,14 +903,16 @@ export async function loadParticipationSources(
     });
   }
 
+  // 洛谷题目集预取候选（各任务只收集不抓取，全部任务结束后统一后台预取）
+  const luoguPrefetchQueue: AuthoritativeContest[] = [];
   await Promise.all(
     tasks.map(async ({ platform, account, fetcher }) => {
       // force=true 时不复用 in-flight：用户点「刷新」期望强制重拉，不该被后台刷新
-      // 的 in-flight 吞掉而看到旧数据。force 请求自己建 in-flight，后续非 force 请求
-      // 仍会等它完成（避免同一平台并发两请求打外网）。
-      const inflight = opts?.force ? undefined : inFlight.get(platform);
-      if (inflight) {
-        await inflight.catch(() => {});
+      // 的 in-flight 吞掉而看到旧数据。force 请求自己建 in-flight 并入集合，后续非 force
+      // 请求会等集合里所有在跑任务完成（避免同一平台并发两请求打外网）。
+      const inflight = inFlight.get(platform);
+      if (!opts?.force && inflight && inflight.size > 0) {
+        await Promise.allSettled([...inflight]);
         byPlatform[platform] = readStoredContests(db, platform);
         // 补上 in-flight 分支的 failures 读取：原实现只读 byPlatform 不读 failures，
         // 导致在 in-flight 期间发生的失败对调用方不可见
@@ -785,12 +935,13 @@ export async function loadParticipationSources(
             knownOldestMs: state?.oldestMs ?? null,
             backlogDone: state?.backlogDone ?? false,
           });
-          await enrichProblems(
+          const luoguCandidates = await enrichProblems(
             db,
             result.items,
             new Map(stored.map((r) => [r.contestId, r.problems ?? null])),
             fetchFn,
           );
+          luoguPrefetchQueue.push(...luoguCandidates);
           const oldestMs = upsertContests(db, platform, account, result.items);
           writeSyncState(db, platform, account, {
             truncated: result.truncated,
@@ -809,15 +960,23 @@ export async function loadParticipationSources(
           failures[platform] = msg;
         }
       })();
-      inFlight.set(platform, task);
+      const running = inFlight.get(platform) ?? new Set<Promise<void>>();
+      running.add(task);
+      inFlight.set(platform, running);
       try {
         await task;
       } finally {
-        inFlight.delete(platform);
+        running.delete(task);
+        if (running.size === 0) inFlight.delete(platform);
       }
       byPlatform[platform] = readStoredContests(db, platform);
     }),
   );
+
+  // 全部同步任务已结束（in-flight 已清空）：此刻启动洛谷题目集后台预取才是安全的
+  if (luoguPrefetchQueue.length > 0) {
+    kickLuoguProblemSetPrefetch(db, luoguPrefetchQueue, luoguCookie, fetchFn);
+  }
 
   return { byPlatform, failures };
 }
@@ -850,10 +1009,15 @@ export function readParticipationSnapshot(db: Db): {
 /** 后台刷新去重（GET 路由多次触发只跑一轮） */
 let backgroundRefresh: Promise<void> | null = null;
 
-/** 过期平台的后台增量刷新（非阻塞）；已有刷新在进行中时不再叠加，返回是否真正启动 */
-export function kickBackgroundRefresh(db: Db, calendar: ContestInfo[] | undefined): boolean {
+/** 过期平台的后台增量刷新（非阻塞）；已有刷新在进行中时不再叠加，返回是否真正启动。
+ *  fetchFn 透传给拉取层：路由把注入的 fetchFn 带进来，测试才能 stub 而不打外网 */
+export function kickBackgroundRefresh(
+  db: Db,
+  calendar: ContestInfo[] | undefined,
+  fetchFn?: typeof fetch,
+): boolean {
   if (backgroundRefresh) return false;
-  backgroundRefresh = loadParticipationSources(db, calendar)
+  backgroundRefresh = loadParticipationSources(db, calendar, { ...(fetchFn ? { fetchFn } : {}) })
     .then(() => undefined)
     .catch(() => undefined) // 后台刷新失败静默：GET 已返回，错误留存在状态表里
     .finally(() => {
@@ -929,6 +1093,10 @@ export async function fetchContestProblemSet(
     } else if (platform === 'atcoder') {
       // 公开 SSR 题目列表：未提交的题也就能拿到题号/题名与题面
       refs = await fetchAtcoderProblemSet(contestId, fetchFn);
+    } else if (platform === 'luogu') {
+      // 比赛页 contestProblems：转正 P 号 / 未转正 T 号都按当前键给出，
+      // 复盘的「赛时未提交的题」列表与赛事中心的归因同一数据源
+      refs = await fetchLuoguContestProblems(contestId, readSetting(db, 'cookie.luogu'), fetchFn);
     }
 
     // AtCoder：官方 tasks 页的题名顺手修正库内被社区数据串号的标题

@@ -54,7 +54,7 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     const hasStored = Object.keys(snapshot.byPlatform).length > 0;
     if (!hasStored && snapshot.stalePlatforms.length > 0) {
       // 首次使用（库内还没有任何参赛记录）：同步初始化（带单次上限），避免首次打开是空列表
-      const sources = await loadParticipationSources(db, calendar);
+      const sources = await loadParticipationSources(db, calendar, { fetchFn });
       res.json({
         contests: deriveParticipatedContests(db, { calendar, sources: sources.byPlatform }),
         sourceFailures: sources.failures,
@@ -63,7 +63,11 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       return;
     }
     let refreshing: PlatformId[] = [];
-    if (snapshot.stalePlatforms.length > 0 && kickBackgroundRefresh(db, calendar)) {
+    if (snapshot.stalePlatforms.length > 0) {
+      // kick 返回 false = 已有一轮后台刷新在跑：这批过期平台同样正在被刷新，
+      // 必须照实回报——返回 refreshing=[] 会让前端撤掉「正在后台更新」提示，
+      // 用户既看不到提示也不会自动拿到新数据（kick 内部有去重，不会叠加第二 burst）
+      kickBackgroundRefresh(db, calendar, fetchFn);
       refreshing = snapshot.stalePlatforms;
     }
     res.json({
@@ -78,7 +82,7 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   // 通常只拉第 1 页，被单次上限截断的平台继续向后补全），返回刷新后的完整列表。
   r.post('/participated/refresh', asyncHandler(async (_req, res) => {
     const calendar = await calendarCache.load(db);
-    const sources = await loadParticipationSources(db, calendar, { force: true });
+    const sources = await loadParticipationSources(db, calendar, { force: true, fetchFn });
     res.json({
       contests: deriveParticipatedContests(db, { calendar, sources: sources.byPlatform }),
       sourceFailures: sources.failures,

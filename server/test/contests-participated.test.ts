@@ -11,6 +11,11 @@ import {
   resolveContestGroup,
   type ContestReviewData,
 } from '../src/contests/participated.ts';
+import {
+  __flushLuoguProblemSetPrefetchForTest,
+  __setLuoguProblemSetPrefetchForTest,
+  fetchLuoguContestProblems,
+} from '../src/contests/participationSources.ts';
 
 /**
  * 赛后复盘推导：数据库没有比赛实体，「参加过的比赛」从 problemKey/url 结构与
@@ -114,6 +119,9 @@ const CAL: ContestInfo[] = [
 test('contestIdOf：各平台反解比赛标识，无信号的平台返回 null', () => {
   assert.equal(contestIdOf('codeforces', '1877A', null), '1877');
   assert.equal(contestIdOf('codeforces', '104821B', null), '104821');
+  // 纯数字键（CF 实测存在，见 problemKey.ts 的取证记录）：贪婪 \d+ 曾把 92101 错拆成比赛 9210
+  assert.equal(contestIdOf('codeforces', '92101', null), '921', '末 2 位是题号，比赛号取前段');
+  assert.equal(contestIdOf('codeforces', '92101', 'https://codeforces.com/contest/1901/problem/01'), '1901', '有 url 时优先取 url');
   assert.equal(contestIdOf('atcoder', 'abc300_a', 'https://atcoder.jp/contests/abc300/tasks/abc300_a'), 'abc300');
   assert.equal(contestIdOf('atcoder', 'abc300_a', null), null, 'AtCoder 无 url 时不猜');
   assert.equal(contestIdOf('jisuanke', '12345-678', null), '12345');
@@ -168,7 +176,7 @@ test('CF：contest/virtual 判定，gym 需一次集中作答（≥3 题 ≤6h�
     assert.deepEqual(
       contests.map((c) => c.key),
       ['codeforces:1877', 'codeforces:1900', 'codeforces:104821'],
-      '按最后提交时间倒序；纯练习组与零散 gym 被排除',
+      '按比赛开始时间倒序；纯练习组与零散 gym 被排除',
     );
 
     const cf1877 = contests[0]!;
@@ -184,6 +192,27 @@ test('CF：contest/virtual 判定，gym 需一次集中作答（≥3 题 ≤6h�
     assert.equal(contests[1]!.evidence, 'virtual');
     assert.equal(contests[2]!.evidence, 'gym');
     assert.equal(contests[2]!.url, 'https://codeforces.com/gym/104821');
+  } finally {
+    db.close();
+  }
+});
+
+test('列表排序按比赛开始时间倒序：补题不重排历史（2026-10 用户实测回归）', () => {
+  // 旧口径按 lastSubmittedAt 倒序：比赛 A（8/1 开赛）最近补过题（9/1），
+  // 会被排到比赛 B（8/20 开赛、无后续活动）前面——历史列表被补题活动打乱
+  const db = createDb(':memory:');
+  try {
+    seedAll(db, [
+      { platform: 'codeforces', problemKey: '1878A', verdict: 'AC', submittedAt: '2026-08-01T14:10:00.000Z', externalId: 'a1', context: 'contest' },
+      { platform: 'codeforces', problemKey: '1878B', verdict: 'AC', submittedAt: '2026-09-01T10:00:00.000Z', externalId: 'a2', context: 'practice' },
+      { platform: 'codeforces', problemKey: '1900A', verdict: 'AC', submittedAt: '2026-08-20T14:10:00.000Z', externalId: 'b1', context: 'contest' },
+    ]);
+    const contests = deriveParticipatedContests(db, { calendar: [] });
+    assert.deepEqual(
+      contests.map((c) => c.key),
+      ['codeforces:1900', 'codeforces:1878'],
+      '8/20 的比赛在前；8/1 的比赛即使最近在补题（lastSubmittedAt=9/1）也排后面',
+    );
   } finally {
     db.close();
   }
@@ -727,6 +756,32 @@ test('provider 映射：CF user.rating / AtCoder history（stub fetch，不访�
   assert.equal(at[1]!.rating, null, 'unrated 场次不携带 rating');
 });
 
+test('provider 映射：AtCoder 日历命中时用日历规范名（history ContestName 有脏值）', async () => {
+  // 实测页面出现过「AtCoder Regular Contest-- 219」：history 的 ContestName 偶有脏值，
+  // 日历（官方 contests 页解析）恒为规范名，命中 slug 时必须优先
+  const cal = calendarIndex([
+    {
+      id: 'at-arc219',
+      platform: 'atcoder',
+      name: 'AtCoder Regular Contest 219',
+      category: 'ARC',
+      startTimeIso: '2026-05-10T12:00:00.000Z',
+      durationMinutes: 120,
+      phase: 'FINISHED',
+      url: 'https://atcoder.jp/contests/arc219',
+    },
+  ]);
+  const atFetch: typeof fetch = (async () =>
+    new Response(JSON.stringify([
+      { ContestScreenName: 'arc219.contest.atcoder.jp', ContestName: 'AtCoder Regular Contest-- 219', EndTimeStamp: Date.parse('2026-05-10T14:00:00.000Z') / 1000, Place: 1458, IsRated: true, OldRating: 0, NewRating: 100 },
+    ]), { status: 200 })) as typeof fetch;
+  const at = await fetchAtcoderParticipation('hieZF123', cal, atFetch);
+  assert.equal(at[0]!.name, 'AtCoder Regular Contest 219', '日历命中的场次用规范名');
+  // 日历未命中：回退 ContestName 原文（不臆造）
+  const at2 = await fetchAtcoderParticipation('hieZF123', calendarIndex([]), atFetch);
+  assert.equal(at2[0]!.name, 'AtCoder Regular Contest-- 219');
+});
+
 test('provider 映射：洛谷 joinedContests / 牛客 joined-history 分页与增量（stub fetch）', async () => {
   const lgRow = (id: number): unknown => ({ id, name: `洛谷比赛 ${id}`, startTime: 1790000000 - id * 86400, endTime: 1790010000, problemCount: 5 });
   let lgCalls = 0;
@@ -1260,3 +1315,190 @@ test('fetchContestProblemSet：牛客 problem-list 解析 index/title；失败�
 });
 
 
+
+// ---------- 洛谷比赛题目集：转正 P 号提交的精确归因（2026-10 用户实测回归） ----------
+
+/** 比赛详情页内嵌 JSON 片段（脱敏自 LGR-310 实测抓包） */
+const LUOGU_CONTEST_HTML =
+  '<script>window.__INITIAL_STATE__={"contest":{"name":"月赛"},"contestProblems":' +
+  '[{"score":100,"problem":{"pid":"P17538","type":"P","name":"音符方阵","difficulty":2,"fullScore":100},"no":"A"},' +
+  '{"score":100,"problem":{"pid":"P17539","type":"P","name":"日月同错","difficulty":4,"fullScore":100},"no":"B"},' +
+  '{"score":100,"problem":{"pid":"P17540","type":"P","name":"发迹","difficulty":6,"fullScore":100},"no":"C"}]' +
+  ',"canViewScoreboard":true};</script>';
+
+test('fetchLuoguContestProblems：解析比赛页 contestProblems（含 C3VK 302 挑战重试）', async () => {
+  let calls = 0;
+  const fetchStub: typeof fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      // 首请求 302 回自身并下发新 C3VK（洛谷反爬协议）
+      return new Response(null, { status: 302, headers: { 'Set-Cookie': 'C3VK=fresh-token; Path=/' } });
+    }
+    return new Response(LUOGU_CONTEST_HTML, { status: 200 });
+  };
+  const refs = await fetchLuoguContestProblems('278842', '', fetchStub);
+  assert.equal(calls, 2, '首请求 302 后必须带新 C3VK 重试');
+  assert.deepEqual(
+    refs,
+    [
+      { id: 'P17538', index: 'A', title: '音符方阵' },
+      { id: 'P17539', index: 'B', title: '日月同错' },
+      { id: 'P17540', index: 'C', title: '发迹' },
+    ],
+  );
+});
+
+test('fetchLuoguContestProblems：页面缺 contestProblems / 非 JSON → 返回 null（归因退回 T 号）', async () => {
+  const noData = await fetchLuoguContestProblems(
+    '1',
+    '',
+    (async () => new Response('<html>权限墙</html>', { status: 200 })) as typeof fetch,
+  );
+  assert.equal(noData, null);
+  const httpFail = await fetchLuoguContestProblems(
+    '1',
+    '',
+    (async () => new Response('nope', { status: 500 })) as typeof fetch,
+  );
+  assert.equal(httpFail, null);
+});
+
+test('洛谷归因：题目集已知时按「窗口内 + 属于该场」精确匹配（转正 P 号计入、练习题不误归）', () => {
+  const db = createDb(':memory:');
+  try {
+    seedAll(db, [
+      // 月赛窗口内的比赛题提交（转正后 P 号键，与题目集成员一致）
+      { platform: 'luogu', problemKey: 'P17538', verdict: 'AC', submittedAt: '2026-09-30T10:11:49.000Z', externalId: 'l1' },
+      { platform: 'luogu', problemKey: 'P17539', verdict: 'WA', submittedAt: '2026-09-30T10:26:48.000Z', externalId: 'l2' },
+      // 窗口内的练习题（不在题目集）：不得误归进场
+      { platform: 'luogu', problemKey: 'P10001', verdict: 'AC', submittedAt: '2026-09-30T11:00:00.000Z', externalId: 'l3' },
+      // 比赛题但提交在窗口外（赛后补题）：不算赛时逐条提交
+      { platform: 'luogu', problemKey: 'P17540', verdict: 'AC', submittedAt: '2026-10-02T02:00:00.000Z', externalId: 'l4' },
+    ]);
+    const sources = {
+      luogu: [
+        srcEntry('luogu', '278842', {
+          name: '【LGR-310-Div.2】洛谷 9 月月赛 II',
+          url: 'https://www.luogu.com.cn/contest/278842',
+          startTimeMs: Date.parse('2026-09-30T10:00:00.000Z'),
+          endTimeMs: Date.parse('2026-09-30T15:00:00.000Z'),
+          problemCount: 4,
+          problems: [
+            { id: 'P17538', index: 'A', title: '音符方阵' },
+            { id: 'P17539', index: 'B', title: '日月同错' },
+            { id: 'P17540', index: 'C', title: '发迹' },
+            { id: 'P17541', index: 'D', title: '25HRS' },
+          ],
+        }),
+      ],
+    };
+    const contests = deriveParticipatedContests(db, { sources });
+    assert.equal(contests.length, 1);
+    const c = contests[0]!;
+    assert.equal(c.key, 'luogu:278842');
+    assert.equal(c.submissionCount, 2, '窗口内且属于该场的 2 条提交计入');
+    assert.equal(c.problemCount, 4, '总题数来自参赛记录');
+    assert.equal(c.acProblemCount, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('洛谷归因：题目集未知时退回 T 号 × 窗口（P 号宁缺毋滥，不猜）', () => {
+  const db = createDb(':memory:');
+  try {
+    seedAll(db, [
+      { platform: 'luogu', problemKey: 'T822401', verdict: 'AC', submittedAt: '2026-09-24T13:40:00.000Z', externalId: 't1' },
+      { platform: 'luogu', problemKey: 'P17538', verdict: 'AC', submittedAt: '2026-09-24T13:50:00.000Z', externalId: 'p1' },
+    ]);
+    const sources = {
+      luogu: [
+        srcEntry('luogu', '357001', {
+          startTimeMs: Date.parse('2026-09-24T13:32:00.000Z'),
+          endTimeMs: Date.parse('2026-09-24T15:00:00.000Z'),
+          problemCount: 8,
+          problems: null,
+        }),
+      ],
+    };
+    const contests = deriveParticipatedContests(db, { sources });
+    assert.equal(contests[0]!.submissionCount, 1, '只认窗口内的 T 号；P 号可能是练习题，不猜');
+  } finally {
+    db.close();
+  }
+});
+
+test('fetchContestProblemSet：洛谷走比赛页并落库三态（复盘「未提交的题」同源）', async () => {
+  const db = createDb(':memory:');
+  try {
+    db.prepare(
+      `INSERT INTO participated_contests (user_id, platform, account, contest_id, name, fetched_at)
+       VALUES (1, 'luogu', 'u', '278842', '月赛', ?)`,
+    ).run(new Date().toISOString());
+    const refs = await fetchContestProblemSet(
+      db,
+      'luogu',
+      '278842',
+      (async () => new Response(LUOGU_CONTEST_HTML, { status: 200 })) as typeof fetch,
+    );
+    assert.equal(refs.status, 'ok');
+    const row = db
+      .prepare("SELECT problem_ids, problem_set_state FROM participated_contests WHERE contest_id='278842'")
+      .get() as { problem_ids: string; problem_set_state: string };
+    assert.equal(row.problem_set_state, 'ok');
+    assert.match(row.problem_ids, /P17538/);
+  } finally {
+    db.close();
+  }
+});
+
+test('洛谷题目集后台预取：脱离同步任务异步落库，下次读库即可归因', async () => {
+  __setLuoguProblemSetPrefetchForTest(0);
+  const db = createDb(':memory:');
+  try {
+    // 账号（latestAccounts 从 submissions 推导）+ 窗口内提交 + 题目集缺失的参赛记录
+    seedAll(db, [
+      { platform: 'luogu', problemKey: 'P17538', verdict: 'AC', submittedAt: '2026-09-30T10:11:49.000Z', externalId: 'l1' },
+    ]);
+    db.prepare("UPDATE submissions SET account = '1892580'").run();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('cookie.luogu', '_uid=1')").run();
+    db.prepare(
+      `INSERT INTO participated_contests
+         (user_id, platform, account, contest_id, name, url, start_ms, end_ms, problem_count, fetched_at)
+       VALUES (1, 'luogu', '1892580', '278842', '月赛', 'https://www.luogu.com.cn/contest/278842', ?, ?, 4, ?)`,
+    ).run(Date.parse('2026-09-30T10:00:00.000Z'), Date.parse('2026-09-30T15:00:00.000Z'), new Date().toISOString());
+    // 同步状态过期：让本轮真的去拉参赛记录
+    db.prepare(
+      "INSERT INTO participation_sync (user_id, platform, account, last_sync_at, backlog_done) VALUES (1, 'luogu', '1892580', ?, 1)",
+    ).run(new Date(Date.now() - 60 * 60_000).toISOString());
+
+    let joinedPages = 0;
+    const fetchStub = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('joinedContests')) {
+        joinedPages += 1;
+        const rows = joinedPages === 1
+          ? [{ id: 278842, name: '【LGR-310-Div.2】月赛', startTime: Date.parse('2026-09-30T10:00:00.000Z') / 1000, endTime: Date.parse('2026-09-30T15:00:00.000Z') / 1000, problemCount: 4 }]
+          : [];
+        return new Response(JSON.stringify({ contests: { result: rows, count: joinedPages === 1 ? 1 : 0, perPage: 20 } }), { status: 200 });
+      }
+      if (url.includes('/contest/')) return new Response(LUOGU_CONTEST_HTML, { status: 200 });
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const sources = await loadParticipationSources(db, undefined, { fetchFn: fetchStub });
+    assert.equal(
+      sources.byPlatform.luogu?.[0]?.problems ?? null,
+      null,
+      '同步任务内联绝不抓洛谷比赛页（防 host 队列被占死、并发同步超时）',
+    );
+    await __flushLuoguProblemSetPrefetchForTest();
+    const row = db
+      .prepare("SELECT problem_ids, problem_set_state FROM participated_contests WHERE contest_id='278842'")
+      .get() as { problem_ids: string; problem_set_state: string };
+    assert.equal(row.problem_set_state, 'ok', '预取成功即落库');
+    assert.match(row.problem_ids, /P17538/);
+  } finally {
+    db.close();
+  }
+});

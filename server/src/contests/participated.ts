@@ -85,6 +85,14 @@ function platformName(platform: PlatformId): string {
 export function contestIdOf(platform: PlatformId, problemKey: string, url: string | null): string | null {
   switch (platform) {
     case 'codeforces': {
+      // 纯数字题号（如 92101 = 比赛 921 + 题号 01，见 problemKey.ts 的实测记录）：
+      // 贪婪 \d+ 会把比赛号错拆成 9210，先试 url 里的 /contest/N/，再退回「末 2 位是题号」
+      if (/^\d+$/.test(problemKey)) {
+        const fromUrl = url ? /codeforces\.com\/contests?\/(\d+)/.exec(url) : null;
+        if (fromUrl) return fromUrl[1];
+        const m = /^(\d+?)(\d{2})$/.exec(problemKey);
+        return m ? m[1] : null;
+      }
       const m = /^(\d+)(.+)$/.exec(problemKey);
       return m ? m[1] : null;
     }
@@ -447,13 +455,28 @@ function buildContestIndex(
         src.startTimeMs !== null &&
         src.endTimeMs !== null
       ) {
+        // 洛谷：比赛题赛后转正 T→P（数字会变、无映射可反查），转正前同步的旧提交被自愈
+        // 重定向到 P 号行、转正后同步的提交直存 P 号——T-only 过滤会把已转正场次的提交
+        // 统计清零（2026-10 用户实测：月赛窗口内 2 条 P 号提交被滤成「无逐条提交记录」），
+        // 而无脑放开 P 号又会把比赛进行时刷的练习题误归进场。精确口径是「窗口内 + 题目
+        // 属于该场」：题目集由 enrichProblems 按需抓取（比赛页 contestProblems，键已是
+        // 转正后的 P 号）并落库；缺失时退回 T 号 × 窗口（宁缺毋滥，不猜 P 号）。
+        const inWindow = (r: ContestSubmissionRow): boolean => {
+          const t = Date.parse(r.submittedAt);
+          return Number.isFinite(t) && t >= src.startTimeMs! && t <= src.endTimeMs!;
+        };
         attributed = platformRows.filter((r) => {
-          if (platform === 'luogu' && !isLuoguContestProblem(r.problemKey)) return false;
+          if (!inWindow(r)) return false;
+          if (platform === 'luogu') {
+            if (src.problems && src.problems.length > 0) {
+              return src.problems.some((p) => p.id === r.problemKey);
+            }
+            return isLuoguContestProblem(r.problemKey);
+          }
           if (platform === 'nowcoder' && src.problems && !src.problems.some((p) => p.id === r.problemKey)) {
             return false;
           }
-          const t = Date.parse(r.submittedAt);
-          return Number.isFinite(t) && t >= src.startTimeMs! && t <= src.endTimeMs!;
+          return true;
         });
       }
       index.set(key, {
@@ -471,7 +494,11 @@ function buildContestIndex(
 }
 
 /**
- * 推导「参加过的比赛」全量列表（按最后提交时间倒序 = 最近复盘优先）。
+ * 推导「参加过的比赛」全量列表（按**比赛开始时间**倒序 = 最近参赛在前）。
+ * 旧口径按 lastSubmittedAt 倒序（「最近复盘优先」），但给旧比赛补一次题就会把它
+ * 顶进历史中间——列表是用户的比赛历史，补题活动时间不该重排历史（2026-10 用户实测
+ * 反馈：7/14 的 CF 插在 8/20 与 8/21 两场之间、2/14 的 ABC 插在 5/23 与 5/24 之间）。
+ * 平级时按最后活动时间裁决（同日多场以近期活跃的靠前）；无开始时间的合成组排最后。
  * calendar 传入赛事日历聚合结果（routes 侧已带 60min 缓存）用于补赛名与时间窗；
  * sources 传入平台侧参赛记录（loadParticipationSources）——名称/时间/成绩的最高
  * 优先级来源，并让本地没有提交的场次也能进入列表。缺省时 CF/计蒜客/QOJ 仍可
@@ -486,7 +513,15 @@ export function deriveParticipatedContests(
     const contest = qualifyGroup(platform, group);
     if (contest) out.push(contest);
   }
-  out.sort((a, b) => (a.lastSubmittedAt < b.lastSubmittedAt ? 1 : -1));
+  out.sort((a, b) => {
+    const at = a.startTimeIso ? Date.parse(a.startTimeIso) : NaN;
+    const bt = b.startTimeIso ? Date.parse(b.startTimeIso) : NaN;
+    const atN = Number.isFinite(at) ? at : Number.NEGATIVE_INFINITY;
+    const btN = Number.isFinite(bt) ? bt : Number.NEGATIVE_INFINITY;
+    if (atN !== btN) return btN - atN;
+    if (a.lastSubmittedAt !== b.lastSubmittedAt) return a.lastSubmittedAt < b.lastSubmittedAt ? 1 : -1;
+    return 0;
+  });
   return out.slice(0, MAX_LIST);
 }
 
