@@ -488,3 +488,52 @@ test('sync: days 窗口触及单次上限时如实上报截断（不谎报「已
   // days 模式不注册后台续拉、不改账号状态（语义不变）
   assert.equal(db.prepare('SELECT COUNT(*) AS c FROM platform_accounts').get()!.c, 0);
 });
+
+test('sync: 注入 knownProblemKeys；平台侧改题号（比赛 T 号 → 赛后 P 号）重定向既有提交', async () => {
+  // 洛谷比赛题赛后转正：适配器须拿到「提交号 → 库中题号」映射才能比对出键变化并重发，
+  // 写入层据键差异把提交重定向到正式 P 号行——否则提交永远指向失效的 T 号死链。
+  let call = 0;
+  const seenKeys: Array<Map<string, string> | undefined> = [];
+  const keySub = (problemKey: string, url: string) => ({
+    problem: {
+      platform: 'codeforces' as const,
+      problemKey,
+      title: `T ${problemKey}`,
+      difficulty: 1500,
+      url,
+      tags: [] as string[],
+    },
+    verdict: 'AC' as const,
+    submittedAt: '2026-09-30T10:26:00.000Z',
+    externalId: 'e1',
+  });
+  const fake: PlatformAdapter = {
+    platform: 'codeforces',
+    knownIdsFilter: true,
+    async fetchUserSubmissions(_handle, opts) {
+      call += 1;
+      seenKeys.push(opts?.knownProblemKeys);
+      return [keySub(
+        call === 1 ? 'T685864' : 'P17538',
+        call === 1 ? 'https://www.luogu.com.cn/problem/T685864' : 'https://www.luogu.com.cn/problem/P17538',
+      )];
+    },
+    problemUrl() {
+      return 'https://codeforces.com/';
+    },
+  };
+  register(fake);
+  await syncPlatform(db, 'codeforces', 'u');
+  const result = await syncPlatform(db, 'codeforces', 'u');
+  assert.ok(seenKeys[1] instanceof Map, '第二次同步应携带 knownProblemKeys');
+  assert.equal(seenKeys[1]!.get('e1'), 'T685864', '映射值为库中既有行当前题号');
+  assert.equal(result.imported, 1, '改题号重定向算一次有效写入');
+  const row = db
+    .prepare(
+      `SELECT p.problem_key AS k, p.url AS url FROM submissions s JOIN problems p ON p.id = s.problem_id
+        WHERE s.external_id = 'e1'`,
+    )
+    .get() as { k: string; url: string };
+  assert.equal(row.k, 'P17538');
+  assert.equal(row.url, 'https://www.luogu.com.cn/problem/P17538');
+});

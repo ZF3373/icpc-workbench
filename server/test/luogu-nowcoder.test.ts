@@ -253,6 +253,47 @@ test('luogu: 补全连续 2 个整页已知即收尾（回归：曾空扫满 30 
   assert.equal(opts.truncated, undefined, '补全到尽头不算截断');
 });
 
+test('luogu: 已知提交的平台侧题号变化（比赛 T 号 → 赛后正式 P 号）→ 重发该行', async () => {
+  // 洛谷比赛题赛后转正：record/list 对同一提交号改发 P 号。若已知行仍被直接跳过，
+  // 写入层永远看不到键变化，提交会永久指向失效的 T 号死链（issue：比赛同步题链接打不开）。
+  const fetchFn = router({
+    'record/list': (url) => {
+      const page = new URL(url).searchParams.get('page');
+      if (page !== '1') return { code: 200, data: { records: { result: [] } } };
+      return {
+        code: 200,
+        data: {
+          records: {
+            result: [
+              { id: 9301, status: 12, submitTime: 1700000000, problem: { pid: 'P17538', difficulty: 5 } },
+            ],
+          },
+        },
+      };
+    },
+    '/problem/': () => ({ code: 200, data: { problem: { pid: 'P17538', difficulty: 5, name: '音符方阵', tags: [] } } }),
+    '_lfe/tags': () => ({ tags: [] }),
+  });
+  const adapter = createLuoguAdapter(fetchFn);
+  const opts = (keys?: Map<string, string>) => ({
+    cookie: COOKIE,
+    knownExternalIds: new Set(['9301']),
+    ...(keys ? { knownProblemKeys: keys } : {}),
+  });
+  // 库中仍是 T 号、平台改发 P 号 → 重发
+  const rows = await adapter.fetchUserSubmissions('123', opts(new Map([['9301', 'T685864']])));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].problem.problemKey, 'P17538');
+  assert.equal(rows[0].problem.title, '音符方阵');
+  assert.equal(rows[0].problem.url, 'https://www.luogu.com.cn/problem/P17538');
+  // 题号未变 → 维持整页已知跳过语义
+  const same = await adapter.fetchUserSubmissions('123', opts(new Map([['9301', 'P17538']])));
+  assert.equal(same.length, 0);
+  // 未注入 knownProblemKeys（旧调用方）→ 维持跳过语义
+  const legacy = await adapter.fetchUserSubmissions('123', opts());
+  assert.equal(legacy.length, 0);
+});
+
 test('luogu: 秒级 submitTime 正确转毫秒（回归：曾被当毫秒解析全部落回 1970）', async () => {
   // 线上实测洛谷 record.submitTime 是 10 位秒级时间戳
   const fetchFn = router({

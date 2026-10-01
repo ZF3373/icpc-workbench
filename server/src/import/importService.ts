@@ -2,6 +2,7 @@ import type { NormalizedSubmission, PlatformId } from '../../../shared/src/index
 import type { Db } from '../db/index.ts';
 import { annotateProblemsL1 } from '../knowledge/pipeline.ts';
 import { problemUpsertSql, purifyTags } from './problemWritePolicy.ts';
+import { mergeProblemRow } from './problemMerge.ts';
 import { createTombstoneMatcher } from './tombstones.ts';
 
 export interface InsertResult {
@@ -26,7 +27,9 @@ export function normalizeLanguageCell(v: string | number | null | undefined): st
 /**
  * 将统一 Submission 结构写入数据库（单事务）：
  * - problems 按 (platform, problem_key) upsert（标题/难度/链接/tags 更新）
- * - submissions 按 (user_id, platform, account, external_id) INSERT OR IGNORE 去重
+ * - submissions 按 (user_id, platform, account, external_id) INSERT OR IGNORE 去重；
+ *   去重命中时检测平台侧改题号（洛谷比赛 T 号 → 赛后 P 号），变了则把旧题行并入新键行
+ *   并重定向既有提交（见 import/problemMerge.ts），与改判刷新同属「既有行不冻结」口径
  * - opts.account：归属账号 handle（多账号隔离）；省略 = 手动导入等无账号来源（account NULL）
  * - opts.clearPlatform：先删除该平台旧提交再插入（保留给显式重置场景；多账号同步不再清库）
  * 供平台同步与手动导入共用。
@@ -69,6 +72,12 @@ export function insertNormalized(
        WHERE user_id = ? AND platform = ? AND account = ? AND external_id = ? AND verdict IS NOT ?`,
   );
   const findProblem = db.prepare('SELECT id, title, tags FROM problems WHERE platform = ? AND problem_key = ?');
+  // 平台侧改题号检测：同提交号既有行当前指向的题目键（洛谷比赛 T 号 → 赛后正式 P 号等）
+  const findSubmittedProblem = db.prepare(
+    `SELECT p.id, p.problem_key AS problemKey
+       FROM submissions s JOIN problems p ON p.id = s.problem_id
+      WHERE s.user_id = ? AND s.platform = ? AND s.account = ? AND s.external_id = ?`,
+  );
   // 墓碑匹配口径（含「等价类还有活行时只挡精确同键」）见 tombstones.ts：与题库入库共用一份
   const tombstones = createTombstoneMatcher(db);
   const clearDeletedMark = db.prepare(
@@ -163,6 +172,29 @@ export function insertNormalized(
         skipped += 1;
         // 已存在的同账号提交号：补语境列（见 backfillContext 注释）并检测平台侧改判
         if (s.context) backfillContext.run(s.context, userId, s.problem.platform, account, s.externalId);
+        // 平台侧改题号（洛谷比赛题赛后 T 号转正式 P 号等）：既有行被 INSERT OR IGNORE
+        // 冻结在失效的旧题行上（链接打不开、标题退化为题号），把旧题行并入新键行、
+        // 提交重定向过去——旧键行从此不再下发，记墓碑防止迟到的旧键提交拽回死链
+        const submitted = findSubmittedProblem.get(
+          userId,
+          s.problem.platform,
+          account,
+          s.externalId,
+        ) as { id: number; problemKey: string } | undefined;
+        if (submitted && submitted.problemKey !== s.problem.problemKey) {
+          mergeProblemRow(db, {
+            platform: s.problem.platform,
+            fromId: submitted.id,
+            fromKey: submitted.problemKey,
+            toId: problem.id,
+            toKey: s.problem.problemKey,
+          });
+          // 合并写入了新墓碑：失效该平台的墓碑缓存，让本批后续行看到一致状态
+          tombstones.forget(s.problem.platform);
+          // 一次有效写入（同步中心可见「这条同步修了东西」）
+          imported += 1;
+          skipped -= 1;
+        }
         if (
           refreshVerdict
             .run(s.verdict, userId, s.problem.platform, account, s.externalId, s.verdict)

@@ -187,6 +187,66 @@ test('insertNormalized: 同提交号平台侧改判 → 刷新既有行 verdict�
   assert.equal(r3.skipped, 1);
 });
 
+test('insertNormalized: 同提交号平台侧改题号（洛谷比赛 T 号 → 赛后 P 号）→ 重定向并合并旧题行', () => {
+  // 场景：比赛期间同步，题目以临时 T 号入库（链接 /problem/T… 赛后失效、标题退化为题号）；
+  // 赛后官方转正为 P 号，record/list 对同一提交号改发 P 号。若只按提交号去重，
+  // 提交行会被 INSERT OR IGNORE 永久冻结在失效的 T 号行上，再同步也修不回来。
+  const mk = (problemKey: string, title: string, externalId: string) => [
+    {
+      problem: {
+        platform: 'luogu' as const,
+        problemKey,
+        title,
+        tags: [] as string[],
+        url: `https://www.luogu.com.cn/problem/${problemKey}`,
+      },
+      verdict: 'AC' as const,
+      submittedAt: '2026-09-30T10:26:00.000Z',
+      externalId,
+    },
+  ];
+  // 比赛期间：T 号入库，用户还把这道题加入了复习队列
+  insertNormalized(db, 1, mk('T685864', 'T685864', 'rec-1'));
+  db.prepare(
+    "INSERT INTO review_items (user_id, problem_id, next_due_on) VALUES (1, (SELECT id FROM problems WHERE problem_key = 'T685864'), '2026-10-10')",
+  ).run();
+  // 赛后：正式 P 号行先经别的提交入库（如「最近 N 天」补拉），随后同一提交号改发 P 号
+  insertNormalized(db, 1, mk('P17538', '音符方阵', 'rec-0'));
+  const r = insertNormalized(db, 1, mk('P17538', '音符方阵', 'rec-1'));
+  assert.equal(r.imported, 1, '重定向算一次有效写入');
+
+  // 提交已指向 P 号行，链接可打开
+  const s = db
+    .prepare(
+      `SELECT p.problem_key AS k, p.url AS url FROM submissions s JOIN problems p ON p.id = s.problem_id
+        WHERE s.external_id = 'rec-1'`,
+    )
+    .get() as { k: string; url: string };
+  assert.equal(s.k, 'P17538');
+  assert.equal(s.url, 'https://www.luogu.com.cn/problem/P17538');
+  // P 号行只有一条（并入既有行，而非再造重复行）；T 号行已删除并记墓碑
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS c FROM problems WHERE problem_key = 'P17538'").get() as { c: number }).c,
+    1,
+  );
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS c FROM problems WHERE problem_key = 'T685864'").get() as { c: number }).c,
+    0,
+  );
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS c FROM deleted_problems WHERE problem_key = 'T685864'").get() as { c: number }).c,
+    1,
+  );
+  // 复习条目跟随到 P 号行，不丢
+  const rv = db.prepare('SELECT p.problem_key AS k FROM review_items r JOIN problems p ON p.id = r.problem_id').get() as {
+    k: string;
+  };
+  assert.equal(rv.k, 'P17538');
+
+  // 之后重复同步不再产生写入（已稳定在 P 号；墓碑挡住迟到的 T 号提交）
+  assert.deepEqual(insertNormalized(db, 1, mk('P17538', '音符方阵', 'rec-1')), { imported: 0, skipped: 1 });
+});
+
 test('parseCsv: 剥离 UTF-8 BOM（Excel「CSV UTF-8」导出必带）', () => {
   // Excel 的「CSV UTF-8」会在文件头写 \uFEFF：不剥离则表头首列变成 \uFEFFproblemKey，
   // 整份文件被拒（「CSV 缺少列: problemKey」）——手动导入最常见的输入格式

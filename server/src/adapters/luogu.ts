@@ -383,12 +383,20 @@ export function createLuoguAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
           naturalEnd = true;
           break;
         }
-        // 已知记录直接跳过（省去后续逐题抓难度/标签）；统计整页已知用于早停/补全跳页
+        // 已知记录直接跳过（省去后续逐题抓难度/标签）；统计整页已知用于早停/补全跳页。
+        // 例外：平台侧改了题号的已知记录（洛谷比赛题赛后 T 号 → 正式 P 号）仍要重发——
+        // 否则该提交被 INSERT OR IGNORE 永久指向失效的旧题行，再同步也修不回来
+        // （与 knownVerdicts 改判重发同一机制，见 FetchOptions.knownProblemKeys）。
         let knownInPage = 0;
         for (const rec of records) {
-          if (known?.has(String(rec.id))) {
-            knownInPage += 1;
-            continue;
+          const recId = String(rec.id);
+          if (known?.has(recId)) {
+            const storedKey = opts?.knownProblemKeys?.get(recId);
+            const pid = rec.problem?.pid;
+            if (storedKey === undefined || typeof pid !== 'string' || pid === storedKey) {
+              knownInPage += 1;
+              continue;
+            }
           }
           // 过滤等待/评测中/隐藏的非最终状态
           if (rec.status === 0 || rec.status === 1 || rec.status === -1) continue;

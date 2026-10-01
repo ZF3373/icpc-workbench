@@ -57,7 +57,7 @@ export const DEFAULT_SYNC_MAX_SUBMISSIONS = 300;
 export const MIN_SYNC_MAX_SUBMISSIONS = 100;
 export const MAX_SYNC_MAX_SUBMISSIONS = 1500;
 
-/** 库中该账号已有的平台侧提交号与当前 verdict（适配器提前终止分页 + 改判检测用）。
+/** 库中该账号已有的平台侧提交号与当前 verdict / 题目键（适配器提前终止分页 + 改判/改题号检测用）。
  *  多账号（v0.8）后按账号过滤：增量「整页已知提前终止」只看本账号的提交号，
  *  否则 A 账号会把 B 账号已入库的页误判为已知而漏拉。 */
 function loadKnownSubmissions(
@@ -65,18 +65,24 @@ function loadKnownSubmissions(
   userId: number,
   platform: PlatformId,
   account: string,
-): { ids: Set<string>; verdicts: Map<string, Verdict> } {
+): { ids: Set<string>; verdicts: Map<string, Verdict>; problemKeys: Map<string, string> } {
   const rows = db
-    .prepare('SELECT external_id, verdict FROM submissions WHERE user_id = ? AND platform = ? AND account = ?')
-    .all(userId, platform, account) as Array<{ external_id: string; verdict: Verdict }>;
+    .prepare(
+      `SELECT s.external_id, s.verdict, p.problem_key AS problem_key
+         FROM submissions s JOIN problems p ON p.id = s.problem_id
+        WHERE s.user_id = ? AND s.platform = ? AND s.account = ?`,
+    )
+    .all(userId, platform, account) as Array<{ external_id: string; verdict: Verdict; problem_key: string }>;
   const ids = new Set<string>();
   const verdicts = new Map<string, Verdict>();
+  const problemKeys = new Map<string, string>();
   for (const r of rows) {
     if (r.external_id == null) continue;
     ids.add(r.external_id);
     verdicts.set(r.external_id, r.verdict);
+    if (r.problem_key != null) problemKeys.set(r.external_id, r.problem_key);
   }
-  return { ids, verdicts };
+  return { ids, verdicts, problemKeys };
 }
 
 /** 读取单次同步上限设置（sync.maxSubmissions），越界回退默认值 */
@@ -258,7 +264,7 @@ async function runSyncPlatform(
       ...(cookie ? { cookie } : {}),
       ...(csrf ? { csrf } : {}),
       ...(ua ? { ua } : {}),
-      ...(knownSubs ? { knownExternalIds: knownSubs.ids, knownVerdicts: knownSubs.verdicts } : {}),
+      ...(knownSubs ? { knownExternalIds: knownSubs.ids, knownVerdicts: knownSubs.verdicts, knownProblemKeys: knownSubs.problemKeys } : {}),
       maxSubmissions,
       ...(practiceSync !== undefined ? { practiceSync } : {}),
       ...(backfill ? { backfill: true } : {}),

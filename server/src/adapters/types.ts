@@ -58,6 +58,14 @@ export interface FetchOptions {
    * 未注入时适配器应视已知行为无改判（维持跳过语义，兼容旧调用方）。
    */
   knownVerdicts?: Map<string, Verdict>;
+  /**
+   * 库中已有提交号 → 当前存储的题目键（同步层注入，与 knownExternalIds 同源同键）。
+   * 平台侧改题号（洛谷比赛题赛后 T 号转正式 P 号等）后，适配器比对出「题号变了的已知行」
+   * 并重发，由写入层重定向既有行——否则该提交被 INSERT OR IGNORE 永久指向失效的旧题行
+   * （旧题号 URL 打不开、标题退化为题号），再次同步也修不回来。
+   * 未注入或该行无题目键时适配器维持跳过语义（兼容旧调用方）。
+   */
+  knownProblemKeys?: Map<string, string>;
   /** 分页间隔（毫秒），仅测试用：传 0 跳过限速 sleep，缺省由适配器自定（洛谷 300ms） */
   pageDelayMs?: number;
   /**
