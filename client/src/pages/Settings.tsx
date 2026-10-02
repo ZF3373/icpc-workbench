@@ -12,6 +12,7 @@ import {
   List,
   Modal,
   Popconfirm,
+  Popover,
   Row,
   Col,
   Select,
@@ -25,7 +26,7 @@ import {
   Upload,
   App as AntdApp,
 } from 'antd'
-import { ApiOutlined, DeleteOutlined, ImportOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, LinkOutlined, DatabaseOutlined } from '@ant-design/icons'
+import { ApiOutlined, DeleteOutlined, ImportOutlined, PlusOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, LinkOutlined, DatabaseOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
@@ -34,7 +35,7 @@ import PageHeader from '../components/PageHeader'
 import { saveUrlAsFile } from '../download'
 import PlatformTag from '../components/PlatformTag'
 import { del, get, post } from '../api'
-import { assembleCookie as assembleCookieHeader, buildCookieItem, extractCookieValue } from '../cookies'
+import { buildCookieItem, extractCookieValue } from '../cookies'
 import { pct } from '../ui'
 import { relativeTimeText } from '../syncStatus'
 import { openExternal } from '../externalLinks'
@@ -48,6 +49,9 @@ interface SettingsData {
   adapterEnabled: Record<string, boolean>
   platforms: typeof PLATFORMS
   cookies: Record<string, { configured: boolean; masked?: string; hasUa?: boolean }>
+  /** 账号级凭据（多账号）：platform → handle → 该账号已保存的逐对打码 Cookie 头；
+   *  键缺失 = 该账号未单独配置（同步回退平台级）。旧版服务端无此字段。 */
+  accountCreds?: Record<string, Record<string, { configured: boolean; masked: string }>>
   reminder: ReminderConfig
   contestReminder: ContestReminderConfig
   sync: {
@@ -67,10 +71,8 @@ const SYNC_NOTE_COLOR: Record<string, string> = {
   manual: 'default',
 }
 
-/** 按平台定义拼装 Cookie 头（纯逻辑见 ../cookies.ts，附带回归测试） */
-function assembleCookie(platform: PlatformId, values: Record<string, string> | undefined): string {
-  return assembleCookieHeader(cookieFieldsOf(platform), values)
-}
+/** 账号小卡片「新增账号」模式下凭据草稿的固定键（真实草稿键 = 已绑定账号的 handle） */
+const NEW_DRAFT_KEY = '__new__'
 
 // 凭据字段表**只有一份**：shared/src/credentials.ts 的 COOKIE_FIELDS。
 // 这里（以及任何客户端文件）不得再定义本地字段表——历史缺陷：字段表上移 shared 后
@@ -84,13 +86,19 @@ export default function Settings() {
   const { preference, setPreference } = useTheme()
   const [data, setData] = useState<SettingsData | null>(null)
   const [aiForm] = Form.useForm()
-  const [handleInputs, setHandleInputs] = useState<Record<string, string>>({})
-  const [cookieInputs, setCookieInputs] = useState<Record<string, Record<string, string>>>({})
-  /** 本次会话中被用户实际改动过的凭据字段（platform → 字段 key 集合）。
-   *  只有这些字段会提交给保存接口，其余字段由服务端保留已保存值——
-   *  修复「只补填一项、另一项留空即被清空」的缺陷。 */
-  const [dirtyFields, setDirtyFields] = useState<Record<string, Set<string>>>({})
-  const [cookieCheck, setCookieCheck] = useState<Record<string, { ok: boolean; message: string } | 'checking'>>({})
+  /** Cookie 密码框的小眼睛是否处于「显示」态（key = platform::draftKey::fieldKey）。
+   *  受控是为了在点「显示」瞬间按需拉取该字段的原文——原文平时不下发前端 */
+  const [credShown, setCredShown] = useState<Record<string, boolean>>({})
+  /** 账号小卡片的凭据草稿（多账号）：platform → 草稿键（已绑定账号的 handle / NEW_DRAFT_KEY）→ 字段值。
+   *  只提交 dirty 字段；同步时各账号只用自己卡片里配置的 Cookie（无平台级回退） */
+  const [acctInputs, setAcctInputs] = useState<Record<string, Record<string, Record<string, string>>>>({})
+  const [acctDirty, setAcctDirty] = useState<Record<string, Record<string, Set<string>>>>({})
+  /** 账号小卡片（多账号）：当前打开的编辑目标；handle=null = 新增账号。
+   *  凭据草稿按「原始 handle」（新增用 NEW_DRAFT_KEY）键存，改名不丢已填内容 */
+  const [acctEditor, setAcctEditor] = useState<{ platform: PlatformId; handle: string | null } | null>(null)
+  const [draftHandle, setDraftHandle] = useState('')
+  /** 各账号生效凭据的检测结果（platform → handle → 结果） */
+  const [acctCheck, setAcctCheck] = useState<Record<string, Record<string, { ok: boolean; message: string } | 'checking'>>>({})
   const [reminderEnabled, setReminderEnabled] = useState(false)
   const [reminderTime, setReminderTime] = useState<Dayjs>(dayjs('20:00', 'HH:mm'))
   const [contestReminder, setContestReminder] = useState<ContestReminderConfig>({ enabled: false, minutesBefore: 30 })
@@ -107,6 +115,9 @@ export default function Settings() {
   const [practiceSync, setPracticeSync] = useState(true)
   /** 拉取速度全局倍率（1× = 安全下限/最快，越大越慢越稳）；拖动滑块即时预览，松手才落库 */
   const [syncScale, setSyncScale] = useState(1)
+  /** 备份列表刷新信号：删号等动作会在服务端新建恢复点，通知 BackupCard 重新拉取，
+   *  否则列表停留在页面加载时的快照——陈旧列表容易让人对着过期的行做删除/恢复（历史踩坑） */
+  const [backupRefresh, setBackupRefresh] = useState(0)
   /** 各平台 1× 基准间隔（毫秒），由服务端下发；用于实时显示「当前倍率下每次请求间隔」 */
   const [intervalBase, setIntervalBase] = useState<Record<string, number>>({})
   /** 服务端当前已落库的倍率（用于去重提交与失败回滚基准） */
@@ -125,17 +136,13 @@ export default function Settings() {
       .then((d) => {
         setData(d)
         aiForm.setFieldsValue({ ...d.ai, apiKey: '', timeoutMs: d.ai.timeoutMs ? d.ai.timeoutMs / 1000 : 120, maxTokens: Math.round((d.ai.maxTokens ?? 393216) / 1024), contextWindow: Math.round((d.ai.contextWindow ?? 1024000) / 1024), searchEngine: d.ai.searchEngine ?? 'tavily', searchApiKey: '' })
-        // 输入框只用于「添加新账号」，不回填已绑定 handle（多账号后一个平台可有多个绑定）
-        const handles: Record<string, string> = {}
-        const cookies: Record<string, Record<string, string>> = {}
-        // Cookie 不会回传到前端；保留空输入框，用户可显式更新或清除。
-        setHandleInputs(handles)
-        setCookieInputs(cookies)
-        // ⚠ 输入框被整体清空，必须同时清掉「已改动」标记，否则会留下「脏但空」的状态：
-        // 用户粘贴凭据后触发了任意一次 load()（翻平台开关/绑账号/存 AI 配置/改提醒时间等 10 处），
-        // 输入框空了而字段仍是 dirty，再点「保存」就把空串当「显式清除」提交，
-        // 静默删掉服务端已存凭据（提示还写「未填写的字段保持原值」，用户以为新凭据存上了）
-        setDirtyFields({})
+        // ⚠ 刷新不得清空 cookieInputs / dirtyFields / acctInputs / acctDirty：它们是用户正在编辑的
+        // 半成品输入，任何一处保存/开关/绑定成功后的 load()（本页有 10+ 处调用）都不能把
+        // 其他输入一并清掉——历史缺陷：点「添加账号」或「保存」都会把所有平台正在填写的
+        // 值清空，两个按钮表现完全相同，用户无法分辨各自管哪块。
+        // 输入的清空只发生在对应动作成功后的局部 setState（账号卡片保存清本账号草稿，
+        // saveCookie/clearCookie 清本平台 Cookie 且连同 dirty 一起清），由此保持不变式
+        // 「dirty ⇒ 输入框里有可见值」，不会把空串当「显式清除」提交而静默删掉已存凭据。
         setReminderEnabled(d.reminder.enabled)
         setReminderTime(dayjs(d.reminder.time, 'HH:mm'))
         setContestReminder(d.contestReminder)
@@ -153,17 +160,19 @@ export default function Settings() {
 
   useEffect(load, [aiForm])
 
-  // 进入设置页时自动检测已保存 Cookie 的平台登录态，驱动面板右侧连接状态点。
-  // 仅对 cookie 类平台、有已保存 Cookie 且尚未检测过的触发，避免重复请求。
+  // 进入设置页时自动检测每个「已配置凭据账号」的登录态，驱动平台连接状态点与账号框状态点。
+  // 只对有凭据槽位且尚未检测过的账号触发，未配置凭据的账号不请求（点了账号框才检测）。
   useEffect(() => {
     if (!data) return
     for (const p of data.platforms) {
       if (p.sync !== 'cookie') continue
-      if (cookieCheck[p.id] !== undefined) continue
-      if (!data.cookies[p.id]?.configured) continue
-      void checkCookie(p.id)
+      for (const a of data.accounts.filter((x) => x.platform === p.id)) {
+        if (acctCheck[p.id]?.[a.handle] !== undefined) continue
+        if (!data.accountCreds?.[p.id]?.[a.handle]) continue
+        void checkAccountCreds(p.id, a.handle)
+      }
     }
-    // checkCookie 闭包随渲染刷新，此处只需在 data 变化（加载完成）时驱动一次
+    // checkAccountCreds 闭包随渲染刷新，此处只需在 data 变化（加载完成）时驱动一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data])
 
@@ -221,23 +230,6 @@ export default function Settings() {
     }
   }
 
-  // 多账号：向平台追加绑定（同 handle 重复保存 = 重新启用，不影响其他账号与历史数据）
-  const bindAccount = async (platform: PlatformId) => {
-    const handle = handleInputs[platform]?.trim()
-    if (!handle) {
-      message.warning('请先填写用户名')
-      return
-    }
-    try {
-      await post('/api/settings/accounts', { platform, handle })
-      message.success(`${PLATFORMS.find((p) => p.id === platform)?.name} 账号 ${handle} 已绑定；请到「题目管理 → 导入 → 平台同步」填入同一用户名完成同步`)
-      setHandleInputs((s) => ({ ...s, [platform]: '' }))
-      load()
-    } catch (e) {
-      message.error((e as Error).message)
-    }
-  }
-
   // 删除账号：连带删除该账号的全部提交记录；服务端删除前自动创建恢复点（备份），误删可找回
   const removeAccount = async (platform: PlatformId, handle: string) => {
     try {
@@ -251,6 +243,8 @@ export default function Settings() {
           : `账号 ${handle} 已删除`,
         6,
       )
+      forgetAcctLocalState(platform, handle)
+      setBackupRefresh((n) => n + 1) // 删号已在服务端生成新的 pre-account-delete 恢复点
       load()
     } catch (e) {
       message.error((e as Error).message)
@@ -369,106 +363,165 @@ export default function Settings() {
     }, 600)
   }
 
-  const saveCookie = async (platform: PlatformId) => {
-    // 字段级合并：只提交本次被改动过的字段（dirtyFields），其余字段由服务端保留已保存值。
-    // 这样「A 已保存、只想补填 B」时不需要把 A 重新粘贴一遍，也不会把 A 清空
-    // （历史缺陷：整条 Cookie 头覆盖保存，空输入框 = 删除该项）。
-    const defs = cookieFieldsOf(platform)
-    const dirty = dirtyFields[platform] ?? new Set<string>()
-    const values = cookieInputs[platform] ?? {}
-    const cookieFields: Record<string, string> = {}
-    for (const f of defs) {
-      if (!dirty.has(f.key)) continue
-      const raw = (values[f.key] ?? '').trim()
-      if (f.configOnly) {
-        // 仅作配置保存的字段（QOJ 的浏览器 UA）：原样提交，空串表示清除该项
-        cookieFields[f.key] = raw
-        continue
-      }
-      if (f.raw) {
-        // raw 字段（会话名不固定 / 值含特殊字符）：原样提交，服务端按字段定义解析与补名前缀
-        // （历史缺陷：前端拼好后端再拼一次，会把 "Cookie: sid=x" 变成 "sid=Cookie: sid=x"）
-        cookieFields[f.key] = raw
-        continue
-      }
-      // 普通 Cookie 字段：只传裸值，`name=value` 由服务端按字段定义拼装（两端同一份字段表）
-      const item = buildCookieItem(f, raw)
-      cookieFields[f.key] = item ? item.slice(item.indexOf('=') + 1) : ''
-    }
+  /** 改动某账号凭据的某字段：记入该草稿键的 dirty 集合（保存时只提交这些字段）。
+   *  草稿键 = 已绑定账号的 handle（改名时草稿挂在原 handle 上不丢失）或 NEW_DRAFT_KEY（新增） */
+  const setAcctField = (platform: PlatformId, draftKey: string, key: string, value: string) => {
+    setAcctInputs((s) => ({
+      ...s,
+      [platform]: { ...(s[platform] ?? {}), [draftKey]: { ...(s[platform]?.[draftKey] ?? {}), [key]: value } },
+    }))
+    setAcctDirty((s) => {
+      const byKey = s[platform] ?? {}
+      const next = new Set(byKey[draftKey] ?? [])
+      next.add(key)
+      return { ...s, [platform]: { ...byKey, [draftKey]: next } }
+    })
+  }
 
-    if (Object.keys(cookieFields).length === 0) {
-      // 什么都没改：若该平台已配置，提示当前保存内容；未配置则提示先填写
-      if (data?.cookies[platform]?.configured) {
-        const name = PLATFORMS.find((p) => p.id === platform)?.name ?? platform
-        message.info(`${name} 凭据未改动，已保存的配置保持不变`)
-      } else {
-        message.info('请先填写凭据再保存')
-      }
+  /** 检测某账号的生效凭据（只检该账号自己卡片里配置的 Cookie，与同步同一口径） */
+  const checkAccountCreds = async (platform: PlatformId, handle: string) => {
+    setAcctCheck((s) => ({ ...s, [platform]: { ...(s[platform] ?? {}), [handle]: 'checking' } }))
+    try {
+      const r = await post<{ ok: boolean; message: string }>('/api/settings/cookies/check', { platform, handle })
+      setAcctCheck((s) => ({ ...s, [platform]: { ...(s[platform] ?? {}), [handle]: r } }))
+    } catch (e) {
+      setAcctCheck((s) => ({
+        ...s,
+        [platform]: { ...(s[platform] ?? {}), [handle]: { ok: false, message: (e as Error).message } },
+      }))
+    }
+  }
+
+  /** 打开账号小卡片：handle=null = 新增账号。已配置凭据的账号自动检测一次，直接暴露过期状态 */
+  const openAcctEditor = (platform: PlatformId, handle: string | null) => {
+    setAcctEditor({ platform, handle })
+    setDraftHandle(handle ?? '')
+    if (handle && !acctCheck[platform]?.[handle] && data?.accountCreds?.[platform]?.[handle]) {
+      void checkAccountCreds(platform, handle)
+    }
+  }
+
+  /** 提交账号小卡片「保存」：
+   *  - 新增：绑定账号（同 handle 重复保存 = 重新启用）→ 随卡片填写的凭据一并落库；
+   *  - 修改：先落凭据（dirty 字段，写在原 handle 名下），若改了名则调改名接口——服务端在同一
+   *    事务里迁移账号行与提交记录归属、并迁移凭据槽位，避免「删号重绑」丢提交记录。
+   *  任一步失败保留卡片让用户改错，成功后关卡片并刷新 */
+  const submitAcctEditor = async (platform: PlatformId, original: string | null) => {
+    const handle = draftHandle.trim()
+    if (!handle) {
+      message.warning('请先填写账号名')
       return
     }
+    const draftKey = original ?? NEW_DRAFT_KEY
+    const name = PLATFORMS.find((p) => p.id === platform)?.name ?? platform
     try {
-      const r = await post<{ ok: boolean; fields?: string[]; hasUa?: boolean }>('/api/settings/cookies', {
-        platform,
-        cookieFields,
-      })
-      const name = PLATFORMS.find((p) => p.id === platform)?.name ?? platform
-      const desc = [...(r.fields ?? []), ...(r.hasUa ? ['User-Agent'] : [])].join(' + ')
-      message.success(`${name} 凭据已保存${desc ? `（${desc}）` : ''}；未填写的字段保持原值`)
-      // 清空已改动标记 + 清空输入框：避免遮蔽框残留旧值被再次误提交
-      setDirtyFields((s) => ({ ...s, [platform]: new Set<string>() }))
-      setCookieInputs((s) => ({ ...s, [platform]: {} }))
-      // 清除旧检测结果：上方 data 变化驱动的 effect 会据此重新检测，刷新连接状态点
-      setCookieCheck((s) => {
-        const next = { ...s }
-        delete next[platform]
-        return next
-      })
+      if (original) {
+        await commitAcctCreds(platform, original, draftKey)
+        if (handle !== original) {
+          await post('/api/settings/accounts/rename', { platform, handle: original, newHandle: handle })
+          message.success(`账号已改名：${original} → ${handle}，提交记录与凭据已一并迁移`)
+        }
+      } else {
+        await post('/api/settings/accounts', { platform, handle })
+        message.success(`${name} 账号 ${handle} 已绑定；请到「题目管理 → 导入 → 平台同步」填入同一用户名完成同步`)
+        await commitAcctCreds(platform, handle, draftKey)
+      }
+      forgetAcctLocalState(platform, original ?? handle)
+      setAcctEditor(null)
       load()
     } catch (e) {
       message.error((e as Error).message)
     }
   }
 
-  /** 显式清除该平台全部凭据（含浏览器 UA），需二次确认 */
-  const clearCookie = (platform: PlatformId) => {
-    const name = PLATFORMS.find((p) => p.id === platform)?.name ?? platform
+  /** 提交某账号凭据的 dirty 字段到该账号名下（无改动则静默跳过，不弹提示）。
+   *  configOnly（QOJ 浏览器 UA）随卡片保存写平台级共享值；普通字段写账号槽位。
+   *  全部字段显式清空保存 = 删除该账号的凭据槽位（回到未配置状态），不动提交记录 */
+  const commitAcctCreds = async (platform: PlatformId, handle: string, draftKey: string) => {
+    const defs = cookieFieldsOf(platform)
+    const dirty = acctDirty[platform]?.[draftKey] ?? new Set<string>()
+    const values = acctInputs[platform]?.[draftKey] ?? {}
+    const cookieFields: Record<string, string> = {}
+    for (const f of defs) {
+      if (!dirty.has(f.key)) continue
+      const raw = (values[f.key] ?? '').trim()
+      if (f.configOnly || f.raw) {
+        // configOnly（浏览器 UA）与 raw 字段：原样提交，空串 = 显式清除
+        cookieFields[f.key] = raw
+        continue
+      }
+      const item = buildCookieItem(f, raw)
+      cookieFields[f.key] = item ? item.slice(item.indexOf('=') + 1) : ''
+    }
+    if (Object.keys(cookieFields).length === 0) return
+    const r = await post<{ ok: boolean; fields?: string[] }>('/api/settings/cookies', {
+      platform,
+      handle,
+      cookieFields,
+    })
+    message.success(
+      (r.fields?.length ?? 0) > 0
+        ? `账号 ${handle} 的凭据已更新（${(r.fields ?? []).join(' + ')}）；未填写的字段同步时回退平台级`
+        : `账号 ${handle} 的凭据已清除，同步时回退平台级`,
+    )
+    setAcctInputs((s) => ({ ...s, [platform]: { ...(s[platform] ?? {}), [draftKey]: {} } }))
+    setAcctDirty((s) => ({ ...s, [platform]: { ...(s[platform] ?? {}), [draftKey]: new Set<string>() } }))
+    void checkAccountCreds(platform, handle)
+  }
+
+  /** 删除账号（二次确认）：连带删除提交记录，删除前服务端自动创建恢复点 */
+  const confirmRemoveAccount = (platform: PlatformId, handle: string) => {
     modal.confirm({
-      title: `清除 ${name} 的全部凭据？`,
-      content: '将删除已保存的 Cookie（含浏览器 UA 配置）。清除后该平台无法自动同步，需要重新填写。',
-      okText: '清除',
+      title: `删除账号 ${handle}？`,
+      content: '将同时删除该账号的全部提交记录；删除前自动创建恢复点，误删可在「数据管理 → 备份与恢复」找回。',
+      okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        try {
-          await post('/api/settings/cookies', { platform, cookie: '', csrf: '' })
-          message.warning(`${name} 凭据已清除`)
-          setDirtyFields((s) => ({ ...s, [platform]: new Set<string>() }))
-          setCookieInputs((s) => ({ ...s, [platform]: {} }))
-          setCookieCheck((s0) => {
-            const next = { ...s0 }
-            delete next[platform]
-            return next
-          })
-          load()
-        } catch (e) {
-          message.error((e as Error).message)
-        }
+        await removeAccount(platform, handle)
+        setAcctEditor(null)
       },
     })
   }
 
-  const checkCookie = async (platform: PlatformId) => {
-    setCookieCheck((s) => ({ ...s, [platform]: 'checking' }))
+  /** 账号删除/保存后联动丢弃其本地草稿与检测结果，并关闭正编辑着该账号的卡片 */
+  const forgetAcctLocalState = (platform: PlatformId, handle: string) => {
+    const drop = <T,>(m: Record<string, Record<string, T>>): Record<string, Record<string, T>> => {
+      const byKey = { ...(m[platform] ?? {}) }
+      delete byKey[handle]
+      return { ...m, [platform]: byKey }
+    }
+    setAcctInputs((s) => drop(s))
+    setAcctDirty((s) => drop(s))
+    setAcctCheck((s) => drop(s))
+    setAcctEditor((ed) => (ed && ed.platform === platform && ed.handle === handle ? null : ed))
+  }
+
+  /** Cookie 密码框点眼睛：切到「显示」且输入框为空时，按需向服务端取回该字段已保存的原文
+   *  （原文平时不下发前端）。handle=null = 新增账号卡片（还没存过任何值，不取）。已输入的值不覆盖 */
+  const toggleCredShown = (
+    platform: PlatformId,
+    draftKey: string,
+    key: string,
+    next: boolean,
+    currentValue: string,
+    handle: string | null,
+  ) => {
+    setCredShown((s) => ({ ...s, [`${platform}::${draftKey}::${key}`]: next }))
+    if (next && !currentValue.trim() && handle) void revealCred(platform, key, handle)
+  }
+
+  const revealCred = async (platform: PlatformId, fieldKey: string, handle: string) => {
     try {
-      // 各输入框都为空时检测已保存的 Cookie（后端兜底读取 settings）
-      const cookie = assembleCookie(platform, cookieInputs[platform])
-      const r = await post<{ ok: boolean; message: string }>('/api/settings/cookies/check', {
+      const r = await post<{ value: string }>('/api/settings/cookies/reveal', {
         platform,
-        ...(cookie ? { cookie } : {}),
+        handle,
+        fieldKey,
       })
-      setCookieCheck((s) => ({ ...s, [platform]: r }))
+      if (!r.value) return // 该账号没存过这个字段：输入框保持空
+      setAcctField(platform, handle, fieldKey, r.value)
     } catch (e) {
-      setCookieCheck((s) => ({ ...s, [platform]: { ok: false, message: (e as Error).message } }))
+      message.error((e as Error).message)
     }
   }
 
@@ -515,6 +568,127 @@ export default function Settings() {
 
   const downloadPrompt = async (url: string, filename: string, successText?: string) => {
     void saveUrlAsFile({ url, filename, successText, message })
+  }
+
+  /** 账号小卡片内容（新增 / 修改共用）：账号名 + Cookie 类平台的该账号凭据 + 参与同步 / 删除。
+   *  account=null 为「添加账号」新建模式；凭据草稿按 draftKey（原 handle / NEW_DRAFT_KEY）读写 */
+  const acctCardContent = (p: (typeof PLATFORMS)[number], account: SettingsData['accounts'][number] | null) => {
+    const handle = account?.handle ?? null
+    const draftKey = handle ?? NEW_DRAFT_KEY
+    const isCookie = p.sync === 'cookie'
+    const slotMasked = handle ? data.accountCreds?.[p.id]?.[handle]?.masked : undefined
+    const aCheck = handle ? acctCheck[p.id]?.[handle] : undefined
+    const vals = acctInputs[p.id]?.[draftKey] ?? {}
+    const fields = isCookie ? cookieFieldsOf(p.id) : []
+    const platformName = PLATFORMS.find((x) => x.id === p.id)?.name ?? p.id
+    return (
+      <div style={{ minWidth: 300, maxWidth: 520 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+          {handle ? `修改账号 ${handle}` : `绑定 ${platformName} 账号`}
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 12, color: '#8993a2', marginBottom: 2 }}>账号名</div>
+          <Input
+            placeholder={p.id === 'codeforces' ? 'CF handle' : '用户名 / uid'}
+            value={draftHandle}
+            onChange={(e) => setDraftHandle(e.target.value)}
+            onPressEnter={() => void submitAcctEditor(p.id, handle)}
+            style={{ width: '100%' }}
+          />
+        </div>
+        {isCookie && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 12, color: '#8993a2', marginBottom: 4 }}>
+              {handle ? '凭据' : '凭据（可留空）'}
+            </div>
+            {handle && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                <Button size="small" loading={aCheck === 'checking'} onClick={() => void checkAccountCreds(p.id, handle)}>
+                  检测
+                </Button>
+                {aCheck && aCheck !== 'checking' && (
+                  <>
+                    <Tag color={aCheck.ok ? 'success' : 'error'} style={{ marginRight: 0 }}>
+                      {aCheck.ok ? '凭据有效' : '凭据无效 / 已过期'}
+                    </Tag>
+                    {!aCheck.ok && <span style={{ fontSize: 12, color: '#8993a2' }}>{aCheck.message}</span>}
+                  </>
+                )}
+              </div>
+            )}
+            <Space wrap size={8}>
+              {fields.map((f) => {
+                // 已配置判定：普通字段看账号槽位打码头；configOnly（QOJ 浏览器 UA）是全账号共用的
+                // 平台级配置，看服务端 hasUa
+                const own = handle
+                  ? f.configOnly
+                    ? ''
+                    : extractCookieValue(slotMasked ?? '', f.cookieName)
+                  : ''
+                const sharedConfigured = f.configOnly && handle && data.cookies[p.id]?.hasUa === true
+                const ph = own
+                  ? `已配置 ${own} · 粘贴新值可覆盖`
+                  : sharedConfigured
+                    ? '已配置（全部账号共用）· 粘贴新值可覆盖'
+                    : f.placeholder
+                const input = f.password ? (
+                  <Input.Password
+                    placeholder={ph}
+                    style={{ width: 220 }}
+                    value={vals[f.key] ?? ''}
+                    visibilityToggle={{
+                      visible: credShown[`${p.id}::${draftKey}::${f.key}`] ?? false,
+                      onVisibleChange: (v) => toggleCredShown(p.id, draftKey, f.key, v, vals[f.key] ?? '', handle),
+                    }}
+                    onChange={(e) => setAcctField(p.id, draftKey, f.key, e.target.value)}
+                  />
+                ) : (
+                  <Input
+                    placeholder={ph}
+                    style={{ width: 220 }}
+                    value={vals[f.key] ?? ''}
+                    onChange={(e) => setAcctField(p.id, draftKey, f.key, e.target.value)}
+                  />
+                )
+                return (
+                  <div key={f.key}>
+                    <div style={{ fontSize: 12, color: '#8993a2', marginBottom: 2 }}>
+                      <code style={{ fontSize: 12 }}>{f.configOnly ? 'User-Agent' : f.cookieName}</code>
+                      {f.label ? ` · ${f.label}` : ''}
+                    </div>
+                    {input}
+                  </div>
+                )
+              })}
+            </Space>
+          </div>
+        )}
+        {account && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <span className="mono" style={{ fontSize: 12, color: '#8993a2' }}>
+              {account.last_sync_at ? `上次同步 ${relativeTimeText(account.last_sync_at)}` : '从未同步'}
+            </span>
+            <span style={{ flex: 1 }} />
+            <span style={{ fontSize: 12, color: '#8993a2' }}>参与同步</span>
+            <Switch
+              size="small"
+              checked={account.enabled === 1}
+              onChange={(v) => void toggleAccountEnabled(p.id, account.handle, v)}
+            />
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <Button type="primary" size="small" onClick={() => void submitAcctEditor(p.id, handle)}>
+            保存
+          </Button>
+          {handle && (
+            <Button size="small" danger onClick={() => confirmRemoveAccount(p.id, handle)}>
+              删除账号
+            </Button>
+          )}
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -633,25 +807,34 @@ export default function Settings() {
               const enabled = data.adapterEnabled[p.id] !== false
               const syncNote =
                 p.sync === 'auto' ? '自动同步' : p.sync === 'cookie' ? '配置 Cookie 后自动同步' : '仅手动导入'
-              const c = cookieInputs[p.id] ?? {}
-              const check = cookieCheck[p.id]
-              const fields = cookieFieldsOf(p.id)
-              // 连接状态点：自动同步平台看「已绑定 + 适配器开启」；cookie 平台看检测登录态
-              // （未检测但有已保存 Cookie 时显示检测中，由上方 effect 自动触发检测）
+              // 连接状态点：自动同步平台看「已绑定 + 适配器开启」；cookie 平台聚合各账号凭据的
+              // 检测结果（任一有效 = 已连接；都在检测中 = 检测中；有槽位未检测 = 检测中，由
+              // 上方 effect 自动触发；其余 = 未连接——没账号或没有任何账号配置凭据）
               const dot =
                 p.sync === 'auto'
                   ? account && enabled
                     ? { cls: 'conn-dot-ok', title: '已连接' }
                     : { cls: 'conn-dot-fail', title: '未连接' }
-                  : check === 'checking'
-                    ? { cls: 'conn-dot-checking', title: '检测中…' }
-                    : check
-                      ? check.ok
-                        ? { cls: 'conn-dot-ok', title: '已连接' }
-                        : { cls: 'conn-dot-fail', title: '未连接' }
-                      : data.cookies[p.id]?.configured
-                        ? { cls: 'conn-dot-checking', title: '检测中…' }
-                        : { cls: 'conn-dot-fail', title: '未连接' }
+                  : (() => {
+                      const results = platformAccounts.map((a) => acctCheck[p.id]?.[a.handle])
+                      if (results.some((r) => r === 'checking')) {
+                        return { cls: 'conn-dot-checking', title: '检测中…' }
+                      }
+                      const checked = results.filter(
+                        (r): r is { ok: boolean; message: string } => Boolean(r) && r !== 'checking',
+                      )
+                      if (checked.some((r) => r.ok)) {
+                        return { cls: 'conn-dot-ok', title: '已连接（至少一个账号凭据有效）' }
+                      }
+                      const withSlot = platformAccounts.filter((a) => data.accountCreds?.[p.id]?.[a.handle])
+                      if (withSlot.length > 0 && withSlot.every((a) => acctCheck[p.id]?.[a.handle])) {
+                        return { cls: 'conn-dot-fail', title: '未连接（已配置账号的凭据均无效）' }
+                      }
+                      if (withSlot.length > 0) {
+                        return { cls: 'conn-dot-checking', title: '已配置（未检测）' }
+                      }
+                      return { cls: 'conn-dot-fail', title: '未连接' }
+                    })()
               return {
                 key: p.id,
                 label: (
@@ -689,182 +872,85 @@ export default function Settings() {
                 ),
                 children: (
                   <>
-                    {/* 已绑定账号列表（多账号）：同平台可并存多个账号，各账号提交隔离保留 */}
-                    {platformAccounts.length > 0 && (
-                      <div style={{ marginBottom: 10 }}>
-                        {platformAccounts.map((a) => (
-                          <div
+                    {/* 已绑定账号 = 一排可点击的账号名称框：点开小卡片可改账号名 / 凭据 / 参与同步 / 删除；
+                        「＋ 添加账号」弹出同一张卡片的新建模式（需要填写的信息一目了然） */}
+                    <Space wrap size={8} align="center" style={{ marginBottom: 4 }}>
+                      {platformAccounts.map((a) => {
+                        // 账号级凭据（多账号）：打码版来自服务端 accountCreds；未配置 = 该账号同步时无 Cookie 可用
+                        const slotMasked = data.accountCreds?.[p.id]?.[a.handle]?.masked
+                        const aCheck = acctCheck[p.id]?.[a.handle]
+                        const credDot =
+                          aCheck === 'checking'
+                            ? { cls: 'conn-dot-checking', title: '检测中…' }
+                            : aCheck
+                              ? aCheck.ok
+                                ? { cls: 'conn-dot-ok', title: '凭据有效' }
+                                : { cls: 'conn-dot-fail', title: '凭据无效或已过期，点开续期' }
+                              : slotMasked
+                                ? { cls: '', title: '已配置凭据（未检测）' }
+                                : { cls: '', title: '未单独配置凭据：同步回退平台级 Cookie' }
+                        return (
+                          <Popover
                             key={a.handle}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 10,
-                              padding: '4px 0',
-                              opacity: a.enabled === 1 ? 1 : 0.55,
-                            }}
+                            open={acctEditor?.platform === p.id && acctEditor.handle === a.handle}
+                            trigger="click"
+                            placement="bottomLeft"
+                            onOpenChange={(v) => (v ? openAcctEditor(p.id, a.handle) : setAcctEditor(null))}
+                            content={acctCardContent(p, a)}
                           >
-                            <b style={{ minWidth: 120 }}>{a.handle}</b>
-                            <span className="mono" style={{ fontSize: 12, color: '#8993a2' }}>
-                              {a.last_sync_at ? `上次同步 ${relativeTimeText(a.last_sync_at)}` : '从未同步'}
-                            </span>
-                            <span style={{ flex: 1 }} />
-                            <span style={{ fontSize: 12, color: '#8993a2' }}>参与同步</span>
-                            <Switch
+                            <Button
                               size="small"
-                              checked={a.enabled === 1}
-                              onChange={(v) => void toggleAccountEnabled(p.id, a.handle, v)}
-                            />
-                            <Popconfirm
-                              title={`删除账号 ${a.handle}`}
-                              description="将同时删除该账号的全部提交记录；删除前自动创建恢复点，误删可在「数据管理 → 备份与恢复」找回。"
-                              okText="删除"
-                              cancelText="取消"
-                              onConfirm={() => void removeAccount(p.id, a.handle)}
+                              style={{ opacity: a.enabled === 1 ? 1 : 0.5 }}
+                              title={a.enabled === 1 ? '点击修改账号名 / 凭据' : '已停用（不参与同步），点击修改'}
                             >
-                              <Button size="small" type="text" danger icon={<DeleteOutlined />} />
-                            </Popconfirm>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    <Space wrap>
-                      <Input
-                        placeholder={p.id === 'codeforces' ? 'CF handle' : '用户名 / uid'}
-                        style={{ width: 200 }}
-                        value={handleInputs[p.id] ?? ''}
-                        onPressEnter={() => void bindAccount(p.id)}
-                        onChange={(e) => setHandleInputs((s) => ({ ...s, [p.id]: e.target.value }))}
-                      />
-                      <Button onClick={() => void bindAccount(p.id)}>
-                        {platformAccounts.length > 0 ? '添加账号' : '绑定'}
-                      </Button>
+                              {a.handle}
+                              {p.sync === 'cookie' && (
+                                <span
+                                  className={`conn-dot ${credDot.cls}`}
+                                  style={{
+                                    marginLeft: 6,
+                                    ...(credDot.cls
+                                      ? {}
+                                      : slotMasked
+                                        ? { background: '#8993a2' }
+                                        : { border: '1px solid #5a6472' }),
+                                  }}
+                                  title={credDot.title}
+                                />
+                              )}
+                            </Button>
+                          </Popover>
+                        )
+                      })}
+                      <Popover
+                        open={acctEditor?.platform === p.id && acctEditor?.handle === null}
+                        trigger="click"
+                        placement="bottomLeft"
+                        onOpenChange={(v) => (v ? openAcctEditor(p.id, null) : setAcctEditor(null))}
+                        content={acctCardContent(p, null)}
+                      >
+                        <Button size="small" variant="dashed" icon={<PlusOutlined />}>
+                          {platformAccounts.length > 0 ? '添加账号' : '绑定'}
+                        </Button>
+                      </Popover>
                     </Space>
-                    <p style={{ margin: '8px 0 0', color: '#8993a2', fontSize: 12 }}>
-                      同一平台可绑定多个账号（如大号 + 小号），各账号提交记录隔离保留、互不覆盖；
-                      删除账号会连带删除其提交记录，删除前自动创建恢复点，可在「数据管理 → 备份与恢复」找回。
-                      单次同步会依次拉取所有启用账号。
-                      {p.sync === 'cookie' && ' 需登录平台（Cookie 类）各账号共用平台级 Cookie，请以当前登录账号为准。'}
-                    </p>
-                    {p.sync === 'cookie' && (
-                      <div style={{ marginTop: 10 }}>
-                        {/* Cookie 原文不回传前端，输入框恒为空；服务端只回传逐对打码版（masked），
-                            按 cookieName 拆回各框，placeholder 显示「已配置 + 遮蔽值」供确认 */}
-                        {(() => {
-                          const configured = data?.cookies[p.id]?.configured === true
-                          const maskedHeader = configured ? (data?.cookies[p.id]?.masked ?? '') : ''
-                          const hasUa = data?.cookies[p.id]?.hasUa === true
-                          /** 改动某字段：记入 dirty 集合（保存时只提交这些字段） */
-                          const setField = (key: string, value: string) => {
-                            setCookieInputs((s) => ({ ...s, [p.id]: { ...(s[p.id] ?? {}), [key]: value } }))
-                            setDirtyFields((s) => {
-                              const next = new Set(s[p.id] ?? [])
-                              next.add(key)
-                              return { ...s, [p.id]: next }
-                            })
-                          }
-                          return (
-                            <>
-                              <Space wrap size={8}>
-                                {fields.map((f) => {
-                                  const maskedVal = f.configOnly ? '' : extractCookieValue(maskedHeader, f.cookieName)
-                                  const fieldConfigured = f.configOnly ? hasUa : configured && maskedVal !== ''
-                                  const ph = fieldConfigured
-                                    ? maskedVal
-                                      ? `已配置 ${maskedVal} · 粘贴新值可覆盖`
-                                      : '已配置 · 粘贴新值可覆盖'
-                                    : f.placeholder
-                                  const input = f.password ? (
-                                    <Input.Password
-                                      placeholder={ph}
-                                      style={{ width: 240 }}
-                                      value={c[f.key] ?? ''}
-                                      onChange={(e) => setField(f.key, e.target.value)}
-                                    />
-                                  ) : (
-                                    <Input
-                                      placeholder={ph}
-                                      style={{ width: 240 }}
-                                      value={c[f.key] ?? ''}
-                                      onChange={(e) => setField(f.key, e.target.value)}
-                                    />
-                                  )
-                                  return (
-                                    <div key={f.key}>
-                                      <div style={{ fontSize: 12, color: '#8993a2', marginBottom: 2 }}>
-                                        <code style={{ fontSize: 12 }}>{f.configOnly ? 'User-Agent' : f.cookieName}</code>
-                                        {f.label ? ` · ${f.label}` : ''}
-                                      </div>
-                                      {input}
-                                    </div>
-                                  )
-                                })}
-                                <div style={{ alignSelf: 'flex-end', paddingBottom: 1 }}>
-                                  <Space size={8}>
-                                    <Button size="small" onClick={() => saveCookie(p.id)}>
-                                      保存
-                                    </Button>
-                                    <Button size="small" loading={check === 'checking'} onClick={() => checkCookie(p.id)}>
-                                      检测
-                                    </Button>
-                                    {configured && (
-                                      <Button size="small" danger onClick={() => clearCookie(p.id)}>
-                                        清除
-                                      </Button>
-                                    )}
-                                    <Tag color={configured ? 'success' : 'default'} style={{ marginRight: 0 }}>
-                                      {configured ? '已配置' : '未配置'}
-                                    </Tag>
-                                  </Space>
-                                </div>
-                              </Space>
-                              {p.id === 'jisuanke' && (
-                                <div style={{ fontSize: 12, color: '#8993a2', marginTop: 6 }}>
-                                  登录 www.jisuanke.com 后，F12 → Application → Cookies 复制 s 与 JSKUSS 的值（acw_tc / XSRF-TOKEN 不需要）；未登录时的 s 是游客会话，校验不过。
-                                </div>
-                              )}
-                              {p.id === 'qoj' && (
-                                <div style={{ fontSize: 12, color: '#8993a2', marginTop: 6 }}>
-                                  两项 Cookie 按名分框填写（保存时由后端合并成 Cookie 头，不必手工拼串）：
-                                  <div style={{ marginTop: 2 }}>
-                                    ① <b>UOJSESSID</b>（登录会话，必需）：浏览器登录 qoj.ac 后 F12 → Application → Cookies，
-                                    找 <code>UOJSESSID</code> 复制它的值。
-                                  </div>
-                                  <div style={{ marginTop: 2 }}>
-                                    ② <b>cf_clearance</b>（Cloudflare 通行凭据，必需）：同页 <code>cf_clearance</code> 的值（较长）。
-                                    两项都在同一个站点的 Domain 下；也可把 Network 里 Request Headers 的整段 <code>Cookie</code>
-                                    粘进任一框，后端会自动把各名字分派到对应字段（其余展示项 uoj_locale / OptanonConsent 等无影响）。
-                                  </div>
-                                  <div style={{ marginTop: 2 }}>
-                                    ③ <b>浏览器 User-Agent</b>（必需）：在该页 Console 输入 <code>navigator.userAgent</code> 回车，整行粘贴。
-                                    <code>cf_clearance</code> 与签发它的浏览器 UA 绑定，UA 不填或不一致会 100% 被 Cloudflare 拦截。
-                                  </div>
-                                  <div style={{ marginTop: 2 }}>
-                                    <code>cf_clearance</code> 约 30 分钟过期：过期后重新复制该项保存即可，另一项保持不变。
-                                  </div>
-                                </div>
-                              )}
-                            </>
-                          )
-                        })()}
-                        {check && check !== 'checking' && (
-                          <Alert
-                            style={{ marginTop: 8, maxWidth: 520 }}
-                            type={check.ok ? 'success' : 'warning'}
-                            showIcon
-                            closable
-                            message={check.message}
-                          />
-                        )}
-                      </div>
+                    {(p.id === 'leetcode' || p.id === 'jisuanke') && (
+                      <p style={{ margin: '2px 0 0', color: '#d48806', fontSize: 12 }}>
+                        ⚠ 多账号请为每个账号分别配置 Cookie：此平台的提交记录跟随 Cookie 登录身份拉取。
+                      </p>
+                    )}
+                    {p.id === 'qoj' && (
+                      <p style={{ margin: '2px 0 0', color: '#8993a2', fontSize: 12 }}>
+                        qoj.ac 登录后 F12 → Application → Cookies 复制 UOJSESSID 与 cf_clearance（点账号框在卡片里粘贴，
+                        也可整段 Cookie 粘进任一框自动分派）；cf_clearance 约 30 分钟过期，过期后重贴该项即可。
+                        浏览器 UA 在账号卡片里填写，全部账号共用。
+                      </p>
                     )}
                   </>
                 ),
               }
             })}
           />
-          <p className="muted-note">
-            说明：每个 Cookie 单独一框，按输入框上方的名称到浏览器 F12 → Application → Cookies 复制对应值（框内整段粘贴亦可，后端自动分派到各字段）。<b>保存只覆盖你本次填写过的字段</b>，留空的字段保持已保存值。代码源仅需 sid；LeetCode 需 LEETCODE_SESSION 与 csrftoken；计蒜客需 s 与 JSKUSS 两项（未登录时站点的 s 是游客会话，校验不过）；QOJ 需 UOJSESSID 与 cf_clearance 两项 Cookie，外加同浏览器的 User-Agent，三项缺一不可。
-          </p>
           <div style={{ marginTop: 4 }}>
             <Space>
               <span>单次同步上限</span>
@@ -1039,7 +1125,7 @@ export default function Settings() {
 
       <ImportPlanModal open={importOpen} onClose={() => setImportOpen(false)} />
       <Col span={24}>
-        <BackupCard />
+        <BackupCard refreshKey={backupRefresh} />
       </Col>
       </Row>
     </div>
@@ -1279,8 +1365,9 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(2)} MB`
 }
 
-/** 备份与恢复点：每日首次启动 / 升级前 / 大批量导入前 / 换账号重置前自动创建；恢复重启后生效 */
-function BackupCard() {
+/** 备份与恢复点：每日首次启动 / 升级前 / 大批量导入前 / 换账号重置前自动创建；恢复重启后生效。
+ *  refreshKey 变化（如设置页删号新建了恢复点）时重新拉取，避免列表停在页面加载时的快照 */
+function BackupCard({ refreshKey = 0 }: { refreshKey?: number }) {
   const { message, modal } = AntdApp.useApp()
   const [backups, setBackups] = useState<BackupItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -1293,7 +1380,7 @@ function BackupCard() {
       .catch((e) => message.error((e as Error).message))
       .finally(() => setLoading(false))
   }
-  useEffect(load, [message])
+  useEffect(load, [message, refreshKey])
 
   const createNow = async () => {
     setCreating(true)

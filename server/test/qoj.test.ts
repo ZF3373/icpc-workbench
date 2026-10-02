@@ -529,6 +529,10 @@ test('qoj: 走完整同步管道（Cookie 注入 → 拉取 → 入库 → sync_
   try {
     db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
       .run('cookie.qoj', COOKIE);
+    // v0.9：同步只用账号自己的 Cookie —— 模拟「账号卡片保存」把 COOKIE 写进 Qingyu 的槽位
+    // （平台级键此时只是影子值，仅供题库爬取/赛事榜单等非账号功能读取）
+    const { writeAccountCreds } = await import('../src/adapters/accountCreds.ts');
+    writeAccountCreds(db, 'qoj', { Qingyu: { cookie: COOKIE } });
     const seenHeaders: Array<Record<string, string>> = [];
     // 提交者必须与绑定的 handle 一致：适配器会过滤表格中他人的提交
     const fixtureHtml = page([

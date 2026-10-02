@@ -6,6 +6,7 @@ import { createDb } from './db/index.ts';
 import { applyPendingRestore, createBackup, maybeDailyBackup } from './backup.ts';
 import { seedBuiltinBank } from './db/builtinBank.ts';
 import { initAdapters } from './adapters/index.ts';
+import { migratePlatformCookieToAccounts } from './adapters/accountCreds.ts';
 import { configureSyncScheduler } from './adapters/syncScheduler.ts';
 import { setRequestIntervalScale } from './net/hostThrottle.ts';
 import { asyncHandler } from './asyncHandler.ts';
@@ -38,6 +39,15 @@ const config = loadConfig();
 applyPendingRestore(config.dbPath);
 const db = createDb(config.dbPath);
 seedBuiltinBank(db); // 内置题库播种：版本变化时 upsert 一次，日常启动零开销
+// 账号级凭据迁移（幂等）：旧版平台级 Cookie 复制给每个尚无自己槽位的绑定账号。
+// v0.9 起各账号同步只用自己卡片里配置的 Cookie，平台级值降级为非账号功能的影子值。
+try {
+  if (migratePlatformCookieToAccounts(db)) {
+    console.log('[accountCreds] 已将平台级 Cookie 迁移到各绑定账号');
+  }
+} catch (e) {
+  console.error(`[accountCreds] 平台级 Cookie 迁移失败（不影响启动）: ${(e as Error).message}`);
+}
 initAdapters(config.dataDir);
 // 后台分批续拉调度器：截断的同步按平台节奏自动续拉下一批（未装配则不排期，不影响手动同步）
 configureSyncScheduler({ db });

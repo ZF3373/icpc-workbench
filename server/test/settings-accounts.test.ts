@@ -209,6 +209,168 @@ test('remove account deletes its submissions, creates a restore point, other acc
   }
 });
 
+// ---------- 账号改名（设置页账号小卡片「保存」路径） ----------
+
+test('rename migrates binding, submissions and credential slot atomically', async () => {
+  await withServer(async (db, base) => {
+    await fetch(`${base}/accounts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'typo-name' }),
+    });
+    db.prepare(
+      `INSERT INTO problems (platform, problem_key, title) VALUES ('codeforces', '1919A', 'T 1919A')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO submissions (user_id, platform, account, problem_id, verdict, submitted_at, external_id)
+       VALUES (?, 'codeforces', 'typo-name', (SELECT id FROM problems WHERE platform='codeforces' AND problem_key='1919A'), 'AC', '2026-01-01T00:00:00.000Z', 'e-1')`,
+    ).run(DEFAULT_USER_ID);
+    // 该账号的凭据槽位（账号级 Cookie）
+    db.prepare(
+      "INSERT INTO settings (key, value) VALUES ('accountCreds.codeforces', ?)",
+    ).run(JSON.stringify({ 'typo-name': { cookie: '_uid=x' } }));
+
+    // 改名：账号行、提交归属、凭据槽位一起迁移；last_sync_at 保留
+    db.prepare("UPDATE platform_accounts SET last_sync_at = '2026-02-02T00:00:00.000Z' WHERE handle = 'typo-name'").run();
+    const res = await fetch(`${base}/accounts/rename`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'typo-name', newHandle: 'alice' }),
+    });
+    assert.equal(res.status, 200);
+
+    const acc = db
+      .prepare("SELECT handle, last_sync_at FROM platform_accounts WHERE platform = 'codeforces'")
+      .get() as { handle: string; last_sync_at: string };
+    assert.equal(acc.handle, 'alice');
+    assert.equal(acc.last_sync_at, '2026-02-02T00:00:00.000Z', '增量起点保留');
+    assert.equal(
+      (db.prepare("SELECT COUNT(*) AS c FROM submissions WHERE account = 'alice'").get() as { c: number }).c,
+      1,
+      '提交归属迁移到新 handle',
+    );
+    assert.equal(
+      (db.prepare("SELECT COUNT(*) AS c FROM submissions WHERE account = 'typo-name'").get() as { c: number }).c,
+      0,
+    );
+    const creds = JSON.parse(
+      (db.prepare("SELECT value FROM settings WHERE key = 'accountCreds.codeforces'").get() as { value: string }).value,
+    ) as Record<string, { cookie?: string }>;
+    assert.equal(creds['typo-name'], undefined, '旧凭据槽位清掉');
+    assert.equal(creds['alice']?.cookie, '_uid=x', '凭据槽位随改名迁移');
+
+    // 重名拒绝：先绑 bob，再把 alice 改成 bob → 409
+    await fetch(`${base}/accounts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'bob' }),
+    });
+    const clash = await fetch(`${base}/accounts/rename`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'alice', newHandle: 'bob' }),
+    });
+    assert.equal(clash.status, 409);
+
+    // 不存在的账号 → 404；同值改名 → 幂等 ok
+    assert.equal(
+      (
+        await fetch(`${base}/accounts/rename`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ platform: 'codeforces', handle: 'ghost', newHandle: 'x' }),
+        })
+      ).status,
+      404,
+    );
+    const same = await fetch(`${base}/accounts/rename`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'alice', newHandle: 'alice' }),
+    });
+    assert.equal(same.status, 200);
+  });
+});
+
+// ---------- Cookie 字段按需揭示（点眼睛显示原文） ----------
+
+test('cookies/reveal: 平台级字段按名取回原文；configOnly 取 UA；未知字段拒绝', async () => {
+  await withServer(async (db, base) => {
+    await saveFields(base, 'luogu', { uid: '1892580', clientId: 'client-token-1' });
+    const uid = await fetch(`${base}/cookies/reveal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'luogu', fieldKey: 'uid' }),
+    });
+    assert.deepEqual(await uid.json(), { value: '1892580' });
+
+    const ua = 'Mozilla/5.0 Reveal UA';
+    await saveFields(base, 'qoj', { ua });
+    const uaRes = await fetch(`${base}/cookies/reveal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'qoj', fieldKey: 'ua' }),
+    });
+    assert.deepEqual(await uaRes.json(), { value: ua });
+
+    const bad = await fetch(`${base}/cookies/reveal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'luogu', fieldKey: 'nope' }),
+    });
+    assert.equal(bad.status, 400);
+
+    // 没存过的字段 → 空串（不报错）
+    const missing = await fetch(`${base}/cookies/reveal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'daimayuan', fieldKey: 'sid' }),
+    });
+    assert.deepEqual(await missing.json(), { value: '' });
+  });
+});
+
+test('cookies/reveal: 账号槽位返回自己的字段；槽位没有的不回退平台级（不外泄）', async () => {
+  await withServer(async (db, base) => {
+    await fetch(`${base}/accounts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'luogu', handle: '1892580' }),
+    });
+    // 账号槽位只存 uid；平台级另存一套
+    const save = await fetch(`${base}/cookies`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'luogu', handle: '1892580', cookieFields: { uid: 'acct-uid' } }),
+    });
+    assert.equal(save.status, 200);
+    await saveFields(base, 'luogu', { uid: 'platform-uid', clientId: 'platform-client' });
+
+    const own = await fetch(`${base}/cookies/reveal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'luogu', handle: '1892580', fieldKey: 'uid' }),
+    });
+    assert.deepEqual(await own.json(), { value: 'acct-uid' });
+
+    // 账号槽位没存 clientId：即使平台级有，也不借账号名下发
+    const notOwn = await fetch(`${base}/cookies/reveal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'luogu', handle: '1892580', fieldKey: 'clientId' }),
+    });
+    assert.deepEqual(await notOwn.json(), { value: '' });
+
+    // 未绑定的 handle → 404
+    const ghost = await fetch(`${base}/cookies/reveal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'luogu', handle: 'ghost', fieldKey: 'uid' }),
+    });
+    assert.equal(ghost.status, 404);
+  });
+});
+
 // ---------- Cookie 检测接口 ----------
 
 import { register, getAdapter } from '../src/adapters/registry.ts';

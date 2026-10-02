@@ -2,8 +2,10 @@ import { Router } from 'express';
 import type { PlatformId } from '../../../shared/src/index.ts';
 import {
   PLATFORMS,
+  COOKIE_FIELDS,
   CREDENTIAL_UA_FIELDS,
   cookieFieldsOf,
+  cookieFieldValue,
   cookieOnlyFieldsOf,
   mergeCookieFields,
 } from '../../../shared/src/index.ts';
@@ -13,6 +15,7 @@ import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { getAdapter } from '../adapters/registry.ts';
 import { createBackup } from '../backup.ts';
+import { effectiveCredentials, readAccountCreds, removeAccountCreds, writeAccountCreds } from '../adapters/accountCreds.ts';
 import {
   DEFAULT_SYNC_MAX_SUBMISSIONS,
   MIN_SYNC_MAX_SUBMISSIONS,
@@ -192,12 +195,23 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
         };
       }
     }
+    // 账号级凭据（多账号）：每个绑定账号可单独保存 Cookie；只回传逐对打码版（键 = handle），
+    // 原文与平台级口径一致不回传前端。仅返回有槽位的账号，缺失即「未单独配置（回退平台级）」。
+    const accountCreds: Record<string, Record<string, { configured: boolean; masked: string }>> = {};
+    for (const p of PLATFORMS) {
+      if (!COOKIE_FIELDS[p.id]) continue;
+      for (const [handle, slot] of Object.entries(readAccountCreds(db, p.id))) {
+        if (!slot.cookie) continue;
+        (accountCreds[p.id] ??= {})[handle] = { configured: true, masked: maskCookieHeader(slot.cookie) };
+      }
+    }
     res.json({
       ai,
       accounts,
       adapterEnabled,
       platforms: PLATFORMS,
       cookies,
+      accountCreds,
       reminder: readReminder(db),
       contestReminder: readContestReminder(db),
       sync: readSyncSettings(db),
@@ -247,14 +261,27 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     res.json(readContestReminder(db));
   });
 
-  // POST /api/settings/cookies  body: { platform, cookie?, csrf?, cookieFields? }
-  // Cookie 为**整条替换**语义（cookie: '' 即清除）；
-  // cookieFields 为**单字段合并**语义（{ 字段key: 新值 }，空串表示显式清空该项，未列出的字段保留已保存值），
-  // 用来消除「只补填一项、另一项留空」时把另一项清空的缺陷（见 shared/src/index.ts COOKIE_FIELDS）。
+  // POST /api/settings/cookies  body: { platform, handle?, cookie?, csrf?, cookieFields? }
+  // 带 handle：**账号级**保存（多账号）——写入该账号的凭据槽位（accountCreds.<platform> JSON），
+  //   cookieFields 为单字段合并语义（只动显式填写的字段，空串 = 显式清空该项；
+  //   合并后全空则删除槽位，同步时回退平台级）。cookie/csrf 整条替换语义不支持账号级。
+  // 不带 handle：平台级保存（旧行为）——cookie 整条替换；cookieFields 单字段合并。
+  //   用来消除「只补填一项、另一项留空」时把另一项清空的缺陷（见 shared/src/index.ts COOKIE_FIELDS）。
   r.post('/cookies', (req, res) => {
-    const { platform, cookie, csrf, cookieFields } = req.body ?? {};
+    const { platform, cookie, csrf, cookieFields, handle } = req.body ?? {};
     if (!isPlatform(platform)) {
       return res.status(400).json({ error: `platform 非法: ${String(platform)}` });
+    }
+    const rawHandle = typeof handle === 'string' ? handle.trim() : '';
+    if (rawHandle && (typeof cookie === 'string' || typeof csrf === 'string')) {
+      return res.status(400).json({ error: '账号级凭据请用 cookieFields 逐字段提交（cookie/csrf 整条替换仅限平台级）' });
+    }
+    // 账号槽位只对已绑定账号开放，避免手滑拼错的 handle 生成孤儿凭据
+    if (rawHandle) {
+      const bound = db
+        .prepare('SELECT 1 AS ok FROM platform_accounts WHERE user_id = ? AND platform = ? AND handle = ?')
+        .get(DEFAULT_USER_ID, platform, rawHandle);
+      if (!bound) return res.status(404).json({ error: `账号 ${rawHandle} 未绑定，无法保存其凭据` });
     }
     const upsert = db.prepare(
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
@@ -278,7 +305,9 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
         const def = defs.find((d) => d.key === key);
         if (!def) return res.status(400).json({ error: `未知 Cookie 字段: ${key}` });
         if (typeof value !== 'string') return res.status(400).json({ error: `Cookie 字段 ${key} 需为字符串` });
-        // configOnly 字段（如 QOJ 的浏览器 UA）不进 Cookie 头，单独存 ua.<platform>
+        // configOnly 字段（如 QOJ 的浏览器 UA）不进 Cookie 头，单独存 ua.<platform>。
+        // 浏览器 UA 属浏览器级凭据（cf_clearance 与签发浏览器绑定），账号级保存同样写平台级，
+        // 供该平台所有账号（含未单独配置的）继承。
         if (def.configOnly) {
           if (value.trim() === '') remove.run(`ua.${platform}`);
           else upsert.run(`ua.${platform}`, value.trim());
@@ -286,9 +315,21 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
         }
         patches[key] = value;
       }
-      const merged = mergeCookieFields(readCookie(), cookieOnlyFieldsOf(platform), patches);
-      if (merged === '') remove.run(`cookie.${platform}`);
-      else upsert.run(`cookie.${platform}`, merged);
+      if (rawHandle) {
+        const slots = readAccountCreds(db, platform);
+        const stored = slots[rawHandle]?.cookie ?? '';
+        const merged = mergeCookieFields(stored, cookieOnlyFieldsOf(platform), patches);
+        if (merged === '') delete slots[rawHandle];
+        else slots[rawHandle] = { cookie: merged };
+        writeAccountCreds(db, platform, slots);
+        // 影子值镜像：题库爬取 / 洛谷·计蒜客赛事参与 / QOJ 榜单等非账号功能仍读
+        // cookie.<platform>，保存任一账号凭据时顺手刷新，让它们始终有「任一有效登录」可用
+        if (merged !== '') upsert.run(`cookie.${platform}`, merged);
+      } else {
+        const merged = mergeCookieFields(readCookie(), cookieOnlyFieldsOf(platform), patches);
+        if (merged === '') remove.run(`cookie.${platform}`);
+        else upsert.run(`cookie.${platform}`, merged);
+      }
     }
 
     if (typeof cookie === 'string') {
@@ -302,21 +343,56 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     // 回传合并后的字段构成（只含 Cookie 名与 UA 是否已配，不回传值），便于前端/用户确认。
     // 注意：必须从**实际保存的头**里提取名字，而不是只看字段定义——QOJ 的 raw「完整 Cookie」
     // 一项就携带 cf_clearance 与 UOJSESSID 等多个名字，只看定义会漏报（表现为界面提示缺项）。
-    const saved = readCookie();
+    const saved = rawHandle ? readAccountCreds(db, platform)[rawHandle]?.cookie ?? '' : readCookie();
     const fields = [...saved.matchAll(/(?:^|;)\s*([A-Za-z0-9_.\-]+)=/g)].map((m) => m[1]);
     const uaKey = CREDENTIAL_UA_FIELDS[platform];
     res.json({
       ok: true,
       fields,
       configured: saved !== '',
-      ...(uaKey ? { hasUa: Boolean(readSetting(`ua.${platform}`)) } : {}),
+      ...(rawHandle ? { handle: rawHandle } : {}),
+      ...(uaKey && !rawHandle ? { hasUa: Boolean(readSetting(`ua.${platform}`)) } : {}),
     });
   });
 
-  // POST /api/settings/cookies/check  body: { platform, cookie?, csrf? }
-  // 检测 Cookie 登录态；cookie 缺省时检测已保存的（适配器需实现 checkAuth，否则提示不支持）
+  // POST /api/settings/cookies/reveal  body: { platform, handle?, fieldKey }
+  // 点眼睛按需取回**单个字段**的原文：平时原文不下发前端（GET 只回逐对打码版），
+  // 仅当用户显式要求显示某字段时才返回它的裸值，缩小原文暴露面。
+  // handle 缺省 = 平台级（cookie.<platform> / ua.<platform>）；带 handle = 该账号自己槽位里的
+  // 字段——槽位没存过的字段返回空串（回退平台级的值不属于这个账号，不借此下发）。
+  r.post('/cookies/reveal', (req, res) => {
+    const { platform, handle, fieldKey } = req.body ?? {};
+    if (!isPlatform(platform)) {
+      return res.status(400).json({ error: `platform 非法: ${String(platform)}` });
+    }
+    const def = cookieFieldsOf(platform).find((d) => d.key === fieldKey);
+    if (!def) {
+      return res.status(400).json({ error: `未知 Cookie 字段: ${String(fieldKey)}` });
+    }
+    const rawHandle = typeof handle === 'string' ? handle.trim() : '';
+    const readSetting = (key: string): string | undefined =>
+      (db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)?.value;
+    if (rawHandle) {
+      const bound = db
+        .prepare('SELECT 1 AS ok FROM platform_accounts WHERE user_id = ? AND platform = ? AND handle = ?')
+        .get(DEFAULT_USER_ID, platform, rawHandle);
+      if (!bound) return res.status(404).json({ error: `账号 ${rawHandle} 未绑定` });
+      // configOnly（QOJ 浏览器 UA）属浏览器属性、全部账号共用：账号卡片里点眼睛同样返回共享值
+      const value = def.configOnly
+        ? readSetting(`ua.${platform}`) ?? ''
+        : cookieFieldValue(readAccountCreds(db, platform)[rawHandle]?.cookie ?? '', def.cookieName);
+      return res.json({ value });
+    }
+    const value = def.configOnly ? readSetting(`ua.${platform}`) ?? '' : cookieFieldValue(readSetting(`cookie.${platform}`) ?? '', def.cookieName);
+    res.json({ value });
+  });
+
+  // POST /api/settings/cookies/check  body: { platform, handle?, cookie?, csrf? }
+  // 检测 Cookie 登录态；cookie 缺省时检测已保存的（适配器需实现 checkAuth，否则提示不支持）。
+  // 带 handle：检测「该账号的生效凭据」（账号自己的 Cookie 逐字段回退平台级，与同步同一口径），
+  // 并把该 handle 传给 checkAuth（如 QOJ 需按目标账号的记录页验证登录态）。
   r.post('/cookies/check', asyncHandler(async (req, res) => {
-    const { platform, cookie, csrf } = req.body ?? {};
+    const { platform, cookie, csrf, handle } = req.body ?? {};
     if (!isPlatform(platform)) {
       return res.status(400).json({ error: `platform 非法: ${String(platform)}` });
     }
@@ -324,16 +400,25 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     if (!adapter?.checkAuth) {
       return res.json({ ok: false, message: '该平台无需登录或暂不支持检测' });
     }
+    // 账号级检测优先用账号名；请求体显式带的 cookie（先填后测）仍最优先
+    const checkHandle = typeof handle === 'string' ? handle.trim() : '';
     const cookieVal =
       typeof cookie === 'string' && cookie.trim()
         ? cookie.trim()
-        : (
-            db.prepare('SELECT value FROM settings WHERE key = ?').get(`cookie.${platform}`) as
-              | { value: string }
-              | undefined
-          )?.value;
+        : checkHandle
+          ? effectiveCredentials(db, platform, checkHandle).cookie
+          : (
+              db.prepare('SELECT value FROM settings WHERE key = ?').get(`cookie.${platform}`) as
+                | { value: string }
+                | undefined
+            )?.value;
     if (!cookieVal) {
-      return res.json({ ok: false, message: '尚未填写 Cookie，请先填写并保存' });
+      return res.json({
+        ok: false,
+        message: checkHandle
+          ? `账号 ${checkHandle} 尚未保存自己的 Cookie（平台级也未配置），请在该账号的「凭据」里填写并保存`
+          : '尚未填写 Cookie，请先填写并保存',
+      });
     }
     const csrfVal =
       typeof csrf === 'string' && csrf.trim()
@@ -343,10 +428,14 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
               | { value: string }
               | undefined
           )?.value;
-    // 检测应与同步走同一数据页：带上已绑定账号的 handle（如代码源 Hydro 需按"自己的记录"访问）
-    const account = db
-      .prepare('SELECT handle FROM platform_accounts WHERE user_id = ? AND platform = ?')
-      .get(DEFAULT_USER_ID, platform) as { handle: string } | undefined;
+    // 检测应与同步走同一数据页：带上目标账号的 handle（缺省取首个已绑定账号）
+    const account = checkHandle
+      ? { handle: checkHandle }
+      : (
+          db
+            .prepare('SELECT handle FROM platform_accounts WHERE user_id = ? AND platform = ?')
+            .get(DEFAULT_USER_ID, platform) as { handle: string } | undefined
+        );
     // 复刻浏览器 UA（QOJ 等 cf_clearance 绑定 UA 的平台需要）：与同步层同一来源
     const uaVal = (
       db.prepare('SELECT value FROM settings WHERE key = ?').get(`ua.${platform}`) as
@@ -462,6 +551,55 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     res.json({ ok: true, id: Number(r.lastInsertRowid) });
   });
 
+  // POST /api/settings/accounts/rename  body: { platform, handle, newHandle }
+  // 修改已绑定账号的名称（设置页账号小卡片「保存」路径）：填错 handle 的补救办法，
+  // 避免删号重绑连带删提交记录。账号行、该账号全部提交记录的归属在同一事务内迁移，
+  // 账号级凭据槽位（accountCreds）随之改名；last_sync_at 保留（增量起点不变）。
+  r.post('/accounts/rename', (req, res) => {
+    const { platform, handle, newHandle } = req.body ?? {};
+    if (!isPlatform(platform)) {
+      return res.status(400).json({ error: `platform 非法: ${String(platform)}` });
+    }
+    if (
+      typeof handle !== 'string' ||
+      handle.trim() === '' ||
+      typeof newHandle !== 'string' ||
+      newHandle.trim() === ''
+    ) {
+      return res.status(400).json({ error: 'handle 与 newHandle 必填' });
+    }
+    const from = handle.trim();
+    const to = newHandle.trim();
+    if (from === to) return res.json({ ok: true, unchanged: true });
+    const binding = db
+      .prepare('SELECT id FROM platform_accounts WHERE user_id = ? AND platform = ? AND handle = ?')
+      .get(DEFAULT_USER_ID, platform, from);
+    if (!binding) return res.status(404).json({ error: `账号 ${from} 未绑定` });
+    const clash = db
+      .prepare('SELECT id FROM platform_accounts WHERE user_id = ? AND platform = ? AND handle = ?')
+      .get(DEFAULT_USER_ID, platform, to);
+    if (clash) return res.status(409).json({ error: `该平台已存在账号 ${to}，不能重名` });
+    try {
+      db.exec('BEGIN');
+      db.prepare('UPDATE platform_accounts SET handle = ? WHERE user_id = ? AND platform = ? AND handle = ?')
+        .run(to, DEFAULT_USER_ID, platform, from);
+      db.prepare('UPDATE submissions SET account = ? WHERE user_id = ? AND platform = ? AND account = ?')
+        .run(to, DEFAULT_USER_ID, platform, from);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      return res.status(500).json({ error: `改名失败：${(e as Error).message}` });
+    }
+    // 账号级凭据槽位随账号改名迁移（放在事务外：迁移失败不回滚改名，读侧有回退兜底）
+    const slots = readAccountCreds(db, platform);
+    if (slots[from]) {
+      slots[to] = slots[from]!;
+      delete slots[from];
+      writeAccountCreds(db, platform, slots);
+    }
+    res.json({ ok: true, handle: to });
+  });
+
   // POST /api/settings/accounts/enabled  body: { platform, handle, enabled }
   // 单账号启停：停用后不参与「一键同步」与该平台的手动同步，历史数据保留。
   r.post('/accounts/enabled', (req, res) => {
@@ -523,6 +661,8 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       db.exec('ROLLBACK');
       return res.status(500).json({ error: `删除失败：${(e as Error).message}` });
     }
+    // 联动清理该账号的凭据槽位（放在事务外：槽位清理失败不影响已成功的删除，读侧有回退兜底）
+    removeAccountCreds(db, platform, trimmed);
     res.json({ ok: true, deletedSubmissions: count.c, backupFile: backup.file });
   });
 

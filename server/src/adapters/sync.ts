@@ -7,6 +7,7 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { insertNormalized } from '../import/importService.ts';
 import { getAdapter } from './registry.ts';
+import { effectiveCredentials } from './accountCreds.ts';
 import { ManualImportRequiredError, SyncError, type FetchOptions, type SyncErrorCode } from './types.ts';
 import { cancelAutoContinue, scheduleAutoContinue } from './syncScheduler.ts';
 import { beginSync, endSync, jobSiteRequests, setSyncPhase } from './syncProgress.ts';
@@ -252,15 +253,16 @@ async function runSyncPlatform(
       !daysWindow && adapter.knownIdsFilter
         ? loadKnownSubmissions(db, userId, platform, handle)
         : undefined;
-    // 需登录平台：从 settings 读取 Cookie / CSRF 注入适配器
+    // 需登录平台：取该账号的生效凭据注入适配器。v0.9 起各账号**只用自己**的 Cookie
+    //（accountCreds 槽位），不再回退平台级——没配置就明确报「未配置 Cookie」，
+    // 谁过期续谁，互不牵连。UA 仍为平台级（浏览器属性，与账号无关）。
     const readSetting = (key: string): string | undefined => {
       const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
         | { value: string }
         | undefined;
       return row?.value;
     };
-    const cookie = readSetting(`cookie.${platform}`);
-    const csrf = readSetting(`csrf.${platform}`);
+    const { cookie, csrf } = effectiveCredentials(db, platform, handle);
     // 复刻浏览器 UA（QOJ 等 cf_clearance 绑定 UA 的平台需要；缺省由适配器用内置 UA）
     const ua = readSetting(`ua.${platform}`);
     const maxSubmissions = readMaxSubmissions(db);

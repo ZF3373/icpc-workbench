@@ -9,6 +9,7 @@ import type {
 import { createDb, type Db } from '../src/db/index.ts';
 import { register } from '../src/adapters/index.ts';
 import { syncPlatform } from '../src/adapters/sync.ts';
+import { writeAccountCreds } from '../src/adapters/accountCreds.ts';
 import { ManualImportRequiredError } from '../src/adapters/types.ts';
 import type { PlatformAdapter } from '../src/adapters/types.ts';
 
@@ -119,13 +120,23 @@ test('second account sync coexists with the first (no clearing, full mode for ne
   assert.deepEqual(handles.map((h) => h.handle), ['alice', 'bob']);
 });
 
-test('sync injects cookie/csrf from settings into adapter', async () => {
-  db.prepare("INSERT INTO settings (key, value) VALUES ('cookie.codeforces', 'session=abc')").run();
+test('sync injects cookie from the account slot; csrf stays platform-level', async () => {
+  // v0.9 起各账号只用自己卡片里配置的 Cookie：平台级键降级为影子值，不再借给账号同步
+  db.prepare("INSERT INTO settings (key, value) VALUES ('cookie.codeforces', 'session=SHADOW')").run();
   db.prepare("INSERT INTO settings (key, value) VALUES ('csrf.codeforces', 'tok123')").run();
+  writeAccountCreds(db, 'codeforces', { u: { cookie: 'session=abc' } });
   makeFake([sub('1919A', 'e1')]);
   await syncPlatform(db, 'codeforces', 'u');
   assert.equal(fakeCalls[0].cookie, 'session=abc');
   assert.equal(fakeCalls[0].csrf, 'tok123');
+});
+
+test('account without its own cookie gets no cookie injected (no shadow fallback)', async () => {
+  db.prepare("INSERT INTO settings (key, value) VALUES ('cookie.codeforces', 'session=SHADOW')").run();
+  makeFake([sub('1919A', 'e1')]);
+  const result = await syncPlatform(db, 'codeforces', 'no-creds');
+  assert.equal(fakeCalls[0].cookie, undefined, '平台级影子 Cookie 不借给账号同步');
+  assert.equal(result.imported, 1, '无需 Cookie 的平台（如 CF）同步不受影响');
 });
 
 test('sync failure keeps all accounts data intact', async () => {
