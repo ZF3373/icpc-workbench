@@ -19,6 +19,8 @@ import {
 import { StarOutlined, SearchOutlined, TrophyOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
+import AccountScopePicker from '../components/AccountScopePicker'
+import { useAccountScope, withScope } from '../accountScope'
 import { pct } from '../ui'
 import { get } from '../api'
 import { MASTERY_LEVEL_LABELS } from '../types'
@@ -88,6 +90,8 @@ export default function Mastery() {
   // React 19 下 antd 静态 message 静默失效，必须用 App 上下文实例
   const { message } = AntdApp.useApp()
   const nav = useNavigate()
+  /** 账号视角：与数据概览共用同一个 localStorage 值 */
+  const [scope, setScope] = useAccountScope()
   const [report, setReport] = useState<MasteryReport | null>(null)
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
@@ -120,11 +124,11 @@ export default function Mastery() {
 
   const load = useCallback(() => {
     setLoading(true)
-    get<MasteryReport>('/api/stats/mastery')
+    get<MasteryReport>(withScope('/api/stats/mastery', scope))
       .then(setReport)
       .catch((e: Error) => message.error(e.message))
       .finally(() => setLoading(false))
-  }, [])
+  }, [message, scope])
 
   useEffect(() => {
     load()
@@ -198,6 +202,7 @@ export default function Mastery() {
         description="把刷题记录、弱项画像与模板课程串成一张图 —— 每个知识点的题量、AC 率与对应课程，点开直达模板库"
         extra={
           <Space wrap>
+            <AccountScopePicker value={scope} onChange={setScope} />
             <Input
               allowClear
               prefix={<SearchOutlined />}

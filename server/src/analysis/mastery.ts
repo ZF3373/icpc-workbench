@@ -10,11 +10,12 @@ import type {
   MasteryPoint,
   MasteryReport,
   MasteryTemplateLink,
+  PlatformId,
 } from '../../../shared/src/index.ts';
 import { canonicalTag, expandTag } from '../../../shared/src/index.ts';
 import { CURRICULUM } from '../templates/curriculum.ts';
 import type { Db } from '../db/index.ts';
-import { fetchRows, rate, round2, safeTags } from './stats.ts';
+import { accountClause, fetchRows, rate, round2, safeTags } from './stats.ts';
 import { filterNoiseTags } from './tags.ts';
 import { allPoints } from '../knowledge/taxonomy.ts';
 import { getConfidenceThreshold, READABLE_SOURCES_SQL } from '../knowledge/store.ts';
@@ -24,6 +25,9 @@ const RECENT_WINDOW_DAYS = 56;
 export interface MasteryOptions {
   /** 保留至少 N 道题的练习知识点（0 = 连课程里还没刷过的知识点也输出） */
   minSolved?: number;
+  /** 账号/平台作用域（须同时给）：省略 = 全部账号 */
+  platform?: PlatformId;
+  account?: string;
 }
 
 /**
@@ -91,10 +95,14 @@ export function computeMastery(db: Db, userId: number, opts: MasteryOptions = {}
   const threshold = getConfidenceThreshold(db);
   const statusMap = loadTemplateStatuses(db, userId);
   const recentCutoff = new Date(Date.now() - RECENT_WINDOW_DAYS * 86_400_000).toISOString();
+  const scope = { platform: opts.platform, account: opts.account };
+  const clause = accountClause(scope);
 
+  // 总体 AC 率是掌握度 gap 的基准，必须与知识点统计同一作用域，否则「相对自身平均」
+  // 仍是全部账号的稀释平均
   const totals = db
-    .prepare("SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN verdict = 'AC' THEN 1 ELSE 0 END), 0) AS ac FROM submissions WHERE user_id = ?")
-    .get(userId) as { n: number; ac: number };
+    .prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END), 0) AS ac FROM submissions s WHERE s.user_id = ?${clause.sql}`)
+    .get(userId, ...clause.params) as { n: number; ac: number };
   const avgAcRate = rate(totals.n, totals.ac);
 
   interface Acc {
@@ -125,9 +133,9 @@ export function computeMastery(db: Db, userId: number, opts: MasteryOptions = {}
        FROM submissions s
        JOIN problems p ON s.problem_id = p.id
        JOIN problem_keypoints pk ON pk.platform = p.platform AND pk.problem_key = p.problem_key AND pk.confidence >= ? AND pk.${READABLE_SOURCES_SQL}
-       WHERE s.user_id = ?`,
+       WHERE s.user_id = ?${clause.sql}`,
     )
-    .all(threshold, userId) as unknown as Array<{
+    .all(threshold, userId, ...clause.params) as unknown as Array<{
     platform: string;
     verdict: string;
     submitted_at: string;
@@ -143,7 +151,7 @@ export function computeMastery(db: Db, userId: number, opts: MasteryOptions = {}
   const fallbackSql =
     `CASE WHEN EXISTS (SELECT 1 FROM problem_keypoints pk WHERE pk.platform = p.platform AND pk.problem_key = p.problem_key AND pk.confidence >= ${threshold} AND pk.${READABLE_SOURCES_SQL}) ` +
     `THEN '[]' ELSE p.tags END AS tags`;
-  const fallbackRows = fetchRows(db, userId, {}, fallbackSql);
+  const fallbackRows = fetchRows(db, userId, scope, fallbackSql);
   const byTag = new Map<string, Acc>();
   for (const r of fallbackRows) {
     const isAc = r.verdict === 'AC';

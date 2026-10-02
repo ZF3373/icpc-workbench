@@ -366,6 +366,11 @@ export interface AbilityComputation {
  * - 首次无状态（老用户升级 / 空库）：从旧口径（全历史中位数）出发走一步夹紧步长，避免首见跳变
  * - 无新练习提交（含失败）：发布值保持不动（刷新页面不漂移），detail 里仍透出当前目标值
  * - 有新练习：状态向目标值走一小步并落库（失败堆出来的低通过率同样触发向下校准）
+ *
+ * 能力值**不按账号作用域**（2026-10 决定）：它估计的是「你这个人的水平」，
+ * 校准轨迹只有 settings 里一行（ability.state）。描述性统计（AC 率 / 弱项 / 掌握度 /
+ * 热力图）才随「账号视角」收窄——那里按作用域算没有状态问题，而这里若跟着收窄，
+ * 切一次视角就改写一次校准轨迹，两个作用域的值会互相污染。
  */
 export function computeAbilityDetail(db: Db, userId: number, windowDays = 60, now: Date = new Date()): AbilityComputation {
   const breakdown = estimateBreakdown(db, userId, windowDays, now);

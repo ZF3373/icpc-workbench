@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { Alert, Button, Card, Col, Empty, Row, Spin, App as AntdApp, Tooltip as AntTooltip } from 'antd'
+import { Alert, Button, Card, Col, Empty, Row, Space, Spin, App as AntdApp, Tooltip as AntTooltip } from 'antd'
 import {
   CheckCircleOutlined,
   HolderOutlined,
@@ -28,6 +28,8 @@ import HistoryPanel from '../components/HistoryPanel'
 import StatStrip from '../components/StatStrip'
 import ActivityHeatmap from '../components/ActivityHeatmap'
 import SyncStatusCard from '../components/SyncStatusCard'
+import AccountScopePicker from '../components/AccountScopePicker'
+import { useAccountScope, withScope } from '../accountScope'
 import SyncProgressHint from '../components/SyncProgressHint'
 import { useSyncProgress } from '../syncProgressContext'
 import { applyModuleOrder, loadModuleOrder, saveModuleOrder, type ModuleId } from '../moduleOrder'
@@ -129,6 +131,8 @@ function ModuleCard({
 
 export default function Dashboard() {
   const { message } = AntdApp.useApp()
+  /** 账号视角：绑了多个账号时，统计族接口按 platform+account 收窄（默认全部账号） */
+  const [scope, setScope] = useAccountScope()
   const [stats, setStats] = useState<OverallStats | null>(null)
   const [weak, setWeak] = useState<WeaknessProfile | null>(null)
   const [trend, setTrend] = useState<TrendPoint[] | null>(null)
@@ -165,9 +169,9 @@ export default function Dashboard() {
     // 整页退化成「暂无刷题数据 —— 去绑定平台账号」，有数千条提交的用户被告知没数据，
     // 而屏幕上没有任何报错提示（只有 DevTools console）
     Promise.allSettled([
-      get<OverallStats>('/api/stats'),
-      get<WeaknessProfile>('/api/stats/weakness'),
-      get<TrendPoint[]>('/api/stats/trend?weeks=12'),
+      get<OverallStats>(withScope('/api/stats', scope)),
+      get<WeaknessProfile>(withScope('/api/stats/weakness', scope)),
+      get<TrendPoint[]>(withScope('/api/stats/trend?weeks=12', scope)),
     ])
       .then(([s, w, t]) => {
         if (s.status === 'fulfilled') setStats(s.value)
@@ -179,7 +183,7 @@ export default function Dashboard() {
         if (msg) message.error(`统计数据加载失败：${msg}`)
       })
       .finally(() => setLoading(false))
-  }, [message])
+  }, [message, scope])
 
   useEffect(() => {
     load()
@@ -409,6 +413,7 @@ export default function Dashboard() {
     heatmap: (
       <ActivityHeatmap
         refreshKey={syncTick}
+        scope={scope}
         draggable={{ onMouseDown: (e) => handleModuleMouseDown(e, 'heatmap') }}
       />
     ),
@@ -572,7 +577,12 @@ export default function Dashboard() {
       <PageHeader
         title="数据概览"
         description="追踪你的训练进度和薄弱环节"
-        extra={syncButton}
+        extra={
+          <Space align="start" wrap>
+            <AccountScopePicker value={scope} onChange={setScope} />
+            {syncButton}
+          </Space>
+        }
       />
 
       {/* 同步状态：进行中显示逐平台进度；空闲显示上次同步结果（含历史抽屉入口） */}

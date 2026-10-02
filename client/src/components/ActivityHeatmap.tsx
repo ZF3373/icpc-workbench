@@ -11,6 +11,8 @@ import { Card, Empty, Segmented, Spin, Tooltip, theme } from 'antd'
 import { HolderOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { get } from '../api'
+import type { AccountScope } from '../accountScope'
+import { withScope } from '../accountScope'
 import { useTheme } from '../themeContext'
 import type { HeatmapResult } from '../types'
 import { buildHeatmapGrid, levelFor, solveLevelThresholds, type HeatmapCell } from '../heatmapGrid'
@@ -44,9 +46,12 @@ function cellTitle(c: HeatmapCell): string {
 
 export default function ActivityHeatmap({
   refreshKey = 0,
+  scope,
   draggable,
 }: {
   refreshKey?: number
+  /** 账号视角（多账号统计隔离）：省略 = 全部账号 */
+  scope?: AccountScope
   /** 数据概览模块拖拽：由 Dashboard 传入，把手渲染在标题前，mousedown 上抛 */
   draggable?: { onMouseDown: (e: ReactMouseEvent<HTMLDivElement>) => void }
 }) {
@@ -59,7 +64,7 @@ export default function ActivityHeatmap({
   useEffect(() => {
     let alive = true
     setLoading(true)
-    get<HeatmapResult>(`/api/stats/heatmap?days=${days}`)
+    get<HeatmapResult>(withScope(`/api/stats/heatmap?days=${days}`, scope ?? {}))
       .then((r) => {
         if (alive) setData(r)
       })
@@ -70,7 +75,7 @@ export default function ActivityHeatmap({
     return () => {
       alive = false
     }
-  }, [days, refreshKey])
+  }, [days, refreshKey, scope])
 
   const grid = useMemo(() => buildHeatmapGrid(data?.days ?? []), [data])
   const thresholds = useMemo(() => solveLevelThresholds(data?.days ?? []), [data])

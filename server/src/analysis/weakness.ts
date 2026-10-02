@@ -1,11 +1,13 @@
 import type {
   DifficultyWeakness,
+  PlatformId,
   WeaknessItem,
   WeaknessProfile,
 } from '../../../shared/src/index.ts';
 import { canonicalTag, codeOfTag } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import {
+  accountClause,
   bump,
   bucketForDifficulty,
   fetchRows,
@@ -24,6 +26,9 @@ export interface WeaknessOptions {
   topN?: number;
   /** 覆盖 tags 列来源（双口径对比：'p.tags AS tags' = tag 口径；缺省 = 知识点口径） */
   tagsSql?: string;
+  /** 账号/平台作用域：整体平均 AC 率（弱项基准）也随作用域收窄，见 accountClause */
+  platform?: PlatformId;
+  account?: string;
 }
 
 /**
@@ -38,7 +43,8 @@ export function computeWeakness(
 ): WeaknessProfile {
   const minAttempts = opts.minAttempts ?? 5;
   const topN = opts.topN ?? 10;
-  const rows = fetchRows(db, userId, {}, opts.tagsSql);
+  const scope = { platform: opts.platform, account: opts.account };
+  const rows = fetchRows(db, userId, scope, opts.tagsSql);
   const totalAc = rows.filter((r) => r.verdict === 'AC').length;
   const avgAcRate = rate(rows.length, totalAc);
 
@@ -64,7 +70,8 @@ export function computeWeakness(
       // 该 tag 对应的概念 code（粗类标签如「数学（综合）」也能取到）；
       // 取不到 code 时权重按 1 处理（不惩罚未纳入 taxonomy 的标签）
       const code = codeOfTag(tag);
-      const weight = code === undefined ? 1 : averageWeightForCode(db, userId, code);
+      const weight =
+        code === undefined ? 1 : averageWeightForCode(db, userId, code, scope);
       return {
         tag,
         attempts: s.attempts,
@@ -99,15 +106,24 @@ export function computeWeakness(
  * 同一概念横跨多个难度桶时，按用户在**各桶的尝试数**加权平均其信息量权重。
  * 只用到该用户实际做过的题所在桶，避免把用户从未接触的难度区间的膨胀也计入。
  */
-function averageWeightForCode(db: Db, userId: number, code: string): number {
+function averageWeightForCode(
+  db: Db,
+  userId: number,
+  code: string,
+  scope: { platform?: PlatformId; account?: string },
+): number {
+  const clause = accountClause(scope);
   const rows = db
     .prepare(
       `SELECT p.difficulty AS difficulty, COUNT(*) AS attempts
          FROM submissions s JOIN problems p ON p.id = s.problem_id
-        WHERE s.user_id = ?
+        WHERE s.user_id = ?${clause.sql}
         GROUP BY p.difficulty`,
     )
-    .all(userId) as unknown as Array<{ difficulty: number | null; attempts: number }>;
+    .all(userId, ...clause.params) as unknown as Array<{
+    difficulty: number | null;
+    attempts: number;
+  }>;
   let total = 0;
   let weighted = 0;
   for (const r of rows) {

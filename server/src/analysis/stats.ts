@@ -42,6 +42,29 @@ export interface StatsFilter {
   from?: string;
   to?: string;
   platform?: PlatformId;
+  /** 归属账号 handle（多账号隔离）；必须与 platform 同时给，见 accountClause */
+  account?: string;
+}
+
+/**
+ * 账号作用域的 SQL 片段（供统计族共用，别名默认为 submissions 的 `s`）。
+ * handle 只在平台内唯一（platform_accounts UNIQUE(user_id, platform, handle)），
+ * 只给 account 不 platform 会跨平台静默合并同名账号（洛谷/牛客 uid 都是数字），
+ * 因此这里直接拒绝，而不是猜一个作用域。
+ */
+export function accountClause(
+  scope: { platform?: PlatformId; account?: string },
+  alias = 's',
+): { sql: string; params: Array<string | number> } {
+  if (!scope.account) {
+    if (!scope.platform) return { sql: '', params: [] };
+    return { sql: ` AND ${alias}.platform = ?`, params: [scope.platform] };
+  }
+  if (!scope.platform) throw new Error('account 过滤必须同时指定 platform');
+  return {
+    sql: ` AND ${alias}.platform = ? AND ${alias}.account = ?`,
+    params: [scope.platform, scope.account],
+  };
 }
 
 export interface SubmissionRow {
@@ -69,10 +92,9 @@ export function fetchRows(
     WHERE s.user_id = ?
   `;
   const params: Array<string | number> = [userId];
-  if (filter.platform) {
-    sql += ' AND s.platform = ?';
-    params.push(filter.platform);
-  }
+  const scope = accountClause(filter);
+  sql += scope.sql;
+  params.push(...scope.params);
   if (filter.from) {
     sql += ' AND s.submitted_at >= ?';
     params.push(filter.from);

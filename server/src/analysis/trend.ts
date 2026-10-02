@@ -1,3 +1,4 @@
+import type { PlatformId } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { bucketForDifficulty, fetchRows, type MutableStat } from './stats.ts';
 
@@ -34,8 +35,10 @@ export function computeTrend(
   weeks = 12,
   /** 锚定"当前周"，默认系统时间；测试注入固定时间 */
   now: Date = new Date(),
+  /** 账号/平台作用域（多账号统计隔离）；省略 = 全部账号，与既有调用行为一致 */
+  scope: { platform?: PlatformId; account?: string } = {},
 ): TrendPoint[] {
-  const rows = fetchRows(db, userId);
+  const rows = fetchRows(db, userId, scope);
   const byWeek = new Map<string, MutableStat>();
   const solvedByWeek = new Map<string, Set<string>>();
   const acDifficultyByWeek = new Map<string, number[]>();

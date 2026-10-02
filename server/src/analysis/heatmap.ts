@@ -25,6 +25,8 @@ export interface HeatmapOptions {
   /** 统计窗口天数（含今天），默认 365 */
   days?: number;
   platform?: PlatformId;
+  /** 归属账号（须与 platform 同时给）；省略 = 全部账号 */
+  account?: string;
   /** 锚定「今天」，默认系统时间；测试注入固定时间 */
   now?: Date;
 }
@@ -48,7 +50,8 @@ export function computeHeatmap(db: Db, userId: number, opts: HeatmapOptions = {}
   const from = localDayOf(addLocalDays(now, -(window - 1)));
 
   const byDay = new Map<string, { attempts: number; ac: number; solved: Set<string> }>();
-  for (const r of fetchRows(db, userId, opts.platform ? { platform: opts.platform } : {})) {
+  const scope = { platform: opts.platform, account: opts.account };
+  for (const r of fetchRows(db, userId, scope)) {
     const day = localDayOf(new Date(r.submitted_at));
     if (day < from || day > to) continue;
     let stat = byDay.get(day);
