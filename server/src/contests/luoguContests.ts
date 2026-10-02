@@ -41,37 +41,51 @@ export function toLuoguContest(c: LuoguContestItem): ContestInfo {
 }
 
 let cache: { at: number; contests: ContestInfo[] } | null = null;
+/** 在飞拉取：缓存写入前（网络窗口内）并发的第二个调用复用同一 Promise，不叠加请求 */
+let inflight: Promise<ContestInfo[]> | null = null;
 const CACHE_MS = 60 * 60 * 1000;
 const PAGES = 2;
 
 export async function fetchLuoguContests(fetchFn: typeof fetch = fetch): Promise<ContestInfo[]> {
   if (cache && Date.now() - cache.at < CACHE_MS) return cache.contests;
-  const pages = await Promise.all(
-    Array.from({ length: PAGES }, (_, i) =>
-      fetchWithChallenge(
-        fetchFn,
-        `https://www.luogu.com.cn/contest/list?_contentOnly=1&page=${i + 1}`,
-        '',
-        undefined,
-        { 'x-lentille-request': 'content-only' },
-      ).then(async (res) => {
-        if (!res.ok) throw new Error(`洛谷赛事接口 HTTP ${res.status}`);
-        const body = (await res.json()) as {
-          data?: { contests?: { result?: LuoguContestItem[] } };
-        };
-        return body.data?.contests?.result ?? [];
-      }),
-    ),
-  );
-  const seen = new Set<number>();
-  const contests: ContestInfo[] = [];
-  for (const page of pages) {
-    for (const item of page) {
-      if (seen.has(item.id)) continue;
-      seen.add(item.id);
-      contests.push(toLuoguContest(item));
+  if (inflight) return inflight;
+  inflight = (async () => {
+    const pages = await Promise.all(
+      Array.from({ length: PAGES }, (_, i) =>
+        fetchWithChallenge(
+          fetchFn,
+          `https://www.luogu.com.cn/contest/list?_contentOnly=1&page=${i + 1}`,
+          '',
+          undefined,
+          { 'x-lentille-request': 'content-only' },
+        ).then(async (res) => {
+          if (!res.ok) throw new Error(`洛谷赛事接口 HTTP ${res.status}`);
+          const body = (await res.json()) as {
+            data?: { contests?: { result?: LuoguContestItem[] } };
+          };
+          return body.data?.contests?.result ?? [];
+        }),
+      ),
+    );
+    const seen = new Set<number>();
+    const contests: ContestInfo[] = [];
+    for (const page of pages) {
+      for (const item of page) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        contests.push(toLuoguContest(item));
+      }
     }
-  }
-  cache = { at: Date.now(), contests };
-  return contests;
+    cache = { at: Date.now(), contests };
+    return contests;
+  })().finally(() => {
+    inflight = null;
+  });
+  return inflight;
+}
+
+/** 测试用：清空模块级缓存与在飞 Promise（它们跨用例共享，测试需要冷启动） */
+export function __resetLuoguContestsForTest(): void {
+  cache = null;
+  inflight = null;
 }

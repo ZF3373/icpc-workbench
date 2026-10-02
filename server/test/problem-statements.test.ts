@@ -39,6 +39,7 @@ function makeReview(
       submissionCount: submissions.length,
       problemCount: submissions.length + unsubmitted.length,
       acProblemCount: submissions.filter((s) => s.verdict === 'AC').length,
+      inContestAcProblemCount: null,
       lastSubmittedAt: '2026-09-20T15:00:00.000Z',
       evidence: 'contest',
       source: null,

@@ -2073,6 +2073,57 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* 参赛卡片的赛中/补题统计：两行大数字（补题进度是这张卡的核心信息），
+   标签小字承载口径，颜色只在语义处出现（补完=绿、剩题=琥珀） */
+.contest-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.contest-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.contest-stat-label {
+  flex-shrink: 0;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.contest-stat-value {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.contest-stat-value-dim {
+  color: var(--text-2);
+}
+
+.contest-stat-done {
+  color: var(--green);
+}
+
+.contest-stat-denom {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.contest-stat-sub {
+  color: var(--amber);
+  font-size: 11px;
+}
+
+.contest-stat-sub-done {
+  color: var(--green);
+}
+
 /* ============================================================
    筛选工具栏（题目管理）
    ============================================================ */

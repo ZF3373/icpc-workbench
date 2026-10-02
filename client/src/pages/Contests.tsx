@@ -326,6 +326,13 @@ export default function Contests() {
           <Row gutter={[16, 16]}>
             {participatedItems.map((c) => {
               const evidence = EVIDENCE_TAG[c.evidence] ?? { color: 'default', label: c.evidence }
+              // 总题数只在平台参赛记录给出权威值时展示分母（牛客/洛谷）；CF/AtCoder 的
+              // problemCount 兜底是「本地交过的题数」，当分母会把「剩 N 题」算错
+              const totalProblems =
+                c.source?.problemCount != null && c.source.problemCount > 0
+                  ? c.source.problemCount
+                  : null
+              const upsolveDone = totalProblems != null && c.acProblemCount >= totalProblems
               return (
                 <Col xs={24} md={12} xl={8} key={c.key}>
                   <Card size="small" className="contest-card">
@@ -345,12 +352,47 @@ export default function Contests() {
                       <span>
                         <ClockCircleOutlined /> {fmtStart(c.startTimeIso)}
                       </span>
-                      <span>
-                        {c.submissionCount > 0
-                          ? `${c.problemCount} 题 · AC ${c.acProblemCount} · ${c.submissionCount} 次提交`
-                          : '无逐条提交记录'}
-                      </span>
+                      {c.submissionCount > 0 ? (
+                        <span>{c.submissionCount} 次提交</span>
+                      ) : c.problemCount > 0 ? (
+                        // 零提交但平台记录给了总题数：如实显示「报名未交题」，
+                        // 区别于数据未同步（无逐条提交记录）
+                        <span>报名未交题 · 共 {c.problemCount} 题</span>
+                      ) : (
+                        <span>无逐条提交记录</span>
+                      )}
                     </div>
+                    {c.submissionCount > 0 && (
+                      <div className="contest-stats">
+                        {c.inContestAcProblemCount != null && (
+                          <div className="contest-stat">
+                            <span className="contest-stat-label">赛中 AC</span>
+                            <span className="contest-stat-value contest-stat-value-dim">
+                              {c.inContestAcProblemCount}
+                            </span>
+                          </div>
+                        )}
+                        <div className="contest-stat">
+                          <span className="contest-stat-label">当前 AC</span>
+                          <span
+                            className={`contest-stat-value${upsolveDone ? ' contest-stat-done' : ''}`}
+                          >
+                            {c.acProblemCount}
+                            {totalProblems != null && (
+                              <span className="contest-stat-denom">/{totalProblems}</span>
+                            )}
+                          </span>
+                          {totalProblems != null &&
+                            (upsolveDone ? (
+                              <span className="contest-stat-sub contest-stat-sub-done">已补完</span>
+                            ) : (
+                              <span className="contest-stat-sub">
+                                剩 {totalProblems - c.acProblemCount} 题
+                              </span>
+                            ))}
+                        </div>
+                      </div>
+                    )}
                     {(c.source?.rank != null || c.source?.rating != null) && (
                       <div className="contest-countdown">
                         {c.source?.rank != null ? `排名 ${c.source.rank}` : ''}

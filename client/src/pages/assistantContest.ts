@@ -14,6 +14,13 @@ function contestLabel(contest: ParticipatedContest): string {
   return contest.name ?? `${contest.platform} · ${contest.contestId}`
 }
 
+/** 赛时/补题拆分标注：赛时数未知或与当前持平（没有补题可看）时不加 */
+function contestAcSplit(contest: ParticipatedContest): string {
+  const inContest = contest.inContestAcProblemCount
+  if (inContest === null || inContest >= contest.acProblemCount) return ''
+  return `（赛时 AC ${inContest}、赛后补题 ${contest.acProblemCount - inContest}）`
+}
+
 /**
  * 带**本场关键事实**的复盘请求：把 AI 本来要反问的事（哪一场、做了几题、
  * 有没有同步到提交）直接写进请求里，省一轮往返。
@@ -23,7 +30,7 @@ function contestLabel(contest: ParticipatedContest): string {
 export function reviewRequestText(contest: ParticipatedContest): string {
   const facts =
     contest.submissionCount > 0
-      ? `本场关键事实：AC ${contest.acProblemCount}/${contest.problemCount} 题，共 ${contest.submissionCount} 次提交。`
+      ? `本场关键事实：AC ${contest.acProblemCount}/${contest.problemCount} 题${contestAcSplit(contest)}，共 ${contest.submissionCount} 次提交。`
       : '本场关键事实：我没有同步到该场的提交记录（可能尚未同步该平台，或该场确实一题未交）。'
   return `请复盘这场比赛（${contestLabel(contest)}）：${facts}请结合提交记录点评整体发挥与逐题表现，指出卡点与改进方向，并给出补题建议。`
 }

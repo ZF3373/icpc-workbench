@@ -231,6 +231,12 @@ function inCalendarWindow(calendar: ContestInfo, submittedAt: string): boolean {
   return Number.isFinite(t) && t >= start - WINDOW_BEFORE_MS && t <= end;
 }
 
+/** 官方时间窗（参赛记录/赛事日历的起止）内的提交：开始前 5 分钟容差与参赛判定同口径 */
+function inOfficialWindow(submittedAt: string, startMs: number, endMs: number): boolean {
+  const t = Date.parse(submittedAt);
+  return Number.isFinite(t) && t >= startMs - WINDOW_BEFORE_MS && t <= endMs;
+}
+
 /** 一次集中作答：≥minProblems 道不同题、首末提交跨度 ≤ 6 小时 */
 function isOneSitting(rows: ContestSubmissionRow[], minProblems: number): boolean {
   if (new Set(rows.map((r) => r.problemKey)).size < minProblems) return false;
@@ -365,6 +371,42 @@ function qualifyGroup(platform: PlatformId, g: ContestGroup): ParticipatedContes
     lastIso;
   const problemKeys = new Set(g.rows.map((r) => r.problemKey));
   const acProblems = new Set(g.rows.filter((r) => r.verdict === 'AC').map((r) => r.problemKey));
+  // 赛时 AC 与当前 AC（含补题）分开口径：补题追踪要看「赛时拿了几题 vs 现在拿了几题」。
+  // 三级来源（先者为准）：
+  //   ① 平台参赛记录的 acceptedCount（牛客）：平台侧记录的赛时成绩，缺逐条提交也能给；
+  //   ② CF context：contest/virtual 即赛时、practice 即补题，平台亲自标注最准；
+  //   ③ 官方时间窗（参赛记录/赛事日历给出起止）。首末提交时间近似（firstIso/lastIso）
+  //      不算官方窗口——那种「窗口」首尾就是提交本身，赛时/补题无从划分。
+  const officialStartMs =
+    src?.startTimeMs ??
+    (calendar?.startTimeIso ? Date.parse(calendar.startTimeIso) : null);
+  const officialEndMs =
+    src?.endTimeMs ??
+    (calendar?.startTimeIso
+      ? Date.parse(calendar.startTimeIso) + calendar.durationMinutes * 60_000
+      : null);
+  let inContestAc: number | null = null;
+  if (src?.acceptedCount != null) {
+    inContestAc = src.acceptedCount;
+  } else if (
+    platform === 'codeforces' &&
+    g.rows.some((r) => r.context === 'contest' || r.context === 'virtual')
+  ) {
+    inContestAc = new Set(
+      g.rows
+        .filter((r) => r.verdict === 'AC' && (r.context === 'contest' || r.context === 'virtual'))
+        .map((r) => r.problemKey),
+    ).size;
+  } else if (officialStartMs !== null && officialEndMs !== null) {
+    inContestAc = new Set(
+      g.rows
+        .filter((r) => r.verdict === 'AC' && inOfficialWindow(r.submittedAt, officialStartMs, officialEndMs))
+        .map((r) => r.problemKey),
+    ).size;
+  }
+  // 平台记录的赛时 AC 是当前 AC 的下界：本地同步可能缺提交，
+  // 不能让「当前 AC < 赛时 AC」这种自相矛盾出现在展示上
+  const acProblemCount = Math.max(acProblems.size, inContestAc ?? 0);
   // problemCount 的语义是**该场比赛一共几题**（列表「6 题 · AC 4」、复盘请求「AC 4/6 题」的分母），
   // 不是「我提交过几题」。曾经只用 problemKeys.size，于是牛客周赛162（共 6 题、交了 4 题全 AC）
   // 被显示成「4 题 · AC 4」——用户实测反馈的就是这个。
@@ -387,7 +429,8 @@ function qualifyGroup(platform: PlatformId, g: ContestGroup): ParticipatedContes
     endTimeIso: endIso,
     submissionCount: g.rows.length,
     problemCount,
-    acProblemCount: acProblems.size,
+    acProblemCount,
+    inContestAcProblemCount: inContestAc,
     // 无提交的权威场次按官方结束时间排进列表（最近的在前）
     lastSubmittedAt: lastIso ?? endIso ?? '',
     evidence,
@@ -461,22 +504,24 @@ function buildContestIndex(
         // 而无脑放开 P 号又会把比赛进行时刷的练习题误归进场。精确口径是「窗口内 + 题目
         // 属于该场」：题目集由 enrichProblems 按需抓取（比赛页 contestProblems，键已是
         // 转正后的 P 号）并落库；缺失时退回 T 号 × 窗口（宁缺毋滥，不猜 P 号）。
+        // 题目集成员（牛客数字 id / 洛谷转正后 P 号都是稳定键）**不限时间窗**：赛后补题
+        // 提交也归因到场——「当前 AC」含补题才能与「赛时 AC」配对看出补题进度（2026-10
+        // 用户需求：一眼看出比赛题补完没有）。题号精确匹配本就比窗口更严，不会误挂练习。
+        const problemSetIds =
+          src.problems && src.problems.length > 0
+            ? new Set(src.problems.map((p) => p.id))
+            : null;
         const inWindow = (r: ContestSubmissionRow): boolean => {
           const t = Date.parse(r.submittedAt);
           return Number.isFinite(t) && t >= src.startTimeMs! && t <= src.endTimeMs!;
         };
         attributed = platformRows.filter((r) => {
+          if (problemSetIds?.has(r.problemKey)) return true;
           if (!inWindow(r)) return false;
           if (platform === 'luogu') {
-            if (src.problems && src.problems.length > 0) {
-              return src.problems.some((p) => p.id === r.problemKey);
-            }
-            return isLuoguContestProblem(r.problemKey);
+            return !problemSetIds && isLuoguContestProblem(r.problemKey);
           }
-          if (platform === 'nowcoder' && src.problems && !src.problems.some((p) => p.id === r.problemKey)) {
-            return false;
-          }
-          return true;
+          return !problemSetIds; // nowcoder：有题目集时只认成员（窗口内顺手刷的题库题不归因）
         });
       }
       index.set(key, {
@@ -614,6 +659,13 @@ function renderAttempts(rows: ContestSubmissionRow[], startMs: number, isCf: boo
   ].join(' → ');
 }
 
+/** 概况里的赛时/补题拆分：赛时数未知或与当前持平（没有补题可看）时不加 */
+function contestAcSplitLabel(contest: ParticipatedContest): string {
+  const inContest = contest.inContestAcProblemCount;
+  if (inContest === null || inContest >= contest.acProblemCount) return '';
+  return `（赛时 AC ${inContest}、赛后补题 ${contest.acProblemCount - inContest}）`;
+}
+
 /**
  * 渲染单场比赛的复盘上下文（Markdown，注入 system prompt 的 {contestSection}）。
  * 结构：比赛元信息 → 逐题明细（按首提交顺序：难度/tags/链接/提交时间线/结果）。
@@ -662,8 +714,8 @@ export function renderContestContext(data: ContestReviewData, opts?: { db?: Db }
   const submittedCount = new Set(submissions.map((s) => s.problemKey)).size;
   const summary =
     data.problemSetKnown && submissions.length > 0
-      ? `全场 ${submittedCount + data.unsubmittedProblems.length} 题中 AC ${contest.acProblemCount} 题、未提交 ${data.unsubmittedProblems.length} 题，共 ${contest.submissionCount} 次提交`
-      : `${contest.problemCount} 题中出现 AC ${contest.acProblemCount} 题，共 ${contest.submissionCount} 次提交`;
+      ? `全场 ${submittedCount + data.unsubmittedProblems.length} 题中 AC ${contest.acProblemCount} 题${contestAcSplitLabel(contest)}、未提交 ${data.unsubmittedProblems.length} 题，共 ${contest.submissionCount} 次提交`
+      : `${contest.problemCount} 题中出现 AC ${contest.acProblemCount} 题${contestAcSplitLabel(contest)}，共 ${contest.submissionCount} 次提交`;
   lines.push(`- 概况：${summary}（${evidenceLabel[contest.evidence as ParticipationSignal] ?? contest.evidence}）`);
 
   if (submissions.length === 0) {

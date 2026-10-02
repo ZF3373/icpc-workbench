@@ -73,7 +73,16 @@ export interface ParticipationSources {
   failures: Partial<Record<PlatformId, string>>;
 }
 
-const FETCH_TIMEOUT_MS = 15_000;
+/** 全平台参赛拉取的默认超时（ms） */
+export const FETCH_TIMEOUT_MS = 15_000;
+/**
+ * 洛谷参赛拉取专用超时（ms）：`AbortSignal.timeout` 从**进节流队列**起算，而洛谷
+ * 是全平台最严的 4s/请求档——同窗口只要有 4 个洛谷请求在飞（日历 2 页 × C3VK 挑战
+ * 翻倍即可凑齐），队尾的 joinedContests 要等 ~16s，15s 预算在排队中就触发
+ * （2026-10 实测：洛谷参赛记录总拉取失败，请求根本没发出去）。30s 覆盖 ~7 个
+ * 槽位的排队，作为错峰（kickBackgroundRefresh 等 calendarCache.settled()）之外的安全垫。
+ */
+export const LUOGU_PARTICIPATION_TIMEOUT_MS = 30_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -83,6 +92,18 @@ function sleep(ms: number): Promise<void> {
 const DEFAULT_MAX_PAGES = 30;
 /** 参赛记录刷新间隔：30 分钟内重复打开直接读库，过期平台后台增量刷新 */
 const REFRESH_INTERVAL_MS = 30 * 60_000;
+/**
+ * 失败平台的短退避：拉取失败也会刷新 last_sync_at（writeSyncState 成败同写），
+ * 若按同间隔冻结，一次洛谷队列挤兑超时会让平台 30 分钟不可自愈、失败横幅挂满
+ * 半小时（2026-10 用户观感「总是拉取失败」）。失败按 5 分钟重试，稳态打外网
+ * 频率仍是每平台每次刷新 1~2 个请求，不构成压力。
+ */
+const FAILURE_RETRY_MS = 5 * 60_000;
+
+/** 该平台本次的新鲜窗口：有失败记录（如超时/风控）按短退避重试，否则 30 分钟 */
+function refreshIntervalMs(lastError: string | null | undefined): number {
+  return lastError ? FAILURE_RETRY_MS : REFRESH_INTERVAL_MS;
+}
 /** 无官方起止时间的场次：结束时间回推一个近似窗口（仅用于时间线归因与展示） */
 const FALLBACK_WINDOW_MS = 2 * 3_600_000;
 
@@ -92,9 +113,14 @@ function okStatus(res: Response): boolean {
   return res.status >= 200 && res.status < 300;
 }
 
-async function fetchJson(url: string, fetchFn: typeof fetch, init?: RequestInit): Promise<unknown> {
+async function fetchJson(
+  url: string,
+  fetchFn: typeof fetch,
+  init?: RequestInit,
+  timeoutMs: number = FETCH_TIMEOUT_MS,
+): Promise<unknown> {
   const res = await fetchFn(url, {
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
     ...init,
   });
   if (!okStatus(res)) throw new Error(`HTTP ${res.status}`);
@@ -234,6 +260,7 @@ export async function fetchLuoguJoinedContests(
       `https://www.luogu.com.cn/api/user/joinedContests?page=${page}`,
       fetchFn,
       { headers: { Cookie: cookie } },
+      LUOGU_PARTICIPATION_TIMEOUT_MS,
     )) as {
       contests?: {
         result?: Array<Record<string, unknown>>;
@@ -927,7 +954,7 @@ export async function loadParticipationSources(
           !opts?.force &&
           state?.lastSyncAt !== null &&
           state?.lastSyncAt !== undefined &&
-          Date.now() - Date.parse(state.lastSyncAt) < REFRESH_INTERVAL_MS &&
+          Date.now() - Date.parse(state.lastSyncAt) < refreshIntervalMs(state.lastError) &&
           (state.backlogDone || stored.length > 0);
         if (fresh) return; // 30 分钟内已拉过：库内数据即是最新
         try {
@@ -998,7 +1025,7 @@ export function readParticipationSnapshot(db: Db): {
     const fresh =
       state?.lastSyncAt !== null &&
       state?.lastSyncAt !== undefined &&
-      Date.now() - Date.parse(state.lastSyncAt) < REFRESH_INTERVAL_MS &&
+      Date.now() - Date.parse(state.lastSyncAt) < refreshIntervalMs(state.lastError) &&
       (state.backlogDone || stored.length > 0 || state.truncated);
     if (state?.lastError) failures[platform] = state.lastError;
     if (!fresh) stalePlatforms.push(platform);
@@ -1009,15 +1036,25 @@ export function readParticipationSnapshot(db: Db): {
 /** 后台刷新去重（GET 路由多次触发只跑一轮） */
 let backgroundRefresh: Promise<void> | null = null;
 
-/** 过期平台的后台增量刷新（非阻塞）；已有刷新在进行中时不再叠加，返回是否真正启动。
- *  fetchFn 透传给拉取层：路由把注入的 fetchFn 带进来，测试才能 stub 而不打外网 */
+/**
+ * 过期平台的后台增量刷新（非阻塞）；已有刷新在进行中时不再叠加，返回是否真正启动。
+ *  fetchFn 透传给拉取层：路由把注入的 fetchFn 带进来，测试才能 stub 而不打外网。
+ *
+ * `after`：错峰挂点（路由传 calendarCache.settled()）。GET /participated 在同一请求里
+ * 先 kick 日历后台重拉、又 kick 本刷新——两者并发打洛谷会把 joinedContests 挤到
+ * 队尾等 ~16s，15s/30s 超时从进队起算（2026-10 实测：洛谷参赛记录总拉取失败）。
+ * 等日历落幕后启动，洛谷桶里就没有自己人了；`after` 失败不阻断刷新本身。
+ */
 export function kickBackgroundRefresh(
   db: Db,
   calendar: ContestInfo[] | undefined,
   fetchFn?: typeof fetch,
+  after?: Promise<void>,
 ): boolean {
   if (backgroundRefresh) return false;
-  backgroundRefresh = loadParticipationSources(db, calendar, { ...(fetchFn ? { fetchFn } : {}) })
+  backgroundRefresh = Promise.resolve(after)
+    .catch(() => undefined) // 放行信号出问题不该连累参赛刷新
+    .then(() => loadParticipationSources(db, calendar, { ...(fetchFn ? { fetchFn } : {}) }))
     .then(() => undefined)
     .catch(() => undefined) // 后台刷新失败静默：GET 已返回，错误留存在状态表里
     .finally(() => {

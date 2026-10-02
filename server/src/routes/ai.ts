@@ -538,7 +538,10 @@ export function aiRoutes(
         sourcesByPlatform = loaded.byPlatform;
       } else {
         const snapshot = readParticipationSnapshot(db);
-        if (snapshot.stalePlatforms.length > 0) kickBackgroundRefresh(db, calendar);
+        if (snapshot.stalePlatforms.length > 0) {
+          // after=settled()：与 GET /participated 同款错峰，别和日历重拉挤兑洛谷队列
+          kickBackgroundRefresh(db, calendar, undefined, calendarCache.settled());
+        }
         sourcesByPlatform = snapshot.byPlatform;
       }
       const resolveOpts = { calendar, sources: sourcesByPlatform };

@@ -31,6 +31,16 @@ export interface CalendarCache {
    * 新建实例，即得一份完全隔离的缓存；routes 共用下方单例）。
    */
   load(db: Db, fetchAll?: typeof fetchAllContests): Promise<ContestInfo[] | undefined>;
+  /**
+   * 等待「当前在飞的后台刷新」落幕（没有在飞刷新时立即放行）。
+   *
+   * 用途：参赛记录刷新的**错峰挂点**。GET /participated 在同一请求里先 kick 日历
+   * 后台重拉、又 kick 参赛记录刷新，两者并发打洛谷（日历 2 页 × C3VK 挑战翻倍
+   * = 4 个 4s 请求槽位），joinedContests 排在队尾等 ~16s，而它的 15s 超时从进
+   * 节流队列起算——排队中就触发（2026-10 实测：洛谷参赛记录总拉取失败）。
+   * 参赛刷新等日历落幕后启动，洛谷桶里就没有自己人了。
+   */
+  settled(): Promise<void>;
 }
 
 export function createCalendarCache(): CalendarCache {
@@ -99,6 +109,11 @@ export function createCalendarCache(): CalendarCache {
       } catch {
         return undefined;
       }
+    },
+    settled() {
+      // refreshing 自吞错误（kickRefresh 内部 catch），promise 永不 reject；
+      // 捕获当下这一份——调用方拿到的是「此刻在飞的刷新」，之后新 kick 的不算
+      return refreshing ?? Promise.resolve();
     },
   };
 }

@@ -187,11 +187,18 @@ test('CF：contest/virtual 判定，gym 需一次集中作答（≥3 题 ≤6h�
     assert.equal(cf1877.endTimeIso, '2026-09-20T16:10:00.000Z', '官方结束时间 = 开始 + 时长');
     assert.equal(cf1877.submissionCount, 4, '补题提交并入同一场');
     assert.equal(cf1877.problemCount, 3);
-    assert.equal(cf1877.acProblemCount, 3);
+    assert.equal(cf1877.acProblemCount, 3, '当前 AC 含赛后补题（C 题 practice AC）');
+    assert.equal(cf1877.inContestAcProblemCount, 2, '赛时 AC 按 context（contest/virtual）划分，不含补题');
 
     assert.equal(contests[1]!.evidence, 'virtual');
+    assert.equal(contests[1]!.inContestAcProblemCount, 1, '虚拟赛提交全部在赛内');
     assert.equal(contests[2]!.evidence, 'gym');
     assert.equal(contests[2]!.url, 'https://codeforces.com/gym/104821');
+    assert.equal(
+      contests[2]!.inContestAcProblemCount,
+      null,
+      'gym 无 context 也无官方窗口：赛时/补题无法划分，不做猜测',
+    );
   } finally {
     db.close();
   }
@@ -251,9 +258,11 @@ test('AtCoder：日历时间窗匹配参赛并取赛名；无日历时启发式�
     );
     assert.equal(contests[0]!.name, 'ABC300');
     assert.equal(contests[0]!.startTimeIso, '2026-09-19T12:00:00.000Z');
+    assert.equal(contests[0]!.inContestAcProblemCount, 2, '提交全在日历窗口内：赛时 = 当前');
     assert.equal(contests[1]!.name, null, '日历没有的场次拿不到赛名');
     assert.equal(contests[1]!.url, 'https://atcoder.jp/contests/abc250');
     assert.equal(contests[1]!.startTimeIso, '2026-09-15T02:00:00.000Z', '无官方时间时用首条提交近似');
+    assert.equal(contests[1]!.inContestAcProblemCount, null, '启发式场次无官方窗口，不猜赛时');
   } finally {
     db.close();
   }
@@ -280,6 +289,7 @@ test('计蒜客 / QOJ：比赛题键命中即参赛，练习题不产生场次',
     assert.equal(contests[0]!.url, 'https://www.jisuanke.com/contest/12345');
     assert.equal(contests[1]!.url, 'https://qoj.ac/contest/3588');
     assert.equal(contests[0]!.acProblemCount, 1);
+    assert.equal(contests[0]!.inContestAcProblemCount, null, '无日历无参赛记录：赛时/补题不划分');
   } finally {
     db.close();
   }
@@ -306,6 +316,7 @@ test('洛谷：窗口内 ≥2 道不同 T 号比赛题才算参赛；P 号练习
     assert.equal(contests[0]!.url, 'https://www.luogu.com.cn/contest/353129');
     assert.equal(contests[0]!.problemCount, 2, '注入只含 T 号比赛题的提交');
     assert.equal(contests[0]!.submissionCount, 2);
+    assert.equal(contests[0]!.inContestAcProblemCount, 1, '日历窗口内只有 T8801 AC');
 
     // 没有日历（赛事源全挂）→ 洛谷推导为空，不报错
     assert.deepEqual(deriveParticipatedContests(db, { calendar: [] }), []);
@@ -352,7 +363,7 @@ test('renderContestContext：元信息 + 时间线偏移 + 赛时/补题标注',
     const md = renderContestContext(review);
     assert.match(md, /- 比赛：Codeforces Round 900 \(Div\. 2\)（Codeforces）/);
     assert.match(md, /- 比赛链接：https:\/\/codeforces\.com\/contest\/1877/);
-    assert.match(md, /概况：3 题中出现 AC 2 题，共 4 次提交（现场参赛）/);
+    assert.match(md, /概况：3 题中出现 AC 2 题（赛时 AC 1、赛后补题 1），共 4 次提交（现场参赛）/);
     assert.match(md, /#### 1877A Rabbits（难度 800｜官方 tags: math（Codeforces 官方标注））/);
     assert.match(md, /\+10:00 WA（赛时） → \+20:00 AC（赛时）/);
     assert.match(md, /\+12:00:00 AC（补题）/, '相对官方开始时间的偏移跨天也能算');
@@ -388,6 +399,7 @@ test('renderContestContext：题目数与单题时间线超限截断', () => {
       submissionCount: 45,
       problemCount: 45,
       acProblemCount: 45,
+      inContestAcProblemCount: 45,
       lastSubmittedAt: '2026-09-20T16:00:00.000Z',
       evidence: 'contest',
       source: null,
@@ -443,6 +455,7 @@ test('renderContestContext：总量预算耗尽也不让后段题只剩空时间
       submissionCount: 502,
       problemCount: 3,
       acProblemCount: 0,
+      inContestAcProblemCount: 0,
       lastSubmittedAt: '2026-09-20T20:00:00.000Z',
       evidence: 'contest',
       source: null,
@@ -468,11 +481,14 @@ test('renderContestContext：总量预算耗尽也不让后段题只剩空时间
 
 import type { AuthoritativeContest, FetchParticipationOptions } from '../src/contests/participationSources.ts';
 import {
+  FETCH_TIMEOUT_MS,
+  LUOGU_PARTICIPATION_TIMEOUT_MS,
   fetchAtcoderParticipation,
   fetchCodeforcesParticipation,
   fetchContestProblemSet,
   fetchLuoguJoinedContests,
   fetchNowcoderJoinedContests,
+  kickBackgroundRefresh,
   loadParticipationSources,
   readParticipationSnapshot,
 } from '../src/contests/participationSources.ts';
@@ -532,6 +548,7 @@ test('权威参赛记录合并：CF 旧数据（context=null）凭 user.rating �
     assert.equal(c.name, 'Codeforces Round 1122 (Div. 3)');
     assert.equal(c.startTimeIso, '2026-09-21T14:35:00.000Z', '官方起止时间来自参赛记录');
     assert.equal(c.submissionCount, 2, '本地提交仍归因到场');
+    assert.equal(c.inContestAcProblemCount, 2, '旧数据无 context：按参赛记录的官方窗口划分赛时');
     assert.deepEqual(c.source, { rank: 15005, rating: 949, ratingChange: -6, problemCount: null, acceptedCount: null });
 
     // 复盘注入端用同一索引能解析回同一场（含成绩行）
@@ -568,6 +585,8 @@ test('权威参赛记录：本地无提交的场次（牛客）以零提交合�
     assert.equal(c.evidence, 'joined-list');
     assert.equal(c.submissionCount, 0, '牛客不同步比赛提交，零提交入列');
     assert.equal(c.name, '牛客周赛 Round 162');
+    assert.equal(c.inContestAcProblemCount, 4, '赛时 AC 直接取平台参赛记录的 acceptedCount');
+    assert.equal(c.acProblemCount, 4, '平台记录的赛时成绩是当前 AC 的下界（本地缺提交也不能自相矛盾）');
 
     const review = resolveContestGroup(db, 'nowcoder:140237', { sources })!;
     const md = renderContestContext(review);
@@ -613,7 +632,9 @@ test('牛客合成组：练习页已含比赛提交（context=null），按权�
     assert.equal(c.submissionCount, 2, '题目集排歧：窗口内的题库练习题不归因');
     // problemCount 是「该场共几题」（平台参赛记录 6），不是「我交过几题」（本地 2）
     assert.equal(c.problemCount, 6, '总题数取平台参赛记录/题目集，而不是本地提交去重');
-    assert.equal(c.acProblemCount, 2);
+    // acceptedCount=4 是平台记录的赛时成绩；本地只同步到 2 条 AC 时当前 AC 以平台记录兜底
+    assert.equal(c.inContestAcProblemCount, 4);
+    assert.equal(c.acProblemCount, 4, '赛时 AC（平台记录）是当前 AC 的下界');
 
     const review = resolveContestGroup(db, 'nowcoder:140489', { sources })!;
     assert.equal(review.submissions.length, 2);
@@ -634,6 +655,53 @@ test('牛客合成组：练习页已含比赛提交（context=null），按权�
       },
     })[0]!;
     assert.equal(degraded.submissionCount, 3, '无题目集时退化为整窗归因');
+  } finally {
+    db.close();
+  }
+});
+
+test('牛客补题归因：窗口外的题目集成员计入当前 AC，赛时 AC 仍按平台记录划分', () => {
+  const db = createDb(':memory:');
+  try {
+    seedAll(db, [
+      // 赛时（窗口 11:00~13:00）：1 题 AC
+      { platform: 'nowcoder', problemKey: '323650', title: '小月的贴纸', verdict: 'AC', submittedAt: '2026-09-20T11:10:10.000Z', externalId: 'n1', context: null },
+      // 赛后补题：题目集成员（窗口外）→ 归因到场，当前 AC 含补题
+      { platform: 'nowcoder', problemKey: '323652', title: '小月的周长', verdict: 'AC', submittedAt: '2026-09-22T08:00:00.000Z', externalId: 'n2', context: null },
+      { platform: 'nowcoder', problemKey: '323654', title: '小月的数码轮', verdict: 'AC', submittedAt: '2026-09-22T09:00:00.000Z', externalId: 'n3', context: null },
+      // 窗口外的题库练习（非本场题目）：不得误归
+      { platform: 'nowcoder', problemKey: '10001', title: 'A+B', verdict: 'AC', submittedAt: '2026-09-21T08:00:00.000Z', externalId: 'n4', context: null },
+    ]);
+    const sources = {
+      nowcoder: [
+        srcEntry('nowcoder', '140489', {
+          name: '牛客周赛 Round 162',
+          startTimeMs: Date.parse('2026-09-20T11:00:00.000Z'),
+          endTimeMs: Date.parse('2026-09-20T13:00:00.000Z'),
+          problemCount: 6,
+          acceptedCount: 1,
+          problems: [
+            { id: '323650', index: 'A' },
+            { id: '323652', index: 'B' },
+            { id: '323654', index: 'C' },
+            { id: '323656', index: 'D' },
+            { id: '323658', index: 'E' },
+            { id: '323660', index: 'F' },
+          ],
+        }),
+      ],
+    };
+    const c = deriveParticipatedContests(db, { sources })[0]!;
+    assert.equal(c.submissionCount, 3, '赛时 1 条 + 补题 2 条');
+    assert.equal(c.inContestAcProblemCount, 1, '赛时 AC 取平台记录 acceptedCount');
+    assert.equal(c.acProblemCount, 3, '当前 AC = 赛时 1 + 补题 2 —— 补题进度一眼可见');
+    // 复盘注入同样能看到窗口外的补题提交（旧口径对复盘不可见）
+    const review = resolveContestGroup(db, 'nowcoder:140489', { sources })!;
+    assert.equal(review.submissions.length, 3);
+    assert.match(
+      renderContestContext(review),
+      /概况：全场 6 题中 AC 3 题（赛时 AC 1、赛后补题 2）、未提交 3 题，共 3 次提交/,
+    );
   } finally {
     db.close();
   }
@@ -666,6 +734,7 @@ test('列表总题数 = 该场题目总数（牛客周赛162：共 6 题、交�
     const c = deriveParticipatedContests(db, { sources })[0]!;
     assert.equal(c.problemCount, 6, '总题数是该场 6 题，不是「我交过的 4 题」');
     assert.equal(c.acProblemCount, 4);
+    assert.equal(c.inContestAcProblemCount, 4, '平台记录与本地提交一致时赛时 = 当前');
     assert.equal(c.submissionCount, 4);
 
     // 复盘上下文同样按 6 题算：未提交的 E/F 要列出来
@@ -712,6 +781,7 @@ test('洛谷有参赛记录时：按官方窗口归因 T 号题提交，公开�
     assert.equal(c.submissionCount, 2, '只归因 T 号比赛题提交');
     // 总题数用洛谷参赛记录里的 8 题（本地只交了 2 题）
     assert.equal(c.problemCount, 8);
+    assert.equal(c.inContestAcProblemCount, 1, '窗口内只有 T822413 AC（无题目集，按窗口划分）');
   } finally {
     db.close();
   }
@@ -850,8 +920,7 @@ test('provider 映射：洛谷 joinedContests / 牛客 joined-history 分页与�
   await assert.rejects(fetchNowcoderJoinedContests('', { backlogDone: false }, ncFetch), /未绑定牛客账号/);
 });
 
-test('拉取落库与增量：fresh 状态不发请求，过期平台重拉并更新游标，失败回退库内数据', async () => {
-  const db = createDb(':memory:');
+test('拉取落库与增量：fresh 状态不发请求，过期平台重拉并更新游标，失败回退库内数据', async () => {  const db = createDb(':memory:');
   try {
     // 建一道牛客题 + 绑定账号的提交（账号来自 submissions.account）
     const pid = Number(
@@ -907,6 +976,104 @@ test('拉取落库与增量：fresh 状态不发请求，过期平台重拉并�
   } finally {
     db.close();
   }
+});
+
+test('失败的平台按 5 分钟短退避重试，不再冻结满 30 分钟', async () => {
+  // 回归背景：拉取失败也会刷新 last_sync_at，而新鲜度只看这个时间戳——
+  // 一次洛谷超时后 30 分钟内不再重试，失败横幅一直挂着（用户观感「总是失败」）。
+  const db = createDb(':memory:');
+  try {
+    const pid = Number(
+      db.prepare("INSERT INTO problems (platform, problem_key, title) VALUES ('nowcoder', '1', 'NC 题')").run().lastInsertRowid,
+    );
+    db.prepare(
+      'INSERT INTO submissions (user_id, platform, account, problem_id, verdict, submitted_at, external_id) VALUES (1, ?, ?, ?, ?, ?, ?)',
+    ).run('nowcoder', '713093328', pid, 'AC', '2026-09-01T00:00:00.000Z', 'nc-seed');
+
+    let fetches = 0;
+    const fetchOnce: typeof fetch = (async () => {
+      fetches += 1;
+      return new Response(JSON.stringify({
+        data: { dataList: [], pageInfo: { pageCount: 0 } },
+      }), { status: 200 });
+    }) as typeof fetch;
+    await loadParticipationSources(db, undefined, { fetchFn: fetchOnce });
+    assert.equal(fetches, 1);
+
+    // 10 分钟前失败（超时）：短退避窗口（5 分钟）已过 → 立即视为过期并重拉
+    db.prepare("UPDATE participation_sync SET last_sync_at = ?, last_error = 'The operation was aborted due to timeout'").run(
+      new Date(Date.now() - 10 * 60_000).toISOString(),
+    );
+    const snapshot = readParticipationSnapshot(db);
+    assert.ok(
+      snapshot.stalePlatforms.includes('nowcoder'),
+      '失败平台 10 分钟后即过期（失败退避 5 分钟 < 10 分钟）',
+    );
+    assert.equal(snapshot.failures.nowcoder, 'The operation was aborted due to timeout');
+    await loadParticipationSources(db, undefined, { fetchFn: fetchOnce });
+    assert.equal(fetches, 2, '失败平台短退避到期后重拉');
+
+    // 对照：无失败记录时 10 分钟仍新鲜（正常间隔 30 分钟），不重拉
+    db.prepare("UPDATE participation_sync SET last_sync_at = ?, last_error = NULL").run(
+      new Date(Date.now() - 10 * 60_000).toISOString(),
+    );
+    const freshSnapshot = readParticipationSnapshot(db);
+    assert.ok(!freshSnapshot.stalePlatforms.includes('nowcoder'), '无失败时 30 分钟内不重拉');
+    await loadParticipationSources(db, undefined, { fetchFn: fetchOnce });
+    assert.equal(fetches, 2, '正常平台 fresh 期内不发请求');
+  } finally {
+    db.close();
+  }
+});
+
+test('kickBackgroundRefresh：等日历后台重拉完成再启动参赛刷新（同刻并发挤兑洛谷队列）', async () => {
+  // 回归背景：GET /participated 同一请求先 kick 日历重拉（洛谷 2 页 × C3VK 挑战
+  // = 4 个 4s 槽位）又 kick 参赛刷新——joinedContests 排队 ~16s，15s 超时在排队中
+  // 触发。参赛刷新必须等日历刷新落幕后才启动。
+  const db = createDb(':memory:');
+  try {
+    const pid = Number(
+      db.prepare("INSERT INTO problems (platform, problem_key, title) VALUES ('nowcoder', '1', 'NC 题')").run().lastInsertRowid,
+    );
+    db.prepare(
+      'INSERT INTO submissions (user_id, platform, account, problem_id, verdict, submitted_at, external_id) VALUES (1, ?, ?, ?, ?, ?, ?)',
+    ).run('nowcoder', '713093328', pid, 'AC', '2026-09-01T00:00:00.000Z', 'nc-seed');
+
+    let requests = 0;
+    const fetchFn = (async () => {
+      requests += 1;
+      return new Response('{}', { status: 404 });
+    }) as typeof fetch;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    assert.equal(kickBackgroundRefresh(db, undefined, fetchFn, gate), true, '首轮 kick 应启动');
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(requests, 0, '日历重拉完成前不得发出任何参赛请求');
+    assert.equal(kickBackgroundRefresh(db, undefined, fetchFn, gate), false, '等待期内重复 kick 去重');
+
+    release();
+    for (let i = 0; i < 50 && requests === 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(requests > 0, '日历刷新放行后参赛请求才发出');
+    // 等后台刷新整轮结束再结束用例（模块级 in-flight 状态不能泄漏到后续用例）
+    for (let i = 0; i < 50; i += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+      if (kickBackgroundRefresh(db, undefined, fetchFn) === true) break;
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('洛谷参赛记录的超时预算宽于全站默认：洛谷 4s/槽的队列最容易被并发挤长', () => {
+  // joinedContests 的 15s 超时从进节流队列起算；洛谷日历源在同一窗口可占 4 个
+  // 槽位（16s）。预算放宽到 30s 覆盖 ~7 个槽位的排队，作为错峰之外的安全垫。
+  assert.equal(FETCH_TIMEOUT_MS, 15_000, '其余平台保持 15s：失败要尽快反馈到横幅');
+  assert.equal(LUOGU_PARTICIPATION_TIMEOUT_MS, 30_000, '洛谷参赛拉取 30s');
 });
 
 // ---------- 赛时未提交的题（题目集 − 本地提交） ----------
@@ -1363,7 +1530,7 @@ test('fetchLuoguContestProblems：页面缺 contestProblems / 非 JSON → 返�
   assert.equal(httpFail, null);
 });
 
-test('洛谷归因：题目集已知时按「窗口内 + 属于该场」精确匹配（转正 P 号计入、练习题不误归）', () => {
+test('洛谷归因：题目集已知时按「属于该场」精确匹配——窗口外补题计入当前 AC、练习题不误归', () => {
   const db = createDb(':memory:');
   try {
     seedAll(db, [
@@ -1372,7 +1539,7 @@ test('洛谷归因：题目集已知时按「窗口内 + 属于该场」精确�
       { platform: 'luogu', problemKey: 'P17539', verdict: 'WA', submittedAt: '2026-09-30T10:26:48.000Z', externalId: 'l2' },
       // 窗口内的练习题（不在题目集）：不得误归进场
       { platform: 'luogu', problemKey: 'P10001', verdict: 'AC', submittedAt: '2026-09-30T11:00:00.000Z', externalId: 'l3' },
-      // 比赛题但提交在窗口外（赛后补题）：不算赛时逐条提交
+      // 比赛题但提交在窗口外（赛后补题）：题目集成员按题号精确归因，当前 AC 含补题
       { platform: 'luogu', problemKey: 'P17540', verdict: 'AC', submittedAt: '2026-10-02T02:00:00.000Z', externalId: 'l4' },
     ]);
     const sources = {
@@ -1396,9 +1563,17 @@ test('洛谷归因：题目集已知时按「窗口内 + 属于该场」精确�
     assert.equal(contests.length, 1);
     const c = contests[0]!;
     assert.equal(c.key, 'luogu:278842');
-    assert.equal(c.submissionCount, 2, '窗口内且属于该场的 2 条提交计入');
+    assert.equal(c.submissionCount, 3, '窗口内 2 条 + 窗口外补题 1 条（题目集成员不限时间窗）');
     assert.equal(c.problemCount, 4, '总题数来自参赛记录');
-    assert.equal(c.acProblemCount, 1);
+    assert.equal(c.acProblemCount, 2, '当前 AC = 赛时 1（P17538）+ 补题 1（P17540）');
+    assert.equal(c.inContestAcProblemCount, 1, '赛时 AC 按官方窗口划分，不含补题');
+    // 复盘注入也能看到补题提交（旧口径窗口外提交对复盘不可见）
+    const review = resolveContestGroup(db, 'luogu:278842', { sources })!;
+    assert.equal(review.submissions.length, 3);
+    assert.match(
+      renderContestContext(review),
+      /概况：全场 4 题中 AC 2 题（赛时 AC 1、赛后补题 1）、未提交 1 题，共 3 次提交/,
+    );
   } finally {
     db.close();
   }

@@ -146,3 +146,52 @@ test('库里没有缓存且拉取全挂：降级 undefined（原行为），库�
   assert.equal(await cache.load(db, fetchAll), undefined);
   assert.equal(calls(), 1);
 });
+
+test('settled()：后台刷新在飞时挂起，完成后放行（参赛记录刷新错峰的挂点）', async () => {
+  // 回归背景：GET /participated 在同一请求里先后 kick 日历重拉与参赛记录刷新，
+  // 两者并发打洛谷（日历 2 页 × C3VK 挑战翻倍 = 4 个 4s 请求槽位），参赛记录的
+  // joinedContests 排在队尾等 ~16s，15s 超时在排队中就触发（2026-10 实测根因）。
+  // 错峰方案：参赛刷新等 settled() 放行后再启动。
+  const db = createDb(':memory:');
+  seedCalendarRow(db, 2 * 60 * 60_000, CAL);
+  const cache = createCalendarCache();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let calls = 0;
+  const fetchAll = (async (): Promise<AllContests> => {
+    calls += 1;
+    await gate;
+    return { contests: CAL2, failures: {} };
+  }) as unknown as () => Promise<AllContests>;
+
+  assert.deepEqual(await cache.load(db, fetchAll), CAL, '过期：先拿库内旧值');
+  await tick(20);
+  assert.equal(calls, 1, '后台刷新已启动');
+
+  let settledDone = false;
+  void cache.settled().then(() => {
+    settledDone = true;
+  });
+  await tick(20);
+  assert.equal(settledDone, false, '刷新在飞：settled() 必须挂起，放行前不得启动参赛刷新');
+  release();
+  await tick(20);
+  assert.equal(settledDone, true, '后台刷新完成后 settled() 放行');
+});
+
+test('settled()：日历新鲜（无后台刷新在飞）时立即放行，不拖慢参赛刷新', async () => {
+  const db = createDb(':memory:');
+  seedCalendarRow(db, 5 * 60_000, CAL);
+  const cache = createCalendarCache();
+  const { fetchAll } = makeFetchAllStub([new Error('不应发起任何网络请求')]);
+
+  assert.deepEqual(await cache.load(db, fetchAll), CAL);
+  let settledDone = false;
+  void cache.settled().then(() => {
+    settledDone = true;
+  });
+  await tick(10);
+  assert.equal(settledDone, true, '没有在飞的刷新：立即放行');
+});

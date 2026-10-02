@@ -424,8 +424,13 @@ export interface ParticipatedContest {
   endTimeIso: string | null;
   submissionCount: number;
   problemCount: number;
-  /** 窗口内出现过 AC 的题数（首 AC 口径，与提交次数无关） */
+  /** 当前 AC 的题数（含赛后补题；与赛时口径 inContestAcProblemCount 配对看补题进度） */
   acProblemCount: number;
+  /**
+   * 赛时（比赛时间窗内）AC 的题数；null = 无法与补题划分（无平台赛时成绩、
+   * 无 CF context、无官方起止时间）。与当前 AC 配对展示：赛中 < 当前 = 还有题没补完。
+   */
+  inContestAcProblemCount: number | null;
   /** 本场最后一次提交时间（列表按它倒序 = 最近复盘优先）；无提交时用官方结束时间 */
   lastSubmittedAt: string;
   /** 参赛判定依据：contest（现场）/ virtual / gym / key-pattern（计蒜客·QOJ 比赛题键）/ calendar-window / heuristic / joined-list（平台参赛记录） */

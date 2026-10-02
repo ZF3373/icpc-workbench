@@ -53,7 +53,9 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     const snapshot = readParticipationSnapshot(db);
     const hasStored = Object.keys(snapshot.byPlatform).length > 0;
     if (!hasStored && snapshot.stalePlatforms.length > 0) {
-      // 首次使用（库内还没有任何参赛记录）：同步初始化（带单次上限），避免首次打开是空列表
+      // 首次使用（库内还没有任何参赛记录）：同步初始化（带单次上限），避免首次打开是空列表。
+      // 先等日历后台重拉落幕再同步：同一时刻并发打洛谷会把 joinedContests 挤兑超时
+      await calendarCache.settled();
       const sources = await loadParticipationSources(db, calendar, { fetchFn });
       res.json({
         contests: deriveParticipatedContests(db, { calendar, sources: sources.byPlatform }),
@@ -67,7 +69,8 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       // kick 返回 false = 已有一轮后台刷新在跑：这批过期平台同样正在被刷新，
       // 必须照实回报——返回 refreshing=[] 会让前端撤掉「正在后台更新」提示，
       // 用户既看不到提示也不会自动拿到新数据（kick 内部有去重，不会叠加第二 burst）
-      kickBackgroundRefresh(db, calendar, fetchFn);
+      // after=settled()：参赛刷新排到日历后台重拉之后，洛谷桶内不再自己挤自己
+      kickBackgroundRefresh(db, calendar, fetchFn, calendarCache.settled());
       refreshing = snapshot.stalePlatforms;
     }
     res.json({
@@ -80,8 +83,11 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   // POST /api/contests/participated/refresh
   // 强制同步拉取参赛记录（无视 30 分钟间隔；增量游标生效——backlog 已完成的平台
   // 通常只拉第 1 页，被单次上限截断的平台继续向后补全），返回刷新后的完整列表。
+  // 用户点「刷新」往往刚看到失败横幅：此刻日历后台重拉可能还在飞，先等它落幕，
+  // 否则 joinedContests 又被挤兑超时，刷新按钮点了等于白点
   r.post('/participated/refresh', asyncHandler(async (_req, res) => {
     const calendar = await calendarCache.load(db);
+    await calendarCache.settled();
     const sources = await loadParticipationSources(db, calendar, { force: true, fetchFn });
     res.json({
       contests: deriveParticipatedContests(db, { calendar, sources: sources.byPlatform }),

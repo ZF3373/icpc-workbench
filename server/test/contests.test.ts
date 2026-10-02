@@ -10,13 +10,14 @@ import {
   parseUpcomingHtml,
   toAtcoderContest,
 } from '../src/contests/atcoderContests.ts';
-import { classifyLuoguContest, toLuoguContest } from '../src/contests/luoguContests.ts';
+import { classifyLuoguContest, fetchLuoguContests, toLuoguContest } from '../src/contests/luoguContests.ts';
 import {
   classifyNowcoderContest,
   parseContestListHtml,
   toNowcoderContest,
 } from '../src/contests/nowcoderContests.ts';
 import { contestPhase, selectContests } from '../src/contests/index.ts';
+import { __resetLuoguContestsForTest } from '../src/contests/luoguContests.ts';
 
 test('classifyContest recognises common CF series', () => {
   assert.equal(classifyContest('Codeforces Round 918 (Div. 1)'), 'Div. 1');
@@ -83,6 +84,31 @@ test('classifyLuoguContest branches', () => {
   assert.equal(classifyLuoguContest('[ICPC2018 Jiaozuo R] 区域赛重现赛'), '重现赛');
   assert.equal(classifyLuoguContest('某团队对抗赛', 1), 'Rated');
   assert.equal(classifyLuoguContest('某团队对抗赛'), '比赛');
+});
+
+test('fetchLuoguContests：冷启动并发调用去重，同一场拉取只发 2 页请求', async () => {
+  // 回归背景：GET /api/contests（日历页签）与 GET /participated 的日历后台重拉
+  // 可能在同一时刻各拉一次（洛谷模块缓存写入前两者都视为未命中），8 个洛谷请求
+  // 槽位会把 joinedContests 挤出 15s 超时。在飞去重后并发的第二个调用复用同一 Promise。
+  __resetLuoguContestsForTest();
+  let calls = 0;
+  const fetchFn = (async (input: string | URL | Request) => {
+    calls += 1;
+    await new Promise((r) => setTimeout(r, 20)); // 模拟在飞窗口
+    const page = new URL(String(input)).searchParams.get('page') ?? '1';
+    return new Response(
+      JSON.stringify({
+        data: { contests: { result: [{ id: Number(page), startTime: 1790000000, endTime: 1790036000, name: `洛谷比赛 ${page}` }] } },
+      }),
+      { status: 200 },
+    );
+  }) as unknown as typeof fetch;
+  const [a, b] = await Promise.all([fetchLuoguContests(fetchFn), fetchLuoguContests(fetchFn)]);
+  assert.equal(calls, 2, '每页恰好一次；并发第二个调用复用在飞结果，不叠加请求');
+  assert.deepEqual(a, b, '两个调用拿到同一份数据');
+  // 缓存写回后：60 分钟内的再次调用零请求
+  await fetchLuoguContests(fetchFn);
+  assert.equal(calls, 2);
 });
 
 test('toLuoguContest: lg- prefix, duration from start/end', () => {
