@@ -164,8 +164,13 @@ export default function HistoryPanel() {
 
   const addToReview = async (r: HistoryItem) => {
     try {
-      await post('/api/reviews', { platform: r.platform, problemKey: r.problemKey })
-      message.success(`「${r.problemKey}」已加入复习队列`)
+      const res = await post<{ alreadyInQueue: boolean; nextDueOn: string }>('/api/reviews', {
+        platform: r.platform,
+        problemKey: r.problemKey,
+      })
+      message.success(
+        `「${r.problemKey}」${res.alreadyInQueue ? '已在复习队列' : '已加入复习队列'}，下次到期 ${res.nextDueOn}`,
+      )
       load(page)
     } catch (e) {
       message.error((e as Error).message)

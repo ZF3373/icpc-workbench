@@ -889,6 +889,8 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     try {
       db.prepare('DELETE FROM submission_intents WHERE problem_id = ?').run(id);
       db.prepare('DELETE FROM submissions WHERE problem_id = ?').run(id);
+      // 复习日志外键指向 problems 且不级联：漏删会让「删除题目」整笔事务失败（同 today_recommendations）
+      db.prepare('DELETE FROM review_events WHERE problem_id = ?').run(id);
       db.prepare('DELETE FROM review_items WHERE problem_id = ?').run(id);
       db.prepare('UPDATE plan_tasks SET problem_id = NULL WHERE problem_id = ?').run(id);
       // today_recommendations 外键无级联（problem_id NOT NULL）：漏删会让删除直接抛

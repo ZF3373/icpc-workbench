@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import dayjs from 'dayjs'
-import { Button, Card, Empty, Modal, Popconfirm, Space, Spin, Tag, Tooltip, App as AntdApp } from 'antd'
+import { Alert, Button, Card, Empty, Modal, Popconfirm, Space, Spin, Tag, Tooltip, App as AntdApp } from 'antd'
 import { DeleteOutlined, EditOutlined, ReadOutlined } from '@ant-design/icons'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
@@ -11,10 +11,20 @@ import { del, get, patch, post } from '../api'
 import type { ReviewFeedback, ReviewItem } from '../types'
 
 const FEEDBACK_META: Array<{ key: ReviewFeedback; label: string; tone: 'danger' | 'primary' | 'default' }> = [
-  { key: 'hard', label: '困难 · 明天再来', tone: 'danger' },
-  { key: 'ok', label: '掌握 · 按计划推进', tone: 'primary' },
+  // 「 · 」后是调度后果说明（按钮只显前半，整句挂在悬停提示上）
+  { key: 'hard', label: '困难 · 退回两档（不是从头再来）', tone: 'danger' },
+  { key: 'ok', label: '掌握 · 前进一档', tone: 'primary' },
   { key: 'easy', label: '轻松 · 跳进两档', tone: 'default' },
 ]
+
+/** GET /api/reviews/due-count 的负载分布（错峰排期后界面要能看出今日量与排队量） */
+interface ReviewLoad {
+  count: number
+  overdue: number
+  dueToday: number
+  next7: number
+  total: number
+}
 
 function dueText(item: ReviewItem): { text: string; overdue: boolean } {
   // 本地日界（dayjs）：与日历页「今天」一致；UTC 取日会让本地 0–8 点的「今日到期」错位一天
@@ -27,6 +37,7 @@ function dueText(item: ReviewItem): { text: string; overdue: boolean } {
 export default function Reviews() {
   const { message } = AntdApp.useApp()
   const [items, setItems] = useState<ReviewItem[]>([])
+  const [loadStat, setLoadStat] = useState<ReviewLoad | null>(null)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'due' | 'all'>('due')
   const [editing, setEditing] = useState<ReviewItem | null>(null)
@@ -44,6 +55,10 @@ export default function Reviews() {
       })
       .catch((e: Error) => message.error(e.message))
       .finally(() => setLoading(false))
+    // 负载分布单独取：它是全队列口径，与当前 due/all 筛选无关，失败也不影响列表
+    get<ReviewLoad>('/api/reviews/due-count')
+      .then(setLoadStat)
+      .catch(() => setLoadStat(null))
   }, [])
 
   const toggleNoteOpen = (id: number) =>
@@ -109,6 +124,16 @@ export default function Reviews() {
         }
       />
 
+      {loadStat && loadStat.total > 0 && (
+        <Alert
+          type={loadStat.overdue > 0 ? 'warning' : 'info'}
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={`今日该复习 ${loadStat.count} 条（逾期 ${loadStat.overdue} · 到期 ${loadStat.dueToday}）；未来 7 天还有 ${loadStat.next7} 条排队，队列共 ${loadStat.total} 条`}
+          description="新加入的题目按题号错峰排进今日起 4 天内到期，批量加入不会把某一天的复习量砸穿。"
+        />
+      )}
+
       {loading ? (
         <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />
       ) : items.length === 0 ? (
@@ -135,7 +160,11 @@ export default function Reviews() {
                         {item.difficulty}
                       </span>
                     )}
-                    <Tooltip title={`间隔 ${item.intervalDays} 天 · 第 ${item.stage + 1} 档`}>
+                    <Tooltip
+                      title={`间隔 ${item.intervalDays} 天 · 第 ${item.stage + 1} 档 · 已复习 ${item.reviewCount} 次${
+                        item.lapseCount > 0 ? `（其中 ${item.lapseCount} 次判为困难）` : ''
+                      }`}
+                    >
                       <Tag className="dot-tag" color={due.overdue ? 'error' : 'processing'}>
                         {due.text}
                       </Tag>
@@ -163,15 +192,16 @@ export default function Reviews() {
                 <div className="review-item-actions">
                   <Space size={6} wrap>
                     {FEEDBACK_META.map((f) => (
-                      <Button
-                        key={f.key}
-                        size="small"
-                        type={f.key === 'ok' ? 'primary' : f.key === 'hard' ? 'default' : 'default'}
-                        danger={f.key === 'hard'}
-                        onClick={() => feedback(item, f.key)}
-                      >
-                        {f.label.split(' · ')[0]}
-                      </Button>
+                      <Tooltip key={f.key} title={f.label}>
+                        <Button
+                          size="small"
+                          type={f.key === 'ok' ? 'primary' : 'default'}
+                          danger={f.key === 'hard'}
+                          onClick={() => feedback(item, f.key)}
+                        >
+                          {f.label.split(' · ')[0]}
+                        </Button>
+                      </Tooltip>
                     ))}
                     <Button
                       size="small"

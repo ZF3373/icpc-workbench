@@ -116,8 +116,13 @@ export default function Today() {
         await del(`/api/reviews/${p.reviewItemId}`)
         message.success(`「${p.problemKey}」已移出复习队列`)
       } else {
-        await post('/api/reviews', { platform: p.platform, problemKey: p.problemKey })
-        message.success(`「${p.problemKey}」已加入复习队列`)
+        const res = await post<{ alreadyInQueue: boolean; nextDueOn: string }>('/api/reviews', {
+          platform: p.platform,
+          problemKey: p.problemKey,
+        })
+        message.success(
+          `「${p.problemKey}」${res.alreadyInQueue ? '已在复习队列' : '已加入复习队列'}，下次到期 ${res.nextDueOn}`,
+        )
       }
       // 静默重拉：让 reviewItemId 回到真实值，再点一次才是「移出」而不是「重复加入」
       load(rotate, true)

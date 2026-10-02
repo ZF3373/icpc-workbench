@@ -258,7 +258,7 @@ CREATE TABLE IF NOT EXISTS review_items (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id          INTEGER NOT NULL REFERENCES users(id),
   problem_id       INTEGER NOT NULL REFERENCES problems(id),
-  stage            INTEGER NOT NULL DEFAULT 0,     -- 间隔阶梯档位 0..5（1/3/7/14/30/60 天）
+  stage            INTEGER NOT NULL DEFAULT 0,     -- 间隔阶梯档位 0..7（1/3/7/14/30/60/120/240 天）
   note             TEXT,
   added_at         TEXT NOT NULL DEFAULT (datetime('now')),
   last_reviewed_at TEXT,
@@ -266,6 +266,26 @@ CREATE TABLE IF NOT EXISTS review_items (
   UNIQUE (user_id, problem_id)
 );
 CREATE INDEX IF NOT EXISTS idx_review_items_due ON review_items(user_id, next_due_on);
+
+-- 复习日志：每次反馈一行（不做「当前状态」能替代的事——档位会被下一次覆盖，
+-- 而「这题忘过几次、上次实际排了几天、当时逾期几天」必须留痕，
+-- 否则留存系数只能凭当前档位猜，后续任何自适应也没有训练数据）。
+-- 外键不级联（与本库其它表一致）：删条目/删题时由调用方显式清理。
+CREATE TABLE IF NOT EXISTS review_events (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id        INTEGER NOT NULL REFERENCES users(id),
+  review_item_id INTEGER NOT NULL REFERENCES review_items(id),
+  problem_id     INTEGER NOT NULL REFERENCES problems(id),
+  reviewed_at    TEXT NOT NULL,                    -- ISO8601 时刻
+  feedback       TEXT NOT NULL,                    -- hard / ok / easy
+  stage_before   INTEGER NOT NULL,
+  stage_after    INTEGER NOT NULL,
+  due_on         TEXT NOT NULL,                    -- 复习时原本的到期日（reviewed_at 晚于它即逾期）
+  interval_days  INTEGER NOT NULL,                 -- 本次落定的实际间隔（已含留存系数）
+  factor         REAL NOT NULL DEFAULT 1           -- 生效的留存系数，便于审计排期为何变长/变短
+);
+CREATE INDEX IF NOT EXISTS idx_review_events_item ON review_events(review_item_id, reviewed_at);
+CREATE INDEX IF NOT EXISTS idx_review_events_user ON review_events(user_id, problem_id);
 
 CREATE TABLE IF NOT EXISTS template_progress (
   template_id TEXT NOT NULL,                        -- 内置课程模板 id

@@ -704,8 +704,14 @@ export default function Problems() {
 
   const addToReview = async (r: ProblemRow) => {
     try {
-      await post('/api/reviews', { platform: r.platform, problemKey: r.problem_key })
-      message.success(`「${r.problem_key}」已加入复习队列，到期会出现在「复习库」与「今日训练」`)
+      const res = await post<{ alreadyInQueue: boolean; nextDueOn: string }>('/api/reviews', {
+        platform: r.platform,
+        problemKey: r.problem_key,
+      })
+      // 新条目按题目 id 错峰 0–3 天到期（批量加入时不再同日堆满），所以要把日期念出来
+      message.success(
+        `「${r.problem_key}」${res.alreadyInQueue ? '已在复习队列' : '已加入复习队列'}，下次到期 ${res.nextDueOn}`,
+      )
       loadRef.current()
     } catch (e) {
       message.error((e as Error).message)
