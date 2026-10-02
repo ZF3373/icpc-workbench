@@ -61,15 +61,19 @@ export const COOKIE_FIELDS: Partial<Record<PlatformId, CookieFieldDef[]>> = {
     { key: 'jskuss', cookieName: 'JSKUSS', label: '登录会话（必需）', placeholder: '粘贴 JSKUSS 的值', password: true, raw: true },
   ],
   // QOJ：两项 Cookie 按名分框 + 浏览器 UA，服务端合并（用户不必手工拼 Cookie 串）。
-  //  ① UOJSESSID —— 登录会话；缺它 → 站点 302 跳登录页。
+  //  ① 登录会话 —— **站点现名 `__Host-UOJSESSID`**（2026-10 起；旧名 UOJSESSID 仅历史兼容，
+  //     发送前由 withHardenedSessionCookie 统一改写成硬化名）；缺它 → 站点 302 跳登录页。
   //  ② cf_clearance —— Cloudflare 通行凭据（逐字节与签发浏览器绑定、约 30 分钟有效）；缺它 → 被挑战。
   //  ③ 浏览器 User-Agent —— configOnly（不进 Cookie 头，由适配器按 ua.qoj 单独注入）；
-  //     实测不带 UA 时 cf_clearance 必然失效。
+  //     实测不带 UA 时 cf_clearance 必然失效。属浏览器属性、**全部账号共用**（各账号卡片里
+  //     都可编辑同一个 ua.qoj）；password 渲染以支持点眼睛按需查看已保存值。
+  //     注意：Console 里 `navigator.userAgent` 的**输出带引号**，整行粘贴会把引号也存进来
+  //     （服务端按原样发送，与签发 cf_clearance 的 UA 不再逐字节相同）——见 ua 字段说明。
   //  值较长且含 . _ - 等字符但**不含 ; 与空格**，按名分框即可；整段粘贴亦容忍（自动分派名字）。
   qoj: [
-    { key: 'uojsessid', cookieName: 'UOJSESSID', label: '登录会话（必需）', placeholder: '粘贴 UOJSESSID 的值（整段 Cookie 亦可，会自动分派）', password: true },
+    { key: 'uojsessid', cookieName: 'UOJSESSID', label: '登录会话（必需；站点名为 __Host-UOJSESSID）', placeholder: '粘贴 __Host-UOJSESSID 的值（旧名 UOJSESSID 亦可；整段 Cookie 会自动分派）', password: true },
     { key: 'clearance', cookieName: 'cf_clearance', label: 'Cloudflare 通行凭据（必需）', placeholder: '粘贴 cf_clearance 的值（整段 Cookie 亦可，会自动分派）', password: true },
-    { key: 'ua', cookieName: '__ua', label: '浏览器 User-Agent（必需）', placeholder: '在 qoj.ac 页 Console 输入 navigator.userAgent 回车，整行粘贴', configOnly: true },
+    { key: 'ua', cookieName: '__ua', label: '浏览器 User-Agent（必需，全部账号共用）', placeholder: '在 qoj.ac 页 Console 输入 navigator.userAgent 回车，整行粘贴', configOnly: true, password: true },
   ],
 };
 
@@ -77,6 +81,76 @@ export const COOKIE_FIELDS: Partial<Record<PlatformId, CookieFieldDef[]>> = {
 export const CREDENTIAL_UA_FIELDS: Partial<Record<PlatformId, string>> = {
   qoj: 'ua',
 };
+
+/**
+ * 浏览器 User-Agent 的粘贴净化。
+ *
+ * 占位提示让用户在 qoj.ac 页 Console 执行 `navigator.userAgent` 并「整行粘贴」，
+ * 而 Console 回显会**带引号**（`'Mozilla/5.0 (Windows NT 10.0; …) Edg/154.0.0.0'`），
+ * 于是引号被一起存进 `ua.<platform>`（实测生产库即如此）。cf_clearance 与签发它的 UA
+ * 逐字节绑定，多出的引号纯属噪声，这里剥掉首尾**成对**的引号。
+ */
+export function cleanUserAgent(value: string): string {
+  const v = value.trim();
+  const m = /^(['"])([\s\S]*)\1$/.exec(v);
+  return m ? m[2]!.trim() : v;
+}
+
+/**
+ * 会话 Cookie 的「硬化名」对照表（发送前统一改名）。
+ *
+ * qoj.ac（UOJ 系）已把登录会话从 `UOJSESSID` 迁到 **`__Host-UOJSESSID`**
+ * （`__Host-` 是浏览器强制 Secure + Path=/ + 无 Domain 的前缀；实测 2026-10-02：
+ * 响应只下发 `__Host-UOJSESSID`，服务端也只读这个名字）。站点改名后的故障特征极具
+ * 迷惑性——**值本身完全有效**（同一串值挂 `__Host-UOJSESSID` 名能正常读到提交记录），
+ * 只是名字不对，于是被站点当作未登录（302 跳 /login），前端显示「凭据无效 / 已过期」，
+ * 用户反复重新配置也没用。
+ *
+ * 因此发送前把会话项改写成硬化名：老库里存的是旧名、用户粘贴的整段里可能只有新名，
+ * 两种输入都能work。存储侧仍沿用旧名（历史数据与既有测试零迁移）。
+ */
+export const HARDENED_SESSION_COOKIES: Partial<
+  Record<PlatformId, { readonly legacy: string; readonly hardened: string }>
+> = {
+  qoj: { legacy: 'UOJSESSID', hardened: '__Host-UOJSESSID' },
+};
+
+/**
+ * 把会话 Cookie 改写成站点当前读取的硬化名（幂等）。
+ *
+ * **原地改名**：除会话项的名字外，其余 Cookie 项及其顺序保持逐字节不变——用户从 F12
+ * 整段复制的头里可能带着 Cloudflare 设备校验项（CF_VERIFIED_DEVICE_…）等站点私有的
+ * 附加项，任何摘取/重排都会破坏「整段透传」这一约定。
+ * 值取硬化名优先、旧名兜底；两者并存时旧名视为历史残留下丢弃（同名歧义比多一项更危险）。
+ * 找不到会话项时原样返回。
+ */
+export function withHardenedSessionCookie(platform: PlatformId, header: string): string {
+  const names = HARDENED_SESSION_COOKIES[platform];
+  const s = header.trim();
+  if (!names || !s) return s;
+  const { legacy, hardened } = names;
+  const value = cookieFieldValue(s, hardened) || cookieFieldValue(s, legacy);
+  if (!value) return s;
+  const alreadyHardened = cookieFieldValue(s, hardened) !== '';
+  const out: string[] = [];
+  for (const part of s.split(';')) {
+    const p = part.trim();
+    if (!p) continue;
+    const eq = p.indexOf('=');
+    const name = eq < 0 ? p : p.slice(0, eq).trim();
+    if (name === hardened) {
+      if (!out.some((o) => o.startsWith(`${hardened}=`))) out.push(p); // 同名只留第一项
+      continue;
+    }
+    if (name === legacy) {
+      // 已有硬化名时丢弃旧名（历史残留，值可能不同）；否则原地改名，位置与其余项不动
+      if (!alreadyHardened) out.push(`${hardened}=${p.slice(eq + 1)}`);
+      continue;
+    }
+    out.push(p);
+  }
+  return out.join('; ');
+}
 
 /** 平台字段定义（无则该平台不需要 Cookie） */
 export function cookieFieldsOf(platform: PlatformId): CookieFieldDef[] {
@@ -88,12 +162,19 @@ export function cookieOnlyFieldsOf(platform: PlatformId): CookieFieldDef[] {
   return cookieFieldsOf(platform).filter((f) => f.configOnly !== true);
 }
 
-/** 从 Cookie 头按名取出单项**裸值**（含 = 的整段头按名提取，裸值原样返回） */
+/**
+ * 从 Cookie 头按名取出单项**裸值**（含 = 的整段头按名提取，裸值原样返回）。
+ *
+ * 名字前允许 `__Host-` 前缀：站点把会话 Cookie 硬化后（如 qoj.ac 的
+ * `UOJSESSID` → `__Host-UOJSESSID`），用户整段粘贴里只有硬化名，按旧名提取会
+ * 取到空值——表现为「粘了整段却提示没配置 / 重新配置后依旧无效」（见
+ * HARDENED_SESSION_COOKIES）。
+ */
 export function cookieFieldValue(header: string, name: string): string {
   const s = header.trim();
   if (!s) return '';
   if (!s.includes('=')) return s;
-  const m = new RegExp(`(?:^|;)\\s*${name}=([^;\\s]+)`).exec(s);
+  const m = new RegExp(`(?:^|;)\\s*(?:__Host-)?${name}=([^;\\s]+)`).exec(s);
   return m ? m[1] : '';
 }
 
@@ -111,7 +192,9 @@ export function buildCookieItem(def: CookieFieldDef, value: string): string {
   if (def.configOnly) return raw; // 非 Cookie 项（如浏览器 UA）由适配器单独注入
   const stripped = raw.replace(/^cookie:\s*/i, '');
   if (!def.raw) {
-    const m = new RegExp(`(?:^|;)\\s*${def.cookieName}=([^;\\s]+)`).exec(stripped);
+    // 同样容忍 `__Host-` 硬化名：否则用户把「只有 __Host-UOJSESSID 的整段 Cookie」粘进来时，
+    // 这里会因取不到值而返回空串 —— 保存动作反而把会话清掉（比不配置更糟）。
+    const m = new RegExp(`(?:^|;)\\s*(?:__Host-)?${def.cookieName}=([^;\\s]+)`).exec(stripped);
     const val = m ? m[1] : stripped.includes(';') ? '' : stripped;
     return val ? `${def.cookieName}=${val}` : '';
   }

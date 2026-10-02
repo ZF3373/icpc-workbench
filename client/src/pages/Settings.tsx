@@ -941,7 +941,7 @@ export default function Settings() {
                     )}
                     {p.id === 'qoj' && (
                       <p style={{ margin: '2px 0 0', color: '#8993a2', fontSize: 12 }}>
-                        qoj.ac 登录后 F12 → Application → Cookies 复制 UOJSESSID 与 cf_clearance（点账号框在卡片里粘贴，
+                        qoj.ac 登录后 F12 → Application → Cookies 复制 __Host-UOJSESSID（旧名 UOJSESSID）与 cf_clearance（点账号框在卡片里粘贴，
                         也可整段 Cookie 粘进任一框自动分派）；cf_clearance 约 30 分钟过期，过期后重贴该项即可。
                         浏览器 UA 在账号卡片里填写，全部账号共用。
                       </p>

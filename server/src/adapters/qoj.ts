@@ -4,6 +4,7 @@ import type {
   Verdict,
 } from '../../../shared/src/index.ts';
 import { difficultyFields } from '../../../shared/src/difficulty.ts';
+import { withHardenedSessionCookie, cleanUserAgent } from '../../../shared/src/credentials.ts';
 import { ManualImportRequiredError } from './types.ts';
 import type { FetchOptions, PlatformAdapter } from './types.ts';
 import { pagedFetch } from './pagination.ts';
@@ -403,12 +404,18 @@ export function parseQojRows(html: string, submitter?: string): QojRow[] {
   return rows;
 }
 
-/** 构造带凭据的请求头。ua 传入时原样发送：cf_clearance 与签发它的浏览器 UA 绑定。 */
+/**
+ * 构造带凭据的请求头。ua 传入时原样发送：cf_clearance 与签发它的浏览器 UA 绑定。
+ *
+ * Cookie 里的登录会话统一改写成站点当前读取的 `__Host-UOJSESSID`（见
+ * shared/src/credentials.ts 的 HARDENED_SESSION_COOKIES）：站点改名后仍按旧名发送，
+ * 每次请求都会被当作未登录（302 跳 /login），表现为「凭据无效且重新配置无效」。
+ */
 function requestHeaders(cookie: string, ua?: string): Record<string, string> {
-  const agent = ua?.trim();
+  const agent = cleanUserAgent(ua ?? '');
   return {
-    Cookie: cookie,
-    'User-Agent': agent && agent !== '' ? agent : UA,
+    Cookie: withHardenedSessionCookie('qoj', cookie),
+    'User-Agent': agent !== '' ? agent : UA,
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
     // 与真实导航请求一致的补充头：少数 WAF 规则按 Sec-Fetch-* 区分导航与脚本请求
@@ -436,7 +443,7 @@ async function fetchSubmissionsPage(
     throw new ManualImportRequiredError(
       'qoj',
       'QOJ 前置 Cloudflare 拦截了本次请求。请在浏览器登录 qoj.ac 后，从 F12 → Network 的任意请求 Request Headers 里整段复制 Cookie，' +
-        '至少包含 UOJSESSID 与 cf_clearance；**并同时填写该浏览器的 User-Agent**' +
+        '至少包含 __Host-UOJSESSID（2026-10 前的旧名 UOJSESSID 亦可）与 cf_clearance；**并同时填写该浏览器的 User-Agent**' +
         '（在 qoj.ac 页面按 F12 → Console 输入 navigator.userAgent 回车，整行复制到「浏览器 User-Agent」框）。' +
         'cf_clearance 与浏览器 UA/IP 绑定、约 30 分钟有效，换 UA 或不填 UA 都会判为无效。',
     );
@@ -445,7 +452,7 @@ async function fetchSubmissionsPage(
   if (res.status === 302 || res.status === 301) {
     throw new ManualImportRequiredError(
       'qoj',
-      'QOJ 登录态已失效（提交记录页跳转登录）：请在设置页重新复制 UOJSESSID（以及 cf_clearance）',
+      'QOJ 登录态已失效（提交记录页跳转登录）：请在设置页重新复制 __Host-UOJSESSID（以及 cf_clearance）',
     );
   }
   if (!res.ok) {
@@ -454,7 +461,7 @@ async function fetchSubmissionsPage(
   if (looksLikeLoginPage(html)) {
     throw new ManualImportRequiredError(
       'qoj',
-      'QOJ 登录态已失效（提交记录页要求登录）：请在设置页重新复制 UOJSESSID（以及 cf_clearance）',
+      'QOJ 登录态已失效（提交记录页要求登录）：请在设置页重新复制 __Host-UOJSESSID（以及 cf_clearance）',
     );
   }
   return html;
@@ -533,23 +540,25 @@ export function createQojAdapter(fetchFn: HttpInit): PlatformAdapter {
      */
     async checkAuth({ cookie, handle, ua }) {
       if (!cookie?.trim()) {
-        return { ok: false, message: '尚未填写 Cookie：请粘贴 UOJSESSID（必要时附 cf_clearance 与浏览器 UA）' };
+        return { ok: false, message: '尚未填写 Cookie：请粘贴 __Host-UOJSESSID（必要时附 cf_clearance 与浏览器 UA）' };
       }
       if (!handle?.trim()) {
         return { ok: false, message: '请先填写 QOJ 用户名并保存，再检测凭据（检测需按账号访问提交记录页）' };
       }
       try {
         // 前置检查两项**都必需**（2026-09 逐项实测）：缺 cf_clearance 会被 Cloudflare 挑战，
-        // 缺 UOJSESSID 会 302 跳登录页。其它展示类 cookie（uoj_locale / OptanonConsent 等）实测无影响。
+        // 缺会话项会 302 跳登录页。会话项自 2026-10 起站点名为 `__Host-UOJSESSID`，旧名
+        // `UOJSESSID` 仍被下面的子串判定接受（发送时统一改写成硬化名，见 requestHeaders）。
+        // 其它展示类 cookie（uoj_locale / OptanonConsent 等）实测无影响。
         const missing: string[] = [];
         if (!/cf_clearance=/i.test(cookie)) missing.push('cf_clearance');
-        if (!/UOJSESSID=/i.test(cookie)) missing.push('UOJSESSID');
+        if (!/UOJSESSID=/i.test(cookie)) missing.push('__Host-UOJSESSID（旧名 UOJSESSID）');
         if (missing.length > 0) {
           return {
             ok: false,
             message:
               `Cookie 里缺少 ${missing.join(' 与 ')}：请在浏览器 F12 → Network 选任意 qoj.ac 请求，` +
-              '把 Request Headers 里 Cookie 的**整段值**复制过来（它同时包含 cf_clearance 与 UOJSESSID）',
+              '把 Request Headers 里 Cookie 的**整段值**复制过来（它同时包含 cf_clearance 与会话 Cookie）',
           };
         }
         const html = await fetchSubmissionsPage(http, handle.trim(), 1, cookie.trim(), ua);

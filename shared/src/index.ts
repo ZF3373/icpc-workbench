@@ -39,7 +39,8 @@ export const PLATFORMS: PlatformMeta[] = [
   { id: 'jisuanke', name: '计蒜客', nameEn: 'Jisuanke', hasOfficialApi: false, homepage: 'https://www.jisuanke.com', sync: 'cookie', hasBank: true, difficultyScale: 'jisuanke-level-8', syncSources: ['contest', 'practice'] },
   // QOJ（qoj.ac，UOJ 系评测系统，Universal Cup 等 ICPC 系列赛的官方 OJ）：
   // 无公开提交 API（/api/* 恒返回 401），提交记录只有服务端渲染的 /submissions 分页 HTML 可用；
-  // 站点前置 Cloudflare 托管挑战，因此除登录会话 UOJSESSID 外通常还需浏览器签发的 cf_clearance。
+  // 站点前置 Cloudflare 托管挑战，因此除登录会话（2026-10 起站点名为 __Host-UOJSESSID，
+  // 旧名 UOJSESSID，发送前由 withHardenedSessionCookie 统一改名）外通常还需浏览器签发的 cf_clearance。
   // 平台自身**没有难度字段**（difficultyScale 记 none = 同步路径不下发难度）；
   // 库内难度由回填路径用 ICPC/CCPC 公开榜单档位推导，落库标度为 icpc-tier（见 analysis/icpcBoard.ts）
   { id: 'qoj', name: 'QOJ', nameEn: 'QOJ', hasOfficialApi: false, homepage: 'https://qoj.ac', sync: 'cookie', hasBank: false, difficultyScale: 'none', syncSources: ['none'] },
@@ -471,12 +472,15 @@ export {
 export {
   COOKIE_FIELDS,
   CREDENTIAL_UA_FIELDS,
+  HARDENED_SESSION_COOKIES,
   cookieFieldsOf,
   cookieOnlyFieldsOf,
   cookieFieldValue,
   buildCookieItem,
   mergeCookieFields,
   splitCookieFields,
+  withHardenedSessionCookie,
+  cleanUserAgent,
   type CookieFieldDef,
 } from './credentials.ts';
 

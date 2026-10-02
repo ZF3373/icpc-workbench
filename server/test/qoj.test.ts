@@ -498,7 +498,7 @@ test('qoj: checkAuth 校验账号与凭据', async () => {
   assert.match(r3.message, /cf_clearance/);
 });
 
-test('qoj: 浏览器整段 Cookie（含 Cloudflare 设备校验项）原样透传', async () => {
+test('qoj: 浏览器整段 Cookie（含 Cloudflare 设备校验项）原样透传，仅会话项原地改名为 __Host-UOJSESSID', async () => {
   // 用户从 F12 复制的真实形态：cf_clearance + CF_VERIFIED_DEVICE_… + UOJ 展示项
   const fullCookie =
     'cf_clearance=abc.def-1757900000-1.2.1.1-XXXXXXXX; CF_VERIFIED_DEVICE_abc123=verified; ' +
@@ -507,7 +507,20 @@ test('qoj: 浏览器整段 Cookie（含 Cloudflare 设备校验项）原样透�
   const adapter = createQojAdapter(router({ 1: page(rowsFrom(500, 3, DEFAULT_TS)) }, { seenHeaders }));
   const r = await adapter.checkAuth!({ cookie: fullCookie, handle: 'someone' });
   assert.equal(r.ok, true);
-  assert.equal(seenHeaders[0]!.Cookie, fullCookie, '整段 Cookie 必须逐字节发出，不得只摘取两项');
+  // 站点自 2026-10 只认 __Host-UOJSESSID（实测：同值挂旧名 302 跳登录，挂硬化名才读得到提交）。
+  // 因此发送前做**原地**改名：除会话项的名字外，其余项与顺序必须逐字节不变
+  //（不得只摘取两项，也不得丢弃 Cloudflare 设备校验项）。
+  assert.equal(
+    seenHeaders[0]!.Cookie,
+    fullCookie.replace('UOJSESSID=sess-token', '__Host-UOJSESSID=sess-token'),
+    '整段 Cookie 除会话项改名外必须逐字节透传',
+  );
+  // 反向护栏：改动前后逐项对比，差异有且只有会话项的名字
+  assert.deepEqual(
+    seenHeaders[0]!.Cookie!.split('; ').filter((p) => !p.startsWith('__Host-UOJSESSID=')),
+    fullCookie.split('; ').filter((p) => !p.startsWith('UOJSESSID=')),
+    '除会话项外不得有任何增删或重排',
+  );
   assert.equal(seenHeaders[0]!['Sec-Fetch-Mode'], 'navigate');
 });
 

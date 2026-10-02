@@ -33,6 +33,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ICPC_TIERS, type IcpcTier } from '../../../shared/src/difficulty.ts';
+import { withHardenedSessionCookie, cleanUserAgent } from '../../../shared/src/credentials.ts';
 import { asHttpClient } from '../adapters/http.ts';
 import { isCloudflareChallenge } from '../adapters/qoj.ts';
 import { effectiveDataDir } from '../knowledge/store.ts';
@@ -76,13 +77,16 @@ function qojContestUrl(contestId: string): string {
 }
 
 function qojHeaders(cookie: string, ua: string): Record<string, string> {
-  const agent = ua.trim() === '' ? QOJ_UA_FALLBACK : ua.trim();
+  const cleaned = cleanUserAgent(ua);
+  const agent = cleaned === '' ? QOJ_UA_FALLBACK : cleaned;
+  const trimmed = cookie.trim();
   return {
     'User-Agent': agent,
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
     Referer: 'https://qoj.ac/',
-    ...(cookie.trim() === '' ? {} : { Cookie: cookie.trim() }),
+    // 会话 Cookie 改写成站点现名 __Host-UOJSESSID（与同步/检测同一口径，否则比赛页永远匿名）
+    ...(trimmed === '' ? {} : { Cookie: withHardenedSessionCookie('qoj', trimmed) }),
   };
 }
 
