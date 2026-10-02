@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import dayjs from 'dayjs'
-import { Alert, Button, Card, Empty, Modal, Popconfirm, Space, Spin, Tag, Tooltip, App as AntdApp } from 'antd'
+import { Button, Card, Empty, Modal, Popconfirm, Space, Spin, Tag, Tooltip, App as AntdApp } from 'antd'
 import { DeleteOutlined, EditOutlined, ReadOutlined } from '@ant-design/icons'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
@@ -17,15 +17,6 @@ const FEEDBACK_META: Array<{ key: ReviewFeedback; label: string; tone: 'danger' 
   { key: 'easy', label: '轻松 · 跳进两档', tone: 'default' },
 ]
 
-/** GET /api/reviews/due-count 的负载分布（错峰排期后界面要能看出今日量与排队量） */
-interface ReviewLoad {
-  count: number
-  overdue: number
-  dueToday: number
-  next7: number
-  total: number
-}
-
 function dueText(item: ReviewItem): { text: string; overdue: boolean } {
   // 本地日界（dayjs）：与日历页「今天」一致；UTC 取日会让本地 0–8 点的「今日到期」错位一天
   const today = dayjs().format('YYYY-MM-DD')
@@ -37,7 +28,6 @@ function dueText(item: ReviewItem): { text: string; overdue: boolean } {
 export default function Reviews() {
   const { message } = AntdApp.useApp()
   const [items, setItems] = useState<ReviewItem[]>([])
-  const [loadStat, setLoadStat] = useState<ReviewLoad | null>(null)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'due' | 'all'>('due')
   const [editing, setEditing] = useState<ReviewItem | null>(null)
@@ -55,10 +45,6 @@ export default function Reviews() {
       })
       .catch((e: Error) => message.error(e.message))
       .finally(() => setLoading(false))
-    // 负载分布单独取：它是全队列口径，与当前 due/all 筛选无关，失败也不影响列表
-    get<ReviewLoad>('/api/reviews/due-count')
-      .then(setLoadStat)
-      .catch(() => setLoadStat(null))
   }, [])
 
   const toggleNoteOpen = (id: number) =>
@@ -123,16 +109,6 @@ export default function Reviews() {
           </Space>
         }
       />
-
-      {loadStat && loadStat.total > 0 && (
-        <Alert
-          type={loadStat.overdue > 0 ? 'warning' : 'info'}
-          showIcon
-          style={{ marginBottom: 12 }}
-          message={`今日该复习 ${loadStat.count} 条（逾期 ${loadStat.overdue} · 到期 ${loadStat.dueToday}）；未来 7 天还有 ${loadStat.next7} 条排队，队列共 ${loadStat.total} 条`}
-          description="新加入的题目按题号错峰排进今日起 4 天内到期，批量加入不会把某一天的复习量砸穿。"
-        />
-      )}
 
       {loading ? (
         <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />
