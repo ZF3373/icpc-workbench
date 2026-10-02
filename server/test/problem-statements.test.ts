@@ -46,6 +46,7 @@ function makeReview(
     },
     submissions: submissions.map((s) => ({
       platform,
+      account: 'u',
       problemKey: s.problemKey,
       title: `Problem ${s.problemKey}`,
       url: s.url,

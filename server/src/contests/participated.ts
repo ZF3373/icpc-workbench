@@ -51,6 +51,8 @@ export type ParticipationSignal =
 /** submissions ⋈ problems 的最小行（推导分组与复盘渲染共用） */
 export interface ContestSubmissionRow {
   platform: PlatformId;
+  /** 提交归属账号（submissions.account）；同平台多账号时用于分派同一场比赛的成绩 */
+  account: string;
   problemKey: string;
   title: string;
   url: string | null;
@@ -155,6 +157,37 @@ interface ContestGroup {
   calendar?: ContestInfo;
   /** 平台侧参赛记录（user.rating / joinedContests 等）：名称/时间/成绩的最高优先级来源 */
   authoritative?: AuthoritativeContest;
+  /**
+   * 该场涉及的所有账号（多账号）：本地提交归属的账号 ∪ 平台参赛记录归属的账号。
+   * 只有一条记录时留空（列表不给单账号用户添噪声）。
+   */
+  accounts?: string[];
+}
+
+/** 同一场次的多账号参赛记录里挑一条承载成绩：本地该场提交最多的账号优先 */
+function pickSrcForContest(
+  rows: ContestSubmissionRow[],
+  srcs: AuthoritativeContest[],
+): AuthoritativeContest {
+  if (srcs.length === 1) return srcs[0];
+  let best = srcs[0];
+  let bestCount = -1;
+  for (const src of srcs) {
+    const n = rows.filter((r) => r.account === src.account).length;
+    if (n > bestCount) {
+      best = src;
+      bestCount = n;
+    }
+  }
+  return best;
+}
+
+/** 该场涉及的账号集合（去重、剔除无归属的手动导入空串） */
+function contestAccounts(rows: ContestSubmissionRow[], srcs: AuthoritativeContest[]): string[] | undefined {
+  const set = new Set<string>();
+  for (const r of rows) if (r.account) set.add(r.account);
+  for (const s of srcs) if (s.account) set.add(s.account);
+  return set.size > 1 ? [...set].sort() : undefined;
 }
 
 function parseTags(raw: string | null): string[] {
@@ -176,13 +209,13 @@ function fetchContestableRows(db: Db, targetPlatform?: PlatformId): ContestSubmi
   const rows = db
     .prepare(
       targetPlatform
-        ? `SELECT s.platform AS platform, p.problem_key AS problemKey, p.title AS title,
+        ? `SELECT s.platform AS platform, s.account AS account, p.problem_key AS problemKey, p.title AS title,
                   p.url AS url, p.difficulty AS difficulty, p.tags AS tags,
                   s.verdict AS verdict, s.submitted_at AS submittedAt, s.context AS context,
                   s.language AS language
            FROM submissions s JOIN problems p ON p.id = s.problem_id
            WHERE s.user_id = ? AND s.platform = ?`
-        : `SELECT s.platform AS platform, p.problem_key AS problemKey, p.title AS title,
+        : `SELECT s.platform AS platform, s.account AS account, p.problem_key AS problemKey, p.title AS title,
                   p.url AS url, p.difficulty AS difficulty, p.tags AS tags,
                   s.verdict AS verdict, s.submitted_at AS submittedAt, s.context AS context,
                   s.language AS language
@@ -192,6 +225,7 @@ function fetchContestableRows(db: Db, targetPlatform?: PlatformId): ContestSubmi
     )
     .all(...(targetPlatform ? [DEFAULT_USER_ID, targetPlatform] : [DEFAULT_USER_ID])) as Array<{
     platform: PlatformId;
+    account: string;
     problemKey: string;
     title: string;
     url: string | null;
@@ -423,6 +457,7 @@ function qualifyGroup(platform: PlatformId, g: ContestGroup): ParticipatedContes
     key: `${platform}:${g.contestId}`,
     platform,
     contestId: g.contestId,
+    ...(g.accounts ? { accounts: g.accounts } : {}),
     name: src?.name ?? calendar?.name ?? null,
     url: src?.url ?? calendar?.url ?? contestUrl(platform, g.contestId),
     startTimeIso: startIso,
@@ -478,13 +513,24 @@ function buildContestIndex(
     const platformRows = byPlatform.get(platform) ?? [];
     const platformSources = sources[platform];
     for (const g of contestGroups(platformRows, platform, cal, Array.isArray(platformSources)).values()) {
+      g.accounts = contestAccounts(g.rows, []);
       index.set(`${platform}:${g.contestId}`, { platform, group: g });
     }
+    // 同一场比赛可能有多个账号的参赛记录（participated_contests 主键含 account）：
+    // 列表仍只出一条，成绩取「本地该场提交最多的账号」那条，其余账号进 accounts 标注。
+    const srcsByContest = new Map<string, AuthoritativeContest[]>();
     for (const src of platformSources ?? []) {
+      const list = srcsByContest.get(src.contestId) ?? [];
+      list.push(src);
+      srcsByContest.set(src.contestId, list);
+    }
+    for (const srcs of srcsByContest.values()) {
+      const src = srcs[0];
       const key = `${platform}:${src.contestId}`;
       const existing = index.get(key);
       if (existing) {
-        existing.group.authoritative = src;
+        existing.group.authoritative = pickSrcForContest(existing.group.rows, srcs);
+        existing.group.accounts = contestAccounts(existing.group.rows, srcs);
         continue;
       }
       // 本地无该场结构化提交组的平台：合成组按**权威参赛窗口**归因提交。
@@ -530,7 +576,8 @@ function buildContestIndex(
           contestId: src.contestId,
           rows: attributed,
           signals: new Set<ParticipationSignal>(['joined-list']),
-          authoritative: src,
+          authoritative: srcs.length > 1 ? pickSrcForContest(attributed, srcs) : src,
+          accounts: contestAccounts(attributed, srcs),
         },
       });
     }
@@ -643,10 +690,17 @@ function offsetLabel(submittedAt: string, startMs: number): string {
   return h > 0 ? `+${h}:${mm}:${ss}` : `+${mm}:${ss}`;
 }
 
-function renderAttempts(rows: ContestSubmissionRow[], startMs: number, isCf: boolean): string {
+function renderAttempts(
+  rows: ContestSubmissionRow[],
+  startMs: number,
+  isCf: boolean,
+  /** 多账号同场时逐条标注归属账号，否则 AI 会把两个号的表现当成一个人的 */
+  showAccount = false,
+): string {
   const show = (r: ContestSubmissionRow) => {
     const label = isCf && r.context ? `（${CONTEXT_LABEL[r.context] ?? r.context}）` : '';
-    return `${offsetLabel(r.submittedAt, startMs)} ${r.verdict}${label}`;
+    const who = showAccount && r.account ? `${r.account} ` : '';
+    return `${who}${offsetLabel(r.submittedAt, startMs)} ${r.verdict}${label}`;
   };
   if (rows.length <= ATTEMPT_HEAD + ATTEMPT_TAIL) {
     return rows.map(show).join(' → ');
@@ -682,6 +736,13 @@ export function renderContestContext(data: ContestReviewData, opts?: { db?: Db }
   lines.push(
     `- 比赛：${contest.name ?? `${platformName(contest.platform)} · ${contest.contestId}`}（${platformName(contest.platform)}）`,
   );
+  // 多账号同场：不写清楚的话，AI 会把小号的练手提交当成主力号的临场发挥
+  const multiAccount = (contest.accounts?.length ?? 0) > 1;
+  if (multiAccount) {
+    lines.push(
+      `- 参赛账号：${contest.accounts!.join('、')}（这一场你用了多个账号，下方逐条提交已标注归属账号；「平台记录」里的成绩只属于其中一个账号）`,
+    );
+  }
   if (contest.url) lines.push(`- 比赛链接：${contest.url}`);
   if (contest.startTimeIso) lines.push(`- 开始：${contest.startTimeIso}`);
   if (contest.endTimeIso) lines.push(`- 结束：${contest.endTimeIso}`);
@@ -806,7 +867,7 @@ export function renderContestContext(data: ContestReviewData, opts?: { db?: Db }
       ? `（AC 题预算紧张，仅保留首尾）`
       : '';
     const attempts = shown.length > 0
-      ? renderAttempts(shown, startMs, isCf)
+      ? renderAttempts(shown, startMs, isCf, multiAccount)
       : '（明细因总量截断省略）';
     const suffix = trimNote
       ? ` ${trimNote}`

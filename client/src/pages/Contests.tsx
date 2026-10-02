@@ -393,6 +393,11 @@ export default function Contests() {
                         </div>
                       </div>
                     )}
+                    {c.accounts && c.accounts.length > 1 && (
+                      <div className="contest-countdown">
+                        多账号参赛：{c.accounts.join('、')}（成绩属于提交较多的账号，复盘明细按账号标注）
+                      </div>
+                    )}
                     {(c.source?.rank != null || c.source?.rating != null) && (
                       <div className="contest-countdown">
                         {c.source?.rank != null ? `排名 ${c.source.rank}` : ''}

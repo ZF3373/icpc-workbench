@@ -377,6 +377,7 @@ test('renderContestContext：元信息 + 时间线偏移 + 赛时/补题标注',
 test('renderContestContext：题目数与单题时间线超限截断', () => {
   const row = (i: number, submittedAt: string): ContestReviewData['submissions'][number] => ({
     platform: 'codeforces',
+    account: 'u',
     problemKey: `1${String(i).padStart(2, '0')}A`,
     title: `T${i}`,
     url: null,
@@ -432,6 +433,7 @@ test('renderContestContext：总量预算耗尽也不让后段题只剩空时间
   const rowsOf = (key: string, n: number, verdict: string): ContestReviewData['submissions'] =>
     Array.from({ length: n }, (_, i) => ({
       platform: 'codeforces',
+      account: 'u',
       problemKey: key,
       title: `T ${key}`,
       url: null,

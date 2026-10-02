@@ -3,6 +3,7 @@ import { fetchParticipatedContests } from '../adapters/jisuanke.ts';
 import { lookupCfProblems, cfContestProblems } from './cfProblemset.ts';
 import { isCfGymContestId, problemSetMatchesContest } from './problemSetShape.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
+import { effectiveCredentials } from '../adapters/accountCreds.ts';
 import type { Db } from '../db/index.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
 import { calendarIndex, contestUrl } from './participated.ts';
@@ -31,6 +32,8 @@ import { fetchLuoguPage } from './problemStatements.ts';
 /** 平台侧参赛记录（时间均为毫秒时间戳；成绩字段缺失为 null） */
 export interface AuthoritativeContest {
   platform: PlatformId;
+  /** 该条参赛记录属于哪个账号（participated_contests.account）；同平台多账号时用于分派成绩 */
+  account?: string;
   /** CF/牛客/洛谷：数字比赛 id；AtCoder：比赛 slug */
   contestId: string;
   name: string;
@@ -583,14 +586,18 @@ function readSyncState(db: Db, platform: PlatformId, account: string): PlatformS
 }
 
 /** 库内某平台全部账号的参赛记录（复盘列表合并展示；按开始时间新→旧排序） */
-function readStoredContests(db: Db, platform: PlatformId): AuthoritativeContest[] {
+/**
+ * 库内已存的参赛记录（读路径）。account 给定时只取该账号 —— 新鲜度判断必须按账号，
+ * 否则第一个账号拉过之后，第二个账号会被判定「已有数据、无需再拉」而永久缺失。
+ */
+function readStoredContests(db: Db, platform: PlatformId, account?: string): AuthoritativeContest[] {
   const rows = db
     .prepare(
       `SELECT contest_id, name, url, start_ms, end_ms, contest_rank, rating, rating_change,
-              problem_count, accepted_count, problem_ids, problem_set_state
-       FROM participated_contests WHERE user_id = ? AND platform = ?`,
+              problem_count, accepted_count, problem_ids, problem_set_state, account
+       FROM participated_contests WHERE user_id = ? AND platform = ?${account !== undefined ? ' AND account = ?' : ''}`,
     )
-    .all(DEFAULT_USER_ID, platform) as Array<{
+    .all(...(account !== undefined ? [DEFAULT_USER_ID, platform, account] : [DEFAULT_USER_ID, platform])) as Array<{
     contest_id: string;
     name: string | null;
     url: string | null;
@@ -603,6 +610,7 @@ function readStoredContests(db: Db, platform: PlatformId): AuthoritativeContest[
     accepted_count: number | null;
     problem_ids: string | null;
     problem_set_state: string | null;
+    account: string;
   }>;
   return rows
     .map((r) => {
@@ -616,6 +624,7 @@ function readStoredContests(db: Db, platform: PlatformId): AuthoritativeContest[
         rawState === 'ok' ? 'ok' : rawState === 'empty' ? 'empty' : 'unknown';
       return {
         platform,
+        account: r.account,
         contestId: r.contest_id,
         name: r.name ?? `${platform} 比赛 ${r.contest_id}`,
         url: r.url ?? contestUrl(platform, r.contest_id),
@@ -723,17 +732,44 @@ function writeSyncState(
   );
 }
 
-/** 每平台最近活跃的绑定账号（同步与拉取都面向当前主力账号） */
-function latestAccounts(db: Db): Map<PlatformId, string> {
-  const rows = db
+/**
+ * 每平台的绑定账号清单（参赛记录逐账号拉取）。
+ *
+ * 旧实现每平台只取「最近活跃的一个 handle」，于是同平台第二个账号（练习小号）的
+ * 参赛记录**永远不会被拉取**，也没有自己的新鲜度与失败状态。
+ * 两个来源合并：platform_accounts 的启用绑定（含刚绑定、还没同步出提交的号）+
+ * submissions 里出现过的账号（兜住历史数据里没登记绑定行的情况）。
+ * 顺序稳定：绑定表按 id 升序，再补 submissions 里最近活跃优先。
+ */
+function participationAccounts(db: Db): Map<PlatformId, string[]> {
+  const bound = db
+    .prepare(
+      `SELECT platform, handle FROM platform_accounts
+        WHERE user_id = ? AND enabled = 1
+          AND platform IN ('codeforces','atcoder','luogu','nowcoder','jisuanke')
+        ORDER BY platform, id`,
+    )
+    .all(DEFAULT_USER_ID) as Array<{ platform: PlatformId; handle: string }>;
+  const synced = db
     .prepare(
       `SELECT platform, account, MAX(submitted_at) AS latest FROM submissions
        WHERE user_id = ? AND account != ''
          AND platform IN ('codeforces','atcoder','luogu','nowcoder','jisuanke')
-       GROUP BY platform`,
+       GROUP BY platform, account
+       ORDER BY latest DESC`,
     )
     .all(DEFAULT_USER_ID) as Array<{ platform: PlatformId; account: string; latest: string }>;
-  return new Map(rows.map((r) => [r.platform, r.account]));
+  const out = new Map<PlatformId, string[]>();
+  const push = (platform: PlatformId, account: string): void => {
+    const list = out.get(platform) ?? [];
+    if (!list.includes(account)) {
+      list.push(account);
+      out.set(platform, list);
+    }
+  };
+  for (const row of bound) push(row.platform, row.handle);
+  for (const row of synced) push(row.platform, row.account);
+  return out;
 }
 
 function readSetting(db: Db, key: string): string {
@@ -745,11 +781,20 @@ function readSetting(db: Db, key: string): string {
 
 // ---------- 聚合入口 ----------
 
-/** 同一平台的拉取进行中时复用（GET 后台刷新与 chat 同步刷新不会重复打外网）。
- *  每平台是一个**集合**：force 刷新与后台刷新可以并存——用单槽 Map 时 force 会覆盖
+/** 同一(平台,账号)的拉取进行中时复用（GET 后台刷新与 chat 同步刷新不会重复打外网）。
+ *  键必须带账号：只按平台去重时，同平台第二个账号的拉取会被当成「已有在跑的」吞掉
+ *  ——小号参赛记录又永远不会被拉（多账号回归：test/participation-accounts.test.ts）。
+ *  每槽是一个**集合**：force 刷新与后台刷新可以并存——用单槽 Map 时 force 会覆盖
  *  在跑的条目，先完成方 finally 里的 delete 会把对方条目一起删掉，后续非 force 调用
  *  查不到 in-flight 就会再起一个并发拉取打外网 */
-const inFlight = new Map<PlatformId, Set<Promise<void>>>();
+const inFlight = new Map<string, Set<Promise<void>>>();
+const inflightKey = (platform: PlatformId, account: string): string => `${platform}\u0000${account}`;
+/** 该平台是否有任一账号正在拉取（洛谷题目集预取的让路判定用） */
+function anyInflight(platform: PlatformId): boolean {
+  const prefix = `${platform}\u0000`;
+  for (const [key, set] of inFlight) if (key.startsWith(prefix) && set.size > 0) return true;
+  return false;
+}
 
 /** 题目集是否为富引用（带比赛内题号）——旧格式纯 id 集合需要重新拉取升级 */
 export function problemsAreRich(refs: ContestProblemRef[] | null | undefined): boolean {
@@ -835,7 +880,7 @@ function kickLuoguProblemSetPrefetch(
     let fetched = 0;
     for (const item of candidates) {
       if (fetched >= LUOGU_SET_PREFETCH_PER_CYCLE) break; // 剩余场等下一轮同步
-      if ((inFlight.get('luogu')?.size ?? 0) > 0) break; // 同步开始打洛谷：让路
+      if (anyInflight('luogu')) break; // 同步开始打洛谷：让路
       const refs = await fetchLuoguContestProblems(item.contestId, cookie, fetchFn);
       if (refs) {
         persistProblemSet(db, 'luogu', item.contestId, refs);
@@ -874,11 +919,14 @@ export async function loadParticipationSources(
 ): Promise<ParticipationSources> {
   const cal = calendarIndex(calendar);
   const fetchFn = opts?.fetchFn ?? throttledFetch;
-  const accounts = latestAccounts(db);
+  const accounts = participationAccounts(db);
   const luoguCookie = readSetting(db, 'cookie.luogu');
   const jisuankeCookie = readSetting(db, 'cookie.jisuanke');
   const byPlatform: ParticipationSources['byPlatform'] = {};
   const failures: ParticipationSources['failures'] = {};
+  /** 逐账号成败：只有该平台**每个**尝试过的账号都失败，才对该平台报失败 */
+  const platformOk = new Set<PlatformId>();
+  const platformErrors = new Map<PlatformId, string[]>();
 
   interface Task {
     platform: PlatformId;
@@ -886,45 +934,59 @@ export async function loadParticipationSources(
     fetcher: (o: FetchParticipationOptions) => Promise<ParticipationFetchResult>;
   }
   const tasks: Task[] = [];
-  const cfHandle = accounts.get('codeforces');
-  if (cfHandle) {
+  // 公开 API 平台（CF/AtCoder/牛客）：按 handle 拉，每个绑定账号一条任务
+  for (const handle of accounts.get('codeforces') ?? []) {
     tasks.push({
       platform: 'codeforces',
-      account: cfHandle,
+      account: handle,
       fetcher: () =>
-        fetchCodeforcesParticipation(cfHandle, cal, fetchFn).then((items) => ({ items, truncated: false })),
+        fetchCodeforcesParticipation(handle, cal, fetchFn).then((items) => ({ items, truncated: false })),
     });
   }
-  const atHandle = accounts.get('atcoder');
-  if (atHandle) {
+  for (const handle of accounts.get('atcoder') ?? []) {
     tasks.push({
       platform: 'atcoder',
-      account: atHandle,
+      account: handle,
       fetcher: () =>
-        fetchAtcoderParticipation(atHandle, cal, fetchFn).then((items) => ({ items, truncated: false })),
+        fetchAtcoderParticipation(handle, cal, fetchFn).then((items) => ({ items, truncated: false })),
     });
   }
-  const lgAccount = accounts.get('luogu');
-  if (lgAccount || luoguCookie) {
+  for (const handle of accounts.get('nowcoder') ?? []) {
+    tasks.push({
+      platform: 'nowcoder',
+      account: handle,
+      fetcher: (o) => fetchNowcoderJoinedContests(handle, o, fetchFn),
+    });
+  }
+  // 洛谷/计蒜客靠登录态：Cookie 取该账号自己的槽位（账号级凭据，不回退平台影子值）。
+  // 没有任何绑定账号、但平台级 Cookie 还在（老库/手工配置）时，仍按旧口径拉一次。
+  const luoguAccounts = accounts.get('luogu') ?? [];
+  for (const handle of luoguAccounts) {
+    const cookie = effectiveCredentials(db, 'luogu', handle).cookie;
+    if (!cookie) continue;
+    tasks.push({ platform: 'luogu', account: handle, fetcher: (o) => fetchLuoguJoinedContests(cookie, o, fetchFn) });
+  }
+  if (luoguCookie && !luoguAccounts.some((h) => effectiveCredentials(db, 'luogu', h).cookie)) {
     tasks.push({
       platform: 'luogu',
-      account: lgAccount ?? '',
+      account: luoguAccounts[0] ?? '',
       fetcher: (o) => fetchLuoguJoinedContests(luoguCookie, o, fetchFn),
     });
   }
-  const ncUid = accounts.get('nowcoder');
-  if (ncUid) {
-    tasks.push({
-      platform: 'nowcoder',
-      account: ncUid,
-      fetcher: (o) => fetchNowcoderJoinedContests(ncUid, o, fetchFn),
-    });
-  }
-  if (jisuankeCookie) {
-    const jskAccount = accounts.get('jisuanke') ?? '';
+  const jisuankeAccounts = accounts.get('jisuanke') ?? [];
+  for (const handle of jisuankeAccounts) {
+    const cookie = effectiveCredentials(db, 'jisuanke', handle).cookie;
+    if (!cookie) continue;
     tasks.push({
       platform: 'jisuanke',
-      account: jskAccount,
+      account: handle,
+      fetcher: () => fetchJisuankeParticipation(cookie).then((items) => ({ items, truncated: false })),
+    });
+  }
+  if (jisuankeCookie && !jisuankeAccounts.some((h) => effectiveCredentials(db, 'jisuanke', h).cookie)) {
+    tasks.push({
+      platform: 'jisuanke',
+      account: jisuankeAccounts[0] ?? '',
       fetcher: () =>
         fetchJisuankeParticipation(jisuankeCookie).then((items) => ({ items, truncated: false })),
     });
@@ -937,7 +999,8 @@ export async function loadParticipationSources(
       // force=true 时不复用 in-flight：用户点「刷新」期望强制重拉，不该被后台刷新
       // 的 in-flight 吞掉而看到旧数据。force 请求自己建 in-flight 并入集合，后续非 force
       // 请求会等集合里所有在跑任务完成（避免同一平台并发两请求打外网）。
-      const inflight = inFlight.get(platform);
+      const slot = inflightKey(platform, account);
+      const inflight = inFlight.get(slot);
       if (!opts?.force && inflight && inflight.size > 0) {
         await Promise.allSettled([...inflight]);
         byPlatform[platform] = readStoredContests(db, platform);
@@ -949,14 +1012,19 @@ export async function loadParticipationSources(
       }
       const task = (async () => {
         const state = readSyncState(db, platform, account);
-        const stored = readStoredContests(db, platform);
+        // 新鲜度与已存数据都按**该账号**判：用整平台 stored 判断会让第二个账号
+        // 因第一个账号已拉过而被判定新鲜、永远不拉
+        const stored = readStoredContests(db, platform, account);
         const fresh =
           !opts?.force &&
           state?.lastSyncAt !== null &&
           state?.lastSyncAt !== undefined &&
           Date.now() - Date.parse(state.lastSyncAt) < refreshIntervalMs(state.lastError) &&
           (state.backlogDone || stored.length > 0);
-        if (fresh) return; // 30 分钟内已拉过：库内数据即是最新
+        if (fresh) {
+          platformOk.add(platform);
+          return; // 30 分钟内该账号已拉过：库内数据即是最新
+        }
         try {
           const result = await fetcher({
             knownOldestMs: state?.oldestMs ?? null,
@@ -976,6 +1044,7 @@ export async function loadParticipationSources(
             backlogDone: !result.truncated,
             error: null,
           });
+          platformOk.add(platform);
         } catch (e) {
           const msg = (e as Error)?.message ?? String(e);
           writeSyncState(db, platform, account, {
@@ -984,17 +1053,17 @@ export async function loadParticipationSources(
             backlogDone: state?.backlogDone ?? false,
             error: msg,
           });
-          failures[platform] = msg;
+          platformErrors.set(platform, [...(platformErrors.get(platform) ?? []), msg]);
         }
       })();
-      const running = inFlight.get(platform) ?? new Set<Promise<void>>();
+      const running = inFlight.get(slot) ?? new Set<Promise<void>>();
       running.add(task);
-      inFlight.set(platform, running);
+      inFlight.set(slot, running);
       try {
         await task;
       } finally {
         running.delete(task);
-        if (running.size === 0) inFlight.delete(platform);
+        if (running.size === 0) inFlight.delete(slot);
       }
       byPlatform[platform] = readStoredContests(db, platform);
     }),
@@ -1003,6 +1072,13 @@ export async function loadParticipationSources(
   // 全部同步任务已结束（in-flight 已清空）：此刻启动洛谷题目集后台预取才是安全的
   if (luoguPrefetchQueue.length > 0) {
     kickLuoguProblemSetPrefetch(db, luoguPrefetchQueue, luoguCookie, fetchFn);
+  }
+
+  // 逐账号成败汇总：任一账号成功就不算该平台失败（否则小号的 Cookie 失效
+  // 会把主力号刚拉到的记录一并标成错误）
+  for (const [platform, msgs] of platformErrors) {
+    if (platformOk.has(platform)) continue;
+    failures[platform] = msgs.length === 1 ? msgs[0] : `${msgs.length} 个账号全部失败：${msgs[0]}`;
   }
 
   return { byPlatform, failures };
@@ -1014,21 +1090,30 @@ export function readParticipationSnapshot(db: Db): {
   failures: ParticipationSources['failures'];
   stalePlatforms: PlatformId[];
 } {
-  const accounts = latestAccounts(db);
+  const accounts = participationAccounts(db);
   const byPlatform: ParticipationSources['byPlatform'] = {};
   const failures: ParticipationSources['failures'] = {};
   const stalePlatforms: PlatformId[] = [];
-  for (const [platform, account] of accounts) {
+  for (const [platform, handles] of accounts) {
     const stored = readStoredContests(db, platform);
     if (stored.length > 0) byPlatform[platform] = stored;
-    const state = readSyncState(db, platform, account);
-    const fresh =
-      state?.lastSyncAt !== null &&
-      state?.lastSyncAt !== undefined &&
-      Date.now() - Date.parse(state.lastSyncAt) < refreshIntervalMs(state.lastError) &&
-      (state.backlogDone || stored.length > 0 || state.truncated);
-    if (state?.lastError) failures[platform] = state.lastError;
-    if (!fresh) stalePlatforms.push(platform);
+    // 任一账号过期/缺记录 → 该平台整体算 stale（后台刷新会只补缺的那部分账号）
+    let stale = false;
+    const errors: string[] = [];
+    for (const account of handles) {
+      const state = readSyncState(db, platform, account);
+      const own = readStoredContests(db, platform, account);
+      const fresh =
+        state?.lastSyncAt !== null &&
+        state?.lastSyncAt !== undefined &&
+        Date.now() - Date.parse(state.lastSyncAt) < refreshIntervalMs(state.lastError) &&
+        (state.backlogDone || own.length > 0 || state.truncated);
+      if (!fresh) stale = true;
+      if (state?.lastError) errors.push(state.lastError);
+    }
+    // 全部账号都报错才对外报平台失败（与 loadParticipationSources 同口径）
+    if (errors.length === handles.length && errors.length > 0) failures[platform] = errors[0];
+    if (stale) stalePlatforms.push(platform);
   }
   return { byPlatform, failures, stalePlatforms };
 }

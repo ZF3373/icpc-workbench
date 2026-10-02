@@ -313,8 +313,11 @@ export interface ReviewItem {
   tags: string[];
   /** 间隔阶梯档位（0 起步） */
   stage: number;
-  /** 当前档位对应的间隔天数 */
+  /** 当前档位对应的间隔天数（基线；实际排期还乘了留存系数） */
   intervalDays: number;
+  /** 该条目累计复习次数 / 其中判为「困难（失手）」的次数（来自 review_events） */
+  reviewCount: number;
+  lapseCount: number;
   note: string | null;
   /** 下次到期日 YYYY-MM-DD */
   nextDueOn: string;
@@ -416,6 +419,12 @@ export interface ParticipatedContest {
   platform: PlatformId;
   /** 平台内比赛标识（CF: 1877 / AtCoder: abc380 / 计蒜客·QOJ: 数字 id）；洛谷为比赛 id */
   contestId: string;
+  /**
+   * 同一平台多账号时该场涉及的所有账号（提交归属 ∪ 平台参赛记录）。
+   * 只在 2 个及以上账号时给出：单账号用户不需要这层噪声。
+   * source 里的成绩来自其中之一（本地该场提交最多的账号），界面要标明不是单人成绩。
+   */
+  accounts?: string[];
   /** 赛名（与赛事日历匹配；匹配不到为 null，展示端回退「平台名 · contestId」） */
   name: string | null;
   url: string;
