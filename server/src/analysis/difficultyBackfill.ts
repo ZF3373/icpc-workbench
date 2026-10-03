@@ -807,8 +807,13 @@ async function fetchLeetcodeTable(ctx: BackfillCtx): Promise<Map<string, Problem
       );
     }
     // 早停与查询侧（fetchProblemMeta）同口径做小写归一：表键是 titleSlug.toLowerCase()，
-    // 库内万一有大写形态的键，不归一则「目标题已齐」永不触发、每轮翻满全表
-    if (wanted && wanted.size > 0 && [...wanted].every((k) => table.has(k.toLowerCase()))) break; // 目标题已齐 → 提前结束
+    // 库内万一有大写形态的键，不归一则「目标题已齐」永不触发、每轮翻满全表。
+    // 用 for...of 早停而非 [...wanted].every：wanted 可达上千，每页都摊平整个 Set 到数组是纯浪费。
+    if (wanted && wanted.size > 0) {
+      let allFound = true;
+      for (const k of wanted) if (!table.has(k.toLowerCase())) { allFound = false; break; }
+      if (allFound) break; // 目标题已齐 → 提前结束
+    }
     if (list.questions.length < LEETCODE_BANK_PAGE) break;
     await sleep(SCAN_DELAY_MS.leetcode);
   }
@@ -854,7 +859,11 @@ async function fetchJisuankeTable(ctx: BackfillCtx): Promise<Map<string, Problem
         }),
       );
     }
-    if (wanted && wanted.size > 0 && [...wanted].every((k) => table.has(k))) break;
+    if (wanted && wanted.size > 0) {
+      let allFound = true;
+      for (const k of wanted) if (!table.has(k)) { allFound = false; break; }
+      if (allFound) break;
+    }
     if (typeof body.total === 'number' && page * JISUANKE_BANK_PAGE >= body.total) break;
     await sleep(SCAN_DELAY_MS.jisuanke);
   }

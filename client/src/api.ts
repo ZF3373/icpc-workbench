@@ -5,20 +5,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   });
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    let needConfig = false;
-    try {
-      const body = (await res.json()) as { error?: string; needConfig?: boolean };
-      if (body.error) msg = body.error;
-      if (body.needConfig) needConfig = true;
-    } catch {
-      /* 非 JSON 响应，保留默认消息 */
-    }
-    const err = new Error(msg) as Error & { needConfig?: boolean };
-    if (needConfig) err.needConfig = true;
-    throw err;
-  }
+  if (!res.ok) throw await parseErrorResponse(res);
   return (await res.json()) as T;
 }
 
@@ -44,6 +31,25 @@ export const put = <T>(path: string, body?: unknown): Promise<T> =>
 
 export const del = <T>(path: string): Promise<T> => api<T>(path, { method: 'DELETE' });
 
+/**
+ * 从非 2xx 响应中提取错误消息与 needConfig 标记，返回可直接 throw 的 Error。
+ * api / 流式 / 文件上传 / 文本提取各入口共用的统一错误解析，避免逐处复制。
+ */
+async function parseErrorResponse(res: Response): Promise<Error & { needConfig?: boolean }> {
+  let msg = `HTTP ${res.status}`;
+  let needConfig = false;
+  try {
+    const body = (await res.json()) as { error?: string; needConfig?: boolean };
+    if (body.error) msg = body.error;
+    if (body.needConfig) needConfig = true;
+  } catch {
+    /* 非 JSON 响应，保留默认消息 */
+  }
+  const err = new Error(msg) as Error & { needConfig?: boolean };
+  if (needConfig) err.needConfig = true;
+  return err;
+}
+
 // ---------- 笔记图片上传（Markdown 编辑器粘贴/拖拽图片用） ----------
 
 export interface UploadedImage {
@@ -65,14 +71,7 @@ export async function uploadImage(file: Blob, signal?: AbortSignal): Promise<Upl
     body: file,
     signal,
   })
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`
-    try {
-      const errBody = (await res.json()) as { error?: string }
-      if (errBody.error) msg = errBody.error
-    } catch { /* 非 JSON 响应，保留默认消息 */ }
-    throw new Error(msg)
-  }
+  if (!res.ok) throw await parseErrorResponse(res)
   return (await res.json()) as UploadedImage
 }
 
@@ -147,18 +146,7 @@ export async function chatWithAssistantStream(
     body: JSON.stringify(body),
     signal,
   });
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    let needConfig = false;
-    try {
-      const errBody = (await res.json()) as { error?: string; needConfig?: boolean };
-      if (errBody.error) msg = errBody.error;
-      if (errBody.needConfig) needConfig = true;
-    } catch { /* 非 JSON 响应，保留默认消息 */ }
-    const err = new Error(msg) as Error & { needConfig?: boolean };
-    if (needConfig) err.needConfig = true;
-    throw err;
-  }
+  if (!res.ok) throw await parseErrorResponse(res);
   if (!res.body) throw new Error('服务端未返回流式响应体');
 
   const reader = res.body.getReader();
@@ -297,18 +285,7 @@ export async function uploadAiFile(
   }
   if (opts?.expiresAfterSeconds !== undefined) headers['x-expires-seconds'] = String(opts.expiresAfterSeconds)
   const res = await fetch('/api/ai/files', { method: 'POST', headers, body: buf, signal })
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`
-    let needConfig = false
-    try {
-      const errBody = (await res.json()) as { error?: string; needConfig?: boolean }
-      if (errBody.error) msg = errBody.error
-      if (errBody.needConfig) needConfig = true
-    } catch { /* 非 JSON 响应，保留默认消息 */ }
-    const err = new Error(msg) as Error & { needConfig?: boolean }
-    if (needConfig) err.needConfig = true
-    throw err
-  }
+  if (!res.ok) throw await parseErrorResponse(res)
   return (await res.json()) as AiFileObject
 }
 
@@ -329,13 +306,6 @@ export async function extractDocumentText(
     'x-file-name': encodeURIComponent(file.name),
   }
   const res = await fetch('/api/ai/extract-text', { method: 'POST', headers, body: buf, signal })
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`
-    try {
-      const errBody = (await res.json()) as { error?: string }
-      if (errBody.error) msg = errBody.error
-    } catch { /* 非 JSON 响应，保留默认消息 */ }
-    throw new Error(msg)
-  }
+  if (!res.ok) throw await parseErrorResponse(res)
   return (await res.json()) as { text: string; pages?: number; warning?: string }
 }

@@ -63,9 +63,9 @@ function maskCookieHeader(raw: string): string {
 }
 
 function readReminder(db: Db): { enabled: boolean; time: string } {
+  const getStmt = db.prepare('SELECT value FROM settings WHERE key = ?');
   const get = (key: string): string | undefined =>
-    (db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)
-      ?.value;
+    (getStmt.get(key) as { value: string } | undefined)?.value;
   const time = get('reminder.time');
   return {
     enabled: get('reminder.enabled') === 'true',
@@ -76,9 +76,9 @@ function readReminder(db: Db): { enabled: boolean; time: string } {
 const DEFAULT_CONTEST_REMINDER_MINUTES = 30;
 
 export function readContestReminder(db: Db): { enabled: boolean; minutesBefore: number } {
+  const getStmt = db.prepare('SELECT value FROM settings WHERE key = ?');
   const get = (key: string): string | undefined =>
-    (db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)
-      ?.value;
+    (getStmt.get(key) as { value: string } | undefined)?.value;
   const minutes = Number(get('contestReminder.minutesBefore'));
   return {
     enabled: get('contestReminder.enabled') === 'true',
@@ -109,24 +109,18 @@ export function readSyncSettings(db: Db): {
   requestIntervalScale: number;
   requestIntervalBase: Record<string, number>;
 } {
-  const row = db
-    .prepare('SELECT value FROM settings WHERE key = ?')
-    .get('sync.maxSubmissions') as { value: string } | undefined;
-  const practice = db
-    .prepare('SELECT value FROM settings WHERE key = ?')
-    .get('jisuanke.practiceSync') as { value: string } | undefined;
-  const scaleRow = db
-    .prepare('SELECT value FROM settings WHERE key = ?')
-    .get('sync.requestIntervalScale') as { value: string } | undefined;
-  const n = Number(row?.value);
-  const scale = Number(scaleRow?.value);
+  const getStmt = db.prepare('SELECT value FROM settings WHERE key = ?');
+  const get = (key: string): string | undefined =>
+    (getStmt.get(key) as { value: string } | undefined)?.value;
+  const n = Number(get('sync.maxSubmissions'));
+  const scale = Number(get('sync.requestIntervalScale'));
   return {
     maxSubmissions:
       Number.isInteger(n) && n >= MIN_SYNC_MAX_SUBMISSIONS && n <= MAX_SYNC_MAX_SUBMISSIONS
         ? n
         : DEFAULT_SYNC_MAX_SUBMISSIONS,
     autoContinueRounds: getAutoContinueRounds(db),
-    jisuankePracticeSync: practice?.value !== 'false',
+    jisuankePracticeSync: get('jisuanke.practiceSync') !== 'false',
     // 拉取速度全局倍率：越界/缺失回退默认 1×（= 安全下限）。与节流层实际生效值同源同口径。
     requestIntervalScale:
       Number.isFinite(scale) &&

@@ -275,6 +275,31 @@ export function parseXcpcTypes(json: unknown): {
   return { tags, catalog };
 }
 
+interface NormalizedBoard {
+  board: RanklandBoardMeta;
+  uk: string;
+  fileId: string;
+  text: string;
+}
+
+// boards 列表在 resolveIcpcDifficulty 里恒定，而 matchRanklandBoard 会按 ref 反复调用：
+// 用 WeakMap（按数组引用）缓存每个 board 的归一化文本，避免每 ref × 每 board 重复跑 5 次 replace。
+const normalizedBoardCache = new WeakMap<readonly RanklandBoardMeta[], NormalizedBoard[]>();
+
+function normalizedBoards(boards: readonly RanklandBoardMeta[]): NormalizedBoard[] {
+  let cached = normalizedBoardCache.get(boards);
+  if (!cached) {
+    cached = boards.map((b) => ({
+      board: b,
+      uk: normalizeMatchText(b.uk),
+      fileId: normalizeMatchText(b.fileId),
+      text: normalizeMatchText(`${b.uk} ${b.name}`),
+    }));
+    normalizedBoardCache.set(boards, cached);
+  }
+  return cached;
+}
+
 /**
  * 赛场键 → RankLand 榜单：先按末段（`icpc2026preliminary-1`）与 `uk` 归一化全等匹配；
  * 失败再退回词元打分 —— 要求年份一致、词元命中率 ≥ 0.8、且最优分唯一（避免把
@@ -286,21 +311,21 @@ export function matchRanklandBoard(
 ): RanklandBoardMeta | null {
   const tail = contestKey.split('/').pop() ?? contestKey;
   const nTail = normalizeMatchText(tail);
-  const exact = boards.find((b) => normalizeMatchText(b.uk) === nTail || normalizeMatchText(b.fileId) === nTail);
-  if (exact) return exact;
+  const normalized = normalizedBoards(boards);
+  const exact = normalized.find((n) => n.uk === nTail || n.fileId === nTail);
+  if (exact) return exact.board;
 
   const year = /(19|20)\d{2}/.exec(tail)?.[0] ?? '';
   const tokens = nTail.split(' ').filter((t) => t.length > 2);
   if (tokens.length === 0) return null;
   const scored: Array<{ score: number; board: RanklandBoardMeta }> = [];
-  for (const board of boards) {
-    const text = normalizeMatchText(`${board.uk} ${board.name}`);
-    if (year !== '' && !text.includes(year)) continue;
+  for (const n of normalized) {
+    if (year !== '' && !n.text.includes(year)) continue;
     let hit = 0;
-    for (const t of tokens) if (text.includes(t)) hit += 1;
+    for (const t of tokens) if (n.text.includes(t)) hit += 1;
     const ratio = hit / tokens.length;
     if (ratio < 0.8) continue;
-    scored.push({ score: ratio * 100 + hit, board });
+    scored.push({ score: ratio * 100 + hit, board: n.board });
   }
   if (scored.length === 0) return null;
   scored.sort((a, b) => b.score - a.score);

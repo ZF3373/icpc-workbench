@@ -339,7 +339,12 @@ export default function Dashboard() {
   /** 当前折叠的模块集合：没有用户记录时用默认折叠集合 */
   const collapsedSet = useMemo(() => new Set<string>(collapsedModules ?? COLLAPSED_BY_DEFAULT), [collapsedModules])
 
+  // 只允许「最新一次请求」落地：切换账号视角时旧 scope 的慢响应会晚到，若照常写回会把
+  // 新账号的数据盖成旧账号的。与 Problems/Today/Calendar/Contests 的 reqSeq 护栏同款。
+  const reqSeq = useRef(0)
+
   const load = useCallback(() => {
+    const seq = (reqSeq.current += 1)
     setLoading(true)
     setLoadError(null)
     // 三个统计接口彼此独立，用 allSettled 分别落地。旧实现是 Promise.all「全成功才落地」
@@ -352,6 +357,7 @@ export default function Dashboard() {
       get<TrendPoint[]>(withScope('/api/stats/trend?weeks=12', scope)),
     ])
       .then(([s, w, t2]) => {
+        if (seq !== reqSeq.current) return
         if (s.status === 'fulfilled') setStats(s.value)
         if (w.status === 'fulfilled') setWeak(w.value)
         if (t2.status === 'fulfilled') setTrend(t2.value)
@@ -360,7 +366,9 @@ export default function Dashboard() {
         setLoadError(msg)
         if (msg) message.error(`统计数据加载失败：${msg}`)
       })
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (seq === reqSeq.current) setLoading(false)
+      })
   }, [message, scope])
 
   useEffect(() => {

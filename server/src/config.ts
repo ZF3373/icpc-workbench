@@ -94,10 +94,10 @@ function validate(cfg: AppConfig): void {
 
 /** 读取运行时 AI 配置：DB settings 表优先于 config.json，apiKey 可被环境变量 AI_API_KEY 覆盖。 */
 export function aiConfigFromDb(db: Db, cfg: AppConfig): AiConfig {
+  // 预编译一次，避免每个 key 都重新 prepare 同一条 SELECT。
+  const getStmt = db.prepare('SELECT value FROM settings WHERE key = ?');
   const get = (key: string): string | undefined => {
-    const row = db
-      .prepare('SELECT value FROM settings WHERE key = ?')
-      .get(key) as { value: string } | undefined;
+    const row = getStmt.get(key) as { value: string } | undefined;
     return row?.value;
   };
 

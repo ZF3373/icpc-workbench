@@ -253,6 +253,7 @@ export function writeAnnotationsToDb(
   writes: AnnotationWrite[],
 ): { lines: JsonlLine[]; written: number; skippedManual: number } {
   const taxonomyVersion = loadTaxonomy().version;
+  const pipelineVersion = currentPipelineVersion();
   const hasManual = db.prepare(
     "SELECT 1 FROM problem_keypoints WHERE platform = ? AND problem_key = ? AND source = 'manual' LIMIT 1",
   );
@@ -299,7 +300,7 @@ export function writeAnnotationsToDb(
         w.source,
         p.method,
         taxonomyVersion,
-        currentPipelineVersion(),
+        pipelineVersion,
         w.title ?? null,
         now,
       );
@@ -310,7 +311,7 @@ export function writeAnnotationsToDb(
       problemKey: w.problemKey,
       knowledgePoints: points,
       taxonomyVersion,
-      pipelineVersion: currentPipelineVersion(),
+      pipelineVersion,
       annotatedAt: now,
       writeSource: w.source,
       ...(w.title !== undefined ? { annotatedTitle: w.title } : {}),

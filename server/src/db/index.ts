@@ -107,6 +107,9 @@ function migrate(db: Db): void {
   rebuildAccountsForMultiAccount(db);
   // 按账号增量过滤的索引：新库（schema 已有 account）与迁移后的老库都在这里补齐
   db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_account ON submissions(user_id, platform, account)');
+  // 清理旧版冗余索引：idx_submissions_user_platform(user_id, platform) 是上面复合索引的严格前缀，
+  // 每条提交 INSERT 都要多维护一个索引；SQLite 用复合索引前缀即可服务 (user_id, platform) 过滤。
+  db.exec('DROP INDEX IF EXISTS idx_submissions_user_platform');
   db.exec('CREATE INDEX IF NOT EXISTS idx_deleted_problems_norm ON deleted_problems(platform, normalized_key)');
   mergeSlashedCfKeys(db);
   // v0.4.5 数据修复：洛谷秒级时间戳曾被按毫秒解析（见 fixLuoguTimestamps）
@@ -272,6 +275,8 @@ function mergeSlashedCfKeys(db: Db): void {
   const dropListItems = db.prepare('DELETE FROM problem_list_items WHERE platform = ? AND problem_key = ?');
   const keepMeta = db.prepare('SELECT title, url FROM problems WHERE id = ?');
   const dropProblem = db.prepare('DELETE FROM problems WHERE id = ?');
+  const dropKeypoints = db.prepare('DELETE FROM problem_keypoints WHERE platform = ? AND problem_key = ?');
+  const dropKnowledgeQueue = db.prepare('DELETE FROM knowledge_queue WHERE platform = ? AND problem_key = ?');
 
   db.exec('BEGIN');
   try {
@@ -303,14 +308,8 @@ function mergeSlashedCfKeys(db: Db): void {
       }
       dropListItems.run('codeforces', row.problem_key);
       // 被合并键的知识点标注行随之失效（无外键约束，留着即孤儿行）；JSONL 源真相不变
-      db.prepare('DELETE FROM problem_keypoints WHERE platform = ? AND problem_key = ?').run(
-        'codeforces',
-        row.problem_key,
-      );
-      db.prepare('DELETE FROM knowledge_queue WHERE platform = ? AND problem_key = ?').run(
-        'codeforces',
-        row.problem_key,
-      );
+      dropKeypoints.run('codeforces', row.problem_key);
+      dropKnowledgeQueue.run('codeforces', row.problem_key);
       dropProblem.run(row.id);
     }
     db.exec('COMMIT');

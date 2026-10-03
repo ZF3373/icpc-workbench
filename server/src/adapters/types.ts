@@ -14,8 +14,8 @@ export class ManualImportRequiredError extends Error {
 
 /** 同步失败的可解释分类码（同步中心状态与诊断导出用） */
 export type SyncErrorCode =
-  | 'auth_expired' // Cookie 过期 / 401/403 / 风控
-  | 'rate_limited' // HTTP 429 等限流
+  | 'auth_expired' // Cookie 过期 / 401/403（鉴权失效）
+  | 'rate_limited' // HTTP 429/503 限流或风控
   | 'schema_changed' // 页面或接口结构变化导致解析失败
   | 'manual_required' // 平台无公开提交 API，需手动导入
   | 'network' // DNS/连接/超时等网络层错误

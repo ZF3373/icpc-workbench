@@ -402,11 +402,12 @@ export default function Settings() {
     }
   }, [data])
 
-  // 卸载时清掉临时高亮 / 跳转定时器，避免设置页卸载后仍触发 setState
+  // 卸载时清掉临时高亮 / 跳转 / 防抖定时器，避免设置页卸载后仍触发 setState 或打到已卸载组件
   useEffect(
     () => () => {
       if (flashTimer.current !== null) window.clearTimeout(flashTimer.current)
       if (jumpTimer.current !== null) window.clearTimeout(jumpTimer.current)
+      if (scaleSaveTimer.current !== null) window.clearTimeout(scaleSaveTimer.current)
     },
     [],
   )

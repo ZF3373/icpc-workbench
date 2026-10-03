@@ -89,6 +89,9 @@ export function annotateProblemsL1(
   const hasAny = db.prepare(
     'SELECT 1 FROM problem_keypoints WHERE platform = ? AND problem_key = ? LIMIT 1',
   );
+  const deleteRule = db.prepare(
+    "DELETE FROM problem_keypoints WHERE platform = ? AND problem_key = ? AND source = 'rule'",
+  );
 
   const writes: AnnotationWrite[] = [];
   const tombstones: JsonlLine[] = [];
@@ -111,9 +114,7 @@ export function annotateProblemsL1(
         // source = 'rule'，同题由题源标签落下的 source = 'tag' 标注不受影响、照旧保留；
         // manual 也不会被清，但带 manual 的题在上面 hasManual 处已跳过，走不到这里。
         // JSONL 补清除快照，防止重放复活。本题下面会计入本轮 ruleMissed（规则口径）。
-        db.prepare(
-          "DELETE FROM problem_keypoints WHERE platform = ? AND problem_key = ? AND source = 'rule'",
-        ).run(row.platform, row.problemKey);
+        deleteRule.run(row.platform, row.problemKey);
         tombstones.push(tombstoneLine(row.platform, row.problemKey, 'rule'));
       }
       if (hits.length > 0) {

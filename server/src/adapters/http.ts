@@ -116,7 +116,11 @@ export function createHttpClient(fn: typeof fetch = fetch, defaults: HttpOptions
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       let res: Response | undefined;
       try {
-        res = await fn(url, { ...init, headers, signal: AbortSignal.timeout(timeoutMs) });
+        // 合并调用方 signal 与超时：既遵守「调用方断连可取消」的语义，又保证单次请求有硬超时。
+        // 之前这里写死 AbortSignal.timeout 会覆盖 init.signal，与 http1.ts / hostThrottle.ts 不一致。
+        const timeoutSignal = AbortSignal.timeout(timeoutMs);
+        const signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
+        res = await fn(url, { ...init, headers, signal });
       } catch (error) {
         lastError = error;
         const retryable =

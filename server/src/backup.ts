@@ -203,7 +203,8 @@ export function requestRestore(db: Db, file: string, dir?: string): { file: stri
 
 /**
  * 启动时应用待恢复标记（必须在 createDb 之前调用）：
- * 用备份覆盖数据库文件（连同删除 WAL/SHM 残留），成功或失败都清除标记。
+ * 先原子地用备份覆盖数据库文件（连同删除 WAL/SHM 残留），成功后再清除标记。
+ * 永久性失败（标记非法 / 备份缺失）与恢复成功都清除标记；复制中途失败则保留标记，下次启动重试。
  * 返回已恢复的备份文件名；无标记或恢复未执行时返回 null。
  */
 export function applyPendingRestore(dbPath: string, dataDir?: string): string | null {
@@ -217,16 +218,30 @@ export function applyPendingRestore(dbPath: string, dataDir?: string): string | 
     fs.rmSync(markerPath, { force: true });
     return null;
   }
-  fs.rmSync(markerPath, { force: true });
-  if (!file || !FILE_RE.test(file)) return null;
+  if (!file || !FILE_RE.test(file)) {
+    // 非法文件名是永久性错误，重试无意义：清标记。
+    fs.rmSync(markerPath, { force: true });
+    return null;
+  }
   const backupDir = path.join(path.dirname(dbPath), 'backups');
   const source = path.join(backupDir, file);
-  if (!fs.existsSync(source)) return null;
+  if (!fs.existsSync(source)) {
+    // 备份文件已不存在，重试无意义：清标记。
+    fs.rmSync(markerPath, { force: true });
+    return null;
+  }
   try {
-    fs.copyFileSync(source, dbPath);
+    // 先写临时文件再原子 rename：copyFileSync 原地覆盖若中途崩溃会留下半截损坏的库文件，
+    // 而 rename 在同一文件系统上是原子的，dbPath 要么是旧库、要么是完整新库。
+    const tmp = `${dbPath}.restore.tmp`;
+    fs.copyFileSync(source, tmp);
+    fs.renameSync(tmp, dbPath);
     for (const suffix of ['-wal', '-shm']) {
       fs.rmSync(dbPath + suffix, { force: true });
     }
+    // 数据库已原子落位，此刻才清除恢复标记：上面的复制/rename 失败会保留标记，下次启动可重试，
+    // 不再因「先删标记再覆盖」而既丢了恢复意图、又可能留下半截库文件。
+    fs.rmSync(markerPath, { force: true });
     // 同步回滚标注源真相：否则下次启动 loadAnnotationsIntoDb 会用更新的 JSONL
     // 把 problem_keypoints 整表重建回来，知识点上的「恢复」形同虚设。
     const snapshot = knowledgeSnapshotPath(backupDir, file);
@@ -250,7 +265,11 @@ export function applyPendingRestore(dbPath: string, dataDir?: string): string | 
     console.log(`[backup] 已恢复备份 ${file}，数据库回滚到该时间点`);
     return file;
   } catch (e) {
-    console.error(`[backup] 恢复备份失败（继续使用现有数据库）: ${(e as Error).message}`);
+    // 清理可能残留的临时文件；保留恢复标记，下次启动重试。
+    fs.rmSync(`${dbPath}.restore.tmp`, { force: true });
+    console.error(
+      `[backup] 恢复备份失败（保留恢复标记，下次启动重试；本次继续使用现有数据库）: ${(e as Error).message}`,
+    );
     return null;
   }
 }

@@ -32,11 +32,19 @@ export interface Taxonomy {
 
 let cache: Taxonomy | null = null;
 let jsonOverride: string | null = null;
+let pointsCache: TaxonomyPoint[] | null = null;
+let pointByCode: Map<string, TaxonomyPoint> | null = null;
+
+function invalidateIndexes(): void {
+  cache = null;
+  pointsCache = null;
+  pointByCode = null;
+}
 
 /** SEA 单文件分发时由入口注入 JSON 文本（不再读磁盘）；传 null 恢复磁盘读取 */
 export function setTaxonomyJson(json: string | null): void {
   jsonOverride = json;
-  cache = null;
+  invalidateIndexes();
 }
 
 export function loadTaxonomy(): Taxonomy {
@@ -49,24 +57,38 @@ export function loadTaxonomy(): Taxonomy {
 /** 测试专用：注入自定义 taxonomy 并重置缓存 */
 export function setTaxonomyForTest(t: Taxonomy | null): void {
   cache = t;
+  pointsCache = null;
+  pointByCode = null;
 }
 
+/** 平铺后的全量知识点（缓存，避免每次调用重建数组）；返回引用仅供只读遍历。 */
 export function allPoints(): TaxonomyPoint[] {
-  return loadTaxonomy().categories.flatMap((c) => c.points);
+  if (!pointsCache) {
+    pointsCache = loadTaxonomy().categories.flatMap((c) => c.points);
+  }
+  return pointsCache;
+}
+
+/** code → point 的 O(1) 索引（缓存），热路径（逐题/逐 tag）避免线性 find。 */
+function codeIndex(): Map<string, TaxonomyPoint> {
+  if (!pointByCode) {
+    pointByCode = new Map(allPoints().map((p) => [p.code, p]));
+  }
+  return pointByCode;
 }
 
 export function isValidCode(code: string): boolean {
-  return allPoints().some((p) => p.code === code);
+  return codeIndex().has(code);
 }
 
 /** code → 展示名；未知 code 返回 null（幻觉 code 拦截用） */
 export function nameOfCode(code: string): string | null {
-  return allPoints().find((p) => p.code === code)?.name ?? null;
+  return codeIndex().get(code)?.name ?? null;
 }
 
 /** code → 模板课程全名（无课程的综合点回退展示名） */
 export function fullNameOfCode(code: string): string | null {
-  const p = allPoints().find((x) => x.code === code);
+  const p = codeIndex().get(code);
   return p ? (p.fullName ?? p.name) : null;
 }
 
@@ -80,5 +102,5 @@ export function categoryOfCode(code: string): string | null {
 
 /** code → 关联课程模板 id 列表（掌握度地图「看课」入口） */
 export function templateIdsOfCode(code: string): string[] {
-  return allPoints().find((p) => p.code === code)?.templateIds ?? [];
+  return codeIndex().get(code)?.templateIds ?? [];
 }

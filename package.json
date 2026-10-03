@@ -1,6 +1,6 @@
 {
   "name": "icpc-workbench",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "private": true,
   "license": "GPL-3.0-only",
   "type": "module",

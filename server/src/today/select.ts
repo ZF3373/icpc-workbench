@@ -74,9 +74,8 @@ export function estimateLevel(acDifficulties: number[], fallback = 1200): number
   return Math.round(median / 100) * 100;
 }
 
-function weakOverlap(tags: string[], weakTags: string[]): string[] {
-  const weak = new Set(weakTags);
-  return tags.filter((t) => weak.has(t));
+function weakOverlap(tags: string[], weakSet: Set<string>): string[] {
+  return tags.filter((t) => weakSet.has(t));
 }
 
 /**
@@ -104,8 +103,10 @@ export function pickBand(
       c.difficulty <= band.max &&
       !excludeIds.has(c.id),
   );
+  // weakTags 集合在 map 外建一次，避免每个候选都重建 Set。
+  const weakSet = new Set(weakTags);
   const ordered = inBand
-    .map((c) => ({ c, weak: weakOverlap(c.tags, weakTags) }))
+    .map((c) => ({ c, weak: weakOverlap(c.tags, weakSet) }))
     .sort(
       (a, b) =>
         b.weak.length - a.weak.length ||

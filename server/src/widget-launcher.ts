@@ -22,6 +22,10 @@ export function tryLaunchWidget(config: AppConfig, port: number): boolean {
       stdio: 'ignore',
       windowsHide: true,
     });
+    // spawn 的异步失败（widget.exe 损坏/无执行权限/目录变化）以 'error' 事件发出而非同步 throw，
+    // 不挂监听会成为 unhandled 'error' 打崩进程（SEA 分支被 fatal 接管整应用退出）。
+    // 挂件拉不起来只应降级为静默跳过，不阻断主程序。
+    child.on('error', () => {});
     child.unref();
     return true;
   } catch {

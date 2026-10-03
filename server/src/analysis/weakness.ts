@@ -17,7 +17,7 @@ import {
   type MutableStat,
 } from './stats.ts';
 import { filterNoiseTags } from './tags.ts';
-import { informativenessFor } from '../knowledge/conceptStats.ts';
+import { conceptStatsFor, INFORMATIVENESS_FLOOR } from '../knowledge/conceptStats.ts';
 
 export type { DifficultyWeakness, WeaknessItem, WeaknessProfile };
 
@@ -63,6 +63,9 @@ export function computeWeakness(
     }
   }
 
+  // 难度分布（与 code 无关）只算一次、信息量按桶缓存；否则每 tag 都重跑同一条 GROUP BY 查询。
+  const weightFor = buildWeightContext(db, userId, scope);
+
   const items: WeaknessItem[] = [...tagMap.entries()]
     .map(([tag, s]) => {
       const acRate = rate(s.attempts, s.ac);
@@ -70,8 +73,7 @@ export function computeWeakness(
       // 该 tag 对应的概念 code（粗类标签如「数学（综合）」也能取到）；
       // 取不到 code 时权重按 1 处理（不惩罚未纳入 taxonomy 的标签）
       const code = codeOfTag(tag);
-      const weight =
-        code === undefined ? 1 : averageWeightForCode(db, userId, code, scope);
+      const weight = code === undefined ? 1 : weightFor(code);
       return {
         tag,
         attempts: s.attempts,
@@ -103,17 +105,17 @@ export function computeWeakness(
 }
 
 /**
- * 同一概念横跨多个难度桶时，按用户在**各桶的尝试数**加权平均其信息量权重。
- * 只用到该用户实际做过的题所在桶，避免把用户从未接触的难度区间的膨胀也计入。
+ * 预计算弱项加权的上下文：难度分布（与 code 无关）只查一次，信息量按难度桶缓存。
+ * 返回 `code → 权重` 闭包供逐 tag 计算，避免每 tag 都重跑同一条 GROUP BY 查询、
+ * 且逐 (tag × 桶) prepare+get（改为整桶 Map 一次取回）。
  */
-function averageWeightForCode(
+function buildWeightContext(
   db: Db,
   userId: number,
-  code: string,
   scope: { platform?: PlatformId; account?: string },
-): number {
+): (code: string) => number {
   const clause = accountClause(scope);
-  const rows = db
+  const dist = db
     .prepare(
       `SELECT p.difficulty AS difficulty, COUNT(*) AS attempts
          FROM submissions s JOIN problems p ON p.id = s.problem_id
@@ -124,12 +126,25 @@ function averageWeightForCode(
     difficulty: number | null;
     attempts: number;
   }>;
-  let total = 0;
-  let weighted = 0;
-  for (const r of rows) {
-    const w = informativenessFor(db, bucketForDifficulty(r.difficulty), code);
-    total += r.attempts;
-    weighted += r.attempts * w;
-  }
-  return total === 0 ? 1 : weighted / total;
+  const infoByBucket = new Map<string, Map<string, number>>();
+  const infoOf = (bucket: string): Map<string, number> => {
+    let m = infoByBucket.get(bucket);
+    if (!m) {
+      m = conceptStatsFor(db, bucket);
+      infoByBucket.set(bucket, m);
+    }
+    return m;
+  };
+  return (code: string): number => {
+    let total = 0;
+    let weighted = 0;
+    for (const r of dist) {
+      const raw = infoOf(bucketForDifficulty(r.difficulty)).get(code);
+      // 与 informativenessFor 同口径：未统计到 → 1；命中 → max(FLOOR, 原始值)。
+      const w = raw === undefined ? 1 : Math.max(INFORMATIVENESS_FLOOR, raw);
+      total += r.attempts;
+      weighted += r.attempts * w;
+    }
+    return total === 0 ? 1 : weighted / total;
+  };
 }

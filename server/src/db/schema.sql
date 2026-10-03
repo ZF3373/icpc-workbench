@@ -194,7 +194,9 @@ CREATE TABLE IF NOT EXISTS submissions (
   context      TEXT,                           -- 提交语境：contest / virtual / practice；NULL = 平台不下发（能力值据此区分赛场 AC 与补题）
   UNIQUE (user_id, platform, account, external_id)
 );
-CREATE INDEX IF NOT EXISTS idx_submissions_user_platform ON submissions(user_id, platform);
+-- 冗余索引：旧的 idx_submissions_user_platform(user_id, platform) 是下方 migrate 创建的
+-- idx_submissions_user_account(user_id, platform, account) 的严格前缀，SQLite 用复合索引前缀即可
+-- 服务 (user_id, platform) 过滤，故此处不再建；老库残留由 db/index.ts migrate 里 DROP。
 CREATE INDEX IF NOT EXISTS idx_submissions_problem ON submissions(problem_id);
 CREATE INDEX IF NOT EXISTS idx_submissions_user_time ON submissions(user_id, submitted_at);
 -- (user_id, platform, account) 索引由 db/index.ts migrate 创建：老库补 account 列之前，

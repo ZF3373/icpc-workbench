@@ -283,6 +283,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       FROM problems p
       LEFT JOIN submissions s ON s.problem_id = p.id AND s.user_id = ?
       ${knowledgeTagsJoinSql()}
+      LEFT JOIN review_items ri ON ri.problem_id = p.id AND ri.user_id = ${DEFAULT_USER_ID}
       WHERE 1 = 1
   `;
   const coreSelect = `
@@ -292,8 +293,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
              COUNT(s.id) AS attempts,
              COALESCE(SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END), 0) AS ac_count,
              MAX(CASE WHEN s.verdict = 'AC' THEN s.submitted_at END) AS last_ac_at,
-             (SELECT ri.id FROM review_items ri
-               WHERE ri.problem_id = p.id AND ri.user_id = ${DEFAULT_USER_ID}) AS review_item_id
+             MAX(ri.id) AS review_item_id
   `;
   /** 分页查询与计数查询共用的 FROM/WHERE（含未知难度分支），保证两者口径完全一致 */
   const filteredFrom = (f: ProblemFilters): { from: string; params: Array<string | number> } => {
@@ -582,45 +582,59 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
               difficulty_source, native_difficulty, difficulty_scale
          FROM problems WHERE id = ?`,
     );
+    // 去重循环内用到的全部固定语句在循环外预编译（与 mergeSlashedCfKeys / problemMerge 同款），
+    // 避免每组重复行都重新 prepare 十余条 SQL。
+    const updSubmissions = db.prepare('UPDATE submissions SET problem_id = ? WHERE problem_id = ?');
+    const updIntents = db.prepare('UPDATE submission_intents SET problem_id = ? WHERE problem_id = ?');
+    const updPlanTasks = db.prepare('UPDATE plan_tasks SET problem_id = ? WHERE problem_id = ?');
+    const updRecos = db.prepare(
+      `UPDATE today_recommendations SET problem_id = ? WHERE problem_id = ?
+         AND NOT EXISTS (SELECT 1 FROM today_recommendations t WHERE t.user_id = today_recommendations.user_id AND t.problem_id = ?)`,
+    );
+    const delRecos = db.prepare('DELETE FROM today_recommendations WHERE problem_id = ?');
+    const updReviews = db.prepare(
+      `UPDATE review_items SET problem_id = ? WHERE problem_id = ?
+         AND NOT EXISTS (SELECT 1 FROM review_items r WHERE r.user_id = review_items.user_id AND r.problem_id = ?)`,
+    );
+    const delReviews = db.prepare('DELETE FROM review_items WHERE problem_id = ?');
+    const delKeypoints = db.prepare('DELETE FROM problem_keypoints WHERE platform = ? AND problem_key = ?');
+    const delKnowledgeQueue = db.prepare('DELETE FROM knowledge_queue WHERE platform = ? AND problem_key = ?');
+    const updListItems = db.prepare(
+      `UPDATE problem_list_items SET problem_key = ?, title = ?, url = ?
+        WHERE platform = ? AND problem_key = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM problem_list_items i
+             WHERE i.list_id = problem_list_items.list_id
+               AND i.platform = problem_list_items.platform
+               AND i.problem_key = ?)`,
+    );
+    const delListItems = db.prepare('DELETE FROM problem_list_items WHERE platform = ? AND problem_key = ?');
+    const delProblem = db.prepare('DELETE FROM problems WHERE id = ?');
     db.exec('BEGIN');
     try {
       for (const g of duplicateGroups) {
         for (const dup of g.remove) {
-          db.prepare('UPDATE submissions SET problem_id = ? WHERE problem_id = ?').run(g.keep.id, dup.id);
-          db.prepare('UPDATE submission_intents SET problem_id = ? WHERE problem_id = ?').run(g.keep.id, dup.id);
-          db.prepare('UPDATE plan_tasks SET problem_id = ? WHERE problem_id = ?').run(g.keep.id, dup.id);
+          updSubmissions.run(g.keep.id, dup.id);
+          updIntents.run(g.keep.id, dup.id);
+          updPlanTasks.run(g.keep.id, dup.id);
           // today_recommendations (user_id, problem_id) 唯一、外键无级联：与 problemMerge 同款——
           // 保留行已有同一用户的推荐条目时丢弃重复行；漏了它整个去重事务会因外键失败 500
-          db.prepare(
-            `UPDATE today_recommendations SET problem_id = ? WHERE problem_id = ?
-               AND NOT EXISTS (SELECT 1 FROM today_recommendations t WHERE t.user_id = today_recommendations.user_id AND t.problem_id = ?)`,
-          ).run(g.keep.id, dup.id, g.keep.id);
-          db.prepare('DELETE FROM today_recommendations WHERE problem_id = ?').run(dup.id);
+          updRecos.run(g.keep.id, dup.id, g.keep.id);
+          delRecos.run(dup.id);
           // 复习条目 (user_id, problem_id) 唯一：保留行已有同一用户的复习条目时丢弃重复行的
-          db.prepare(
-            `UPDATE review_items SET problem_id = ? WHERE problem_id = ?
-               AND NOT EXISTS (SELECT 1 FROM review_items r WHERE r.user_id = review_items.user_id AND r.problem_id = ?)`,
-          ).run(g.keep.id, dup.id, g.keep.id);
-          db.prepare('DELETE FROM review_items WHERE problem_id = ?').run(dup.id);
-          db.prepare('DELETE FROM problem_keypoints WHERE platform = ? AND problem_key = ?').run(g.platform, dup.problemKey);
-          db.prepare('DELETE FROM knowledge_queue WHERE platform = ? AND problem_key = ?').run(g.platform, dup.problemKey);
+          updReviews.run(g.keep.id, dup.id, g.keep.id);
+          delReviews.run(dup.id);
+          delKeypoints.run(g.platform, dup.problemKey);
+          delKnowledgeQueue.run(g.platform, dup.problemKey);
           // 题单条目按 (platform, problem_key) 存**串**而不是行 id：不一起改键，条目就永久指向
           // 已删除的题号 —— 题单页的难度/标签/已 AC 全靠 LEFT JOIN problems ON key 匹配
           //（见 routes/lists.ts），同一道题刚 AC 过也会永远显示「未做/难度未知」，且无自愈路径。
           // 与 problemMerge.ts 同一处理（那里早就做了，这里是漏做）
           const keepRow = problemById.get(g.keep.id) as NonNullable<ReturnType<typeof problemById.get>>;
-          db.prepare(
-            `UPDATE problem_list_items SET problem_key = ?, title = ?, url = ?
-              WHERE platform = ? AND problem_key = ?
-                AND NOT EXISTS (
-                  SELECT 1 FROM problem_list_items i
-                   WHERE i.list_id = problem_list_items.list_id
-                     AND i.platform = problem_list_items.platform
-                     AND i.problem_key = ?)`,
-          ).run(keepRow.problem_key, keepRow.title, keepRow.url, g.platform, dup.problemKey, keepRow.problem_key);
-          db.prepare('DELETE FROM problem_list_items WHERE platform = ? AND problem_key = ?').run(g.platform, dup.problemKey);
+          updListItems.run(keepRow.problem_key, keepRow.title, keepRow.url, g.platform, dup.problemKey, keepRow.problem_key);
+          delListItems.run(g.platform, dup.problemKey);
           const dupRow = problemById.get(dup.id) as NonNullable<ReturnType<typeof problemById.get>>;
-          db.prepare('DELETE FROM problems WHERE id = ?').run(dup.id);
+          delProblem.run(dup.id);
           // 重复行多来自题库（如带空格的脏题号），不记墓碑则下次拉题库/播种原样复活；
           // 墓碑带快照，回收站可原样找回
           markDeleted.run(

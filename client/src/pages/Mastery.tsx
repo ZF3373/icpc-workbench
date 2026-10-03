@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   App as AntdApp,
   Button,
@@ -138,11 +138,16 @@ export default function Mastery() {
     }
   }, [active, tagRetry])
 
+  // 只允许「最新一次请求」落地：切换账号视角时旧 scope 的慢响应会晚到盖掉新数据。
+  const reqSeq = useRef(0)
+
   const load = useCallback(() => {
+    const seq = (reqSeq.current += 1)
     setLoading(true)
     setLoadError(null)
     get<MasteryReport>(withScope('/api/stats/mastery', scope))
       .then((r) => {
+        if (seq !== reqSeq.current) return
         setReport(r)
         setLoadError(null)
       })
@@ -150,11 +155,14 @@ export default function Mastery() {
       // 渲染分支于是把「请求失败」当成「还没有刷题数据 —— 去题目管理」，等于告诉有几千条
       // 提交的用户「你没有记录」。这里落到 loadError，由 InlineError 出错误态 + 重试。
       .catch((e: Error) => {
+        if (seq !== reqSeq.current) return
         setLoadError(e.message)
         setReport(null)
         message.error(e.message)
       })
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (seq === reqSeq.current) setLoading(false)
+      })
   }, [message, scope])
 
   useEffect(() => {

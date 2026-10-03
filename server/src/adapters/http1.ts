@@ -92,6 +92,9 @@ export function createHttp1Fetch(options: Http1FetchOptions = {}): typeof fetch 
               }),
             );
           });
+          // 响应体中途被断开（连接在正文流中 reset）时 res 会发 'error'，req 的 error 监听接不住；
+          // 不挂监听会变成 unhandled 'error' 直接打崩进程。
+          res.on('error', reject);
         },
       );
       const onAbort = (): void => {
