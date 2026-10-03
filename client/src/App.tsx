@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Layout, Tooltip } from 'antd'
-import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons'
+import { MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined } from '@ant-design/icons'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
 import Problems from './pages/Problems'
@@ -21,7 +21,9 @@ import UpdateChecker from './UpdateChecker'
 import SyncProgressBadge from './SyncProgressBadge'
 import { get } from './api'
 import SiderMenu from './components/SiderMenu'
+import CommandPalette from './components/CommandPalette'
 import { MENU } from './menuConfig'
+import { pushRecentPage } from './recentPages'
 
 const { Sider, Content } = Layout
 
@@ -31,6 +33,8 @@ export default function App() {
   const selected = MENU.some((m) => m.key === loc.pathname) ? loc.pathname : '/'
   const [collapsed, setCollapsed] = useState(false)
   const [version, setVersion] = useState('')
+  /** 全局命令面板（Cmd/Ctrl + K） */
+  const [paletteOpen, setPaletteOpen] = useState(false)
 
   useEffect(() => {
     // 侧边栏版本号取自后端（exe 打包时注入 git tag；源码运行为 dev）
@@ -39,12 +43,30 @@ export default function App() {
       .catch(() => {})
   }, [])
 
+  // 记录最近访问（命令面板的第一个分组）；只记已知路由，避免把带 query 的地址记成两个入口
+  useEffect(() => {
+    if (MENU.some((m) => m.key === loc.pathname)) pushRecentPage(loc.pathname)
+  }, [loc.pathname])
+
+  // 快捷键：Cmd/Ctrl + K 唤起命令面板，Esc 由面板自己处理
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPaletteOpen((open) => !open)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Reminder />
       <ContestReminder />
       {/* 全局同步悬浮卡：切到任何页面都能看到「还在同步」，避免用户误以为卡住而退出 */}
       <SyncProgressBadge />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={nav} />
       <Sider
         width={200}
         collapsedWidth={68}
@@ -78,6 +100,18 @@ export default function App() {
           >
             {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
           </button>
+          {!collapsed && (
+            <button
+              type="button"
+              className="sider-footer-search"
+              title="全局搜索（Ctrl/⌘ + K）"
+              onClick={() => setPaletteOpen(true)}
+            >
+              <SearchOutlined />
+              <span>搜索</span>
+              <kbd>⌘K</kbd>
+            </button>
+          )}
           <span className="sider-footer-version">
             <span className="sider-footer-dot" />
             {version || 'local'}

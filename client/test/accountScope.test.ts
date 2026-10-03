@@ -7,10 +7,14 @@ import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   ALL_ACCOUNTS,
+  ALL_ACCOUNTS_KEY,
+  accountKey,
   isAllAccounts,
   normalizeScope,
+  parseAccountKey,
   pickerVisible,
   readScope,
+  scopeKey,
   withScope,
   writeScope,
 } from '../src/accountScope'
@@ -89,6 +93,62 @@ describe('isAllAccounts / pickerVisible', () => {
       ]),
       true,
     )
+  })
+})
+
+/**
+ * 账号键值稳定性（回归防护）：切换器曾用数组下标当 Select value，
+ * 账号增删或排序变化后同一个下标会指向另一个账号 —— 界面选中的项没变，
+ * 实际统计口径已经换号（静默串数据）。键值改为由 account 本身派生。
+ */
+describe('accountKey / parseAccountKey / scopeKey', () => {
+  it('键值由 platform + account 派生，与数组下标无关', () => {
+    assert.equal(accountKey('codeforces', 'main'), 'codeforces:main')
+    // 同一账号在列表里换位置（下标从 1 变 0）不影响键值
+    const before = [accountKey('luogu', 'a'), accountKey('codeforces', 'main')]
+    const after = [accountKey('codeforces', 'main'), accountKey('luogu', 'a')]
+    assert.equal(before[1], after[0])
+  })
+
+  it('按键值拆回作用域', () => {
+    assert.deepEqual(parseAccountKey('codeforces:main'), { platform: 'codeforces', account: 'main' })
+    // handle 自带冒号：按第一个冒号切分，尾部原样保留
+    assert.deepEqual(parseAccountKey('luogu:a:b'), { platform: 'luogu', account: 'a:b' })
+  })
+
+  it('非法键值返回 null，调用方据此不改视角', () => {
+    assert.equal(parseAccountKey(':main'), null) // 空平台
+    assert.equal(parseAccountKey('notaplatform:main'), null) // 未知平台
+    assert.equal(parseAccountKey('codeforces:'), null) // 空账号
+    assert.equal(parseAccountKey('codeforces'), null) // 没有分隔符
+  })
+
+  it('scopeKey：全部账号给哨兵值，具体账号给稳定键值', () => {
+    assert.equal(scopeKey(ALL_ACCOUNTS), ALL_ACCOUNTS_KEY)
+    assert.equal(scopeKey({}), ALL_ACCOUNTS_KEY)
+    assert.equal(scopeKey({ platform: 'codeforces', account: 'main' }), 'codeforces:main')
+    // 半截作用域按「全部账号」处理，与服务端口径一致
+    assert.equal(scopeKey({ account: 'main' }), ALL_ACCOUNTS_KEY)
+  })
+
+  it('哨兵值不会与任何真实账号键值碰撞', () => {
+    const keys = [
+      accountKey('codeforces', ALL_ACCOUNTS_KEY),
+      accountKey('luogu', ALL_ACCOUNTS_KEY),
+    ]
+    for (const k of keys) assert.notEqual(k, ALL_ACCOUNTS_KEY)
+    assert.equal(parseAccountKey(ALL_ACCOUNTS_KEY), null)
+  })
+
+  it('accountKey → parseAccountKey 往返无损', () => {
+    for (const [platform, account] of [
+      ['codeforces', 'main'],
+      ['nowcoder', '713093328'],
+      ['qoj', 'a:b'],
+      ['leetcode', 'a b&c=d'],
+    ] as const) {
+      assert.deepEqual(parseAccountKey(accountKey(platform, account)), { platform, account })
+    }
   })
 })
 

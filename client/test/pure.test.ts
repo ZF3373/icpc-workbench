@@ -5,41 +5,74 @@
  */
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { difficultyColor, rateColor, tagColor, platformName } from '../src/ui.ts'
+import {
+  difficultyColor,
+  difficultyTone,
+  gapColor,
+  rateColor,
+  rateTone,
+  tagColor,
+  platformName,
+  toneVar,
+} from '../src/ui.ts'
 import { assembleCookie, buildCookieItem, mergeCookieFields, splitCookieFields, type CookieFieldDef } from '../src/cookies.ts'
 
 // ---------- ui.ts 纯展示函数 ----------
 
 describe('ui.ts', () => {
-  describe('difficultyColor', () => {
-    it('returns gray for null/undefined', () => {
-      assert.equal(difficultyColor(null), '#8993a2')
-      assert.equal(difficultyColor(undefined), '#8993a2')
+  describe('difficultyTone / difficultyColor', () => {
+    it('returns unknown for null/undefined', () => {
+      assert.equal(difficultyTone(null), 'unknown')
+      assert.equal(difficultyTone(undefined), 'unknown')
+      assert.equal(difficultyColor(null), 'var(--text-3)')
+      assert.equal(difficultyColor(undefined), 'var(--text-3)')
     })
-    it('maps rating ranges to CF-style colors', () => {
-      assert.equal(difficultyColor(800), '#aab6c2')   // new
-      assert.equal(difficultyColor(1200), '#55d990')  // pupil (boundary)
-      assert.equal(difficultyColor(1399), '#55d990')  // pupil (just under)
-      assert.equal(difficultyColor(1400), '#45d5e5')  // specialist
-      assert.equal(difficultyColor(1899), '#58a3ff')  // expert
-      assert.equal(difficultyColor(1900), '#a887ff')  // candidate master
-      assert.equal(difficultyColor(2399), '#ffbd61')  // master
-      assert.equal(difficultyColor(2400), '#ff5d70')  // grandmaster+
+    it('maps rating ranges to CF-style tones (boundaries)', () => {
+      assert.equal(difficultyTone(800), 'new')
+      assert.equal(difficultyTone(1200), 'pupil') // pupil (boundary)
+      assert.equal(difficultyTone(1399), 'pupil') // pupil (just under)
+      assert.equal(difficultyTone(1400), 'specialist')
+      assert.equal(difficultyTone(1899), 'expert')
+      assert.equal(difficultyTone(1900), 'candidate-master')
+      assert.equal(difficultyTone(2399), 'master')
+      assert.equal(difficultyTone(2400), 'grandmaster')
+    })
+    it('resolves every tone to a CSS variable, never a hex', () => {
+      const tones = [null, 800, 1200, 1400, 1600, 1900, 2100, 2400] as const
+      for (const d of tones) {
+        const value = difficultyColor(d)
+        assert.match(value, /^var\(--[a-z0-9-]+\)$/, `difficultyColor(${String(d)}) = ${value}`)
+      }
     })
   })
 
-  describe('rateColor', () => {
-    it('returns green for high AC rate', () => {
-      assert.equal(rateColor(55), '#69d7a5')
-      assert.equal(rateColor(90), '#69d7a5')
+  describe('rateTone / rateColor', () => {
+    it('returns good tone for high AC rate', () => {
+      assert.equal(rateTone(55), 'good')
+      assert.equal(rateTone(90), 'good')
+      assert.equal(rateColor(55), 'var(--green)')
     })
-    it('returns yellow for medium AC rate', () => {
-      assert.equal(rateColor(40), '#f2c46d')
-      assert.equal(rateColor(54.9), '#f2c46d')
+    it('returns fair tone for medium AC rate', () => {
+      assert.equal(rateTone(40), 'fair')
+      assert.equal(rateTone(54.9), 'fair')
+      assert.equal(rateColor(40), 'var(--amber)')
     })
-    it('returns red for low AC rate', () => {
-      assert.equal(rateColor(0), '#ff7b84')
-      assert.equal(rateColor(39.9), '#ff7b84')
+    it('returns poor tone for low AC rate', () => {
+      assert.equal(rateTone(0), 'poor')
+      assert.equal(rateTone(39.9), 'poor')
+      assert.equal(rateColor(0), 'var(--red)')
+    })
+  })
+
+  describe('gapColor', () => {
+    it('三段语义色：明显偏弱 / 偏弱 / 不弱', () => {
+      assert.equal(gapColor(20), toneVar('danger'))
+      assert.equal(gapColor(16), toneVar('danger'))
+      assert.equal(gapColor(15), toneVar('warning')) // 边界：>15 才算明显偏弱
+      assert.equal(gapColor(6), toneVar('warning'))
+      assert.equal(gapColor(5), toneVar('success')) // 边界：>5 才算偏弱
+      assert.equal(gapColor(0), toneVar('success'))
+      assert.equal(gapColor(-12), toneVar('success'))
     })
   })
 

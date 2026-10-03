@@ -140,29 +140,47 @@ export default function About() {
               <Button loading={checking} onClick={check}>
                 检查更新
               </Button>
-              {hasUpdate && info!.canSelfUpdate && (
+              {/* 按通道更新：正式版（稳定发布）与预览版（提交构建）并列入口，
+                  两通道都有更新时用户自己选；产物缺失的通道回退下载页 */}
+              {info?.ok && info.canSelfUpdate && info.hasUpdate && info.stableDownload && (
                 <Popconfirm
-                  title="确认更新？"
+                  title={`更新到正式版 ${info.latest}？`}
                   description="将下载并替换程序文件（约百余 MB），完成后需关闭并重新打开软件；练习数据不受影响。"
                   okText="开始更新"
                   cancelText="取消"
-                  onConfirm={runUpdate}
+                  onConfirm={() => runUpdate('stable')}
                 >
                   <Button type="primary" loading={busy}>
-                    一键更新
+                    更新到正式版 {info.latest}
                   </Button>
                 </Popconfirm>
               )}
-              {hasUpdate && !info!.canSelfUpdate && info!.releasePage && (
-                <Button type="primary" onClick={() => openExternal(info!.releasePage!)}>
-                  前往下载 {info!.latest}
+              {info?.ok && info.canSelfUpdate && info.hasCommitUpdate && info.commitDownload && (
+                <Popconfirm
+                  title={`更新到预览版（${info.commit?.shortSha}）？`}
+                  description="预览版包含最新提交修复，稳定性略低于正式版；同样替换程序文件并需重启，练习数据不受影响。"
+                  okText="开始更新"
+                  cancelText="取消"
+                  onConfirm={() => runUpdate('commit')}
+                >
+                  <Button loading={busy}>
+                    更新到预览版 {info.commit?.shortSha}
+                  </Button>
+                </Popconfirm>
+              )}
+              {info?.ok && info.hasUpdate && (!info.canSelfUpdate || !info.stableDownload) && info.releasePage && (
+                <Button type="primary" onClick={() => openExternal(info.releasePage!)}>
+                  前往下载 {info.latest}
                 </Button>
+              )}
+              {info?.ok && info.hasCommitUpdate && (!info.canSelfUpdate || !info.commitDownload) && info.commit?.page && (
+                <Button onClick={() => openExternal(info.commit!.page)}>查看预览构建 ↗</Button>
               )}
             </Space>
             {busy && (
               <div style={{ marginTop: 12, maxWidth: 720 }}>
                 <Progress percent={percent} status="active" />
-                <span style={{ color: 'var(--text-tertiary, #8993a2)', fontSize: 12 }}>
+                <span style={{ color: 'var(--text-3)', fontSize: 12 }}>
                   {phase === 'verifying' ? '正在校验文件完整性…' : '正在下载更新（下载完自动替换，请勿关闭软件）'}
                 </span>
               </div>
@@ -183,24 +201,42 @@ export default function About() {
                 message={
                   info.ok
                     ? hasUpdate
-                      ? info.channel === 'commit'
-                        ? `有新提交构建 ${info.commit?.shortSha}（当前 ${info.current}）`
-                        : `发现新版本 ${info.latest}（当前 ${info.current}）`
+                      ? [
+                          info.hasUpdate && `发现新版本 ${info.latest}`,
+                          info.hasCommitUpdate && `预览构建 ${info.commit?.shortSha}`,
+                        ]
+                          .filter(Boolean)
+                          .join('；') + `（当前 ${info.current}）`
                       : `已是最新版本（${info.current}${info.buildCommit && info.buildCommit !== 'dev' ? ` · ${info.buildCommit}` : ''}）`
                     : `检查更新失败：${info.message ?? '网络异常'}，可稍后重试`
                 }
                 description={
                   info.ok && hasUpdate ? (
-                    info.channel === 'commit' ? (
-                      <span>
-                        包含最新提交修复{info.commit?.message ? `：${info.commit.message}` : ''}。
-                        {!info.canSelfUpdate && info.commit && (
-                          <a onClick={() => openExternal(info.commit!.page)}>查看该构建 ↗</a>
-                        )}
-                      </span>
-                    ) : (
-                      '正式版更新；到下载页下载安装包覆盖，或下载便携版用新 exe 替换旧文件即可，练习数据不受影响。'
-                    )
+                    <span>
+                      {info.hasUpdate && (
+                        <>
+                          正式版：覆盖安装包或用便携版替换即可，练习数据不受影响。
+                          {!info.stableDownload && info.releasePage && (
+                            <>
+                              {' '}
+                              <a onClick={() => openExternal(info.releasePage!)}>前往下载 ↗</a>
+                            </>
+                          )}
+                          <br />
+                        </>
+                      )}
+                      {info.hasCommitUpdate && (
+                        <>
+                          预览版：包含最新提交修复{info.commit?.message ? `（${info.commit.message}）` : ''}。
+                          {(!info.canSelfUpdate || !info.commitDownload) && info.commit && (
+                            <>
+                              {' '}
+                              <a onClick={() => openExternal(info.commit!.page)}>查看该构建 ↗</a>
+                            </>
+                          )}
+                        </>
+                      )}
+                    </span>
                   ) : undefined
                 }
               />

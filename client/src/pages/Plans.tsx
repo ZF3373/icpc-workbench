@@ -5,7 +5,6 @@ import {
   Card,
   DatePicker,
   Drawer,
-  Empty,
   Form,
   Input,
   InputNumber,
@@ -22,6 +21,9 @@ import { CheckOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-
 import dayjs, { type Dayjs } from 'dayjs'
 import type { ColumnsType } from 'antd/es/table'
 import PageHeader from '../components/PageHeader'
+import PageSkeleton from '../components/PageSkeleton'
+import EmptyState from '../components/EmptyState'
+import InlineError from '../components/InlineError'
 import { del, get, patch, post } from '../api'
 import type { GenerateResult, PlanDetail, PlanListItem, PlanTask } from '../types'
 
@@ -48,7 +50,11 @@ export default function Plans() {
   // React 19 下 antd 静态 message 静默失效，必须用 App 上下文实例
   const { message } = AntdApp.useApp()
   const [plans, setPlans] = useState<PlanListItem[]>([])
-  const [loading, setLoading] = useState(false)
+  // 初始即 true：初始 false 会先画一帧「表格无数据 + 暂无计划」，等 effect 发出请求才翻成加载中，
+  // 首屏先闪一下空态再变加载（也与下面「首屏骨架」分支的判定一致）
+  const [loading, setLoading] = useState(true)
+  /** 列表取数失败原因：与「一个计划都还没有」严格区分（失败给 InlineError 重试，不冒充空态） */
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [genOpen, setGenOpen] = useState(false)
   const [detail, setDetail] = useState<PlanDetail | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -58,10 +64,23 @@ export default function Plans() {
 
   const load = useCallback(() => {
     setLoading(true)
+    // 新一轮取数开始即清掉上次的失败原因，重试成功后错误态不会残留
+    setLoadError(null)
     get<PlanListItem[]>('/api/plans')
-      .then(setPlans)
-      .catch((e: Error) => message.error(e.message))
-      .finally(() => setLoading(false))
+      .then((r) => {
+        setPlans(r)
+        setLoadError(null)
+      })
+      .catch((e: Error) => {
+        // 失败 ≠ 空：记下原因渲染 InlineError；已有旧列表时下面的提示条仍会说明这次刷新失败
+        setLoadError(e.message)
+        message.error(e.message)
+      })
+      .finally(() => {
+        setLoading(false)
+      })
+    // 依赖保持为空：message 是 AntdApp 提供的稳定实例，放进依赖会让本回调随渲染重建
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -156,7 +175,15 @@ export default function Plans() {
       dataIndex: 'title',
       render: (v: string, r) => <a onClick={() => openDetail(r.id)}>{v}</a>,
     },
-    { title: '来源', dataIndex: 'source', width: 80, render: (v: PlanListItem['source']) => sourceTag(v) },
+    {
+      title: '来源',
+      dataIndex: 'source',
+      width: 80,
+      // ≤768px 隐藏：来源 Tag 是 nowrap，是这张表里最难压缩的一列；
+      // 窄屏让它退出，避免表格被撑出横向滚动（进度/任务数等关键列保留）
+      responsive: ['md'],
+      render: (v: PlanListItem['source']) => sourceTag(v),
+    },
     { title: '周期', width: 210, render: (_v, r) => <span className="mono">{r.start_date} ~ {r.end_date}</span> },
     { title: '进度', width: 160, render: (_v, r) => <Progress className="gradient-progress" percent={r.task_count ? Math.round((r.checked_count / r.task_count) * 100) : 0} size="small" /> },
     { title: '任务', dataIndex: 'task_count', width: 70, align: 'right', render: (_v, r) => <span className="mono">{r.checked_count}/{r.task_count}</span> },
@@ -203,10 +230,36 @@ export default function Plans() {
           </Space>
         }
       />
-      <Table rowKey="id" size="small" loading={loading} columns={cols} dataSource={plans} pagination={{ pageSize: 10 }} />
-      {!loading && plans.length === 0 && (
-        <Card style={{ marginTop: 16 }}>
-          <Empty description="暂无计划 —— 点击「生成新计划」开始" style={{ padding: '24px 0' }} />
+      {/* 分支顺序与 Today.tsx 一致：loading（且屏上还没有任何行）→ 骨架 ｜ 有行 → 表格
+          ｜ loadError → 可重试错误态 ｜ 空 → 空态。
+          用 `loading && plans.length === 0` 而不是「只认首次加载」的 loadedOnce：
+          失败后点重试时屏上同样是空的，只有这个条件能保证重试期间不是一片空白。 */}
+      {loading && plans.length === 0 ? (
+        <PageSkeleton stats={false} table rows={6} />
+      ) : plans.length > 0 ? (
+        <Table rowKey="id" size="small" loading={loading} columns={cols} dataSource={plans} pagination={{ pageSize: 10 }} />
+      ) : loadError ? (
+        /* 失败 ≠ 空：取数失败给可重试的错误态，只有确实一个计划都没有时才落空态 */
+        <Card>
+          <InlineError
+            message={loadError}
+            hint="计划列表没能取回来；重试即可，已生成的计划与打卡记录不会丢失。"
+            onRetry={load}
+            retrying={loading}
+          />
+        </Card>
+      ) : (
+        <Card>
+          <EmptyState
+            title="还没有训练计划"
+            description="让 AI 按你的弱项生成一份计划，或手动添加任务。未配置 API Key 时会自动退回模板计划，不影响使用。"
+            action={{
+              label: '生成新计划',
+              type: 'primary',
+              icon: <PlusOutlined />,
+              onClick: () => setGenOpen(true),
+            }}
+          />
         </Card>
       )}
 
@@ -242,7 +295,9 @@ export default function Plans() {
                       className={`task-card task-card-${t.kind}${t.checked ? ' task-done' : ''}`}
                       style={{ marginBottom: 8 }}
                     >
-                      <div className="task-row">
+                      {/* 任务卡内的「内容 | 操作」两栏：≤768px 转纵向（.card-actions-row
+                          的 @media 规则），操作按钮下沉到内容下方，不再与标题挤一行 */}
+                      <div className="task-row card-actions-row">
                         <div className="task-main">
                           <Space size={8} wrap>
                             {kindTag(t.kind)}

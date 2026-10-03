@@ -114,6 +114,9 @@ test('resolveUpdate：稳定版更新优先于提交通道', () => {
   assert.equal(info.channel, 'stable');
   assert.equal(info.latest, 'v0.4.1');
   assert.equal(info.download?.core, 'https://x/v0.4.1/icpc-core.exe');
+  // 双通道产物：稳定版与预览版各自可用，前端按用户选择取用
+  assert.equal(info.stableDownload?.shell, 'https://x/v0.4.1/icpc-workbench.exe');
+  assert.equal(info.commitDownload?.shell, 'https://x/nightly/icpc-workbench.exe');
 });
 
 test('resolveUpdate：版本一致但 nightly 提交更新 → 提交通道', () => {
@@ -123,6 +126,9 @@ test('resolveUpdate：版本一致但 nightly 提交更新 → 提交通道', ()
   assert.equal(info.channel, 'commit');
   assert.equal(info.commit?.shortSha, 'bbb2222');
   assert.equal(info.download?.shell, 'https://x/nightly/icpc-workbench.exe');
+  // 无稳定版更新：正式版通道不提供下载（不提供降级入口），预览版通道可用
+  assert.equal(info.stableDownload, null);
+  assert.equal(info.commitDownload?.core, 'https://x/nightly/icpc-core.exe');
 });
 
 test('resolveUpdate：已是同一构建则不提示', () => {
@@ -148,6 +154,9 @@ test('resolveUpdate：产物不全时 download 为 null（前端回退下载页�
   const info = resolveUpdate('v0.4.1', 'aaa1111', null, incomplete);
   assert.equal(info.channel, 'commit');
   assert.equal(info.download, null);
+  // 不全的是预览通道：commitDownload 置 null，stableDownload 不受影响（无稳定版更新时本就为 null）
+  assert.equal(info.commitDownload, null);
+  assert.equal(info.stableDownload, null);
 });
 
 test('checkForUpdate：注入 fetch 同时覆盖两个通道', async () => {

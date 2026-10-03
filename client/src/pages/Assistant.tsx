@@ -1,20 +1,24 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Alert, App as AntdApp, Button, Card, Input, Modal, Popconfirm, Select, Space, Spin, Tag, Tooltip } from 'antd'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Alert, App as AntdApp, Button, Card, Dropdown, Input, Modal, Select, Space, Spin, Tag, Tooltip } from 'antd'
 import type { TextAreaRef } from 'antd/es/input/TextArea'
 import {
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
   HolderOutlined,
+  InfoCircleOutlined,
   LoadingOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  MoreOutlined,
   PaperClipOutlined,
   PlusOutlined,
   PushpinFilled,
   PushpinOutlined,
   RobotOutlined,
+  SelectOutlined,
   SendOutlined,
+  UndoOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -36,9 +40,18 @@ import {
 import type { ParticipatedContest, PlanListItem } from '../types'
 import Markdown from '../components/Markdown'
 import PageHeader from '../components/PageHeader'
+import SessionMiniPanel from '../components/SessionMiniPanel'
+import {
+  commandPrompt,
+  commandReady,
+  matchChatCommands,
+  parseChatCommand,
+  type ChatCommand,
+} from '../chatCommands'
 import { platformName } from '../ui'
 import { createStreamBuffer } from '../streamBuffer'
 import { rememberSessionFiles, getSessionFileText, forgetSessionFiles } from './sessionFiles'
+import { moveSessionBy, pinFirstOrder, restoreSessionOrder, sessionIdOrder } from './assistantSessionOrder'
 import { sanitizeOutgoingTurns, describeToolStatus, EMPTY_REPLY_NOTICE } from './assistantTurns'
 import {
   resolveTemplateTarget,
@@ -119,6 +132,12 @@ interface ChatState {
 
 const STORAGE_KEY = 'icpc-ai-sessions-v1'
 const MAX_SESSIONS = 50
+
+/**
+ * 单条 AI 回复超过这个字数就默认折叠（§5.3）。
+ * 1600 字约等于「一屏多一点」：短于它的回复折叠反而多一次点击。
+ */
+const LONG_MSG_CHARS = 1600
 
 function loadFromStorage(): ChatSession[] {
   try {
@@ -230,6 +249,28 @@ function reorderSessions(fromId: string, toId: string): void {
     next.splice(toIdx, 0, moved!)
     return { ...prev, sessions: next }
   })
+}
+
+/**
+ * 键盘排序：把 `id` 对应会话上移/下移一格（拖拽的无障碍替代，§6.2）。
+ * 返回是否真的移动了 —— 越界时为 false，调用方据此不弹撤销提示。
+ */
+function moveSession(id: string, delta: -1 | 1): boolean {
+  const before = chatState.sessions
+  const next = moveSessionBy(before, id, delta)
+  if (!next) return false
+  // CAS：仅当期间没人动过列表时才落盘，避免覆盖并发的增删/切换
+  setChatState((prev) => (prev.sessions === before ? { ...prev, sessions: next } : prev))
+  return true
+}
+
+/** 撤销键盘/拖拽排序：按 id 序列还原顺序；列表已增删（id 对不上）时返回 false */
+function restoreSessionOrderByIds(orderedIds: string[]): boolean {
+  const before = chatState.sessions
+  const next = restoreSessionOrder(before, orderedIds)
+  if (!next) return false
+  setChatState((prev) => (prev.sessions === before ? { ...prev, sessions: next } : prev))
+  return true
 }
 
 function deleteSessionById(id: string): void {
@@ -363,6 +404,12 @@ function fmtBytes(n: number): string {
 /** 折叠状态持久化：切页/刷新后保持用户的选择（localStorage 不可用时仅本次会话生效） */
 const SIDE_COLLAPSED_KEY = 'icpc-assistant-side-collapsed'
 
+/**
+ * 会话排序「撤销」提示的固定 message key：同一 key 会被 antd 替换而非叠加，
+ * 连续点上下移时不会堆出一摞提示（与 SiderMenu 的 msgKeyRef 思路一致，但这里更简单）。
+ */
+const SESSION_ORDER_MSG_KEY = 'assistant-session-order'
+
 function readSideCollapsed(): boolean {
   try {
     return localStorage.getItem(SIDE_COLLAPSED_KEY) === '1'
@@ -374,7 +421,7 @@ function readSideCollapsed(): boolean {
 // ---------- 组件 ----------
 
 export default function Assistant() {
-  const { message } = AntdApp.useApp()
+  const { message, modal } = AntdApp.useApp()
   const nav = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const chat = useSyncExternalStore(subscribeChat, getChatSnapshot)
@@ -385,6 +432,86 @@ export default function Assistant() {
   const listId = activeSession?.listId
   const contestKey = activeSession?.contestKey
   const sending = sendingIds.has(activeId)
+
+  /**
+   * 折叠态迷你栏要展示的信息（P3-5）：
+   * - 当前会话首字当作"图标"，让收起后仍能认出会话切换过没有；
+   * - 当前会话里的附件总数（图片/文件是用户手动传的，收起来后最容易忘了它在哪个会话）；
+   * - 是否正在流式生成（多会话可并行，「它还在写」必须能看见）。
+   */
+  const railAttachments = messages.reduce((n, m) => n + (m.attachments?.length ?? 0), 0)
+  const railInitial = (activeSession?.title ?? '新').trim().slice(0, 1) || '新'
+  // 置顶会话浮动到列表前部（组内保持手动顺序）；store 数组不动，拖拽/撤销仍按手动顺序运作
+  const orderedSessions = useMemo(() => pinFirstOrder(sessions), [sessions])
+  const miniSessions = useMemo(
+    () =>
+      orderedSessions.map((s) => ({
+        id: s.id,
+        title: s.title,
+        pinned: s.pinned,
+        turns: s.messages.length,
+        streaming: sendingIds.has(s.id),
+      })),
+    [orderedSessions, sendingIds],
+  )
+
+  /**
+   * `/` 快捷指令（P3-5）：输入框以 `/` 开头时在它上方浮出候选，↑↓ 选择、Enter 执行、Esc 忽略。
+   * 菜单只在「确实是命令」时出现 —— 解析不出来就照常当普通消息发出去，绝不静默吞掉输入。
+   */
+  const cmdCandidates = useMemo(() => matchChatCommands(input), [input])
+  const [cmdIndex, setCmdIndex] = useState(0)
+  const [cmdDismissed, setCmdDismissed] = useState(false)
+  /**
+   * 已展开全文的超长回复（按消息下标记，§5.3）。
+   * 默认折叠：AI 的长回复动辄几千字，一条就把输入框顶出视野，用户得一路滚到底才能接着问。
+   * 按内容长度而不是「分析/代码/建议」猜分段 —— 靠关键词猜标题会把普通段落误判成分节，
+   * 而 markdown 自带的标题结构在渲染层已经分层了。
+   */
+  const [expandedMsgs, setExpandedMsgs] = useState<Set<number>>(() => new Set())
+  const cmdMenuOpen = cmdCandidates.length > 0 && !cmdDismissed
+  // 候选变了就把高亮收回范围，避免停在一个已经不存在的项上
+  useEffect(() => {
+    setCmdIndex((i) => (i < cmdCandidates.length ? i : 0))
+  }, [cmdCandidates.length])
+  // 输入不再是命令态时，重新允许弹出菜单（Esc 只忽略当前这一次）
+  useEffect(() => {
+    if (cmdCandidates.length === 0) setCmdDismissed(false)
+  }, [cmdCandidates.length])
+
+  /** 执行一条指令；需要参数却没给时只补全命令名，等用户填完再按 Enter */
+  const runChatCommand = (cmd: ChatCommand) => {
+    const parsed = parseChatCommand(input)
+    const arg = parsed?.command.name === cmd.name ? parsed.arg : ''
+    if (!commandReady(cmd, arg)) {
+      setChatState((prev) => ({ ...prev, input: commandPrompt(cmd) }))
+      return
+    }
+    switch (cmd.name) {
+      case 'new':
+        createNewSession()
+        break
+      case 'attach':
+        fileInputRef.current?.click()
+        break
+      // 题目/模板复用命令面板已经打通的 ?q= 深链，落到对应页面的搜索态
+      case 'problem':
+        nav(`/problems?q=${encodeURIComponent(arg)}`)
+        break
+      case 'template':
+        nav(`/templates?q=${encodeURIComponent(arg)}`)
+        break
+      case 'today':
+        nav('/today')
+        break
+      case 'settings':
+        nav('/settings')
+        break
+      default:
+        break
+    }
+    setChatState((prev) => ({ ...prev, input: '' }))
+  }
 
   const [plans, setPlans] = useState<PlanListItem[]>([])
   /** 题单列表（关联上下文下拉用，只要 id/标题/题数） */
@@ -400,6 +527,18 @@ export default function Assistant() {
   const [listCreating, setListCreating] = useState(false)
   const [planCreating, setPlanCreating] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
+  /** 折叠态浮层里会话 ⋯ 菜单的打开态：打开期间锁定浮层，portal 菜单才够得着 */
+  const [miniActionsOpen, setMiniActionsOpen] = useState(false)
+  /** 删除会话的统一确认入口：展开侧行与折叠态浮层共用（React 19 下静态 Modal.confirm 静默失效，必须用 App 上下文实例） */
+  const confirmDeleteSession = (id: string) => {
+    modal.confirm({
+      title: '删除这条会话？',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () => deleteSessionById(id),
+    })
+  }
   /** 模板库分类清单（内置课程分类 + 用户自建标签）：写入模板库时选目标标签用 */
   const [tplCategories, setTplCategories] = useState<TemplateCategoryOption[]>([])
   /** 用户为某个 template-add 草稿显式指定的目标标签（key = `${消息下标}:${草稿下标}`） */
@@ -418,6 +557,8 @@ export default function Assistant() {
   const stickToBottomRef = useRef(true)
   /** 输入框引用：「再次编辑」时把历史消息回填并聚焦输入框 */
   const inputRef = useRef<TextAreaRef>(null)
+  /** 划选 AI 输出后的「引用到输入框」浮钮：x/y 为浮钮中心（viewport 坐标），text 是选区快照 */
+  const [quoteFloat, setQuoteFloat] = useState<{ x: number; y: number; text: string } | null>(null)
 
   // ---------- 图片附件（Files API） ----------
   /** 本条消息待发送的附件（上传成功后的 file_id 引用） */
@@ -428,7 +569,80 @@ export default function Assistant() {
   // 切换会话时清空未发送的附件，避免串会话
   useEffect(() => {
     setPendingAtts([])
+    // 选区随消息列表一起换掉了，浮钮位置失效
+    setQuoteFloat(null)
   }, [activeId])
+
+  // ---------- 划选 AI 输出 → 引用到输入框 ----------
+  /** mouseup / 键盘划选（Shift+方向键）结束时检查选区：落在助手消息内才浮出引用钮。
+   *  选区文本在触发时就快照进 state —— 点击浮钮时原生选区往往已被收起，靠快照而非
+   *  当时的 window.getSelection 才拿得到内容。 */
+  useEffect(() => {
+    const readAssistantSelection = (): { text: string; rect: DOMRect } | null => {
+      const sel = window.getSelection()
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null
+      const anchor = sel.anchorNode
+      const el = anchor instanceof Element ? anchor : anchor?.parentElement
+      // 只认助手消息里的划选：引用的前提是「这是 AI 说的」
+      if (!el || !msgsRef.current?.contains(el) || !el.closest('.plan-chat-msg-assistant')) return null
+      const text = sel.toString().trim()
+      if (!text) return null
+      return { text, rect: sel.getRangeAt(0).getBoundingClientRect() }
+    }
+    const showAt = (hit: { text: string; rect: DOMRect } | null) => {
+      if (!hit) {
+        setQuoteFloat(null)
+        return
+      }
+      // 水平居中于选区并夹在视口内；选区贴着顶时浮钮改挂到选区下方
+      const x = Math.min(Math.max(hit.rect.left + hit.rect.width / 2, 100), window.innerWidth - 100)
+      const y = hit.rect.top > 64 ? hit.rect.top - 44 : hit.rect.bottom + 10
+      setQuoteFloat({ x, y, text: hit.text })
+    }
+    const onMouseUp = (e: MouseEvent) => {
+      // 点在浮钮自身上时不能收走它：mouseup 先于 click 到达，收走了 click 就落空
+      if (e.target instanceof Element && e.target.closest('.selection-quote-btn')) return
+      showAt(readAssistantSelection())
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (!e.shiftKey && !['Shift', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return
+      showAt(readAssistantSelection())
+    }
+    document.addEventListener('mouseup', onMouseUp)
+    document.addEventListener('keyup', onKeyUp)
+    return () => {
+      document.removeEventListener('mouseup', onMouseUp)
+      document.removeEventListener('keyup', onKeyUp)
+    }
+  }, [])
+
+  /** 把划选文本作为 markdown 引用块（> 逐行前缀）附到输入框末尾：
+      渲染出来是一段引用，AI 与用户都一眼看出「问的是这段」 */
+  const quoteSelectionToInput = () => {
+    if (!quoteFloat) return
+    const quoted = quoteFloat.text
+      .split('\n')
+      .map((l) => `> ${l}`)
+      .join('\n')
+    setChatState((prev) => {
+      const base = prev.input
+      const sep = base.length === 0 ? '' : base.endsWith('\n') ? '\n' : '\n\n'
+      return { ...prev, input: `${base}${sep}${quoted}\n` }
+    })
+    setQuoteFloat(null)
+    window.getSelection()?.removeAllRanges()
+    // 光标落到输入框末尾：引用完接着打字就是提问
+    requestAnimationFrame(() => {
+      const ta = inputRef.current?.resizableTextArea?.textArea
+      if (ta) {
+        ta.focus()
+        const end = ta.value.length
+        ta.setSelectionRange(end, end)
+      } else {
+        inputRef.current?.focus()
+      }
+    })
+  }
 
   // ---------- 左侧栏折叠 ----------
   /** 折叠/展开左侧栏（fold/unfold 图标与全局侧边栏保持一致） */
@@ -674,6 +888,42 @@ export default function Assistant() {
     document.addEventListener('mouseup', onGlobalMouseUp)
     return () => document.removeEventListener('mouseup', onGlobalMouseUp)
   }, [dragId])
+
+  /**
+   * 会话排序后的「撤销」提示（§6.2 验收标准：3 秒内可撤销）。
+   * beforeIds 是操作前的 id 序列；撤销时按 id 还原 —— 到点没点就自然消失，无需额外清理。
+   */
+  const showSessionUndo = (beforeIds: string[]) => {
+    message.open({
+      key: SESSION_ORDER_MSG_KEY,
+      type: 'success',
+      duration: 3,
+      content: (
+        <span>
+          已调整会话顺序
+          <Button
+            type="link"
+            size="small"
+            icon={<UndoOutlined />}
+            onClick={() => {
+              message.destroy(SESSION_ORDER_MSG_KEY)
+              if (restoreSessionOrderByIds(beforeIds)) message.info('已恢复排序前的顺序')
+              // 3 秒窗口内新建/删除过会话：旧快照对不上，明确告知而不是半截还原
+              else message.warning('会话列表已变化，无法撤销')
+            }}
+          >
+            撤销
+          </Button>
+        </span>
+      ),
+    })
+  }
+
+  /** 键盘排序：上移/下移一格；真的移动了才给撤销入口 */
+  const handleSessionMove = (id: string, delta: -1 | 1) => {
+    const before = sessionIdOrder(sessions)
+    if (moveSession(id, delta)) showSessionUndo(before)
+  }
 
   // ?plan=<id> 消费 + 计划列表加载 + 清理已删除的计划关联
   useEffect(() => {
@@ -1290,7 +1540,7 @@ export default function Assistant() {
     <div>
       <PageHeader
         title="AI 助手"
-        description="与 AI 教练自由对话：解答算法问题、调试代码、解读你的问题分布统计；关联训练计划后可直接修改计划，也可让 AI 评估并更新估算能力值。"
+        description="与 AI 教练自由对话：解答算法问题、调试代码、解读刷题数据；关联计划 / 题单 / 比赛后 AI 可直接动手。"
       />
       {needConfig && (
         <Alert
@@ -1322,6 +1572,54 @@ export default function Assistant() {
               </button>
             </Tooltip>
           </div>
+          {/* 折叠态迷你栏（P3-5）：会话图标 + 附件/流式提示 + 新建入口；
+              悬停或键盘聚焦时浮出完整会话列表，不必先展开侧栏。
+              is-flyout-locked：浮层里 ⋯ 菜单打开期间锁住浮层显隐 —— 菜单渲染在 portal，
+              鼠标移向它会离开 rail 触发区，不锁的话浮层带着触发按钮一起消失 */}
+          <div className={`assistant-mini-rail${miniActionsOpen ? ' is-flyout-locked' : ''}`}>
+            <Tooltip title={`${activeSession?.title ?? '新会话'} —— 点击展开侧栏`} placement="right">
+              <button
+                type="button"
+                className="mini-rail-avatar"
+                aria-label={`展开侧栏（当前会话：${activeSession?.title ?? '新会话'}）`}
+                onClick={toggleSideCollapsed}
+              >
+                {railInitial}
+                {sending && <LoadingOutlined className="mini-rail-stream" />}
+                {railAttachments > 0 && (
+                  <span className="mini-rail-badge" title={`当前会话有 ${railAttachments} 个附件`}>
+                    {railAttachments}
+                  </span>
+                )}
+              </button>
+            </Tooltip>
+            <Tooltip title="新建会话" placement="right">
+              <button type="button" className="mini-rail-new" aria-label="新建会话" onClick={createNewSession}>
+                <PlusOutlined />
+              </button>
+            </Tooltip>
+            <div className="mini-rail-flyout">
+              <SessionMiniPanel
+                sessions={miniSessions}
+                activeId={activeId}
+                onSelect={switchToSession}
+                onCreate={createNewSession}
+                /* 折叠态也能键盘排序：与展开侧栏的会话行共用同一个撤销提示 */
+                onMove={handleSessionMove}
+                /* 折叠态同样能重命名/置顶/删除：与展开侧行共用 renamingId 与确认弹窗 */
+                renamingId={renamingId}
+                onRenameStart={setRenamingId}
+                onRenameCommit={(id, title) => {
+                  renameSession(id, title)
+                  setRenamingId(null)
+                }}
+                onRenameCancel={() => setRenamingId(null)}
+                onTogglePin={toggleSessionPin}
+                onDeleteRequest={confirmDeleteSession}
+                onActionsOpenChange={setMiniActionsOpen}
+              />
+            </div>
+          </div>
           {/* 会话记录 */}
           <Card
             size="small"
@@ -1338,13 +1636,14 @@ export default function Assistant() {
             }
           >
             <div style={{ maxHeight: 280, overflowY: 'auto', margin: '0 -4px' }}>
-              {sessions.map((s) => {
+              {orderedSessions.map((s) => {
                 const isActive = s.id === activeId
                 const isDragging = dragId === s.id
                 const isDragOver = dragOverId === s.id && dragId !== null && dragId !== s.id
                 return (
                   <div
                     key={s.id}
+                    className="reorder-host"
                     onClick={() => switchToSession(s.id)}
                     style={{
                       display: 'flex',
@@ -1354,9 +1653,9 @@ export default function Assistant() {
                       borderRadius: 8,
                       cursor: 'pointer',
                       marginBottom: 2,
-                      background: isActive ? 'rgba(134, 168, 255, 0.13)' : 'transparent',
+                      background: isActive ? 'var(--brand-soft)' : 'transparent',
                       opacity: isDragging ? 0.4 : 1,
-                      borderTop: isDragOver ? '2px solid #86a8ff' : '2px solid transparent',
+                      borderTop: isDragOver ? '2px solid var(--brand)' : '2px solid transparent',
                       transition: 'background 0.15s',
                       userSelect: dragId !== null ? 'none' : undefined,
                     }}
@@ -1365,7 +1664,7 @@ export default function Assistant() {
                       if (dragIdRef.current !== null && dragIdRef.current !== s.id) {
                         setDragOverId(s.id)
                       } else if (!isActive && !isDragging) {
-                        e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
+                        e.currentTarget.style.background = 'var(--overlay-2)'
                       }
                     }}
                     onMouseLeave={(e) => {
@@ -1373,9 +1672,11 @@ export default function Assistant() {
                       if (!isActive) e.currentTarget.style.background = 'transparent'
                     }}
                     onMouseUp={() => {
-                      // 拖拽中松手在此行：执行排序
+                      // 拖拽中松手在此行：执行排序（并留一条撤销入口）
                       if (dragIdRef.current !== null && dragIdRef.current !== s.id) {
+                        const before = sessionIdOrder(sessions)
                         reorderSessions(dragIdRef.current, s.id)
+                        showSessionUndo(before)
                       }
                       dragIdRef.current = null
                       setDragId(null)
@@ -1383,7 +1684,7 @@ export default function Assistant() {
                     }}
                   >
                     <HolderOutlined
-                      style={{ fontSize: 12, color: '#5a6472', flexShrink: 0, cursor: 'grab' }}
+                      style={{ fontSize: 12, color: 'var(--text-dim)', flexShrink: 0, cursor: 'grab' }}
                       onMouseDown={(e) => {
                         // 在手柄上按下鼠标：启动拖拽（阻止默认行为避免选中文本）
                         e.stopPropagation()
@@ -1392,6 +1693,8 @@ export default function Assistant() {
                         setDragId(s.id)
                       }}
                     />
+                    {/* 行内只留拖拽手柄 + ⋯ 菜单：↑↓ 排序与拖拽功能重复，重命名/置顶/删除
+                        是低频操作，收进菜单把宽度还给标题。⋯ 是真实按钮，键盘和触屏都够得着。 */}
                     <div style={{ flex: 1, minWidth: 0 }} onDoubleClick={() => setRenamingId(s.id)}>
                       {renamingId === s.id ? (
                         <Input
@@ -1414,58 +1717,67 @@ export default function Assistant() {
                         />
                       ) : (
                         <>
-                          <div
-                            style={{
-                              fontSize: 13,
-                              fontWeight: isActive ? 600 : 400,
-                              whiteSpace: 'nowrap',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              color: s.pinned ? '#f2c46d' : undefined,
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 4,
-                            }}
-                            title="双击重命名"
-                          >
-                            {sendingIds.has(s.id) && (
-                              <LoadingOutlined style={{ fontSize: 11, color: '#86a8ff', flexShrink: 0 }} />
-                            )}
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title || '新会话'}</span>
-                          </div>
-                          <div style={{ fontSize: 11, color: '#8993a2' }}>{relTime(s.updatedAt)}</div>
+                          {/* 双击重命名的提示：原生 title 悬停约 1 秒才出、无样式、键盘聚焦也不显示；
+                              换成 Tooltip 后与行内「⋯ → 重命名」的入口保持同一套提示形态
+                              （键盘用户的主路径是 ⋯ 菜单，这里是鼠标路径的提示） */}
+                          <Tooltip title="双击重命名">
+                            <div
+                              style={{
+                                fontSize: 13,
+                                fontWeight: isActive ? 600 : 400,
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                color: s.pinned ? 'var(--amber)' : undefined,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 4,
+                              }}
+                            >
+                              {sendingIds.has(s.id) && (
+                                <LoadingOutlined style={{ fontSize: 11, color: 'var(--brand)', flexShrink: 0 }} />
+                              )}
+                              {s.pinned && (
+                                <PushpinFilled style={{ fontSize: 11, color: 'var(--amber)', flexShrink: 0 }} />
+                              )}
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title || '新会话'}</span>
+                            </div>
+                          </Tooltip>
+                          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{relTime(s.updatedAt)}</div>
                         </>
                       )}
                     </div>
-                    <Button
-                      size="small"
-                      type="text"
-                      icon={s.pinned ? <PushpinFilled style={{ color: '#f2c46d' }} /> : <PushpinOutlined />}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        toggleSessionPin(s.id)
+                    <Dropdown
+                      trigger={['click']}
+                      placement="bottomRight"
+                      menu={{
+                        items: [
+                          { key: 'rename', icon: <EditOutlined />, label: '重命名' },
+                          {
+                            key: 'pin',
+                            icon: s.pinned ? <PushpinFilled /> : <PushpinOutlined />,
+                            label: s.pinned ? '取消置顶' : '置顶',
+                          },
+                          { type: 'divider' },
+                          { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true },
+                        ],
+                        onClick: ({ key, domEvent }) => {
+                          domEvent.stopPropagation() // 不能顺带切换会话
+                          if (key === 'rename') setRenamingId(s.id)
+                          else if (key === 'pin') toggleSessionPin(s.id)
+                          else if (key === 'delete') confirmDeleteSession(s.id)
+                        },
                       }}
-                      style={{ flexShrink: 0, padding: '0 4px' }}
-                    />
-                    <Popconfirm
-                      title="删除这条会话？"
-                      okText="删除"
-                      cancelText="取消"
-                      onConfirm={(e) => {
-                        e?.stopPropagation()
-                        deleteSessionById(s.id)
-                      }}
-                      onCancel={(e) => e?.stopPropagation()}
                     >
                       <Button
                         size="small"
                         type="text"
-                        danger
-                        icon={<DeleteOutlined />}
+                        icon={<MoreOutlined />}
+                        aria-label={`会话操作：「${s.title || '新会话'}」`}
                         onClick={(e) => e.stopPropagation()}
                         style={{ flexShrink: 0, padding: '0 4px' }}
                       />
-                    </Popconfirm>
+                    </Dropdown>
                   </div>
                 )
               })}
@@ -1474,78 +1786,90 @@ export default function Assistant() {
 
           {/* 对话上下文 */}
           <Card size="small" title="对话上下文" style={{ marginTop: 12 }}>
-            <p style={{ fontSize: 12, color: '#8993a2', marginBottom: 8 }}>
-              AI 自动携带你的练习数据汇总（含问题分布统计）与弱项画像。
+            <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 8 }}>
+              AI 自动携带你的练习数据汇总与弱项画像。
             </p>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="关联训练计划（可选）"
-              value={planId}
-              allowClear
-              onClear={() => updateActiveSessionPlanId(undefined)}
-              onChange={(v) => updateActiveSessionPlanId(v)}
-              options={plans.map((p) => ({ value: p.id, label: p.title }))}
-            />
-            <p style={{ fontSize: 12, color: '#8993a2', margin: '8px 0 0' }}>
-              关联后可让 AI 直接修改该计划（应用前会向你确认）。
-            </p>
-            <Select
-              style={{ width: '100%', marginTop: 8 }}
-              placeholder="关联题单整理（可选）"
-              value={listId}
-              allowClear
-              onClear={() => updateActiveSessionListId(undefined)}
-              onChange={(v) => updateActiveSessionListId(v)}
-              options={problemLists.map((l) => ({
-                value: l.id,
-                label: `${l.title}（${l.item_count} 题）`,
-              }))}
-            />
-            <p style={{ fontSize: 12, color: '#8993a2', margin: '8px 0 0' }}>
-              关联后 AI 可基于题单内容分析分类、推荐优先刷哪些题。
-            </p>
-            <Select
-              style={{ width: '100%', marginTop: 8 }}
-              placeholder="赛后复盘：选择参加过的比赛（可选）"
-              value={contestKey}
-              allowClear
-              showSearch
-              optionFilterProp="label"
-              onClear={() => updateActiveSessionContestKey(undefined)}
-              onChange={(v) => {
-                updateActiveSessionContestKey(v)
-                // 选中即预填复盘请求（输入框已有草稿时不覆盖）：带上本场关键事实，
-                // 省去 AI 反问「哪一场、做了几题」
-                if (v && !input.trim()) {
-                  const picked = contests.find((c) => c.key === v)
-                  setChatState((prev) => ({
-                    ...prev,
-                    input: picked ? reviewRequestText(picked) : REVIEW_REQUEST_TEXT,
-                  }))
-                }
-              }}
-              options={contests.map((c) => {
-                const label = c.name ?? `${platformName(c.platform)} · ${c.contestId}`
-                const d = new Date(c.startTimeIso ?? c.lastSubmittedAt)
-                const date = Number.isFinite(d.getTime()) ? ` · ${d.getMonth() + 1}/${d.getDate()}` : ''
-                const counts =
-                  c.submissionCount === 0 ? '未同步提交' : `${c.problemCount} 题 AC ${c.acProblemCount}`
-                return {
-                  value: c.key,
-                  label: `${label}（${platformName(c.platform)}${date} · ${counts}）`,
-                }
-              })}
-              notFoundContent={
-                <span style={{ fontSize: 12, color: '#8993a2' }}>
-                  暂无可复盘的比赛——先到「题目管理」同步各平台提交记录
+            {/* 三个关联入口的「关联了会发生什么」说明收进 ⓘ：一段四行的复盘说明
+                在 260px 侧栏里要占十来行，悬停才需要知道细节的不必常驻 */}
+            <div className="ctx-select-row">
+              <Select
+                style={{ flex: 1, minWidth: 0 }}
+                placeholder="关联训练计划（可选）"
+                value={planId}
+                allowClear
+                onClear={() => updateActiveSessionPlanId(undefined)}
+                onChange={(v) => updateActiveSessionPlanId(v)}
+                options={plans.map((p) => ({ value: p.id, label: p.title }))}
+              />
+              <Tooltip title="关联后 AI 可直接修改该计划；每次修改都会先向你确认，确认后才会应用。">
+                <span className="ctx-help" aria-label="关联训练计划说明">
+                  <InfoCircleOutlined />
                 </span>
-              }
-            />
-            <p style={{ fontSize: 12, color: '#8993a2', margin: '8px 0 0' }}>
-              选中后 AI 会拿到比赛链接与该场提交记录进行复盘。列表来自你的提交记录与各平台参赛记录
-              （CF / AtCoder / 洛谷 / 牛客 / 计蒜客 / QOJ）；代码源、LeetCode 暂不支持；标注「未同步提交」的场次
-              AI 会结合平台排名成绩与比赛链接点评。
-            </p>
+              </Tooltip>
+            </div>
+            <div className="ctx-select-row">
+              <Select
+                style={{ flex: 1, minWidth: 0 }}
+                placeholder="关联题单整理（可选）"
+                value={listId}
+                allowClear
+                onClear={() => updateActiveSessionListId(undefined)}
+                onChange={(v) => updateActiveSessionListId(v)}
+                options={problemLists.map((l) => ({
+                  value: l.id,
+                  label: `${l.title}（${l.item_count} 题）`,
+                }))}
+              />
+              <Tooltip title="关联后 AI 会基于题单内容分析分类、推荐优先刷哪些题。">
+                <span className="ctx-help" aria-label="关联题单说明">
+                  <InfoCircleOutlined />
+                </span>
+              </Tooltip>
+            </div>
+            <div className="ctx-select-row">
+              <Select
+                style={{ flex: 1, minWidth: 0 }}
+                placeholder="赛后复盘比赛（可选）"
+                value={contestKey}
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                onClear={() => updateActiveSessionContestKey(undefined)}
+                onChange={(v) => {
+                  updateActiveSessionContestKey(v)
+                  // 选中即预填复盘请求（输入框已有草稿时不覆盖）：带上本场关键事实，
+                  // 省去 AI 反问「哪一场、做了几题」
+                  if (v && !input.trim()) {
+                    const picked = contests.find((c) => c.key === v)
+                    setChatState((prev) => ({
+                      ...prev,
+                      input: picked ? reviewRequestText(picked) : REVIEW_REQUEST_TEXT,
+                    }))
+                  }
+                }}
+                options={contests.map((c) => {
+                  const label = c.name ?? `${platformName(c.platform)} · ${c.contestId}`
+                  const d = new Date(c.startTimeIso ?? c.lastSubmittedAt)
+                  const date = Number.isFinite(d.getTime()) ? ` · ${d.getMonth() + 1}/${d.getDate()}` : ''
+                  const counts =
+                    c.submissionCount === 0 ? '未同步提交' : `${c.problemCount} 题 AC ${c.acProblemCount}`
+                  return {
+                    value: c.key,
+                    label: `${label}（${platformName(c.platform)}${date} · ${counts}）`,
+                  }
+                })}
+                notFoundContent={
+                  <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                    暂无可复盘的比赛——先到「题目管理」同步各平台提交记录
+                  </span>
+                }
+              />
+              <Tooltip title="选中后 AI 会拿到比赛链接与该场提交记录进行复盘。列表来自你的提交记录与各平台参赛记录（CF / AtCoder / 洛谷 / 牛客 / 计蒜客 / QOJ）；代码源、LeetCode 暂不支持；标注「未同步提交」的场次，AI 会结合平台排名成绩与比赛链接点评。">
+                <span className="ctx-help" aria-label="赛后复盘说明">
+                  <InfoCircleOutlined />
+                </span>
+              </Tooltip>
+            </div>
           </Card>
 
           {/* 估算能力值 */}
@@ -1564,18 +1888,23 @@ export default function Assistant() {
             {ability ? (
               <>
                 <div style={{ fontSize: 28, fontWeight: 700 }}>{ability.effective}</div>
-                <div style={{ fontSize: 12, color: '#8993a2' }}>
-                  计算值 {ability.computed}（加权解题证据估算）
-                </div>
-                {ability.override && (
-                  <div style={{ marginTop: 8 }}>
-                    <Tag color="purple">AI 调整</Tag>
-                    <span style={{ fontSize: 12 }}>{ability.override.reason ?? '未记录理由'}</span>
+                {/* 未调整时 effective 就是计算值，不重复报数；被 AI 调整过才给出计算值与理由 */}
+                {ability.override ? (
+                  <div style={{ fontSize: 12, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                    <Tag color="purple" style={{ marginInlineEnd: 0 }}>
+                      AI 调整
+                    </Tag>
+                    <span>
+                      计算值 {ability.computed}
+                      {ability.override.reason ? ` · ${ability.override.reason}` : ''}
+                    </span>
                   </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: 'var(--text-3)' }}>加权解题证据估算</div>
                 )}
               </>
             ) : abilityError ? (
-              <span style={{ fontSize: 12, color: '#f2c46d' }}>
+              <span style={{ fontSize: 12, color: 'var(--amber)' }}>
                 加载失败，<a onClick={loadAbility}>重试</a>
               </span>
             ) : (
@@ -1603,6 +1932,17 @@ export default function Assistant() {
               </div>
             </div>
           )}
+          {quoteFloat && (
+            /* 划选 AI 输出后的浮钮：fixed 定位挂 viewport 坐标，避开任何祖先 overflow 裁剪 */
+            <button
+              type="button"
+              className="selection-quote-btn"
+              style={{ left: quoteFloat.x, top: quoteFloat.y, transform: 'translateX(-50%)' }}
+              onClick={quoteSelectionToInput}
+            >
+              <SelectOutlined /> 引用到输入框
+            </button>
+          )}
           <div
             className="plan-chat-msgs"
             ref={msgsRef}
@@ -1610,17 +1950,34 @@ export default function Assistant() {
               const el = e.currentTarget
               // 距底部 80px 以内视为"在底部"，允许自动滚动；超出则用户主动上滑，停止跟随
               stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+              // 滚动后选区的 viewport 位置已失效，引用浮钮先收起（重新划选会再浮出）
+              setQuoteFloat(null)
             }}
           >
             {messages.length === 0 && !sending && (
-              <div style={{ color: '#8993a2', fontSize: 13, padding: '32px 16px', textAlign: 'center' }}>
-                <RobotOutlined style={{ fontSize: 32, display: 'block', marginBottom: 12 }} />
-                试试这样问：<br />
-                「我哪个知识点最弱？该怎么补？」<br />
-                「这段代码为什么 TLE：粘贴你的代码」<br />
-                「根据我的刷题情况帮我重新估算能力值」<br />
-                「把这段思路沉淀成模板记到模板库」{planId !== undefined ? '「把计划里下周改成图论专题」' : ''}
-                {listId !== undefined ? '「题单里哪道题最值得先做？」' : ''}
+              /* 空态建议做成可点的芯片：点击即填入输入框，不再只是装饰性文字 */
+              <div className="chat-empty">
+                <RobotOutlined className="chat-empty-icon" />
+                <div className="chat-empty-title">试试这样问：</div>
+                <div className="chat-empty-sugs">
+                  {[
+                    '我哪个知识点最弱？该怎么补？',
+                    '这段代码为什么 TLE：粘贴你的代码',
+                    '根据我的刷题情况帮我重新估算能力值',
+                    '把这段思路沉淀成模板记到模板库',
+                    ...(planId !== undefined ? ['把计划里下周改成图论专题'] : []),
+                    ...(listId !== undefined ? ['题单里哪道题最值得先做？'] : []),
+                  ].map((sug) => (
+                    <button
+                      key={sug}
+                      type="button"
+                      className="chat-empty-sug"
+                      onClick={() => setChatState((prev) => ({ ...prev, input: sug }))}
+                    >
+                      {sug}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             {messages.map((m, i) => {
@@ -1687,10 +2044,10 @@ export default function Assistant() {
                       style={{
                         marginBottom: 8,
                         padding: '6px 12px',
-                        background: 'var(--fill-2, rgba(0,0,0,0.04))',
+                        background: 'var(--overlay-2)',
                         borderRadius: 6,
                         fontSize: 13,
-                        color: 'var(--text-2, #5b6573)',
+                        color: 'var(--text-2)',
                       }}
                     >
                       <summary style={{ cursor: 'pointer', userSelect: 'none', fontWeight: 500 }}>
@@ -1701,7 +2058,39 @@ export default function Assistant() {
                       </div>
                     </details>
                   )}
-                  <Markdown text={text} streaming={sending && i === messages.length - 1} />
+                  <div
+                    className={
+                      text.length > LONG_MSG_CHARS && !(sending && i === messages.length - 1) && !expandedMsgs.has(i)
+                        ? 'msg-clamp'
+                        : undefined
+                    }
+                  >
+                    <Markdown text={text} streaming={sending && i === messages.length - 1} />
+                  </div>
+                  {(() => {
+                    // 超长回复（且已经输出完）默认折叠，给出「展开全文 / 收起」
+                    const tooLong = text.length > LONG_MSG_CHARS
+                    const isStreamingThis = sending && i === messages.length - 1
+                    if (!tooLong || isStreamingThis) return null
+                    const expanded = expandedMsgs.has(i)
+                    return (
+                      <Button
+                        size="small"
+                        type="text"
+                        className="msg-clamp-toggle"
+                        onClick={() =>
+                          setExpandedMsgs((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(i)) next.delete(i)
+                            else next.add(i)
+                            return next
+                          })
+                        }
+                      >
+                        {expanded ? '收起' : `展开全文（约 ${Math.round(text.length / 100) / 10} 千字）`}
+                      </Button>
+                    )
+                  })()}
                   {text.trim() && (
                     <Button
                       size="small"
@@ -1732,7 +2121,7 @@ export default function Assistant() {
                       )}
                       {abilityUpd &&
                         (abilityUpd.level === ability?.effective ? (
-                          <span style={{ fontSize: 12, color: 'var(--text-3, #8993a2)' }}>
+                          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
                             建议值 {abilityUpd.level} 与当前生效值相同，无需重复更新
                           </span>
                         ) : (
@@ -1828,7 +2217,7 @@ export default function Assistant() {
                       style={{
                         marginTop: 4,
                         fontSize: 12,
-                        color: 'var(--text-3, #8993a2)',
+                        color: 'var(--text-3)',
                         textAlign: 'right',
                       }}
                     >
@@ -1846,7 +2235,33 @@ export default function Assistant() {
               </div>
             )}
           </div>
-          <div className="plan-chat-input">
+          <div className="plan-chat-input" style={{ position: 'relative' }}>
+            {/* `/` 快捷指令候选（P3-5）：浮在输入框上方，不挤压消息区高度 */}
+            {cmdMenuOpen && (
+              <div className="chat-cmd-menu" role="listbox" aria-label="快捷指令">
+                {cmdCandidates.map((c, i) => (
+                  <button
+                    key={c.name}
+                    type="button"
+                    role="option"
+                    aria-selected={i === cmdIndex}
+                    className={`chat-cmd-item${i === cmdIndex ? ' is-active' : ''}`}
+                    onMouseEnter={() => setCmdIndex(i)}
+                    // mousedown 而不是 click：click 之前输入框会先失焦，菜单已经被关掉
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      runChatCommand(c)
+                    }}
+                  >
+                    <span className="chat-cmd-name">
+                      /{c.name}
+                      {c.arg ? <span className="chat-cmd-arg"> {c.arg}</span> : null}
+                    </span>
+                    <span className="chat-cmd-hint">{c.hint}</span>
+                  </button>
+                ))}
+              </div>
+            )}
             {pendingAtts.length > 0 && (
               <div style={{ flexBasis: '100%', display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                 {pendingAtts.map((a, i) => (
@@ -1866,13 +2281,30 @@ export default function Assistant() {
               ref={inputRef}
               value={input}
               onChange={(e) => setChatState((prev) => ({ ...prev, input: e.target.value }))}
-              placeholder="向 AI 教练提问…（可粘贴代码，拖入或附加图片/代码文件）Enter 发送，Shift+Enter 换行"
+              placeholder="向 AI 教练提问…（可粘贴代码，拖入或附加图片/代码文件；输入 / 查看快捷指令）Enter 发送，Shift+Enter 换行"
               autoSize={{ minRows: 1, maxRows: 6 }}
-              onPressEnter={(e) => {
-                if (!e.shiftKey) {
+              onKeyDown={(e) => {
+                // 菜单打开时先吃掉方向键/Enter/Esc，避免同时触发「发送」
+                if (!cmdMenuOpen) return
+                if (e.key === 'ArrowDown') {
                   e.preventDefault()
-                  void send()
+                  setCmdIndex((i) => (i + 1) % cmdCandidates.length)
+                } else if (e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  setCmdIndex((i) => (i - 1 + cmdCandidates.length) % cmdCandidates.length)
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setCmdDismissed(true)
                 }
+              }}
+              onPressEnter={(e) => {
+                if (e.shiftKey) return
+                e.preventDefault()
+                if (cmdMenuOpen) {
+                  runChatCommand(cmdCandidates[cmdIndex])
+                  return
+                }
+                void send()
               }}
             />
             <Button
@@ -1893,7 +2325,7 @@ export default function Assistant() {
               <>
                 {/* 正文输出完但 AI 还在跑工具（检索/抓网页）时，说明为什么按钮仍是「停止」 */}
                 {toolStatus?.sessionId === activeId && (
-                  <span style={{ fontSize: 12, color: 'var(--text-3, #8993a2)', whiteSpace: 'nowrap' }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
                     {toolStatus.text}
                   </span>
                 )}

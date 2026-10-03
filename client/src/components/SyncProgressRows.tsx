@@ -50,9 +50,9 @@ export function RunningRows() {
               )}
               {job && <Typography.Text type="secondary">{phaseText(job)}</Typography.Text>}
             </Space>
-            {job && <div style={{ color: '#8993a2', fontSize: 12, marginTop: 2 }}>{jobLineText(job)}</div>}
+            {job && <div style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 2 }}>{jobLineText(job)}</div>}
             {row.state === 'failed' && row.error && (
-              <div style={{ color: '#ff7875', fontSize: 12, marginTop: 2 }}>{row.error}</div>
+              <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 2 }}>{row.error}</div>
             )}
           </div>
         )
@@ -90,7 +90,7 @@ export function IdlePlatformRows() {
               {s.handle}
             </Typography.Text>
           </Space>
-          <div style={{ color: '#8993a2', fontSize: 12, marginTop: 2 }}>{platformRunLine(s)}</div>
+          <div style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 2 }}>{platformRunLine(s)}</div>
         </div>
       ))}
     </Space>

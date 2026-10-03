@@ -21,7 +21,7 @@ export default function SyncProgressHint({ platform }: { platform?: PlatformId }
   if (!text) return null
 
   return (
-    <span style={{ color: '#8993a2', fontSize: 12 }} title="切换页面不会中断同步；请勿关闭应用">
+    <span style={{ color: 'var(--text-3)', fontSize: 12 }} title="切换页面不会中断同步；请勿关闭应用">
       {text}
     </span>
   )

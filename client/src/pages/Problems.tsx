@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Key } from 'react'
 import {
   Alert,
   Button,
   Checkbox,
+  Dropdown,
   Form,
   Input,
   InputNumber,
@@ -19,7 +21,7 @@ import {
   Upload,
 } from 'antd'
 import type { TableProps, TreeSelectProps } from 'antd'
-import { ApartmentOutlined, CheckOutlined, ClearOutlined, CloudDownloadOutlined, DeleteOutlined, DownOutlined, EditOutlined, HistoryOutlined, InboxOutlined, PlusOutlined, ReadOutlined, RestOutlined, TagsOutlined, UpOutlined } from '@ant-design/icons'
+import { ApartmentOutlined, CheckOutlined, ClearOutlined, CloudDownloadOutlined, DeleteOutlined, DownOutlined, EditOutlined, HistoryOutlined, InboxOutlined, MoreOutlined, PlusOutlined, ReadOutlined, RestOutlined, TagsOutlined, UpOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useSearchParams } from 'react-router-dom'
 import SyncProgressHint from '../components/SyncProgressHint'
@@ -30,9 +32,14 @@ import { PLATFORMS } from '../../../shared/src/index.ts'
 import IntentPopover from '../components/IntentPopover'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
+import EmptyState from '../components/EmptyState'
+import InlineError from '../components/InlineError'
+import PageSkeleton from '../components/PageSkeleton'
+import ProblemBatchActions from '../components/ProblemBatchActions'
 import { difficultyColor, formatDifficulty, OFFICIAL_NO_DIFFICULTY_TEXT, PLATFORM_COLOR, platformName, tagColor } from '../ui'
 import { DIFFICULTY_BUCKETS as DIFF_BUCKETS, type DifficultyBucket } from '../problemFilter'
 import { appendSortParams, sortFieldOf, sortFromAntd, sorterOrderOf, sortTooltip, type SortState } from '../problemSort'
+import { BP, useMediaQuery } from '../useMediaQuery'
 import { codeOptionsFromTags } from '../intentOptions'
 import { del, get, patch, post, put } from '../api'
 import {
@@ -161,6 +168,13 @@ export default function Problems() {
   // React 19 下 antd 静态 message/Modal.confirm 静默失效，必须用 App 上下文实例
   const { message, modal } = AntdApp.useApp()
   const [searchParams] = useSearchParams()
+  /**
+   * ≤920px 时算法标签栏换成顶部 Select（§5.2 / P3-2）。
+   * 原实现是把它横排成需要横向滚动的窄条：一屏只看得见三四个标签、且丢了「全部标签」的语境，
+   * 平板/小屏上基本不可用。这里两套结构二选一渲染 —— 而不是都用 CSS 藏着 ——
+   * 否则侧栏与 Select 会同时存在于 Tab 顺序里，读屏也会念两遍。
+   */
+  const narrowTaxonomy = useMediaQuery(BP.narrowTaxonomy)
   const [rows, setRows] = useState<ProblemRow[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -181,8 +195,9 @@ export default function Problems() {
     return t ? [t] : []
   })
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
-  const [q, setQ] = useState<string>()
-  const [qInput, setQInput] = useState('')
+  // 关键词：支持从全局命令面板带 ?q= 跳入（选中一道题直接落到该题的搜索结果上）
+  const [q, setQ] = useState<string | undefined>(() => searchParams.get('q') ?? undefined)
+  const [qInput, setQInput] = useState(() => searchParams.get('q') ?? '')
   // 难度区间（CF rating 标尺，闭区间；未知难度的题在设置区间后不显示）
   const [diffMin, setDiffMin] = useState<number | undefined>()
   const [diffMax, setDiffMax] = useState<number | undefined>()
@@ -202,6 +217,20 @@ export default function Problems() {
   const [draftTags, setDraftTags] = useState<string[]>([])
   const [draftDiffMin, setDraftDiffMin] = useState<number | undefined>()
   const [draftDiffMax, setDraftDiffMax] = useState<number | undefined>()
+
+  /**
+   * 命令面板深链跟随：`/problems?q=<题号>`。
+   *
+   * 页面容器在 App.tsx 里是按 **pathname** 加 key 的，同一路由只变 query 不会重挂载，
+   * 所以已经停在题目管理页时再选一道题，光靠 useState 初值拿不到新关键词 —— 必须监听
+   * 参数变化补一次。只在参数本身变化时同步，用户手动清空搜索框不会被它反复覆盖。
+   */
+  const urlQ = searchParams.get('q') ?? ''
+  useEffect(() => {
+    if (!urlQ) return
+    setQ(urlQ)
+    setQInput(urlQ)
+  }, [urlQ])
   // 内置题库开箱即用：默认包含未做题库题（否则题库再大默认视图也只有做过的题）
   const [includeBank, setIncludeBank] = useState(true)
   const [importOpen, setImportOpen] = useState(() => searchParams.get('import') === 'sync')
@@ -230,6 +259,19 @@ export default function Problems() {
   const [diffEditRow, setDiffEditRow] = useState<ProblemRow | null>(null)
   const [diffEditValue, setDiffEditValue] = useState<number | null>(null)
   const [diffSaving, setDiffSaving] = useState(false)
+
+  // 批量操作（P3-1）：选中行 key 受控；preserveSelectedRowKeys 让翻页后选择不丢
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
+  const [batchBusy, setBatchBusy] = useState(false)
+  /**
+   * 操作列「更多」下拉：`open` 受控（同一时刻只开一行，也便于「卡在哪」那项不关闭菜单）。
+   * keepMenuOpenRef：rc-menu 先调菜单项自己的 onClick、再调菜单级 onClick（Dropdown 借此关闭），
+   * 于是「卡在哪」项里把标记置上，随后的关闭请求就被忽略——否则 Popover 会锚在已经隐藏的菜单上。
+   */
+  const [menuRowId, setMenuRowId] = useState<number | null>(null)
+  const keepMenuOpenRef = useRef(false)
+  /** 列表取数失败原因：与「一道题都没有」严格区分（失败渲染 InlineError 而不是空态） */
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   // 过滤条件 → 查询串（服务端过滤；分页参数单独拼，便于翻页时复用同一组条件）
   const buildFilterParams = useCallback(() => {
@@ -278,9 +320,14 @@ export default function Problems() {
         setRows(res.items)
         setTotal(res.total)
         setPage(res.page)
+        setLoadError(null)
       })
       .catch((e: Error) => {
-        if (seq === reqSeq.current) message.error(e.message)
+        if (seq === reqSeq.current) {
+          // 提示条 + 表格内 InlineError 双通道：翻页失败时旧行还在，只有提示条能说明「这是旧数据」
+          setLoadError(e.message)
+          message.error(e.message)
+        }
       })
       .finally(() => {
         if (seq === reqSeq.current) setLoading(false)
@@ -536,7 +583,7 @@ export default function Problems() {
                   </li>
                 ))}
               </ul>
-              {dupes.length > 5 && <span style={{ color: '#8993a2' }}>… 共 {dupes.length} 组</span>}
+              {dupes.length > 5 && <span style={{ color: 'var(--text-3)' }}>… 共 {dupes.length} 组</span>}
             </>
           )}
         </div>
@@ -584,6 +631,26 @@ export default function Problems() {
   const activeFilterCount =
     tagFilters.length + (diffUnknown || diffMin != null || diffMax != null ? 1 : 0)
 
+  /**
+   * 是否存在任何会收窄结果集的筛选条件。
+   *
+   * 只用于空态文案的分岔：命中筛选 → 「没有符合条件的题目」+ 重置筛选按钮；
+   * 否则 → 「题库里还没有题目」+ 导入入口。这两件事对用户完全不同，
+   * 合并成一句话等于让筛错条件的用户以为题库是空的。
+   *
+   * 判定范围必须与 resetFilters() 清理的字段一致（否则点了「重置筛选」仍显示
+   * 「没有符合条件」会自相矛盾）；includeBank 是「是否包含题库未入库题目」的
+   * 展示开关而非收窄条件，因此不计入。
+   */
+  const filterActive =
+    platform != null ||
+    tagFilters.length > 0 ||
+    statusFilter !== 'all' ||
+    diffMin != null ||
+    diffMax != null ||
+    diffUnknown ||
+    Boolean(q && q.trim())
+
   const toggleFilterPanel = () => {
     if (!filterOpen) {
       setDraftTags(tagFilters)
@@ -623,7 +690,7 @@ export default function Problems() {
         count: unfilteredFacets?.difficulty[b.key] ?? 0,
       })).map((b) => ({
         ...b,
-        color: b.min == null ? '#8993a2' : difficultyColor((b.min + (b.max ?? b.min + 199)) / 2),
+        color: b.min == null ? 'var(--text-3)' : difficultyColor((b.min + (b.max ?? b.min + 199)) / 2),
       })),
     [unfilteredFacets],
   )
@@ -680,7 +747,12 @@ export default function Problems() {
     setIncludeBank(true)
   }
 
-  const markAc = async (r: ProblemRow) => {
+  /**
+   * 标记 AC（单条主操作）。`quiet` = 批量执行时的静默模式：
+   * 不逐题弹提示、不逐题重取列表（批量栏跑完统一汇报一次并刷新一次），失败改为向上抛出，
+   * 由批量执行器计数——单条调用（quiet 缺省）行为与改造前完全一致。
+   */
+  const markAc = async (r: ProblemRow, quiet = false) => {
     try {
       await post('/api/import/manual', {
         platform: r.platform,
@@ -695,25 +767,30 @@ export default function Problems() {
           },
         ],
       })
+      if (quiet) return
       message.success(`已标记 ${r.problem_key} 为 AC`)
       loadRef.current()
     } catch (e) {
+      if (quiet) throw e
       message.error((e as Error).message)
     }
   }
 
-  const addToReview = async (r: ProblemRow) => {
+  /** 加入复习队列（单条）。`quiet` 同上：批量加入时不逐题提示、不逐题刷新 */
+  const addToReview = async (r: ProblemRow, quiet = false) => {
     try {
       const res = await post<{ alreadyInQueue: boolean; nextDueOn: string }>('/api/reviews', {
         platform: r.platform,
         problemKey: r.problem_key,
       })
+      if (quiet) return
       // 新条目按题目 id 错峰 0–3 天到期（批量加入时不再同日堆满），所以要把日期念出来
       message.success(
         `「${r.problem_key}」${res.alreadyInQueue ? '已在复习队列' : '已加入复习队列'}，下次到期 ${res.nextDueOn}`,
       )
       loadRef.current()
     } catch (e) {
+      if (quiet) throw e
       message.error((e as Error).message)
     }
   }
@@ -740,7 +817,7 @@ export default function Problems() {
             将一并删除该题的提交记录（{r.attempts} 条）、复习条目（{r.reviewItemId != null ? 1 : 0} 条）、
             卡点与知识点标注，相关统计同步减少且<b>不可恢复</b>；训练计划里引用该题的任务仅解除关联。
           </p>
-          <p style={{ margin: '4px 0', color: '#8993a2' }}>
+          <p style={{ margin: '4px 0', color: 'var(--text-3)' }}>
             仅用于清理重复 / 误导入的题目；如需隐藏题库未做题，关掉「含题库未做题」即可。
             删除后同步与题库拉取不再重建该题；题目行可在工具栏「回收站」恢复（提交 / 复习 /
             卡点 / 人工知识点标注不会找回）。
@@ -769,6 +846,115 @@ export default function Problems() {
     })
   }
 
+  // ---------- 批量操作（P3-1） ----------
+
+  /**
+   * 选中行 → 当前页可操作的行对象。
+   * selection 用 preserveSelectedRowKeys 跨页保留 key，但「标记 AC / 加入复习」需要 platform +
+   * problem_key，只有已加载进 rows 的行才有这两个字段；跨页选中的 key 拿不到行对象，
+   * 因此批量动作只作用于当前页，剩余条数如实汇报（不静默当成成功）。
+   */
+  const selectedRows = useMemo(
+    () => rows.filter((r) => selectedRowKeys.includes(r.id)),
+    [rows, selectedRowKeys],
+  )
+
+  /**
+   * 批量执行骨架：串行执行（每一次都是真实写请求，一次并发上百个会把服务端与本机同时压住），
+   * 逐条计数，最后统一汇报一次并刷新一次列表。
+   */
+  const runBatch = async (
+    label: string,
+    targets: ProblemRow[],
+    action: (r: ProblemRow) => Promise<void>,
+    after?: () => void,
+  ) => {
+    const total = selectedRowKeys.length
+    if (targets.length === 0) {
+      message.warning('所选题目不在当前页，请翻到对应页后再试')
+      return
+    }
+    setBatchBusy(true)
+    let ok = 0
+    let failed = 0
+    try {
+      for (const r of targets) {
+        try {
+          await action(r)
+          ok += 1
+        } catch {
+          failed += 1
+        }
+      }
+    } finally {
+      setBatchBusy(false)
+      setSelectedRowKeys([])
+    }
+    const skipped = total - targets.length
+    const text =
+      `${label}：成功 ${ok} 题` +
+      (failed > 0 ? `，失败 ${failed} 题` : '') +
+      (skipped > 0 ? `；另有 ${skipped} 题不在当前页，未处理` : '')
+    if (failed > 0) message.warning(text)
+    else message.success(text)
+    loadRef.current()
+    after?.()
+  }
+
+  const batchMarkAc = () => void runBatch('批量标记 AC', selectedRows, (r) => markAc(r, true))
+
+  const batchAddToReview = () => void runBatch('批量加入复习队列', selectedRows, (r) => addToReview(r, true))
+
+  /**
+   * 批量删除：复用单条删除同一个接口（DELETE /api/problems/:id），但**不能**复用它那个
+   * 「一题一个确认框」的函数——批量要的是一次确认说明整体代价。确认框里的代价说明与
+   * removeProblem 保持一致（连带删提交 / 复习条目 / 卡点 / 人工知识点标注，不可恢复）。
+   */
+  const batchRemoveProblems = () => {
+    const targets = selectedRows
+    if (targets.length === 0) {
+      message.warning('所选题目不在当前页，请翻到对应页后再试')
+      return
+    }
+    const skipped = selectedRowKeys.length - targets.length
+    modal.confirm({
+      title: `删除选中的 ${targets.length} 道题？`,
+      width: 520,
+      content: (
+        <div style={{ fontSize: 13 }}>
+          <p style={{ margin: '4px 0' }}>
+            将一并删除这 {targets.length} 道题的提交记录、复习条目、卡点与知识点标注，
+            相关统计同步减少且<b>不可恢复</b>；训练计划里引用这些题的任务仅解除关联。
+          </p>
+          <p style={{ margin: '4px 0', color: 'var(--text-3)' }}>
+            {targets.slice(0, 8).map((r) => r.problem_key).join('、')}
+            {targets.length > 8 ? ` 等 ${targets.length} 题` : ''}
+            ；删除后题目行可在工具栏「回收站」恢复（提交 / 复习 / 卡点 / 人工知识点标注不会找回）。
+            {skipped > 0 ? `另有 ${skipped} 题不在当前页，本次不会删除。` : ''}
+          </p>
+        </div>
+      ),
+      okText: `删除 ${targets.length} 题`,
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () =>
+        runBatch(
+          '批量删除',
+          targets,
+          async (r) => {
+            await del(`/api/problems/${r.id}`)
+          },
+          () => {
+            // 删除改变全库题数与分布：与单条删除同口径刷新分面 / 分布图 / 回收站
+            reloadFacets()
+            reloadUnfilteredFacets()
+            loadTrash()
+          },
+        ),
+    })
+  }
+
+
   // 回收站恢复：服务端按墓碑快照重建题目行并清墓碑；提交/复习/卡点不复活，弹窗里再确认一次
   const restoreProblem = (t: DeletedRow) => {
     modal.confirm({
@@ -778,7 +964,7 @@ export default function Problems() {
           <p style={{ margin: '4px 0' }}>
             将按删除时刻的快照重建题目行（标题 / 难度 / 标签），此后同步与题库拉取恢复正常收录。
           </p>
-          <p style={{ margin: '4px 0', color: '#8993a2' }}>
+          <p style={{ margin: '4px 0', color: 'var(--text-3)' }}>
             删除时清掉的提交、复习条目、卡点与人工知识点标注不会找回；同步平台题目下次同步会拉回提交记录。
           </p>
         </div>
@@ -833,7 +1019,7 @@ export default function Problems() {
                   <li>题目新建 {pv.preview.problemCreates} 个 / 更新 {pv.preview.problemUpdates} 个</li>
                 </ul>
                 {pv.invalid.length > 0 && (
-                  <div style={{ color: '#d4380d' }}>
+                  <div style={{ color: 'var(--red)' }}>
                     非法行示例：
                     <ul style={{ paddingLeft: 18 }}>
                       {pv.invalid.slice(0, 3).map((r) => (
@@ -939,7 +1125,7 @@ export default function Problems() {
                   r.difficultyScale,
                   r.difficultyGap ? OFFICIAL_NO_DIFFICULTY_TEXT : undefined,
                 )}</div>
-                <div style={{ color: '#c9d4e0' }}>
+                <div style={{ color: 'var(--text-2)' }}>
                   {manual ? '手动标定（回填与同步不会覆盖）' : '点击这一格可手动填写难度'}
                 </div>
               </>
@@ -952,7 +1138,7 @@ export default function Problems() {
               onClick={() => openDiffEditor(r)}
             >
               {v == null ? (
-                <span style={{ color: '#4e5a68' }}>{r.difficultyGap ? '无官方难度' : '-'}</span>
+                <span style={{ color: 'var(--text-dim)' }}>{r.difficultyGap ? '无官方难度' : '-'}</span>
               ) : (
                 <span className={`rating-pill mono${manual ? ' is-manual' : ''}`} style={{ color: difficultyColor(v) }}>{v}</span>
               )}
@@ -974,7 +1160,7 @@ export default function Problems() {
             {tags.length > 3 && <span className="tag-more">+{tags.length - 3}</span>}
           </Space>
         ) : (
-          <span style={{ color: '#4e5a68' }}>-</span>
+          <span style={{ color: 'var(--text-dim)' }}>-</span>
         ),
     },
     {
@@ -988,48 +1174,69 @@ export default function Problems() {
     },
     {
       title: '操作',
-      // 5 个按钮最小内容宽约 214px + 单元格内边距，150 会把「卡在哪」裁出列外
-      width: 232,
+      // P3-1：操作列只留「标记 AC」这一个高频主操作 + 一个「更多」下拉，
+      // 宽度因此从 232 降到 120（旧值 232 是为了塞下 5 个按钮，见 UI 优化方案 §5.2）
+      width: 120,
       fixed: 'right',
       render: (_v, r) => (
         <Space size={4}>
           {r.status !== 'ac' && (
-            <Button size="small" onClick={() => markAc(r)}>
+            <Button size="small" onClick={() => void markAc(r)}>
               标记 AC
             </Button>
           )}
-          {r.reviewItemId != null ? (
-            <Tooltip title="已加入复习队列，点击移出">
-              <Button
-                size="small"
-                type="text"
-                className="review-added-btn"
-                icon={<CheckOutlined />}
-                onClick={() => removeFromReview(r)}
-              />
-            </Tooltip>
-          ) : (
-            <Tooltip title="加入复习队列（间隔复习）">
-              <Button size="small" type="text" icon={<ReadOutlined />} onClick={() => addToReview(r)} />
-            </Tooltip>
-          )}
-          <Tooltip title="人工校正知识点（L3，重跑管线不覆盖）">
-            <Button size="small" type="text" icon={<EditOutlined />} onClick={() => void openKpEditor(r)} />
-          </Tooltip>
-          <Tooltip title="记录你卡在哪，用于弱项判断">
-            <span>
-              <IntentPopover
-                platform={r.platform}
-                problemKey={r.problem_key}
-                codeOptions={codeOptionsFromTags(r.tags)}
-                onSuccess={(m) => message.success(m)}
-                onError={(m) => message.error(m)}
-              />
-            </span>
-          </Tooltip>
-          <Tooltip title="删除题目（清理重复 / 误导入；连带删除其提交与复习记录）">
-            <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => removeProblem(r)} />
-          </Tooltip>
+          <Dropdown
+            trigger={['click']}
+            open={menuRowId === r.id}
+            onOpenChange={(next, info) => {
+              // 「卡在哪」那项自带 Popover（它必须自己当触发器）：它被点击后 rc-menu 还会通知
+              // Dropdown 关闭，若照办，Popover 就会锚在已隐藏的菜单上。这一项标记后忽略该次关闭。
+              if (!next && info.source === 'menu' && keepMenuOpenRef.current) {
+                keepMenuOpenRef.current = false
+                return
+              }
+              setMenuRowId(next ? r.id : null)
+            }}
+            menu={{
+              items: [
+                r.reviewItemId != null
+                  ? { key: 'review-remove', label: '移出复习队列', icon: <CheckOutlined /> }
+                  : { key: 'review-add', label: '加入复习队列', icon: <ReadOutlined /> },
+                { key: 'kp', label: '人工校正知识点', icon: <EditOutlined /> },
+                {
+                  key: 'intent',
+                  // IntentPopover 没有受控 open：它自己渲染触发按钮，所以这里把它整块作为菜单项 label
+                  // （用 span 包一层只是为了撑满菜单行，点击仍落在它自己的按钮上）
+                  label: (
+                    <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                      <IntentPopover
+                        platform={r.platform}
+                        problemKey={r.problem_key}
+                        codeOptions={codeOptionsFromTags(r.tags)}
+                        onSuccess={(m) => message.success(m)}
+                        onError={(m) => message.error(m)}
+                        onDone={() => setMenuRowId(null)}
+                      />
+                    </span>
+                  ),
+                  onClick: () => {
+                    keepMenuOpenRef.current = true
+                  },
+                },
+                { type: 'divider' },
+                { key: 'delete', label: '删除题目（连带提交与复习记录）', icon: <DeleteOutlined />, danger: true },
+              ],
+              onClick: ({ key }) => {
+                if (key === 'review-add') void addToReview(r)
+                else if (key === 'review-remove') void removeFromReview(r)
+                else if (key === 'kp') void openKpEditor(r)
+                // 删除不在菜单 onClick 里直接执行：removeProblem 内部先弹 Modal.confirm 讲清代价
+                else if (key === 'delete') removeProblem(r)
+              },
+            }}
+          >
+            <Button size="small" icon={<MoreOutlined />} title="更多操作" aria-label="更多操作" />
+          </Dropdown>
         </Space>
       ),
     },
@@ -1124,38 +1331,62 @@ export default function Problems() {
         </div>
       </aside>
 
+      {/* ≤920px：分类栏改为顶部多选 Select（P3-2）。窄屏下标签很多，
+          多选 + 可搜索才是能用的形态；宽屏仍用常驻侧栏 */}
+      {narrowTaxonomy && (
+        <div className="taxonomy-select-bar">
+          <span className="taxonomy-select-label">算法标签</span>
+          <Select
+            mode="multiple"
+            allowClear
+            placeholder="全部标签"
+            aria-label="按算法标签筛选"
+            style={{ flex: '1 1 220px', minWidth: 0, maxWidth: 420 }}
+            value={tagFilters}
+            onChange={(v: string[]) => setTagFilters(v)}
+            options={tagCounts.map(([t, n]) => ({ value: t, label: `${t}（${n}）` }))}
+            maxTagCount="responsive"
+            optionFilterProp="label"
+            showSearch
+          />
+          <span className="taxonomy-select-label">{facets?.total ?? total} 题</span>
+        </div>
+      )}
+
       <div className="workbench">
-        {/* 左栏：标签分类 */}
-        <aside className="taxonomy-panel">
-          <div className="section-label">
-            算法标签
-            <span className="section-label-count">{facets?.total ?? total} 题</span>
-          </div>
-          <div className="taxonomy-list">
-            <button
-              type="button"
-              className={`taxonomy-item${tagFilters.length === 0 ? ' is-active' : ''}`}
-              onClick={() => setTagFilters([])}
-            >
-              <span className="taxonomy-item__marker" style={{ background: '#86a8ff' }} />
-              <span className="taxonomy-item__name">全部标签</span>
-              <span className="taxonomy-item__count">{facets?.total ?? total}</span>
-            </button>
-            {tagCounts.map(([t, n]) => (
+        {/* 左栏：标签分类（≤920px 由上面的 Select 代替） */}
+        {!narrowTaxonomy && (
+          <aside className="taxonomy-panel">
+            <div className="section-label">
+              算法标签
+              <span className="section-label-count">{facets?.total ?? total} 题</span>
+            </div>
+            <div className="taxonomy-list">
               <button
-                key={t}
                 type="button"
-                className={`taxonomy-item${tagFilters.includes(t) ? ' is-active' : ''}`}
-                onClick={() => toggleSidebarTag(t)}
+                className={`taxonomy-item${tagFilters.length === 0 ? ' is-active' : ''}`}
+                onClick={() => setTagFilters([])}
               >
-                <span className="taxonomy-item__marker" style={{ background: tagColor(t) }} />
-                <span className="taxonomy-item__name">{t}</span>
-                <span className="taxonomy-item__count">{n}</span>
+                <span className="taxonomy-item__marker" style={{ background: 'var(--brand)' }} />
+                <span className="taxonomy-item__name">全部标签</span>
+                <span className="taxonomy-item__count">{facets?.total ?? total}</span>
               </button>
-            ))}
-          </div>
-          <div className="taxonomy-footer">点击标签加入筛选（再点一次取消），多选按「或」组合</div>
-        </aside>
+              {tagCounts.map(([t, n]) => (
+                <button
+                  key={t}
+                  type="button"
+                  className={`taxonomy-item${tagFilters.includes(t) ? ' is-active' : ''}`}
+                  onClick={() => toggleSidebarTag(t)}
+                >
+                  <span className="taxonomy-item__marker" style={{ background: tagColor(t) }} />
+                  <span className="taxonomy-item__name">{t}</span>
+                  <span className="taxonomy-item__count">{n}</span>
+                </button>
+              ))}
+            </div>
+            <div className="taxonomy-footer">点击标签加入筛选（再点一次取消），多选按「或」组合</div>
+          </aside>
+        )}
 
         {/* 中栏：题目工作区 */}
         <section className="problem-workspace">
@@ -1299,6 +1530,21 @@ export default function Problems() {
               </div>
             )}
           </div>
+          {selectedRowKeys.length > 0 && (
+            <ProblemBatchActions
+              count={selectedRowKeys.length}
+              busy={batchBusy}
+              onMarkAc={batchMarkAc}
+              onAddToReview={batchAddToReview}
+              onDelete={batchRemoveProblems}
+              onClear={() => setSelectedRowKeys([])}
+            />
+          )}
+          {loading && rows.length === 0 ? (
+            // 首屏（还没有任何一行可显示）用骨架屏占住真实结构，避免整页 Spin 的布局跳动与空表闪现；
+            // 已有数据后的翻页 / 筛选刷新仍走 Table 自身的 loading，不整页骨架（P5-2）
+            <PageSkeleton stats={false} table rows={8} />
+          ) : (
           <div className="problem-table">
             <Table
               rowKey="id"
@@ -1306,10 +1552,43 @@ export default function Problems() {
               loading={loading}
               columns={cols}
               dataSource={rows}
+              // 批量操作（P3-1）：选择受控 + 跨页保留（分页在服务端，翻页后 rows 换一批，勾选不该被清掉）
+              rowSelection={{
+                selectedRowKeys,
+                onChange: (keys) => setSelectedRowKeys(keys),
+                preserveSelectedRowKeys: true,
+              }}
+              // 空态与会「没有数据」的失败严格分开：失败给重试，无数据给下一步动作（§6.3）
+              locale={{
+                emptyText: loadError ? (
+                  <InlineError
+                    compact
+                    message={loadError}
+                    hint="题目列表没能取回来；重试即可，库里的数据没有改动。"
+                    onRetry={() => load(page)}
+                    retrying={loading}
+                  />
+                ) : (
+                  <EmptyState
+                    compact
+                    title={filterActive ? '没有符合条件的题目' : '题库里还没有题目'}
+                    description={
+                      filterActive
+                        ? '当前筛选组合下没有命中任何题目；放宽难度区间、清空标签或关掉状态页签后再看。'
+                        : '导入刷题记录或从平台拉取题库后，题目会出现在这里。'
+                    }
+                    action={
+                      filterActive
+                        ? { label: '重置筛选', onClick: resetFilters }
+                        : { label: '导入题目', type: 'primary', onClick: () => setImportOpen(true) }
+                    }
+                  />
+                ),
+              }}
               // 表头点击排序（受控 sortOrder）：onChange 里只处理排序，翻页仍走下面的 pagination.onChange
               onChange={onTableChange}
-              // 固定列宽合计 850px；概览条已移到页顶不再占宽度，两栏布局下中栏
-              // 一般足够 970px，更窄的窗口才出横向滚动条，操作列吸附右缘始终可见
+              // 固定列宽合计 738px（操作列聚合后由 850px 降下来）；概览条已移到页顶不再占宽度，
+              // 两栏布局下中栏一般足够 970px，更窄的窗口才出横向滚动条，操作列吸附右缘始终可见
               scroll={{ x: 970 }}
               // 服务端分页：当前页 50 行由后端过滤 + LIMIT 得出，前端不再持有全量数据
               pagination={{
@@ -1322,6 +1601,7 @@ export default function Problems() {
               }}
             />
           </div>
+          )}
         </section>
       </div>
 
@@ -1429,7 +1709,7 @@ export default function Problems() {
                 规则 {coverage.bySource.rule ?? 0} · 题源标签 {coverage.bySource.tag ?? 0} · 人工 {coverage.bySource.manual ?? 0}
               </span>
             </Space>
-            <p style={{ margin: '8px 0 0', color: '#8993a2', fontSize: 12 }}>
+            <p style={{ margin: '8px 0 0', color: 'var(--text-3)', fontSize: 12 }}>
               taxonomy v{coverage.taxonomyVersion} · pipeline v{coverage.pipelineVersion}
               {coverage.rulesVersion ? `（规则表 v${coverage.rulesVersion}）` : ''} · 统计阈值 {coverage.threshold}
               {coverage.lowConfidenceOnly > 0 ? ` · ${coverage.lowConfidenceOnly} 题仅有低置信标注` : ''}
@@ -1451,14 +1731,14 @@ export default function Problems() {
             </Button>
           </Tooltip>
         </Space>
-        <p style={{ color: '#8993a2', fontSize: 12 }}>
+        <p style={{ color: 'var(--text-3)', fontSize: 12 }}>
           AI 已退出清洗模块；未覆盖题目进入「词表缺口」报告，补齐 tags.ts 同义组是提升覆盖率的唯一手段。
           离线批跑可用 <span className="mono">npx tsx scripts/gen-knowledge.ts</span>。
         </p>
         {sample && (
           <div style={{ marginTop: 12 }}>
             <div style={{ marginBottom: 4, fontWeight: 600 }}>抽检清单（{sample.sampleSize} 题）</div>
-            <div style={{ maxHeight: 260, overflow: 'auto', border: '1px solid #2a323d', borderRadius: 6, padding: 8 }}>
+            <div style={{ maxHeight: 260, overflow: 'auto', border: '1px solid var(--line-soft)', borderRadius: 6, padding: 8 }}>
               {Object.entries(
                 sample.items.reduce<Record<string, typeof sample.items>>((acc, it) => {
                   const k = `${it.platform}/${it.problemKey}`
@@ -1477,7 +1757,7 @@ export default function Problems() {
                 </div>
               ))}
             </div>
-            <p style={{ color: '#8993a2', fontSize: 12, marginBottom: 0 }}>
+            <p style={{ color: 'var(--text-3)', fontSize: 12, marginBottom: 0 }}>
               发现错标：关闭本面板，在题目列表对应行的「校正知识点」中修正（人工标注永久置顶）。
             </p>
           </div>
@@ -1494,7 +1774,7 @@ export default function Problems() {
         okText="保存为人工标注"
         width={560}
       >
-        <p style={{ color: '#8993a2', fontSize: 12 }}>
+        <p style={{ color: 'var(--text-3)', fontSize: 12 }}>
           从知识点体系选择（可多选；清空保存 = 人工确认「无知识点」）。人工标注永久置顶，重跑管线不会覆盖。
         </p>
         <TreeSelect
@@ -1524,7 +1804,7 @@ export default function Problems() {
         okText="保存为手动难度"
         width={480}
       >
-        <p style={{ color: '#8993a2', fontSize: 12, marginTop: 0 }}>
+        <p style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 0 }}>
           CF rating 统一标尺（800–3500，步长 100）。手动值优先级最高：回填、同步与题库拉取都不会覆盖它，
           并会清掉「平台无公开难度」的记录。留空或点「清除」= 恢复「未知」，该题下次回填会重新查上游。
         </p>
@@ -1585,7 +1865,7 @@ export default function Problems() {
         footer={null}
         width={720}
       >
-        <p style={{ color: '#8993a2', fontSize: 12 }}>
+        <p style={{ color: 'var(--text-3)', fontSize: 12 }}>
           恢复只按删除时刻的快照重建题目行；其提交、复习条目、卡点与人工知识点标注不会找回。
           题目行留在回收站不会污染统计，不恢复可放着不管。
         </p>
@@ -1617,7 +1897,7 @@ export default function Problems() {
               title: '删除时间',
               dataIndex: 'deleted_at',
               width: 150,
-              render: (v: string) => <span style={{ fontSize: 12, color: '#8993a2' }}>{v}</span>,
+              render: (v: string) => <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{v}</span>,
             },
             {
               title: '操作',
@@ -1855,7 +2135,7 @@ function BankTab({ onDone }: { onDone: () => void }) {
 
   return (
     <div>
-      <p style={{ color: '#8993a2' }}>
+      <p style={{ color: 'var(--text-3)' }}>
         软件已内置 Codeforces 等题库，开箱即可供训练计划/题单选题；需要更多题目时从这里扩充（无需账号/Cookie，不影响刷题统计）。
         Codeforces / AtCoder 一次调用秒级完成；洛谷/牛客/LeetCode/代码源按页拉取，拉取量越大耗时越长（约 1-2 分钟/千题）。
         列表只列有公开题库的平台（QOJ 无题库接口，故不提供拉取）。
@@ -1894,7 +2174,7 @@ function BankTab({ onDone }: { onDone: () => void }) {
         <div style={{ marginTop: 12 }}>
           <Space>
             <Switch checked={atcoderTags} onChange={setAtcoderTags} />
-            <span style={{ color: '#8993a2' }}>
+            <span style={{ color: 'var(--text-3)' }}>
               用洛谷镜像补标签（默认关；覆盖有限：实测 250 行样本中 139 行命中题号、仅 68 行真的带标签，
               结果里的命中计数如实回传）
             </span>
@@ -1990,8 +2270,8 @@ function BackfillDifficultyCard() {
   const progress = progressText(run, nameOf)
 
   return (
-    <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #222831' }}>
-      <p style={{ color: '#8993a2' }}>
+    <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--line-soft)' }}>
+      <p style={{ color: 'var(--text-3)' }}>
         补全库内「未知难度 / 未知原生难度 / 缺标签」的题，覆盖所有平台：整表型平台
         （Codeforces / AtCoder / 力扣 / 计蒜客 / 代码源）先拉一次题库表再在本地比对；
         洛谷与牛客按题查题目页（牛客只在待补题上千时才改拉整表）。所有请求都走<b>全局按域名限速</b>：洛谷 ≥4 秒/题、
@@ -2029,7 +2309,7 @@ function BackfillDifficultyCard() {
           强制重查（无视「平台无公开难度」的结论，并补洛谷的「仅缺原生值」行 —— 这一轮会明显更慢）
         </Checkbox>
       </div>
-      {progress && <p style={{ marginTop: 12, color: '#8993a2' }}>{progress}</p>}
+      {progress && <p style={{ marginTop: 12, color: 'var(--text-3)' }}>{progress}</p>}
       {result && <p style={{ marginTop: 12 }}>{result}</p>}
     </div>
   )

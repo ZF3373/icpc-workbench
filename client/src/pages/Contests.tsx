@@ -1,15 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Alert, Button, Card, Col, Empty, Row, Select, Space, Spin, Tag, App as AntdApp } from 'antd'
+import { Alert, Button, Card, Col, Row, Segmented, Select, Tag, App as AntdApp, Tooltip } from 'antd'
 import { ClockCircleOutlined, RedoOutlined, RobotOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
+import PageSkeleton from '../components/PageSkeleton'
+import EmptyState, { type EmptyStateAction } from '../components/EmptyState'
+import InlineError from '../components/InlineError'
 import { get, post } from '../api'
 import { platformName } from '../ui'
+import { endedAgo, fmtTimeHm, groupContestsByDay } from './contestsView'
 import type { ContestInfo, ParticipatedContest } from '../types'
 import type { PlatformId } from '../../../shared/src/index.ts'
 
-/** 分类展示色（未命中走 default） */
+/**
+ * 分类展示色（未命中走 default）。
+ *
+ * ⚠ 这些是 antd 的**预设色名**，不是硬编码 hex —— 不要「顺手 Token 化」成 `var(--…)`。
+ * 预设色由 ConfigProvider 的 `theme.algorithm`（`themeContext.tsx` 里按亮/暗切
+ * `defaultAlgorithm` / `darkAlgorithm`）在运行时解析成带配对前景/边框色的
+ * 「底色 + 文字色」组合；换成 CSS 变量会丢掉这层配对，Tag 只剩一块色底。
+ * 全站硬编码色的审计结论见 `docs/UI-Optimization-Report.md` §8。
+ */
 const CATEGORY_COLOR: Record<string, string> = {
   'Div. 1': 'volcano',
   'Div. 2': 'geekblue',
@@ -35,7 +47,7 @@ const CATEGORY_COLOR: Record<string, string> = {
 
 type ContestType = 'upcoming' | 'running' | 'finished' | 'participated'
 
-/** 参赛判定依据 → 展示标签（与后端 participated.ts 的 evidence 对应） */
+/** 参赛判定依据 → 展示标签（与后端 participated.ts 的 evidence 对应；色值同为 antd 预设色名，见上） */
 const EVIDENCE_TAG: Record<string, { color: string; label: string }> = {
   contest: { color: 'green', label: '现场参赛' },
   virtual: { color: 'blue', label: '虚拟赛' },
@@ -46,15 +58,17 @@ const EVIDENCE_TAG: Record<string, { color: string; label: string }> = {
   'joined-list': { color: 'purple', label: '平台记录' },
 }
 
-/** Rating 变化展示：+32 / -6（无变化不显示括号） */
-function fmtRatingChange(change: number | null | undefined): string {
-  if (!change) return ''
-  return `（${change > 0 ? '+' : ''}${change}）`
-}
-
 function fmtStart(iso: string | null): string {
   if (!iso) return '时间待定'
-  return new Date(iso).toLocaleString('zh-CN', { hour12: false })
+  // 秒数对「选场」没有信息量，去掉后日期/时间在卡片里短一截
+  return new Date(iso).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
 }
 
 function countdown(iso: string | null): string {
@@ -119,6 +133,8 @@ export default function Contests() {
   const [sourceFailures, setSourceFailures] = useState<Partial<Record<PlatformId, string>>>({})
   const [backgroundRefreshing, setBackgroundRefreshing] = useState<PlatformId[]>([])
   const [loading, setLoading] = useState(true)
+  /** 取数失败原因：与「这个页签本来就没有场次」严格区分（失败给 InlineError 重试，不冒充空态） */
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [tab, setTab] = useState<ContestType>('upcoming')
   const [platform, setPlatform] = useState<PlatformId | undefined>()
   /** 请求序号：切页签/平台时旧响应晚到不得覆盖新视图（与其他页面的 reqSeq 同一护栏）。
@@ -130,6 +146,8 @@ export default function Contests() {
       const seq = ++reqSeq.current
       const stale = (): boolean => seq !== reqSeq.current
       setLoading(true)
+      // 新一轮取数开始即清掉上一次的失败原因：否则重试成功后错误态会残留
+      setLoadError(null)
       if (t === 'participated') {
         // 我参加的：本地提交推导 + 平台参赛记录（后端落库，读库秒出；过期平台后台增量刷新）。
         // 5 分钟内复用前端缓存；「刷新」按钮走 POST 强制同步拉取
@@ -152,9 +170,12 @@ export default function Contests() {
             setData(null)
             setSourceFailures(r.sourceFailures ?? {})
             setBackgroundRefreshing(r.refreshing ?? [])
+            setLoadError(null)
           })
           .catch((e: Error) => {
             if (stale()) return
+            // 失败 ≠ 空：记下原因交给 InlineError 带重试，而不是让「暂无参赛记录」冒充结论
+            setLoadError(e.message)
             message.error(e.message)
           })
           .finally(() => {
@@ -170,9 +191,12 @@ export default function Contests() {
         .then((r) => {
           if (stale()) return
           setData(r)
+          setLoadError(null)
         })
         .catch((e: Error) => {
           if (stale()) return
+          // 同上：日历页签取数失败也是失败态，不是「暂无已排期的比赛」
+          setLoadError(e.message)
           message.error(e.message)
         })
         .finally(() => {
@@ -248,25 +272,50 @@ export default function Contests() {
       ? [...CALENDAR_PLATFORM_OPTIONS, { value: 'qoj' as const, label: 'QOJ' }]
       : CALENDAR_PLATFORM_OPTIONS
 
+  /** 参赛页签空态的出口：有平台筛选先给「清筛选」，否则给「去设置绑定账号」；都兜一个「重新加载」 */
+  const participatedEmptyActions: EmptyStateAction[] = [
+    platform
+      ? { label: '查看全部平台', type: 'primary', onClick: () => setPlatform(undefined) }
+      : { label: '去设置绑定账号', type: 'primary', onClick: () => nav('/settings') },
+    { label: '重新加载', onClick: () => load(tab, platform) },
+  ]
+
+  /** 日历页签空态的出口：筛选优先，其次「进行中 ↔ 即将开始」互跳，最后兜「重新加载」 */
+  const calendarEmptyActions: EmptyStateAction[] = platform
+    ? [
+        { label: '查看全部平台', type: 'primary', onClick: () => setPlatform(undefined) },
+        { label: '重新加载', onClick: () => load(tab, platform) },
+      ]
+    : tab === 'upcoming'
+      ? [
+          { label: '查看进行中的', type: 'primary', onClick: () => switchTab('running') },
+          { label: '重新加载', onClick: () => load(tab, platform) },
+        ]
+      : tab === 'running'
+        ? [
+            { label: '看看即将开始的', type: 'primary', onClick: () => switchTab('upcoming') },
+            { label: '重新加载', onClick: () => load(tab, platform) },
+          ]
+        : [{ label: '重新加载', type: 'primary', onClick: () => load(tab, platform) }]
+
   return (
     <div>
       <PageHeader
         title="赛事中心"
-        description="Codeforces / AtCoder / 洛谷 / 牛客 / 计蒜客 场次一览 —— 赛前选场，赛后复盘（公开数据，日历各源缓存 60 分钟，参赛记录 30 分钟增量刷新）"
+        description="各平台场次一览 —— 赛前选场，赛后复盘。"
         extra={
-          <Space>
-            <Button type={tab === 'upcoming' ? 'primary' : 'default'} onClick={() => switchTab('upcoming')}>
-              即将开始
-            </Button>
-            <Button type={tab === 'running' ? 'primary' : 'default'} onClick={() => switchTab('running')}>
-              进行中
-            </Button>
-            <Button type={tab === 'finished' ? 'primary' : 'default'} onClick={() => switchTab('finished')}>
-              最近结束
-            </Button>
-            <Button type={tab === 'participated' ? 'primary' : 'default'} onClick={() => switchTab('participated')}>
-              我参加的
-            </Button>
+          <>
+            {/* Segmented 而不是四个按钮：页签是「视图切换」不是「动作」，控件语义先分清 */}
+            <Segmented
+              value={tab}
+              onChange={(v) => switchTab(v as ContestType)}
+              options={[
+                { label: '即将开始', value: 'upcoming' },
+                { label: '进行中', value: 'running' },
+                { label: '最近结束', value: 'finished' },
+                { label: '我参加的', value: 'participated' },
+              ]}
+            />
             <Select
               allowClear
               placeholder="全部平台"
@@ -275,10 +324,13 @@ export default function Contests() {
               onChange={setPlatform}
               options={platformOptions}
             />
-            <Button icon={<RedoOutlined />} loading={loading} onClick={() => load(tab, platform, true)}>
-              刷新
-            </Button>
-          </Space>
+            {/* 缓存节奏是实现细节，从页头描述挪到这里：想知道的人自然会悬停「刷新」 */}
+            <Tooltip title="公开数据各源缓存 60 分钟、参赛记录 30 分钟增量刷新；点击立即强制重拉。">
+              <Button icon={<RedoOutlined />} loading={loading} onClick={() => load(tab, platform, true)}>
+                刷新
+              </Button>
+            </Tooltip>
+          </>
         }
       />
 
@@ -312,17 +364,44 @@ export default function Contests() {
         )
       )}
 
-      {/* 参赛页签首次加载显示转圈；重新拉取时保留旧列表，不再闪「暂无参赛记录」 */}
-      {loading && tab === 'participated' && !participated ? (
-        <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />
-      ) : loading && tab !== 'participated' && !data ? (
-        <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />
+      {/* 首屏骨架：这两个分支都只是「本页签第一次取数还没落地」，不存在「未绑定账号」这类前置门
+          —— 页面不读账号绑定状态，未绑定时照样请求、只是返回空列表（那是下面的空态）。
+          真实首屏是页头 + 一屏比赛卡片，故用 stats={false} 的卡片网格占位：xl 三列与
+          .page-skeleton-grid 的 auto-fit(minmax(320px)) 一致，数据落地只有内容变化、无布局跳动。
+          重新拉取时保留旧列表（participated / data 还在），不会退回骨架 */}
+      {loading && (tab === 'participated' ? !participated : !data) ? (
+        <PageSkeleton stats={false} blocks={3} blockHeight={230} />
+      ) : loadError && (tab === 'participated' ? !participated : !data) ? (
+        // 失败 ≠ 空：取数失败给可重试的错误态，而不是让「暂无参赛记录」冒充结论
+        <Card>
+          <InlineError
+            message={loadError}
+            hint={
+              tab === 'participated'
+                ? '这块本来显示的是你在各平台的参赛记录与 AI 复盘入口。'
+                : '这块本来显示的是各平台的比赛日历；平台源偶发限流也会返回失败，重试即可。'
+            }
+            onRetry={() => load(tab, platform)}
+            retrying={loading}
+          />
+        </Card>
       ) : tab === 'participated' ? (
         participatedItems.length === 0 ? (
           <Card>
-            <Empty description="暂无参赛记录 —— 先到「设置 → 平台账号与适配器」绑定账号并同步各平台提交（牛客仅依赖绑定 uid）" />
+            <EmptyState
+              title={platform ? `没有 ${platformName(platform)} 的参赛记录` : '暂无参赛记录'}
+              description={
+                platform
+                  ? '当前按平台筛选，该平台下没有命中的场次；清掉筛选可以看到其他平台的参赛记录（也可能确实还没有记录）。'
+                  : '参赛记录由已绑定账号的提交记录与平台参赛页推导。到「设置 → 平台账号与适配器」绑定账号并同步提交后，这里会列出参赛场次（牛客仅依赖绑定 uid）。'
+              }
+              actions={participatedEmptyActions}
+            />
           </Card>
         ) : (
+          /* 卡片列：lg(≥992) 两列、xl(≥1200) 三列。antd 的 md 是 min-width:768px，
+             用 md={12} 会在 768px 正好落成两列，而验收要求「≤768px 单列」，
+             所以两列的起点改用 lg —— 768/640 下均为 xs={24} 单列 */
           <Row gutter={[16, 16]}>
             {participatedItems.map((c) => {
               const evidence = EVIDENCE_TAG[c.evidence] ?? { color: 'default', label: c.evidence }
@@ -334,7 +413,7 @@ export default function Contests() {
                   : null
               const upsolveDone = totalProblems != null && c.acProblemCount >= totalProblems
               return (
-                <Col xs={24} md={12} xl={8} key={c.key}>
+                <Col xs={24} lg={12} xl={8} key={c.key}>
                   <Card size="small" className="contest-card">
                     <div className="today-problem-head">
                       <PlatformTag id={c.platform} />
@@ -362,9 +441,33 @@ export default function Contests() {
                         <span>无逐条提交记录</span>
                       )}
                     </div>
-                    {c.submissionCount > 0 && (
-                      <div className="contest-stats">
-                        {c.inContestAcProblemCount != null && (
+                    {(c.submissionCount > 0 || c.source?.rank != null || c.source?.rating != null) && (
+                      /* 一行横向迷你统计替代「纵向大数字 + 排名/Rating 药丸」：补题进度仍是核心
+                         （当前 AC 带分母与剩题/已补完），排名/Rating 并进同一行后少一层胶囊，
+                         多场次的成果可以左右扫着比。没有的项不渲染，间距由 flex 承担 */
+                      <div className="contest-statgrid">
+                        {c.submissionCount > 0 && (
+                          <div className="contest-stat">
+                            <span className="contest-stat-label">当前 AC</span>
+                            <span
+                              className={`contest-stat-value${upsolveDone ? ' contest-stat-done' : ''}`}
+                            >
+                              {c.acProblemCount}
+                              {totalProblems != null && (
+                                <span className="contest-stat-denom">/{totalProblems}</span>
+                              )}
+                            </span>
+                            {totalProblems != null &&
+                              (upsolveDone ? (
+                                <span className="contest-stat-sub contest-stat-sub-done">已补完</span>
+                              ) : (
+                                <span className="contest-stat-sub">
+                                  剩 {totalProblems - c.acProblemCount} 题
+                                </span>
+                              ))}
+                          </div>
+                        )}
+                        {c.submissionCount > 0 && c.inContestAcProblemCount != null && (
                           <div className="contest-stat">
                             <span className="contest-stat-label">赛中 AC</span>
                             <span className="contest-stat-value contest-stat-value-dim">
@@ -372,46 +475,47 @@ export default function Contests() {
                             </span>
                           </div>
                         )}
-                        <div className="contest-stat">
-                          <span className="contest-stat-label">当前 AC</span>
-                          <span
-                            className={`contest-stat-value${upsolveDone ? ' contest-stat-done' : ''}`}
-                          >
-                            {c.acProblemCount}
-                            {totalProblems != null && (
-                              <span className="contest-stat-denom">/{totalProblems}</span>
-                            )}
-                          </span>
-                          {totalProblems != null &&
-                            (upsolveDone ? (
-                              <span className="contest-stat-sub contest-stat-sub-done">已补完</span>
-                            ) : (
-                              <span className="contest-stat-sub">
-                                剩 {totalProblems - c.acProblemCount} 题
-                              </span>
-                            ))}
-                        </div>
+                        {c.source?.rank != null && (
+                          <div className="contest-stat">
+                            <span className="contest-stat-label">排名</span>
+                            <span className="contest-stat-value contest-stat-value-dim">
+                              {c.source.rank}
+                            </span>
+                          </div>
+                        )}
+                        {c.source?.rating != null && (
+                          <div className="contest-stat">
+                            <span className="contest-stat-label">Rating</span>
+                            <span className="contest-stat-value contest-stat-value-dim">
+                              {c.source.rating}
+                              {c.source.ratingChange ? (
+                                <span
+                                  className={`contest-stat-delta ${
+                                    c.source.ratingChange > 0
+                                      ? 'contest-stat-delta-up'
+                                      : 'contest-stat-delta-down'
+                                  }`}
+                                >
+                                  {c.source.ratingChange > 0 ? '+' : ''}
+                                  {c.source.ratingChange}
+                                </span>
+                              ) : null}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
                     {c.accounts && c.accounts.length > 1 && (
-                      <div className="contest-countdown">
+                      /* 多账号说明是脚注不是状态：灰色小字即可，不占用品牌色药丸 */
+                      <div className="contest-footnote">
                         多账号参赛：{c.accounts.join('、')}（成绩属于提交较多的账号，复盘明细按账号标注）
-                      </div>
-                    )}
-                    {(c.source?.rank != null || c.source?.rating != null) && (
-                      <div className="contest-countdown">
-                        {c.source?.rank != null ? `排名 ${c.source.rank}` : ''}
-                        {c.source?.rank != null && c.source?.rating != null ? ' · ' : ''}
-                        {c.source?.rating != null
-                          ? `Rating ${c.source.rating}${fmtRatingChange(c.source.ratingChange)}`
-                          : ''}
                       </div>
                     )}
                     <Button
                       size="small"
                       type="link"
                       icon={<RobotOutlined />}
-                      style={{ padding: 0, marginTop: 4 }}
+                      style={{ padding: 0 }}
                       onClick={() => nav(`/ai?contest=${encodeURIComponent(c.key)}`)}
                     >
                       去 AI 复盘
@@ -424,46 +528,95 @@ export default function Contests() {
         )
       ) : items.length === 0 ? (
         <Card>
-          <Empty
-            description={
+          <EmptyState
+            title={
               tab === 'upcoming'
                 ? '暂无已排期的比赛'
                 : tab === 'running'
                   ? '当前没有进行中的比赛'
-                  : '暂无近期比赛记录 —— 洛谷仅返回最近两页赛事'
+                  : '暂无近期比赛记录'
             }
+            description={
+              platform
+                ? `当前按「${platformName(platform)}」筛选，该平台没有命中本页签的场次；清掉筛选可以看到全部平台。`
+                : tab === 'upcoming'
+                  ? '各平台日历源都没有返回未来的场次（洛谷仅返回最近两页赛事）；换个页签或稍后重试。'
+                  : tab === 'running'
+                    ? '现在没有正在进行的比赛 —— 可以去「即将开始」挑一场排期。'
+                    : '各平台日历源都没有返回近期已结束的场次（洛谷仅返回最近两页赛事）；稍后重试可能拿到更新的赛程。'
+            }
+            actions={calendarEmptyActions}
           />
         </Card>
-      ) : (
+      ) : tab === 'running' ? (
+        // 进行中通常只有个位数场次，按天分组收益为负；平铺并保留完整时刻
+        // （比赛可能昨天就开跑了，「昨天 20:00」必须带日期才读得懂）
         <Row gutter={[16, 16]}>
           {items.map((c) => (
-            <Col xs={24} md={12} xl={8} key={c.id}>
-              <Card size="small" className="contest-card">
-                <div className="today-problem-head">
-                  <PlatformTag id={c.platform} />
-                  <Tag color={CATEGORY_COLOR[c.category] ?? 'default'}>{c.category}</Tag>
-                </div>
-                <a className="today-problem-title" href={c.url} target="_blank" rel="noreferrer">
-                  {c.name} ↗
-                </a>
-                <div className="contest-meta">
-                  <span>
-                    <ClockCircleOutlined /> {fmtDuration(c.durationMinutes)}
-                  </span>
-                  <span>{fmtStart(c.startTimeIso)}</span>
-                </div>
-                {tab === 'upcoming' && c.startTimeIso && (
-                  <div className="contest-countdown">{countdown(c.startTimeIso)}</div>
-                )}
-                {tab === 'running' && c.startTimeIso && (
-                  <div className="contest-countdown">{remaining(c.startTimeIso, c.durationMinutes)}</div>
-                )}
-              </Card>
+            <Col xs={24} lg={12} xl={8} key={c.id}>
+              <ContestCalendarCard contest={c} mode="running" />
             </Col>
           ))}
         </Row>
+      ) : (
+        // 即将开始 / 最近结束按天分组：几十场平铺成一堵卡片墙时，「哪天有什么」
+        // 要逐卡读时刻才能拼出来；日期上提到组头后，卡内只留 时:分 + 倒计时药丸
+        groupContestsByDay(items).map((g) => (
+          <section className="contest-day-section" key={g.key}>
+            <div className="contest-day-head">
+              <span className="contest-day-title">{g.label}</span>
+              <span className="contest-day-count">{g.items.length} 场</span>
+            </div>
+            <Row gutter={[16, 16]}>
+              {g.items.map((c) => (
+                <Col xs={24} lg={12} xl={8} key={c.id}>
+                  <ContestCalendarCard contest={c} mode={tab} />
+                </Col>
+              ))}
+            </Row>
+          </section>
+        ))
       )}
     </div>
+  )
+}
+
+/** 日历页签的比赛卡：三态共用一张卡，差一点只在 meta 时刻与底部状态药丸 */
+function ContestCalendarCard({
+  contest: c,
+  mode,
+}: {
+  contest: ContestInfo
+  mode: Exclude<ContestType, 'participated'>
+}) {
+  return (
+    <Card size="small" className="contest-card">
+      <div className="today-problem-head">
+        <PlatformTag id={c.platform} />
+        <Tag color={CATEGORY_COLOR[c.category] ?? 'default'}>{c.category}</Tag>
+      </div>
+      <a className="today-problem-title" href={c.url} target="_blank" rel="noreferrer">
+        {c.name} ↗
+      </a>
+      <div className="contest-meta">
+        <span>
+          <ClockCircleOutlined /> {fmtDuration(c.durationMinutes)}
+        </span>
+        {/* 分组页签的日期由组头承担，卡内只留 时:分；进行中平铺展示完整时刻 */}
+        <span>{mode === 'running' ? fmtStart(c.startTimeIso) : fmtTimeHm(c.startTimeIso)}</span>
+      </div>
+      {mode === 'upcoming' && c.startTimeIso && (
+        <div className="contest-countdown">{countdown(c.startTimeIso)}</div>
+      )}
+      {mode === 'running' && c.startTimeIso && (
+        <div className="contest-countdown">{remaining(c.startTimeIso, c.durationMinutes)}</div>
+      )}
+      {mode === 'finished' && c.startTimeIso && (
+        <div className="contest-countdown contest-countdown-dim">
+          {endedAgo(c.startTimeIso, c.durationMinutes)}
+        </div>
+      )}
+    </Card>
   )
 }
 

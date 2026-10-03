@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { Button, Card, Col, Empty, Progress, Row, Space, Spin, Tag, Tooltip, App as AntdApp } from 'antd'
+import { Link, useNavigate } from 'react-router-dom'
+import { Button, Card, Col, Empty, Progress, Row, Space, Tag, Tooltip, App as AntdApp } from 'antd'
 import {
   BulbOutlined,
   CheckCircleOutlined,
@@ -12,6 +12,9 @@ import {
 } from '@ant-design/icons'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
+import PageSkeleton from '../components/PageSkeleton'
+import EmptyState from '../components/EmptyState'
+import InlineError from '../components/InlineError'
 import { difficultyColor, tagColor } from '../ui'
 import { del, get, post } from '../api'
 import type { StreakInfo, TodayPlan, TodayBandKey, TodayProblem } from '../types'
@@ -19,9 +22,9 @@ import type { PlatformId } from '../../../shared/src/index.ts'
 
 /** 每档题量（与后端默认一致；「换一批」在同一档内轮换） */
 const BAND_TONE: Record<TodayBandKey, string> = {
-  consolidation: '#58a3ff',
-  core: '#86a8ff',
-  challenge: '#ffbd61',
+  consolidation: 'var(--blue)',
+  core: 'var(--brand)',
+  challenge: 'var(--amber)',
 }
 
 /** 换一批的进度按**本地日**存：刷新页面不该退回第一批，换日自动归零。
@@ -57,8 +60,10 @@ function writeStoredRotate(rotate: number): void {
 
 export default function Today() {
   const { message } = AntdApp.useApp()
+  const navigate = useNavigate()
   const [plan, setPlan] = useState<TodayPlan | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [rotate, setRotate] = useState<number>(readStoredRotate)
   const [streak, setStreak] = useState<StreakInfo | null>(null)
   /** 正在同步的平台集合（按 platform 维度去重，同一平台同时只同步一次） */
@@ -72,13 +77,22 @@ export default function Today() {
   const load = useCallback(
     (rot: number, silent = false) => {
       const seq = (reqSeq.current += 1)
-      if (!silent) setLoading(true)
+      if (!silent) {
+        setLoading(true)
+        setLoadError(null)
+      }
       get<TodayPlan>(`/api/today?rotate=${rot}`)
         .then((res) => {
-          if (seq === reqSeq.current) setPlan(res)
+          if (seq === reqSeq.current) {
+            setPlan(res)
+            setLoadError(null)
+          }
         })
         .catch((e: Error) => {
-          if (seq === reqSeq.current) message.error(e.message)
+          if (seq === reqSeq.current) {
+            setLoadError(e.message)
+            setPlan(null)
+          }
         })
         .finally(() => {
           // 只看「是否最新一次请求」，不看 silent：静默重拉晚于一次普通刷新返回时，
@@ -86,7 +100,7 @@ export default function Today() {
           if (seq === reqSeq.current) setLoading(false)
         })
     },
-    [message],
+    [],
   )
 
   useEffect(() => {
@@ -186,9 +200,30 @@ export default function Today() {
       />
 
       {loading && !plan ? (
-        <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />
+        <PageSkeleton stats blocks={3} />
+      ) : loadError ? (
+        <InlineError
+          message={loadError}
+          hint="今日推荐加载失败；重试即可。"
+          onRetry={() => load(rotate)}
+          retrying={loading}
+        />
       ) : !plan ? (
-        <Empty description="今日推荐加载失败" />
+        <Card>
+          <EmptyState
+            title="暂无今日推荐"
+            description="推荐依赖已同步的刷题记录。先到「设置」绑定平台账号并同步数据，或到「题目管理」手动导入题目。"
+            action={{ label: '去题目管理', type: 'primary', onClick: () => navigate('/problems') }}
+          />
+        </Card>
+      ) : plan.bands.length === 0 ? (
+        <Card>
+          <EmptyState
+            title="暂无今日推荐"
+            description="当前题库样本不足，无法生成三档推荐。同步更多平台提交或导入题目后再试。"
+            action={{ label: '换一批试试', type: 'primary', onClick: refreshBand }}
+          />
+        </Card>
       ) : (
         <>
           {/* 能力概览条 */}
@@ -246,7 +281,7 @@ export default function Today() {
           {plan.dueReviews > 0 && (
             <Card size="small" style={{ marginBottom: 16 }}>
               <Space>
-                <ReadOutlined style={{ color: '#86a8ff' }} />
+                <ReadOutlined style={{ color: 'var(--brand)' }} />
                 <span>
                   有 <b>{plan.dueReviews}</b> 道题到了复习时间 ——
                   <Link to="/reviews">去复习库处理 →</Link>
@@ -298,15 +333,19 @@ export default function Today() {
                         )}
                         <div className="today-problem-foot">
                           <Space size={4} wrap>
+                            {/* key 必须带来源前缀：这两组 Tag 是同一个 <Space> 的兄弟子节点，
+                                React 按同一个 key 命名空间对齐它们。两边都用裸标签名时，
+                                同一标签既是「弱项」又是普通标签就会撞 key（控制台报
+                                duplicate key，且重复/丢项的渲染行为不受支持）。 */}
                             {p.weakTags.map((t) => (
-                              <Tooltip title={`弱项标签：相对你的平均 AC 率偏低`} key={t}>
+                              <Tooltip title={`弱项标签：相对你的平均 AC 率偏低`} key={`weak:${t}`}>
                                 <Tag className="weak-tag" color={tagColor(t)}>
                                   弱 · {t}
                                 </Tag>
                               </Tooltip>
                             ))}
                             {p.tags.slice(0, 2).map((t) => (
-                              <Tag key={t}>{t}</Tag>
+                              <Tag key={`tag:${t}`}>{t}</Tag>
                             ))}
                           </Space>
                           <Space size={4}>
@@ -338,7 +377,7 @@ export default function Today() {
                     ))
                   )}
                   {band.relaxed && (
-                    <p className="band-desc" style={{ color: '#d29922' }}>
+                    <p className="band-desc" style={{ color: 'var(--amber)' }}>
                       {band.relaxed}
                     </p>
                   )}
@@ -350,7 +389,7 @@ export default function Today() {
           <Card size="small" style={{ marginTop: 16 }}>
             <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
               <span
-                style={{ color: '#8993a2', fontSize: 12 }}
+                style={{ color: 'var(--text-3)', fontSize: 12 }}
                 title={
                   plan.levelDetail && plan.levelDetail.base != null
                     ? `难度基数 ${plan.levelDetail.base} · 通过率校准 ${plan.levelDetail.performanceAdj >= 0 ? '+' : ''}${plan.levelDetail.performanceAdj} · 新练习 ${plan.levelDetail.newEvidence} 次`

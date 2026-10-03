@@ -99,7 +99,7 @@ export default function SyncHistoryDrawer({ open, onClose }: { open: boolean; on
       title: '说明',
       key: 'note',
       render: (_v, r) => {
-        if (r.status === 'failed') return <span style={{ color: '#ff7875' }}>{r.errorMessage ?? '（无错误信息）'}</span>
+        if (r.status === 'failed') return <span style={{ color: 'var(--red)' }}>{r.errorMessage ?? '（无错误信息）'}</span>
         if (r.truncated === 1) return '记录较多，已分批（可再次同步继续补全）'
         return '—'
       },

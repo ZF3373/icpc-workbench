@@ -62,13 +62,15 @@ export default function UpdateChecker() {
       }
       action={
         <Space>
-          {info.canSelfUpdate && (
+          {/* canSelfUpdate 只表达环境能力；推荐通道有没有产物看 info.download，
+              缺产物时一键更新会拿到「无产物」失败，不如直接只给下载页 */}
+          {info.canSelfUpdate && info.download && (
             <Popconfirm
               title="确认更新？"
               description="将下载并替换程序文件，完成后需关闭并重新打开软件；练习数据不受影响。"
               okText="开始更新"
               cancelText="取消"
-              onConfirm={runUpdate}
+              onConfirm={() => runUpdate()}
             >
               <Button size="small" type="primary" loading={busy}>
                 一键更新

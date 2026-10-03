@@ -68,12 +68,12 @@ export default function SyncProgressBadge() {
             gap: 6,
             padding: '6px 12px',
             borderRadius: 16,
-            border: '1px solid #2b3648',
-            background: '#141a24',
-            color: '#c9d3e0',
+            border: '1px solid var(--line)',
+            background: 'var(--surface-2)',
+            color: 'var(--text-2)',
             fontSize: 12,
             cursor: 'pointer',
-            boxShadow: '0 4px 14px rgba(0, 0, 0, 0.35)',
+            boxShadow: 'var(--shadow)',
           }}
         >
           <LoadingOutlined />
@@ -92,7 +92,7 @@ export default function SyncProgressBadge() {
         bottom: 20,
         zIndex: 1200,
         width: 320,
-        boxShadow: '0 6px 20px rgba(0, 0, 0, 0.35)',
+        boxShadow: 'var(--shadow)',
       }}
     >
       <Card
@@ -116,7 +116,7 @@ export default function SyncProgressBadge() {
                   {modeText(j)}
                 </Tag>
               </Space>
-              <div style={{ color: '#8993a2', fontSize: 12, marginTop: 2 }}>{jobLineText(j)}</div>
+              <div style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 2 }}>{jobLineText(j)}</div>
               <Tag color={TONE_COLOR[heartbeatTone(j.lastRequestAgoMs)]} style={{ marginTop: 4 }}>
                 {heartbeatText(j.lastRequestAgoMs)}
               </Tag>

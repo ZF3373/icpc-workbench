@@ -28,7 +28,8 @@ interface UpdateContextValue {
   percent: number
   busy: boolean
   result: { ok: boolean; text: string } | null
-  runUpdate: () => Promise<void>
+  /** channel 缺省时使用检查结果的推荐通道（顶部横幅的一键更新走推荐通道） */
+  runUpdate: (channel?: 'stable' | 'commit') => Promise<void>
   hasUpdate: boolean
 }
 
@@ -111,59 +112,71 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     else message.error(applied.message ?? '应用更新失败')
   }, [message])
 
-  const runUpdate = useCallback(async () => {
-    if (phase === 'downloading' || phase === 'verifying') return
-    setResult(null)
-    setPercent(0)
-    setPhase('downloading')
-    try {
-      const started = await post<{ ok: boolean; message?: string }>('/api/update/download')
-      if (!started.ok) {
+  const runUpdate = useCallback(
+    async (channel?: 'stable' | 'commit') => {
+      if (phase === 'downloading' || phase === 'verifying') return
+      setResult(null)
+      setPercent(0)
+      setPhase('downloading')
+      try {
+        const started = await post<{ ok: boolean; message?: string }>(
+          '/api/update/download',
+          channel ? { channel } : undefined,
+        )
+        if (!started.ok) {
+          setPhase('idle')
+          message.warning(started.message ?? '无法开始下载')
+          return
+        }
+        const ok = await pollUntilStaged()
+        if (!ok) {
+          const p = await get<UpdateProgress>('/api/update/progress').catch(() => null)
+          setPhase('error')
+          setResult({ ok: false, text: p?.error ?? '下载失败，请稍后重试或前往下载页手动更新' })
+          return
+        }
+        await applyStaged()
+      } catch (e) {
         setPhase('idle')
-        message.warning(started.message ?? '无法开始下载')
-        return
+        setResult({ ok: false, text: (e as Error).message })
+        message.error((e as Error).message)
       }
-      const ok = await pollUntilStaged()
-      if (!ok) {
-        const p = await get<UpdateProgress>('/api/update/progress').catch(() => null)
-        setPhase('error')
-        setResult({ ok: false, text: p?.error ?? '下载失败，请稍后重试或前往下载页手动更新' })
-        return
-      }
-      await applyStaged()
-    } catch (e) {
-      setPhase('idle')
-      setResult({ ok: false, text: (e as Error).message })
-      message.error((e as Error).message)
-    }
-  }, [phase, pollUntilStaged, applyStaged, message])
+    },
+    [phase, pollUntilStaged, applyStaged, message],
+  )
 
   // 应用启动时同步后端更新状态：刷新/重启后若仍有未完成的更新，
   // 恢复进度显示并继续驱动到完成（与不刷新时的行为一致）。
   useEffect(() => {
     let cancelled = false
-    void get<UpdateProgress>('/api/update/progress').then((p) => {
-      if (cancelled) return
-      if (p.phase !== 'downloading' && p.phase !== 'verifying' && p.phase !== 'staged') return
-      setPhase(p.phase)
-      setPercent(
-        p.phase === 'staged' ? 100 : p.total > 0 ? Math.min(99, Math.round((p.received / p.total) * 100)) : 0,
-      )
-      void (async () => {
-        if (p.phase === 'staged') {
+    void get<UpdateProgress>('/api/update/progress')
+      .then((p) => {
+        if (cancelled) return
+        if (p.phase !== 'downloading' && p.phase !== 'verifying' && p.phase !== 'staged') return
+        setPhase(p.phase)
+        setPercent(
+          p.phase === 'staged' ? 100 : p.total > 0 ? Math.min(99, Math.round((p.received / p.total) * 100)) : 0,
+        )
+        void (async () => {
+          if (p.phase === 'staged') {
+            await applyStaged()
+            return
+          }
+          const ok = await pollUntilStaged()
+          if (!ok) {
+            const ep = await get<UpdateProgress>('/api/update/progress').catch(() => null)
+            setPhase('error')
+            setResult({ ok: false, text: ep?.error ?? '下载失败，请稍后重试或前往下载页手动更新' })
+            return
+          }
           await applyStaged()
-          return
-        }
-        const ok = await pollUntilStaged()
-        if (!ok) {
-          const ep = await get<UpdateProgress>('/api/update/progress').catch(() => null)
-          setPhase('error')
-          setResult({ ok: false, text: ep?.error ?? '下载失败，请稍后重试或前往下载页手动更新' })
-          return
-        }
-        await applyStaged()
-      })()
-    })
+        })()
+      })
+      // 必须 catch：后端重启/不可达时本请求会失败，而这是一次**页面加载即触发**的探测。
+      // 不接住就是一个未处理的 Promise rejection —— 实测会让每个页面的控制台都多出一条
+      // 与本页无关的 uncaught TypeError，真出问题时反而更难定位（`void` 只压住 lint，不压住 rejection）。
+      // 失败即「没有待恢复的更新」，保持 idle 是正确状态，无需打扰用户。
+      .catch(() => undefined)
     return () => {
       cancelled = true
     }

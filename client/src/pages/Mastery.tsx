@@ -5,12 +5,10 @@ import {
   Card,
   Col,
   Drawer,
-  Empty,
   Input,
   Progress,
   Row,
   Space,
-  Spin,
   Switch,
   Tag,
   Tooltip,
@@ -19,6 +17,10 @@ import {
 import { StarOutlined, SearchOutlined, TrophyOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
+import PageSkeleton from '../components/PageSkeleton'
+import CardSkeleton from '../components/CardSkeleton'
+import EmptyState from '../components/EmptyState'
+import InlineError from '../components/InlineError'
 import AccountScopePicker from '../components/AccountScopePicker'
 import { useAccountScope, withScope } from '../accountScope'
 import { pct } from '../ui'
@@ -55,11 +57,11 @@ const PROBLEM_STATUS_META: Record<TagProblem['status'], { color: string; label: 
 
 /** 档位视觉（与 Dashboard 图表色系一致） */
 const LEVEL_META: Record<number, { color: string; hint: string }> = {
-  4: { color: '#52c41a', hint: 'AC 率高、题量充足，保持手感即可' },
-  3: { color: '#1677ff', hint: '有一定积累，继续刷中高档题巩固' },
-  2: { color: '#13c2c2', hint: '刚起步，建议配合模板课程系统练' },
-  1: { color: '#faad14', hint: '只是碰到过，尽快回炉对应模板' },
-  0: { color: '#bfbfbf', hint: '尚未通过任何题目 —— 练过没做出来的优先补，没碰过的从模板课开始' },
+  4: { color: 'var(--green)', hint: 'AC 率高、题量充足，保持手感即可' },
+  3: { color: 'var(--blue)', hint: '有一定积累，继续刷中高档题巩固' },
+  2: { color: 'var(--cyan)', hint: '刚起步，建议配合模板课程系统练' },
+  1: { color: 'var(--amber)', hint: '只是碰到过，尽快回炉对应模板' },
+  0: { color: 'var(--text-3)', hint: '尚未通过任何题目 —— 练过没做出来的优先补，没碰过的从模板课开始' },
 }
 
 const LEVEL_ORDER = [4, 3, 2, 1, 0]
@@ -94,6 +96,7 @@ export default function Mastery() {
   const [scope, setScope] = useAccountScope()
   const [report, setReport] = useState<MasteryReport | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [q, setQ] = useState('')
   const [onlyWeak, setOnlyWeak] = useState(false)
   /** 课程大纲里从未练过的知识点（0 提交、无关联题目）默认不进地图，避免淹没真实练习画像 */
@@ -101,6 +104,14 @@ export default function Mastery() {
   const [active, setActive] = useState<MasteryPoint | null>(null)
   /** 当前抽屉知识点的对应题目（null = 加载中） */
   const [tagProblems, setTagProblems] = useState<TagProblem[] | null>(null)
+  /**
+   * 抽屉「对应题目」的取数失败原因。
+   * 旧实现是 `.catch(() => setTagProblems([]))` —— 把请求失败伪装成「题库里还没有该知识点的题目」，
+   * 用户会以为自己真的没题可练，实际只是这次查询挂了。失败与空必须分开。
+   */
+  const [tagError, setTagError] = useState<string | null>(null)
+  /** 抽屉内「重试」的触发器：effect 依赖 active，重试同一知识点需要额外一次自增 */
+  const [tagRetry, setTagRetry] = useState(0)
   /** 相对上次访问新升档的知识点（🎉 标记，点开抽屉后消失） */
   const [newly, setNewly] = useState<Set<string>>(new Set())
 
@@ -110,23 +121,39 @@ export default function Mastery() {
     if (!active) return
     let current = true
     setTagProblems(null)
+    setTagError(null)
     get<TagProblem[]>(`/api/problems?tag=${encodeURIComponent(active.tag)}&bank=1`)
       .then((rows) => {
-        if (current) setTagProblems(rows.sort(byDifficultyAsc))
+        if (!current) return
+        setTagProblems(rows.sort(byDifficultyAsc))
+        setTagError(null)
       })
-      .catch(() => {
-        if (current) setTagProblems([])
+      .catch((e: Error) => {
+        if (!current) return
+        setTagError(e.message)
+        setTagProblems([])
       })
     return () => {
       current = false
     }
-  }, [active])
+  }, [active, tagRetry])
 
   const load = useCallback(() => {
     setLoading(true)
+    setLoadError(null)
     get<MasteryReport>(withScope('/api/stats/mastery', scope))
-      .then(setReport)
-      .catch((e: Error) => message.error(e.message))
+      .then((r) => {
+        setReport(r)
+        setLoadError(null)
+      })
+      // 失败 ≠ 没有数据：掌握度是重查询、最容易超时。旧实现只弹一个 toast，report 仍是 null，
+      // 渲染分支于是把「请求失败」当成「还没有刷题数据 —— 去题目管理」，等于告诉有几千条
+      // 提交的用户「你没有记录」。这里落到 loadError，由 InlineError 出错误态 + 重试。
+      .catch((e: Error) => {
+        setLoadError(e.message)
+        setReport(null)
+        message.error(e.message)
+      })
       .finally(() => setLoading(false))
   }, [message, scope])
 
@@ -227,13 +254,45 @@ export default function Mastery() {
         }
       />
 
+      {/* 首屏骨架：页面真实结构是「统计带（知识点/档位计数）→ 若干张档位卡片」，
+          所以 stats 保留、用 4 个中等高度的块占位档位卡；比整页居中转圈少一次布局跳动。
+          这里不像 Problems/Contests 那样卡 `!report`：本页没有「点一下就静默重拉」的局部动作，
+          load() 只由挂载 / 换账号视角 / 重试触发，而这三种情况下屏上的旧地图都属于另一个数据口径，
+          盖住它比继续展示更诚实（与 Dashboard 的 `if (loading) return <PageSkeleton />` 同判） */}
       {loading ? (
-        <div style={{ textAlign: 'center', padding: 80 }}>
-          <Spin />
-        </div>
+        <PageSkeleton blocks={4} blockHeight={140} />
+      ) : loadError ? (
+        /* 失败 ≠ 空态：接口失败时给可重试的错误态，而不是「还没有刷题数据」 */
+        <InlineError
+          message={loadError}
+          hint="这块本来显示的是你的知识点掌握度地图（题量、AC 率与关联模板课程）"
+          onRetry={load}
+          retrying={loading}
+        />
       ) : total === 0 ? (
         <Card>
-          <Empty description="还没有刷题数据 —— 先到「题目管理」同步或导入提交记录，掌握度会自动生成" />
+          {untouchedCount > 0 ? (
+            /* 「有数据却显示空」：知识点全是课程大纲里没练过的，被默认开关藏起来了。
+               这里的出路不是让用户去同步（他本来就有数据），而是把隐藏的部分显示出来 */
+            <EmptyState
+              title="暂无可展示的练习画像"
+              description={`${untouchedCount} 个知识点都还没有提交记录，默认不显示以免淹没真实画像。打开「显示未练习」即可看到课程大纲里的这些学习盲区。`}
+              actions={[
+                { label: `显示未练习（${untouchedCount}）`, type: 'primary', onClick: () => setShowUntouched(true) },
+                { label: '去题目管理刷题', type: 'default', onClick: () => nav('/problems') },
+              ]}
+            />
+          ) : (
+            /* description 只解释「为什么是空的」，出路交给两个真按钮（旧实现只有一句文字指引） */
+            <EmptyState
+              title="还没有刷题数据"
+              description="掌握度由已同步的提交记录推导。绑定平台账号同步数据，或到题目管理手动导入后，知识点地图会自动生成。"
+              actions={[
+                { label: '去题目管理', type: 'primary', onClick: () => nav('/problems') },
+                { label: '去设置绑定账号', type: 'default', onClick: () => nav('/settings') },
+              ]}
+            />
+          )}
         </Card>
       ) : (
         <>
@@ -288,8 +347,8 @@ export default function Mastery() {
                             style={{ borderLeft: `3px solid ${LEVEL_META[p.level].color}` }}
                           >
                             <b>
-                              {p.level === 4 && <TrophyOutlined style={{ color: '#faad14', marginInlineEnd: 4 }} />}
-                              {p.level === 3 && <StarOutlined style={{ color: '#1677ff', marginInlineEnd: 4 }} />}
+                              {p.level === 4 && <TrophyOutlined style={{ color: 'var(--amber)', marginInlineEnd: 4 }} />}
+                              {p.level === 3 && <StarOutlined style={{ color: 'var(--blue)', marginInlineEnd: 4 }} />}
                               {p.tag}
                               {newly.has(p.tag) && <span style={{ marginInlineStart: 4 }}>🎉</span>}
                             </b>
@@ -308,7 +367,7 @@ export default function Mastery() {
                                 percent={progress}
                                 size="small"
                                 showInfo={false}
-                                strokeColor={nextSolved === null ? '#faad14' : LEVEL_META[p.level].color}
+                                strokeColor={nextSolved === null ? 'var(--amber)' : LEVEL_META[p.level].color}
                                 style={{ margin: 0, lineHeight: 1 }}
                               />
                             </span>
@@ -338,15 +397,15 @@ export default function Mastery() {
                 size="small"
                 style={
                   active.level === 4
-                    ? { background: '#f6ffed', borderColor: '#b7eb8f' }
-                    : { background: '#e6f4ff', borderColor: '#91caff' }
+                    ? { background: 'var(--green-soft)', borderColor: 'var(--green-line)' }
+                    : { background: 'var(--brand-soft)', borderColor: 'var(--brand-line)' }
                 }
               >
                 <Space align="center">
                   {active.level === 4 ? (
-                    <TrophyOutlined style={{ color: '#faad14', fontSize: 22 }} />
+                    <TrophyOutlined style={{ color: 'var(--amber)', fontSize: 22 }} />
                   ) : (
-                    <StarOutlined style={{ color: '#1677ff', fontSize: 22 }} />
+                    <StarOutlined style={{ color: 'var(--blue)', fontSize: 22 }} />
                   )}
                   <Space direction="vertical" size={0}>
                     <b>{active.level === 4 ? '🏆 熟练掌握！' : '🎖 已掌握！'}</b>
@@ -400,19 +459,23 @@ export default function Mastery() {
                 ) : undefined
               }
             >
-              {tagProblems === null ? (
-                <div style={{ textAlign: 'center', padding: 16 }}>
-                  <Spin />
-                </div>
+              {tagError ? (
+                /* 失败 ≠ 空：这块本来显示的是该知识点在题库里的对应题目 */
+                <InlineError
+                  compact
+                  message={tagError}
+                  hint="这块本来显示的是该知识点在题库里的对应题目（含题库未做题）。"
+                  onRetry={() => setTagRetry((n) => n + 1)}
+                />
+              ) : tagProblems === null ? (
+                <CardSkeleton variant="list" rows={3} />
               ) : tagProblems.length === 0 ? (
-                <Space direction="vertical" size={4}>
-                  <Typography.Text type="secondary">
-                    题库里还没有该知识点的题目 —— 到「题目管理」同步提交记录或拉取题库（洛谷/牛客）后即可在这里练题
-                  </Typography.Text>
-                  <Button size="small" style={{ alignSelf: 'flex-start' }} onClick={() => nav('/problems')}>
-                    去题目管理
-                  </Button>
-                </Space>
+                <EmptyState
+                  compact
+                  title="题库里还没有该知识点的题目"
+                  description="到「题目管理」同步提交记录，或拉取题库（洛谷/牛客）后，这里就能直接点开练题。"
+                  action={{ label: '去题目管理', type: 'primary', onClick: () => nav('/problems') }}
+                />
               ) : (
                 <Space direction="vertical" size={4} style={{ width: '100%' }}>
                   {tagProblems.slice(0, DRAWER_PROBLEM_LIMIT).map((p) => (

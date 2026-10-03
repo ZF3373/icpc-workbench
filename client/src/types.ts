@@ -166,6 +166,10 @@ export interface UpdateInfo {
   hasCommitUpdate: boolean
   channel: 'stable' | 'commit' | null
   download: UpdateDownloadUrls | null
+  /** 正式版通道产物（有新版本且产物齐全时非空；按通道自更新用） */
+  stableDownload: UpdateDownloadUrls | null
+  /** 预览（提交构建）通道产物（有新提交构建且产物齐全时非空） */
+  commitDownload: UpdateDownloadUrls | null
   canSelfUpdate?: boolean
   message?: string
 }

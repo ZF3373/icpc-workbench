@@ -63,6 +63,10 @@ export interface UpdateInfo {
   channel: 'stable' | 'commit' | null;
   /** 推荐通道的产物下载地址（自更新用） */
   download: DownloadUrls | null;
+  /** 正式版通道的产物下载地址（有新版本且产物齐全时非空；按通道自更新用） */
+  stableDownload: DownloadUrls | null;
+  /** 预览（提交构建）通道的产物下载地址（有新提交构建且产物齐全时非空） */
+  commitDownload: DownloadUrls | null;
   message?: string;
 }
 
@@ -113,6 +117,8 @@ function emptyInfo(current: string, buildCommit: string): UpdateInfo {
     hasCommitUpdate: false,
     channel: null,
     download: null,
+    stableDownload: null,
+    commitDownload: null,
   };
 }
 
@@ -180,14 +186,19 @@ export function resolveUpdate(
     return info;
   }
 
-  const source = info.channel === 'stable' ? stable : nightly;
-  const download: DownloadUrls = {
-    shell: assetUrl(source, SHELL_NAME) ?? '',
-    core: assetUrl(source, CORE_NAME) ?? '',
-    checksums: assetUrl(source, CHECKSUMS_NAME) ?? '',
+  // 两个通道各自给出产物地址：自更新按用户选择的通道取用，不再只跟随推荐通道。
+  // 产物不全的通道置 null，前端对该通道回退「前往下载页」
+  const urlsOf = (rel: GithubRelease | null): DownloadUrls | null => {
+    const d: DownloadUrls = {
+      shell: assetUrl(rel, SHELL_NAME) ?? '',
+      core: assetUrl(rel, CORE_NAME) ?? '',
+      checksums: assetUrl(rel, CHECKSUMS_NAME) ?? '',
+    };
+    return d.shell && d.core && d.checksums ? d : null;
   };
-  // 产物齐全才允许自更新；缺资源时 download 置空，前端回退「前往下载页」
-  info.download = download.shell && download.core && download.checksums ? download : null;
+  info.stableDownload = info.hasUpdate ? urlsOf(stable) : null;
+  info.commitDownload = info.hasCommitUpdate ? urlsOf(nightly) : null;
+  info.download = info.channel === 'stable' ? info.stableDownload : info.commitDownload;
   return info;
 }
 
@@ -314,12 +325,14 @@ export function updateRoutes(config: AppConfig, preUpgradeBackup?: () => void): 
   r.get('/check', asyncHandler(async (_req, res) => {
     const info = await checkForUpdate(APP_VERSION, GITHUB_REPO, fetch, BUILD_COMMIT);
     if (info.ok) lastCheck = { info, at: Date.now() };
-    res.json({ ...info, canSelfUpdate: canSelfUpdate() && info.download !== null });
+    // canSelfUpdate 只表达「环境是否支持自更新」；各通道有没有产物看
+    // stableDownload / commitDownload，前端按通道决定给一键更新还是下载页
+    res.json({ ...info, canSelfUpdate: canSelfUpdate() });
   }));
   r.get('/progress', (_req, res) => {
     res.json(updateState());
   });
-  r.post('/download', asyncHandler(async (_req, res) => {
+  r.post('/download', asyncHandler(async (req, res) => {
     if (!canSelfUpdate()) {
       res.json({ ok: false, message: '当前环境不支持一键更新（开发模式或非 Windows），请手动下载替换' });
       return;
@@ -328,12 +341,29 @@ export function updateRoutes(config: AppConfig, preUpgradeBackup?: () => void): 
       lastCheck && lastCheck.info.ok && Date.now() - lastCheck.at < CHECK_CACHE_TTL_MS
         ? lastCheck.info
         : await checkForUpdate(APP_VERSION, GITHUB_REPO, fetch, BUILD_COMMIT);
-    if (!info.ok || !info.download) {
+    if (!info.ok) {
       res.json({ ok: false, message: info.message ?? '未获取到可下载的更新产物' });
       return;
     }
+    // 通道参数：stable（正式版）/ commit（预览版）；缺省用检查结果推荐通道
+    // （顶部横幅的一键更新不带参数，保持推荐通道行为）
+    const wanted: 'stable' | 'commit' | null =
+      req.body?.channel === 'commit' || req.body?.channel === 'stable'
+        ? (req.body.channel as 'stable' | 'commit')
+        : info.channel;
+    const urls = wanted === 'commit' ? info.commitDownload : wanted === 'stable' ? info.stableDownload : info.download;
+    if (!urls) {
+      res.json({
+        ok: false,
+        message:
+          wanted === 'commit'
+            ? '预览通道暂无可下载的更新产物，请前往下载页手动获取'
+            : '未获取到可下载的更新产物，请前往下载页手动获取',
+      });
+      return;
+    }
     try {
-      res.json(startDownload(info.download, stagingDir));
+      res.json(startDownload(urls, stagingDir));
     } catch (e) {
       // staging 目录创建失败（安装目录无写权限）等同步异常：给明确提示而非 HTTP 500
       res.json({ ok: false, message: `无法开始下载：${e instanceof Error ? e.message : String(e)}` });

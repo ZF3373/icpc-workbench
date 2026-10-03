@@ -44,6 +44,38 @@ export function normalizeScope(raw: unknown): AccountScope {
 /** 空作用域（全部账号） */
 export const ALL_ACCOUNTS: AccountScope = {};
 
+/** 切换器「全部账号」选项的稳定键值（不与任何真实账号冲突） */
+export const ALL_ACCOUNTS_KEY = '*';
+
+/**
+ * 账号的稳定键值：`platform:account`。
+ *
+ * 为什么不能用数组下标当 Select 的 value：账号增删或排序变化后，同一个下标会指向
+ * 另一个账号 —— 用户看到的选中项没变，实际统计口径已经换了另一个号（静默串数据）。
+ * 键值由 account 本身派生，只要这个账号还在，键值就不变。
+ *
+ * 分隔符用 `:`，拆分时按**第一个**冒号切分 —— 平台 id 里不含 `:`，
+ * 所以 handle 本身带冒号也能无损还原。
+ */
+export function accountKey(platform: string, account: string): string {
+  return `${platform}:${account}`
+}
+
+/** 从 accountKey 拆回 { platform, account }；非法格式返回 null */
+export function parseAccountKey(key: string): AccountScope | null {
+  const at = key.indexOf(':')
+  if (at <= 0) return null;
+  const platform = key.slice(0, at);
+  const account = key.slice(at + 1);
+  if (!VALID_PLATFORMS.has(platform) || account === '') return null;
+  return { platform: platform as PlatformId, account };
+}
+
+/** 作用域 → 切换器键值：全部账号给 ALL_ACCOUNTS_KEY */
+export function scopeKey(scope: AccountScope): string {
+  return isAllAccounts(scope) ? ALL_ACCOUNTS_KEY : accountKey(scope.platform!, scope.account!);
+}
+
 export function isAllAccounts(scope: AccountScope): boolean {
   return !scope.platform || !scope.account;
 }

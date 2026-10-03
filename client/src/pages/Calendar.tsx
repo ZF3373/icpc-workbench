@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, Calendar, Card, Col, Empty, Row, Space, Spin, Tag, App as AntdApp } from 'antd'
+import { Button, Calendar, Card, Col, Row, Space, Tag, App as AntdApp } from 'antd'
 import { CheckOutlined, FieldTimeOutlined, FireOutlined, TrophyOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
+import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import StatStrip from '../components/StatStrip'
+import CardSkeleton from '../components/CardSkeleton'
+import EmptyState from '../components/EmptyState'
+import InlineError from '../components/InlineError'
 import { get, post, del } from '../api'
 import type { DayPlanInfo, DayTask, StreakInfo } from '../types'
 
@@ -23,18 +27,23 @@ const KIND_COLOR: Record<DayTask['kind'], string> = {
 
 export default function CalendarPage() {
   const { message } = AntdApp.useApp()
+  const navigate = useNavigate()
   const [month, setMonth] = useState(dayjs().format('YYYY-MM'))
   const [monthData, setMonthData] = useState<Record<string, DayPlanInfo>>({})
   const [selected, setSelected] = useState(dayjs().format('YYYY-MM-DD'))
   const [tasks, setTasks] = useState<DayTask[]>([])
   const [loadingTasks, setLoadingTasks] = useState(false)
   const [streak, setStreak] = useState<StreakInfo>({ current: 0, longest: 0, totalDays: 0 })
+  /** 月历 / 当天任务各自的取数失败原因：失败不能伪装成「这天没有任务」 */
+  const [monthError, setMonthError] = useState<string | null>(null)
+  const [dayError, setDayError] = useState<string | null>(null)
 
   // 只认最新一次请求：快速切换月份/日期会有多个请求在途，旧响应晚到会盖掉新视图
   //（与 Today.tsx / HistoryPanel 的 reqSeq 护栏同款）
   const monthSeq = useRef(0)
   const loadMonth = useCallback((m: string) => {
     const seq = (monthSeq.current += 1)
+    setMonthError(null)
     get<DayPlanInfo[]>(`/api/checkins?month=${m}`)
       .then((rows) => {
         if (seq !== monthSeq.current) return
@@ -42,19 +51,31 @@ export default function CalendarPage() {
         for (const r of rows) map[r.date] = r
         setMonthData(map)
       })
-      .catch((e: Error) => message.error(e.message))
+      .catch((e: Error) => {
+        // 月历取不回来时格子里全成了「无任务」，只弹 toast 会让用户以为这个月真的没安排
+        if (seq === monthSeq.current) setMonthError(e.message)
+        message.error(e.message)
+      })
   }, [])
 
   const daySeq = useRef(0)
   const loadDay = useCallback((d: string) => {
     const seq = (daySeq.current += 1)
     setLoadingTasks(true)
+    setDayError(null)
     get<DayTask[]>(`/api/checkins/date/${d}`)
       .then((rows) => {
         if (seq !== daySeq.current) return
         setTasks(rows)
       })
-      .catch((e: Error) => message.error(e.message))
+      .catch((e: Error) => {
+        // 同时清空 tasks：否则「上一天的任务」会留在卡片里，被当成这一天的安排
+        if (seq === daySeq.current) {
+          setDayError(e.message)
+          setTasks([])
+        }
+        message.error(e.message)
+      })
       .finally(() => {
         if (seq === daySeq.current) setLoadingTasks(false)
       })
@@ -102,6 +123,7 @@ export default function CalendarPage() {
   const RING_R = 15.5
   const RING_CIRC = 2 * Math.PI * RING_R
 
+  // fullCellRender(date, info) 的 info 用不上：本格子的日期/完成度全部来自 monthData
   const renderCell = (date: Dayjs) => {
     const key = date.format('YYYY-MM-DD')
     const info = monthData[key]
@@ -200,10 +222,22 @@ export default function CalendarPage() {
             }
             size="small"
           >
+            {/* 月历取数失败：格子会全空，必须在日历上方说明，而不是让用户以为这个月没安排 */}
+            {monthError && (
+              <InlineError
+                compact
+                message={monthError}
+                hint="本月打卡数据没能取回来，下面的日历暂不可信。"
+                onRetry={() => loadMonth(month)}
+              />
+            )}
             <Calendar
               onSelect={(d: Dayjs) => setSelected(d.format('YYYY-MM-DD'))}
               onPanelChange={(d: Dayjs) => setMonth(d.format('YYYY-MM'))}
-              dateFullCellRender={renderCell}
+              /* antd 5 起 dateFullCellRender 已弃用（每次进日历页都刷一条控制台告警）。
+                 官方迁移就是改名：fullCellRender(date, info) 直接接管整个「日」格子的内容，
+                 与旧 dateFullCellRender(date) 的返回结构一致（仍是 .calendar-cell 那一层）。 */
+              fullCellRender={renderCell}
             />
             <div className="calendar-legend" aria-hidden>
               <span>
@@ -221,9 +255,27 @@ export default function CalendarPage() {
         <Col xs={24} xl={8}>
           <Card title={`当天任务 · ${selected}`} size="small" style={{ minHeight: 360 }}>
             {loadingTasks ? (
-              <Spin style={{ display: 'block', margin: '40px auto' }} />
+              <CardSkeleton variant="list" rows={3} />
+            ) : dayError ? (
+              /* 失败 ≠ 没有任务：旧实现只弹 toast，列表保持上一次的数据（或空）→ 卡片会显示
+                 「当天没有计划任务」这种不实结论。这里给明确的错误块 + 重试。 */
+              <InlineError
+                compact
+                message={dayError}
+                hint="这一天的任务清单没能取回来，重试即可。"
+                onRetry={() => loadDay(selected)}
+                retrying={loadingTasks}
+              />
             ) : tasks.length === 0 ? (
-              <Empty description="当天没有计划任务" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              <EmptyState
+                compact
+                title="当天没有计划任务"
+                description="训练计划里的任务会自动排到日期上。先去「训练计划」建一个计划，或看看今天的推荐题。"
+                actions={[
+                  { label: '去训练计划', type: 'primary', onClick: () => navigate('/plans') },
+                  { label: '看今日训练', onClick: () => navigate('/today') },
+                ]}
+              />
             ) : (
               tasks.map((t) => {
                 const link = t.problem_url ?? t.url

@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import dayjs from 'dayjs'
-import { Button, Card, Empty, Modal, Popconfirm, Space, Spin, Tag, Tooltip, App as AntdApp } from 'antd'
+import { Button, Card, Modal, Popconfirm, Space, Tag, Tooltip, App as AntdApp } from 'antd'
 import { DeleteOutlined, EditOutlined, ReadOutlined } from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
+import PageSkeleton from '../components/PageSkeleton'
+import EmptyState from '../components/EmptyState'
+import InlineError from '../components/InlineError'
 import PlatformTag from '../components/PlatformTag'
 import NoteEditor from '../components/NoteEditor'
 import NotePreview from '../components/NotePreview'
@@ -27,8 +31,10 @@ function dueText(item: ReviewItem): { text: string; overdue: boolean } {
 
 export default function Reviews() {
   const { message } = AntdApp.useApp()
+  const nav = useNavigate()
   const [items, setItems] = useState<ReviewItem[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [filter, setFilter] = useState<'due' | 'all'>('due')
   const [editing, setEditing] = useState<ReviewItem | null>(null)
   const [noteDraft, setNoteDraft] = useState('')
@@ -37,13 +43,21 @@ export default function Reviews() {
 
   const load = useCallback((f: 'due' | 'all') => {
     setLoading(true)
+    setLoadError(null)
     get<ReviewItem[]>(`/api/reviews${f === 'due' ? '?due=1' : ''}`)
       .then((r) => {
         setItems(r)
+        setLoadError(null)
         // 每次重取列表后回到默认收起（列表重挂载，展开状态不跨刷新保留）
         setOpenNoteIds(new Set())
       })
-      .catch((e: Error) => message.error(e.message))
+      // 失败 ≠ 没有数据：接口失败时 items 保持空，旧实现会被下面的空态渲染成
+      // 「复习队列还是空的 —— 到题目管理加题」，把一次超时误导成用户自己的问题。
+      // 这里落到 loadError，由 InlineError 出错误态 + 重试（重试沿用当前筛选）。
+      .catch((e: Error) => {
+        setLoadError(e.message)
+        message.error(e.message)
+      })
       .finally(() => setLoading(false))
   }, [])
 
@@ -110,24 +124,57 @@ export default function Reviews() {
         }
       />
 
-      {loading ? (
-        <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />
+      {/* 首屏骨架：复习库是「一列复习卡」的列表页（没有统计带），用表格行占位贴近真实首屏。
+          只在「还没有任何一行可显示」时占位：本页每次反馈 / 移除 / 存笔记都会重拉列表，
+          若 loading 就整页退回骨架，点一下按钮全页闪一次。与 Problems / Contests 同款判断。 */}
+      {loading && items.length === 0 ? (
+        <PageSkeleton stats={false} table rows={4} />
+      ) : loadError ? (
+        /* 失败 ≠ 空态：接口失败时给可重试的错误态，而不是「复习队列还是空的」 */
+        <InlineError
+          message={loadError}
+          hint="这块本来显示的是你的复习队列（到期时间、间隔档位与笔记），重试即按当前筛选重新拉取"
+          onRetry={() => load(filter)}
+          retrying={loading}
+        />
       ) : items.length === 0 ? (
         <Card>
-          <Empty
-            description={
-              filter === 'due'
-                ? '没有到期的复习 —— 到「题目管理」或「今日训练」把值得重做的题加入队列'
-                : '复习队列还是空的 —— 到「题目管理」把错题和值得重做的题加入队列'
-            }
-          />
+          {/* description 只解释「为什么是空的」，出路给成真按钮：去题目管理加题 / 切到另一个筛选 */}
+          {filter === 'due' ? (
+            <EmptyState
+              title="暂无到期的复习"
+              description="复习项会按 1/3/7/14/30/60 天的间隔排期，今天没有到期的说明都还在间隔期内。也可以直接看整个队列。"
+              actions={[
+                { label: '去题目管理加题', type: 'primary', onClick: () => nav('/problems') },
+                { label: '查看全部队列', type: 'default', onClick: () => setFilter('all') },
+              ]}
+            />
+          ) : (
+            <EmptyState
+              title="复习队列还是空的"
+              description="复习队列靠手动加入：在题目管理里把错题和值得重做的题加进来，或到今日训练把推荐题加入复习。"
+              actions={[
+                { label: '去题目管理', type: 'primary', onClick: () => nav('/problems') },
+                { label: '去看今日训练', type: 'default', onClick: () => nav('/today') },
+              ]}
+            />
+          )}
         </Card>
       ) : (
-        <div className="review-list">
+        /* 卡片列表显式单列：列向 flex（任何断点下都不会被挤成多列或撑出横向滚动），
+           gap 给出相邻复习卡之间的间距 —— 此前是默认块级堆叠、卡片紧贴无间距 */
+        <div className="review-list" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {items.map((item) => {
             const due = dueText(item)
             return (
-              <Card key={item.id} size="small" className="review-item">
+              <Card
+                key={item.id}
+                size="small"
+                className="review-item"
+                // ≤768px：卡片内「内容 | 操作」这一行转纵向，操作组整体下沉到内容下方
+                // （@media(max-width:720px) 的老规则只覆盖 ≤720，这里用同一 class 统一到 768）
+                classNames={{ body: 'card-actions-row' }}
+              >
                 <div className="review-item-main">
                   <div className="today-problem-head">
                     <PlatformTag id={item.platform} />
@@ -166,7 +213,8 @@ export default function Reviews() {
                   )}
                 </div>
                 <div className="review-item-actions">
-                  <Space size={6} wrap>
+                  {/* ≤768px：反馈 / 编辑 / 移除按钮行由横排转竖排下沉，避免窄屏被压成两行截断 */}
+                  <Space size={6} wrap className="card-actions-row">
                     {FEEDBACK_META.map((f) => (
                       <Tooltip key={f.key} title={f.label}>
                         <Button

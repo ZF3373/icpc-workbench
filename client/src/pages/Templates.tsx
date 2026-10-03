@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   App as AntdApp,
   Button,
   Card,
   Dropdown,
-  Empty,
   Form,
   Input,
   InputNumber,
@@ -14,11 +13,12 @@ import {
   Popconfirm,
   Select,
   Space,
-  Spin,
   Tag,
   Tooltip,
 } from 'antd'
 import {
+  ArrowDownOutlined,
+  ArrowUpOutlined,
   BookOutlined,
   CheckCircleOutlined,
   CodeOutlined,
@@ -35,15 +35,20 @@ import {
   PlusOutlined,
   RightOutlined,
   SyncOutlined,
+  UndoOutlined,
 } from '@ant-design/icons'
 import PageHeader from '../components/PageHeader'
 import StatStrip from '../components/StatStrip'
+import PageSkeleton from '../components/PageSkeleton'
+import EmptyState from '../components/EmptyState'
+import InlineError from '../components/InlineError'
 import Markdown from '../components/Markdown'
 import CodeEditor from '../components/CodeEditor'
 import NoteEditor from '../components/NoteEditor'
 import NotePreview from '../components/NotePreview'
 import IndentSwitch from '../components/IndentSwitch'
 import { tagColor } from '../ui'
+import { BP, useMediaQuery } from '../useMediaQuery'
 import { saveUrlAsFile } from '../download'
 import { del, get, patch, post, put } from '../api'
 import { TEMPLATE_EXPORT_OPTIONS, type TemplateExportFormat } from '../templateExport'
@@ -123,6 +128,8 @@ export default function Templates() {
   const { message, modal } = AntdApp.useApp()
   const [data, setData] = useState<TemplatesResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  /** 首屏取数失败原因：与「模板库本来就是空的」严格区分（失败给 InlineError，空给 EmptyState） */
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [activeCat, setActiveCat] = useState<string>()
   const [expanded, setExpanded] = useState<string>()
   const [noteDraft, setNoteDraft] = useState('')
@@ -140,6 +147,12 @@ export default function Templates() {
   const [dragOverCat, setDragOverCat] = useState<{ key: string; pos: 'before' | 'after' } | null>(null)
   /** 拖拽源分类 key（ref 即时读写，不依赖 state 异步更新） */
   const dragCatRef = useRef<string | null>(null)
+  /** 撤销提示的 key：连续排序时先销毁上一条，避免提示堆叠刷屏 */
+  const catMsgKeyRef = useRef(0)
+  /** 命令面板深链参数：/templates?q=模板名 */
+  const [searchParams] = useSearchParams()
+  /** ≤920px：课程分类改为顶部 Select（§5.5 / P3-2），与 Problems 的分类栏同一套策略 */
+  const narrowTaxonomy = useMediaQuery(BP.narrowTaxonomy)
 
   /** 按 localStorage 持久化顺序重排分类，新增的分类追加到末尾 */
   const sortedCategories = useMemo(() => {
@@ -156,9 +169,19 @@ export default function Templates() {
 
   const load = useCallback(() => {
     setLoading(true)
+    setLoadError(null)
     get<TemplatesResponse>('/api/templates')
-      .then(setData)
-      .catch((e: Error) => message.error(e.message))
+      .then((res) => {
+        setData(res)
+        setLoadError(null)
+      })
+      .catch((e: Error) => {
+        // 失败 ≠ 空：旧实现只弹一条 toast，首屏没数据时页面停在 `!data` 分支渲染
+        // 「模板课程加载失败」的空态 —— 有结论没出路。这里记下原因交给 InlineError 带重试。
+        // 已有 data 时不打回错误态（局部刷新失败不该清空整页），toast 仍保留。
+        setLoadError(e.message)
+        message.error(e.message)
+      })
       .finally(() => setLoading(false))
   }, [])
 
@@ -170,6 +193,33 @@ export default function Templates() {
   useEffect(() => {
     if (!activeCat && data?.categories.length) setActiveCat(data.categories[0].key)
   }, [data, activeCat])
+
+  /**
+   * 全局命令面板的深链：`/templates?q=<模板名>`。
+   * 直接跳到该模板所在分类并展开它，省掉「先进模板库、再切分类、再找条目」三步 ——
+   * 这正是命令面板存在的意义（§4.3）。
+   *
+   * 用 urlQ 而不是「只跑一次」的 ref 做去重：应用内从 /templates 再跳 /templates?q=… 时
+   * 组件不会重挂载，只跑一次的写法会在第二次跳转时静默失效。
+   */
+  const urlQ = searchParams.get('q') ?? ''
+  const deepLinkAppliedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!urlQ || !data?.categories.length) return
+    if (deepLinkAppliedRef.current === urlQ) return
+    deepLinkAppliedRef.current = urlQ
+    const wanted = urlQ.trim().toLowerCase()
+    for (const cat of data.categories) {
+      const hit =
+        cat.templates.find((t) => t.name.toLowerCase() === wanted) ??
+        cat.templates.find((t) => t.name.toLowerCase().includes(wanted))
+      if (hit) {
+        setActiveCat(cat.key)
+        setExpanded(hit.id)
+        return
+      }
+    }
+  }, [data, urlQ])
 
   const setStatus = async (t: TemplateItemInfo, status: TemplateStatus) => {
     try {
@@ -395,6 +445,7 @@ export default function Templates() {
       const fromIdx = keys.indexOf(dragCatRef.current)
       const toIdx = keys.indexOf(dragOverCat.key)
       if (fromIdx !== -1 && toIdx !== -1 && fromIdx !== toIdx) {
+        const before = [...keys]
         keys.splice(fromIdx, 1)
         let insertAt = keys.indexOf(dragOverCat.key)
         if (dragOverCat.pos === 'after') insertAt += 1
@@ -402,9 +453,57 @@ export default function Templates() {
         saveCatOrder(keys)
         // 触发 sortedCategories 重算（data 引用不变，需要手动触发）
         setData((d) => (d ? { ...d } : d))
+        showCatUndo(before)
       }
     }
     clearCatDrag()
+  }
+
+  /**
+   * 键盘排序（§6.2 / P6-1）：与相邻分类交换一格。
+   * 与 mouse 拖拽共用 saveCatOrder + 同一份 key 顺序，落盘格式完全一致；
+   * 端点（无处可动）直接返回，按钮本身也会 disabled。
+   */
+  const moveCat = (key: string, delta: -1 | 1) => {
+    const keys = sortedCategories.map((c) => c.key)
+    const from = keys.indexOf(key)
+    const to = from + delta
+    if (from === -1 || to < 0 || to >= keys.length) return
+    const before = [...keys]
+    keys.splice(from, 1)
+    keys.splice(to, 0, key)
+    saveCatOrder(keys)
+    setData((d) => (d ? { ...d } : d))
+    showCatUndo(before)
+  }
+
+  /** 排序后的 3 秒「撤销」提示（§6.2 验收标准）。连续操作先销毁上一条，避免提示堆叠 */
+  const showCatUndo = (before: string[]) => {
+    const key = `cat-order-${(catMsgKeyRef.current += 1)}`
+    message.destroy()
+    message.open({
+      key,
+      type: 'success',
+      duration: 3,
+      content: (
+        <span>
+          已调整分类顺序
+          <Button
+            type="link"
+            size="small"
+            icon={<UndoOutlined />}
+            onClick={() => {
+              message.destroy(key)
+              saveCatOrder(before)
+              setData((d) => (d ? { ...d } : d))
+              message.info('已恢复排序前的顺序')
+            }}
+          >
+            撤销
+          </Button>
+        </span>
+      ),
+    })
   }
 
   // ---------- 内置条目：写入自己的模板内容 ----------
@@ -433,8 +532,29 @@ export default function Templates() {
 
   const cat = useMemo(() => data?.categories.find((c) => c.key === activeCat), [data, activeCat])
 
-  if (loading && !data) return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />
-  if (!data) return <Empty description="模板课程加载失败" />
+  // 首屏骨架屏占住「统计带 → 分类导航 → 条目列表」的真实结构，避免整页 Spin 的布局跳动
+  if (loading && !data) return <PageSkeleton stats={false} blocks={3} blockHeight={220} />
+  if (!data) {
+    // 失败与空态分流：失败可重试，空态给真实的下一步（重新加载）
+    return loadError ? (
+      <Card>
+        <InlineError
+          message={loadError}
+          hint="模板课程清单没能取回来；重试即可，已保存的自建模板与笔记不会丢失。"
+          onRetry={load}
+          retrying={loading}
+        />
+      </Card>
+    ) : (
+      <Card>
+        <EmptyState
+          title="模板课程清单为空"
+          description="内置课程由服务端下发。如果是本地首次启动，重新加载一次通常即可恢复。"
+          action={{ label: '重新加载', type: 'primary', onClick: load }}
+        />
+      </Card>
+    )
+  }
 
   return (
     <div>
@@ -512,43 +632,92 @@ export default function Templates() {
         ]}
       />
 
-      <div className="workbench" style={{ marginTop: 16, gridTemplateColumns: '190px minmax(0, 1fr)' }}>
-        {/* 左栏：分类导航 + 进度 */}
-        <aside className="taxonomy-panel">
-          <div className="section-label">课程分类</div>
-          <div className="taxonomy-list" style={{ userSelect: dragCat !== null ? 'none' : undefined }}>
-            {sortedCategories.map((c) => {
+      {/* ≤920px：课程分类改为顶部 Select（P3-2），窄屏下不再横排出需要滚动的窄条 */}
+      {narrowTaxonomy && (
+        <div className="taxonomy-select-bar" style={{ marginTop: 16 }}>
+          <span className="taxonomy-select-label">课程分类</span>
+          <Select
+            style={{ flex: '1 1 220px', minWidth: 0, maxWidth: 420 }}
+            aria-label="选择课程分类"
+            value={activeCat}
+            onChange={(v: string) => {
+              setActiveCat(v)
+              setExpanded(undefined)
+            }}
+            options={sortedCategories.map((c) => {
               const mastered = c.templates.filter((t) => t.status === 'mastered').length
-              const isDragging = dragCat === c.key
-              const dropTarget = dragOverCat?.key === c.key
-              return (
-                <button
-                  key={c.key}
-                  type="button"
-                  className={`taxonomy-item${activeCat === c.key ? ' is-active' : ''}${isDragging ? ' is-dragging' : ''}${dropTarget && dragOverCat?.pos === 'before' ? ' is-drag-over-before' : ''}${dropTarget && dragOverCat?.pos === 'after' ? ' is-drag-over-after' : ''}`}
-                  onClick={() => {
-                    setActiveCat(c.key)
-                    setExpanded(undefined)
-                  }}
-                  onMouseDown={(e) => handleCatMouseDown(e, c.key)}
-                  onMouseEnter={(e) => handleCatMouseEnter(e, c.key)}
-                  onMouseUp={handleCatMouseUp}
-                >
-                  <span className="taxonomy-item__marker" style={{ background: tagColor(c.key) }} />
-                  <span className="taxonomy-item__name">{c.name}</span>
-                  <span className="taxonomy-item__count">
-                    {mastered}/{c.templates.length}
-                  </span>
-                </button>
-              )
+              return { value: c.key, label: `${c.name}（${mastered}/${c.templates.length}）` }
             })}
-          </div>
-          <div className="taxonomy-footer">
-            <Button size="small" type="text" icon={<PlusOutlined />} onClick={openCategoryCreate}>
-              新建标签
-            </Button>
-          </div>
-        </aside>
+          />
+          <Button size="small" type="text" icon={<PlusOutlined />} onClick={openCategoryCreate}>
+            新建标签
+          </Button>
+        </div>
+      )}
+
+      <div className="workbench" style={{ marginTop: 16, gridTemplateColumns: narrowTaxonomy ? 'minmax(0, 1fr)' : '190px minmax(0, 1fr)' }}>
+        {/* 左栏：分类导航 + 进度（≤920px 由上面的 Select 代替） */}
+        {!narrowTaxonomy && (
+          <aside className="taxonomy-panel">
+            <div className="section-label">课程分类</div>
+            <div className="taxonomy-list" style={{ userSelect: dragCat !== null ? 'none' : undefined }}>
+              {sortedCategories.map((c, i) => {
+                const mastered = c.templates.filter((t) => t.status === 'mastered').length
+                const isDragging = dragCat === c.key
+                const dropTarget = dragOverCat?.key === c.key
+                return (
+                  // reorder-host 必须是 .reorder-controls 的**直接**父元素（CSS 用 `>`）
+                  <div className="taxonomy-row reorder-host" key={c.key}>
+                    <button
+                      type="button"
+                      className={`taxonomy-item${activeCat === c.key ? ' is-active' : ''}${isDragging ? ' is-dragging' : ''}${dropTarget && dragOverCat?.pos === 'before' ? ' is-drag-over-before' : ''}${dropTarget && dragOverCat?.pos === 'after' ? ' is-drag-over-after' : ''}`}
+                      onClick={() => {
+                        setActiveCat(c.key)
+                        setExpanded(undefined)
+                      }}
+                      onMouseDown={(e) => handleCatMouseDown(e, c.key)}
+                      onMouseEnter={(e) => handleCatMouseEnter(e, c.key)}
+                      onMouseUp={handleCatMouseUp}
+                    >
+                      <span className="taxonomy-item__marker" style={{ background: tagColor(c.key) }} />
+                      <span className="taxonomy-item__name">{c.name}</span>
+                      <span className="taxonomy-item__count">
+                        {mastered}/{c.templates.length}
+                      </span>
+                    </button>
+                    <span className="reorder-controls">
+                      <button
+                        type="button"
+                        className="reorder-btn"
+                        disabled={i === 0}
+                        title={`上移「${c.name}」`}
+                        aria-label={`上移「${c.name}」`}
+                        onClick={() => moveCat(c.key, -1)}
+                      >
+                        <ArrowUpOutlined />
+                      </button>
+                      <button
+                        type="button"
+                        className="reorder-btn"
+                        disabled={i === sortedCategories.length - 1}
+                        title={`下移「${c.name}」`}
+                        aria-label={`下移「${c.name}」`}
+                        onClick={() => moveCat(c.key, 1)}
+                      >
+                        <ArrowDownOutlined />
+                      </button>
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="taxonomy-footer">
+              <Button size="small" type="text" icon={<PlusOutlined />} onClick={openCategoryCreate}>
+                新建标签
+              </Button>
+            </div>
+          </aside>
+        )}
 
         {/* 右栏：当前分类模板列表 */}
         <section>
@@ -573,7 +742,17 @@ export default function Templates() {
               </div>
               {cat.templates.length === 0 ? (
                 <Card>
-                  <Empty description="该分类暂无模板 —— 点击「新建模板」添加自己的积累" />
+                  {/* 空态给出路：直接落在「新建模板」上，并把当前分类预选好，省掉一次选择 */}
+                  <EmptyState
+                    title="该分类暂无模板"
+                    description="这个标签下还没有内容。新建模板时会把当前分类预选好，也可以先看看其他分类的内置课程。"
+                    action={{
+                      label: '新建模板',
+                      type: 'primary',
+                      icon: <PlusOutlined />,
+                      onClick: () => openCreate(cat.key),
+                    }}
+                  />
                 </Card>
               ) : (
                 cat.templates.map((t, idx) => {
