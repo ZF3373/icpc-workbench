@@ -12,7 +12,8 @@ import type { AppConfig } from '../config.ts';
  *   target_commitish（或标题中的短 SHA）比对，感知未打 tag 的新提交
  *
  * 版本号 APP_VERSION / BUILD_COMMIT 由 build-exe.mjs 打包时通过 esbuild
- * define 注入；源码开发运行均为 "dev"，视为永远最新。
+ * define 注入；源码开发运行均为 "dev"——检查更新照常执行（dev 按 0.0.0 比较，
+ * 稳定通道恒有新版本、预览通道恒有构建），但不支持自更新，只展示状态与下载页链接。
  *
  * 自更新（一键更新）：/download 把所选通道的 icpc-workbench.exe 与
  * icpc-core.exe 下载到 data/update-staging 并做 SHA256 校验；/apply 用
@@ -165,7 +166,9 @@ export function resolveUpdate(
   }
 
   const sha = nightlyCommitSha(nightly);
-  if (sha && buildCommit !== 'dev' && !sha.startsWith(buildCommit.toLowerCase())) {
+  // dev 构建没有可比的基线 commit：有 nightly 就算「有预览构建可看」——
+  // 检查更新页用它展示预览通道入口（dev 不支持自更新，只会给查看构建链接）
+  if (sha && (buildCommit === 'dev' || !sha.startsWith(buildCommit.toLowerCase()))) {
     const page =
       nightly?.html_url ?? `https://github.com/${GITHUB_REPO}/actions/workflows`;
     info.commit = {
@@ -221,8 +224,10 @@ async function fetchRelease(
 
 /**
  * 查询 GitHub 两个通道并与当前构建比较。
- * 断网 / 限流 / 无 Release 一律返回 ok:false（前端静默或提示重试），不抛错。
- * fetchImpl 可注入，便于测试（注入时不会走 PowerShell 兜底）。
+ * dev 构建同样执行检查（版本号 dev 视为 0.0.0，稳定通道恒有「新版本」）：检查更新页
+ * 用它展示两个通道的最新状态与下载页链接；dev 不支持自更新（canSelfUpdate=false），
+ * 不会出现一键更新按钮。断网 / 限流 / 无 Release 一律返回 ok:false（前端静默或提示
+ * 重试），不抛错。fetchImpl 可注入，便于测试（注入时不会走 PowerShell 兜底）。
  */
 export async function checkForUpdate(
   current: string,
@@ -230,7 +235,6 @@ export async function checkForUpdate(
   fetchImpl: typeof fetch = fetch,
   buildCommit: string = BUILD_COMMIT,
 ): Promise<UpdateInfo> {
-  if (current === 'dev') return failed(current, buildCommit, '开发模式，不检查更新');
   const base = `https://api.github.com/repos/${repo}`;
   try {
     let stable: GithubRelease | null = null;

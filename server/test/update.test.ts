@@ -49,15 +49,19 @@ test('checkForUpdate 已是最新', async () => {
   assert.equal(info.hasUpdate, false);
 });
 
-test('checkForUpdate 开发模式不检查', async () => {
-  let called = false;
-  const fake = (() => {
-    called = true;
-    return Promise.resolve(new Response('{}'));
+test('checkForUpdate：dev 构建照常检查（展示双通道状态但不支持自更新）', async () => {
+  const fake = ((input: RequestInfo | URL) => {
+    const url = String(input);
+    const body = url.endsWith('/releases/latest') ? stableRelease('v0.4.1') : nightlyRelease('bbb2222');
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
   }) as unknown as typeof fetch;
   const info = await checkForUpdate('dev', 'o/r', fake);
-  assert.equal(info.ok, false);
-  assert.equal(called, false);
+  // dev 按 0.0.0 比较：稳定通道恒有「新版本」；预览通道有构建即可看
+  assert.equal(info.ok, true);
+  assert.equal(info.hasUpdate, true);
+  assert.equal(info.hasCommitUpdate, true);
+  assert.equal(info.stableDownload?.shell, 'https://x/v0.4.1/icpc-workbench.exe');
+  assert.equal(info.commitDownload?.shell, 'https://x/nightly/icpc-workbench.exe');
 });
 
 test('checkForUpdate 网络/接口失败返回 ok:false 而非抛错', async () => {
@@ -139,8 +143,8 @@ test('resolveUpdate：已是同一构建则不提示', () => {
   assert.equal(same.download, null);
 });
 
-test('resolveUpdate：无 commit 构建信息（dev 构建/无 nightly）不提示提交更新', () => {
-  assert.equal(resolveUpdate('v0.4.1', 'dev', stableRelease('v0.4.1'), nightlyRelease('bbb2222')).hasCommitUpdate, false);
+test('resolveUpdate：dev 构建无基线 commit，有 nightly 即视为有预览构建；无 nightly 不提示', () => {
+  assert.equal(resolveUpdate('v0.4.1', 'dev', stableRelease('v0.4.1'), nightlyRelease('bbb2222')).hasCommitUpdate, true);
   assert.equal(resolveUpdate('v0.4.1', 'aaa1111', stableRelease('v0.4.1'), null).hasCommitUpdate, false);
 });
 

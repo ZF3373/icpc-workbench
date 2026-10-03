@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Card, Col, Popconfirm, Progress, Row, Space } from 'antd'
+import { Alert, Button, Card, Col, Progress, Row, Space, Tooltip } from 'antd'
 import {
   AppstoreOutlined,
   DatabaseOutlined,
@@ -26,7 +26,7 @@ const FEATURES: { title: string; desc: string }[] = [
 ]
 
 export default function About() {
-  const { info, checking, check, phase, percent, busy, result, runUpdate, hasUpdate } = useSoftwareUpdate()
+  const { info, checking, check, phase, percent, busy, result, runUpdate } = useSoftwareUpdate()
   const [appVersion, setAppVersion] = useState('')
   const [dataDir, setDataDir] = useState('')
 
@@ -132,51 +132,61 @@ export default function About() {
               <span>
                 当前版本：<b>{appVersion || '未知'}</b>
               </span>
-              {info?.buildCommit && info.buildCommit !== 'dev' && (
-                <span>
-                  构建 commit：<b className="mono">{info.buildCommit}</b>
-                </span>
-              )}
               <Button loading={checking} onClick={check}>
                 检查更新
               </Button>
-              {/* 按通道更新：正式版（稳定发布）与预览版（提交构建）并列入口，
-                  两通道都有更新时用户自己选；产物缺失的通道回退下载页 */}
-              {info?.ok && info.canSelfUpdate && info.hasUpdate && info.stableDownload && (
-                <Popconfirm
-                  title={`更新到正式版 ${info.latest}？`}
-                  description="将下载并替换程序文件（约百余 MB），完成后需关闭并重新打开软件；练习数据不受影响。"
-                  okText="开始更新"
-                  cancelText="取消"
-                  onConfirm={() => runUpdate('stable')}
-                >
-                  <Button type="primary" loading={busy}>
-                    更新到正式版 {info.latest}
-                  </Button>
-                </Popconfirm>
-              )}
-              {info?.ok && info.canSelfUpdate && info.hasCommitUpdate && info.commitDownload && (
-                <Popconfirm
-                  title={`更新到预览版（${info.commit?.shortSha}）？`}
-                  description="预览版包含最新提交修复，稳定性略低于正式版；同样替换程序文件并需重启，练习数据不受影响。"
-                  okText="开始更新"
-                  cancelText="取消"
-                  onConfirm={() => runUpdate('commit')}
-                >
-                  <Button loading={busy}>
-                    更新到预览版 {info.commit?.shortSha}
-                  </Button>
-                </Popconfirm>
-              )}
-              {info?.ok && info.hasUpdate && (!info.canSelfUpdate || !info.stableDownload) && info.releasePage && (
-                <Button type="primary" onClick={() => openExternal(info.releasePage!)}>
-                  前往下载 {info.latest}
-                </Button>
-              )}
-              {info?.ok && info.hasCommitUpdate && (!info.canSelfUpdate || !info.commitDownload) && info.commit?.page && (
-                <Button onClick={() => openExternal(info.commit!.page)}>查看预览构建 ↗</Button>
-              )}
             </Space>
+            {/* 通道选项：一行一个通道（名称 + 版本 + 一键更新），不搞确认弹窗与长段说明 */}
+            {info?.ok && (info.hasUpdate || info.hasCommitUpdate) && (
+              <div className="update-channels">
+                {info.hasUpdate && (
+                  <div className="update-channel">
+                    <span className="update-channel__name">正式版</span>
+                    <span className="update-channel__ver mono">{info.latest}</span>
+                    {info.canSelfUpdate && info.stableDownload ? (
+                      <Button type="primary" size="small" loading={busy} onClick={() => runUpdate('stable')}>
+                        一键更新
+                      </Button>
+                    ) : (
+                      info.releasePage && (
+                        <Button size="small" type="primary" onClick={() => openExternal(info.releasePage!)}>
+                          前往下载
+                        </Button>
+                      )
+                    )}
+                  </div>
+                )}
+                {info.hasCommitUpdate && (
+                  <div className="update-channel">
+                    <span className="update-channel__name">预览版</span>
+                    <span className="update-channel__ver mono">{info.commit?.shortSha}</span>
+                    {info.canSelfUpdate && info.commitDownload ? (
+                      <Tooltip title="自动构建、可能未完善；回退需重装旧版本">
+                        <Button size="small" loading={busy} onClick={() => runUpdate('commit')}>
+                          一键更新
+                        </Button>
+                      </Tooltip>
+                    ) : (
+                      info.commit?.page && (
+                        <Button size="small" onClick={() => openExternal(info.commit!.page)}>
+                          查看构建
+                        </Button>
+                      )
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            {info?.ok && !info.hasUpdate && !info.hasCommitUpdate && (
+              <p style={{ margin: '12px 0 0', fontSize: 12, color: 'var(--text-3)' }}>
+                已是最新版本{info.buildCommit && info.buildCommit !== 'dev' ? `（${info.buildCommit}）` : ''}
+              </p>
+            )}
+            {info && !info.ok && (
+              <p style={{ margin: '12px 0 0', fontSize: 12, color: 'var(--amber)' }}>
+                检查更新失败：{info.message ?? '网络异常'}，可稍后重试
+              </p>
+            )}
             {busy && (
               <div style={{ marginTop: 12, maxWidth: 720 }}>
                 <Progress percent={percent} status="active" />
@@ -191,54 +201,6 @@ export default function About() {
                 type={result.ok ? 'success' : 'error'}
                 showIcon
                 message={result.text}
-              />
-            )}
-            {info && (
-              <Alert
-                style={{ marginTop: 12, maxWidth: 720 }}
-                type={info.ok ? (hasUpdate ? 'warning' : 'success') : 'info'}
-                showIcon
-                message={
-                  info.ok
-                    ? hasUpdate
-                      ? [
-                          info.hasUpdate && `发现新版本 ${info.latest}`,
-                          info.hasCommitUpdate && `预览构建 ${info.commit?.shortSha}`,
-                        ]
-                          .filter(Boolean)
-                          .join('；') + `（当前 ${info.current}）`
-                      : `已是最新版本（${info.current}${info.buildCommit && info.buildCommit !== 'dev' ? ` · ${info.buildCommit}` : ''}）`
-                    : `检查更新失败：${info.message ?? '网络异常'}，可稍后重试`
-                }
-                description={
-                  info.ok && hasUpdate ? (
-                    <span>
-                      {info.hasUpdate && (
-                        <>
-                          正式版：覆盖安装包或用便携版替换即可，练习数据不受影响。
-                          {!info.stableDownload && info.releasePage && (
-                            <>
-                              {' '}
-                              <a onClick={() => openExternal(info.releasePage!)}>前往下载 ↗</a>
-                            </>
-                          )}
-                          <br />
-                        </>
-                      )}
-                      {info.hasCommitUpdate && (
-                        <>
-                          预览版：包含最新提交修复{info.commit?.message ? `（${info.commit.message}）` : ''}。
-                          {(!info.canSelfUpdate || !info.commitDownload) && info.commit && (
-                            <>
-                              {' '}
-                              <a onClick={() => openExternal(info.commit!.page)}>查看该构建 ↗</a>
-                            </>
-                          )}
-                        </>
-                      )}
-                    </span>
-                  ) : undefined
-                }
               />
             )}
           </Card>

@@ -3633,6 +3633,42 @@ button.dist-row:hover {
   background: var(--brand-soft);
 }
 
+/* 软件更新的通道选项：一行一个通道（名称 + 版本 + 动作按钮），取代长段落提醒文字 */
+.update-channels {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  max-width: 480px;
+}
+
+.update-channel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.update-channel__name {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.update-channel__ver {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
 .list-item-row {
   display: flex;
   align-items: center;
