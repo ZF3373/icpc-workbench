@@ -169,7 +169,7 @@ Artifacts in `server/release/`: `icpc-workbench.exe` (~90MB, Node SEA single fil
 
 ### Software Update (Dual Channel + One-Click Self-Update)
 
-Version number and build commit are injected by the packaging script (shown in `/api/health`, sidebar, and Settings page). The app auto-checks silently on launch (once per 24 hours); a dismissable banner appears at the top when an update is available; the Settings page "Software Update" card supports manual checking.
+Version number and build commit are injected by the packaging script (shown in `/api/health` and the About page). The app auto-checks silently on launch (once per 24 hours); a dismissable banner appears at the top when a **stable** release is available (preview builds never nag — automated builds may be incomplete, so they are not pushed to all users); the About page "Check for updates" card supports manual checking, with stable/preview listed one per row — click "One-click update" to start downloading and replacing right away.
 
 - **Stable channel**: GitHub Releases stable versions, compared by semantic version
 - **Commit channel**: The pre-release tagged `nightly`—CI (`.github/workflows/nightly-desktop.yml`) auto-builds the Windows set and macOS (Apple Silicon) dmg on every push to master and publishes; the app compares the build commit with the nightly's commit, so new untagged commits are also detected

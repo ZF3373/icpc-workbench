@@ -170,7 +170,7 @@ node server/scripts/build-exe.mjs
 
 ### 软件更新（双通道 + 一键自更新）
 
-版本号与构建 commit 由打包脚本注入（`/api/health`、侧边栏、设置页均展示）。应用打开时自动静默检查（24 小时一次），有更新时页面顶部出现可关闭的横幅；设置页「软件更新」卡片可手动检查。
+版本号与构建 commit 由打包脚本注入（`/api/health` 与关于页均展示）。应用打开时自动静默检查（24 小时一次），正式版有更新时页面顶部出现可关闭的横幅（预览构建不主动催更，避免把未完善的自动构建推给全部用户）；关于页「检查更新」卡片可手动检查，正式版/预览版一行一项，点「一键更新」直接开始下载替换。
 
 - **稳定通道**：GitHub Releases 正式版，按语义版本比较
 - **提交通道**：tag 为 `nightly` 的预发布版——CI（`.github/workflows/nightly-desktop.yml`）在每次 push 到 master 时自动构建 Windows 三件套与 macOS（Apple Silicon）dmg 并发布；应用对比构建时注入的 commit 与 nightly 的提交，未打 tag 的新提交也能感知
