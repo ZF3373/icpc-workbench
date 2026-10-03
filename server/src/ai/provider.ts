@@ -53,7 +53,7 @@ export interface ChatOptions {
   onUsage?: (usage: TokenUsage) => void;
   /** 调用方提供的 AbortSignal（如客户端中断），与超时信号组合后传入 fetch */
   signal?: AbortSignal;
-  /** 是否解析 DSML 标记为 tool_calls（默认 true；二轮流式设为 false 避免 DeepSeek 误触发） */
+  /** 是否解析 DSML 标记为 tool_calls（默认 true；工具往返的强制收尾轮设为 false —— 上限已到，杜绝 DeepSeek 误触发，只收最终回答） */
   parseDsmlTools?: boolean;
   /** 流式读取的空闲超时（毫秒，默认 STREAM_STALL_TIMEOUT_MS；测试可注入小值） */
   stallTimeoutMs?: number;
@@ -543,6 +543,43 @@ export class AiProvider {
       }
     };
 
+    /**
+     * 流结束时对未闭合 DSML 残片的抢救（dsmlMode 未退出时调用）。
+     *
+     * 模型正文里泄漏的 DSML 块可能只写到一半就断了（上游截断/格式错乱），旧版把
+     * 残片整体静默丢弃 —— 其中完整的 invoke（模型真实的再次调用意图）凭空消失，
+     * 上层工具往返循环不再发生，回复表现为「联网搜索后自动停止在半截」。
+     * 这里做两件事：
+     * 1. enableDsml 时解析残片里**完整**的 invoke 块为工具调用（外层 tool_calls
+     *    包装没闭合不影响 invoke 本身完整）；
+     * 2. 剥掉所有 DSML 标记与块（含未闭合的尾标签），剩余文本照常 yield ——
+     *    绝不静默吞掉可能混在残片里的正文。
+     */
+    function* salvageDsmlFragment(): Generator<string, void, void> {
+      if (!dsmlMode || !contentBuf) return;
+      dsmlMode = false;
+      const frag = contentBuf;
+      contentBuf = '';
+      if (enableDsml) {
+        for (const p of parseDsmlToolCalls(frag)) {
+          const idx = toolCallAccum.size;
+          toolCallAccum.set(idx, { id: `call_dsml_${idx}`, name: p.name, args: p.args });
+        }
+      }
+      const clean = frag
+        // 完整块连同其内的参数值一并移除
+        .replace(/<｜DSML｜tool_calls>[\s\S]*?<\/｜DSML｜tool_calls>/g, '')
+        .replace(/<｜DSML｜invoke[\s\S]*?<\/｜DSML｜invoke>/g, '')
+        .replace(/<｜DSML｜parameter[\s\S]*?<\/｜DSML｜parameter>/g, '')
+        // 散落的完整标记
+        .replace(/<｜DSML｜[^>]*>/g, '')
+        .replace(/<\/｜DSML｜[^>]*>/g, '')
+        // 流已结束：未闭合的尾标签（opener 之后再无 '>'）只可能是 DSML 噪音
+        .replace(/<｜DSML｜[^>]*$/, '')
+        .replace(/<\/｜DSML｜[^>]*$/, '');
+      if (clean.trim()) yield clean;
+    }
+
     /** 处理 contentBuf：正常文本 yield，DSML 块缓冲（enableDsml=true 解析为 tool_calls，false 丢弃） */
     const processContentBuf = function* (): Generator<string, void, void> {
       while (contentBuf) {
@@ -626,10 +663,12 @@ export class AiProvider {
           if (!line.startsWith('data:')) continue;
           const payload = line.slice(5).trim();
           if (payload === '[DONE]') {
-            // 流结束：冲刷剩余的正常文本（DSML 模式下未闭合的残片丢弃，不 yield）
+            // 流结束：冲刷剩余的正常文本；未闭合的 DSML 残片先抢救（解析完整
+            // invoke、保留正文）再丢弃纯噪音，绝不静默吞内容
             if (!dsmlMode && contentBuf) {
               for (const s of processContentBuf()) yield s;
             }
+            for (const s of salvageDsmlFragment()) yield s;
             if (toolCallAccum.size > 0 && finishReason !== 'tool_calls') {
               finishReason = 'tool_calls';
             }
@@ -701,10 +740,11 @@ export class AiProvider {
       // 流结束后移除调用方中断监听（用户点「停止」时 controller 已 abort，这里兜底防泄漏）
       opts.signal?.removeEventListener('abort', onCallerAbort);
     }
-    // 流自然结束（未收到 [DONE]）：同样冲刷剩余文本
+    // 流自然结束（未收到 [DONE]）：同样冲刷剩余文本（含未闭合 DSML 残片抢救）
     if (!dsmlMode && contentBuf) {
       for (const s of processContentBuf()) yield s;
     }
+    for (const s of salvageDsmlFragment()) yield s;
     if (toolCallAccum.size > 0 && finishReason !== 'tool_calls') {
       finishReason = 'tool_calls';
     }

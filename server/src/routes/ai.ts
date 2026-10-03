@@ -70,6 +70,20 @@ const MAX_TURNS = 60;
 /** 硬上限：只用于挡住异常/恶意超大请求体，正常会话不该碰到 */
 const HARD_MAX_TURNS = 1000;
 
+/**
+ * 工具调用往返循环的轮次上限（防止无限循环烧配额）。
+ * 最后一轮是「强制收尾轮」：不再允许 AI 发起新的工具调用，注入提示要求它
+ * 直接给出最终回答。不能省掉这一轮 —— 上限耗尽后直接收尾的话，AI 的最终
+ * 回答永远不会生成，前端表现为「联网搜索后回复自动停止」（无错误、无截断
+ * 提示的静默截断；DeepSeek 在 tool 结果回来后经常继续以 DSML 泄漏发起下一
+ * 次搜索，5 轮上限并不遥远）。
+ */
+const MAX_TOOL_ROUNDS = 5;
+
+/** 强制收尾轮注入给 AI 的提示（作为 user 消息追加在 tool 结果之后） */
+const TOOL_ROUND_LIMIT_NOTICE =
+  '（系统提示：工具调用轮次已达上限，无法继续执行工具。请直接基于以上工具结果与你已有的知识给出最终回答，不要再尝试调用工具。）';
+
 /** 助手提示词模板：懒加载（SEA bundle 注入值优先，同 planService 惯例） */
 let promptOverride: string | null = null;
 let promptFromDisk: string | null = null;
@@ -728,14 +742,14 @@ export function aiRoutes(
       console.error('[AI chat] 第一轮结束, finishReason=', finishReason, 'toolCalls=', pendingToolCalls?.length ?? 0);
       if (finishReason === 'tool_calls' && pendingToolCalls && pendingToolCalls.length > 0) {
         // 工具调用往返循环：AI 可能连续多次请求工具（第一轮搜了不够，想再搜一次）
-        // 最多循环 5 轮防止无限循环
+        // 最多循环 MAX_TOOL_ROUNDS 轮防止无限循环；最后一轮强制收尾（见 MAX_TOOL_ROUNDS 注释）
         let roundMsgs: ChatMessage[] = [
           ...fullMsgs,
           { role: 'assistant', content: '', tool_calls: pendingToolCalls },
         ];
         let currentToolCalls: ToolCall[] | undefined = pendingToolCalls;
 
-        for (let round = 0; round < 5; round++) {
+        for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
           for (const tc of currentToolCalls!) {
             let args: Record<string, unknown> = {};
             try {
@@ -784,19 +798,25 @@ export function aiRoutes(
           // 后续流式轮次：解析 DSML（AI 可能再次发起工具调用）
           finishReason = null;
           let nextToolCalls: ToolCall[] | undefined;
+          // 最后一轮：注入「直接回答」提示并关闭 DSML 解析 —— 即使模型仍尝试发起
+          // 工具调用也只当作噪音过滤（文本部分照常输出），保证一定有一条最终回答流
+          const forcedFinal = round === MAX_TOOL_ROUNDS - 1;
           console.error('[AI chat] 轮次', round + 2, '开始, 消息数=', roundMsgs.length);
           try {
-            const streamN = provider.chatStream(roundMsgs, {
-              maxTokens,
-              // 不传 tools：让 AI 基于搜索结果给出最终答案
-              // 仍然解析 DSML：AI 可能通过 DSML 再次发起工具调用，需要检测并继续往返
-              parseDsmlTools: true,
-              onFinish: (r, tc) => { finishReason = r; nextToolCalls = tc; },
-              onReasoning: (chunk) => {
-                if (!res.writableEnded) res.write(`data: ${JSON.stringify({ reasoning: chunk })}\n\n`);
+            const streamN = provider.chatStream(
+              forcedFinal ? [...roundMsgs, { role: 'user', content: TOOL_ROUND_LIMIT_NOTICE }] : roundMsgs,
+              {
+                maxTokens,
+                // 前 4 轮不传 tools：让 AI 基于搜索结果给出最终答案（DSML 泄漏仍可再发起工具）
+                // 最后一轮连 DSML 解析也关闭，杜绝误触发，强制产出最终回答
+                parseDsmlTools: !forcedFinal,
+                onFinish: (r, tc) => { finishReason = r; nextToolCalls = tc; },
+                onReasoning: (chunk) => {
+                  if (!res.writableEnded) res.write(`data: ${JSON.stringify({ reasoning: chunk })}\n\n`);
+                },
+                onUsage: (u) => { usage = u; },
               },
-              onUsage: (u) => { usage = u; },
-            });
+            );
             for await (const delta of streamN) {
               if (!res.writableEnded) res.write(`data: ${JSON.stringify({ delta })}\n\n`);
             }
@@ -810,6 +830,9 @@ export function aiRoutes(
           }
 
           console.error('[AI chat] 轮次', round + 2, '结束, finishReason=', finishReason, 'toolCalls=', nextToolCalls?.length ?? 0);
+
+          // 强制收尾轮必然结束（DSML 解析已关，不会再有 tool_calls）
+          if (forcedFinal) break;
 
           // 如果 AI 又发起了工具调用，继续往返；否则结束循环
           if (finishReason !== 'tool_calls' || !nextToolCalls || nextToolCalls.length === 0) {
