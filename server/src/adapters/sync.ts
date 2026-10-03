@@ -42,8 +42,10 @@ export function classifySyncError(e: unknown): SyncErrorCode {
   if (e instanceof SyncError) return e.code;
   if (e instanceof ManualImportRequiredError) return 'manual_required';
   const msg = String((e as Error)?.message ?? '');
-  if (/HTTP 429|限流|Too Many Requests/i.test(msg)) return 'rate_limited';
-  if (/HTTP 40[13]|Cookie|风控|登录|auth/i.test(msg)) return 'auth_expired';
+  // 注意「风控」是析取式提示词（如「403（Cookie 过期或触发风控）」「503（可能触发风控）」），
+  // 不能单独作为分类信号；按状态码区分：403=鉴权、503=限流/风控、429=限流。
+  if (/HTTP 429|HTTP 503|限流|Too Many Requests/i.test(msg)) return 'rate_limited';
+  if (/HTTP 40[13]|Cookie|登录|auth/i.test(msg)) return 'auth_expired';
   if (/结构|解析失败|页面异常|parse/i.test(msg)) return 'schema_changed';
   if (/fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|timeout|abort|网络/i.test(msg)) return 'network';
   return 'unknown';
@@ -101,6 +103,35 @@ export function readMaxSubmissions(db: Db): number {
 /** AtCoder 按 epoch 升序拉取（最旧→最新），其余平台均按新→旧 */
 function isAscendingPlatform(platform: PlatformId): boolean {
   return platform === 'atcoder';
+}
+
+/**
+ * 升序平台增量同步的回看窗口（毫秒）。
+ *
+ * 背景（2026-10-03 排查到的真实数据丢失）：kenkoooo 的 `/user/submissions` 是**窗口式接口** ——
+ * 每次至多返回 500 行，`from_second` 只能指定「从哪一秒开始」，**没有按行数偏移的能力**。
+ * 这意味着「上一次同步结束到本次之间」的边界上，如果某个秒的提交数超过一整个窗口，
+ * 无论适配器怎么翻页都无法把该秒取全（同一 from_second 只会反复给出同一窗）。
+ * 更常见也更危险的是：光标若因为任何原因（瞬时上游空响应、时钟偏差、接口抖动）
+ * 停在「比最新提交更晚」的位置，那么这之间的提交**再也拉不回来**——用户看到的就是
+ * 「点了同步，但是最新的提交一直不进来」。
+ *
+ * 因此升序平台的增量同步固定从「上次同步时间 - 回看窗口」开始拉：
+ * 重复的提交由唯一键（user_id, platform, account, external_id）去重，代价是每次多扫
+ * `回看窗口 / 500 行窗口` 个请求，换来的是「任何边界抖动都不会造成永久空洞」。
+ * 取 12 小时：常态下多数账号一天内的提交远不足 500 行，即多一次请求即可覆盖。
+ */
+export const ASCENDING_SYNC_LOOKBACK_MS = 12 * 3600_000;
+
+/**
+ * 升序平台的增量起点（含回看窗口）。`since` 缺失（全量首刷）时返回 undefined。
+ * 导出以便单测直接断言「回看窗口确实生效」。
+ */
+export function ascendingSinceWithLookback(since: string | undefined): string | undefined {
+  if (!since) return undefined;
+  const t = Date.parse(since);
+  if (!Number.isFinite(t)) return since;
+  return new Date(t - ASCENDING_SYNC_LOOKBACK_MS).toISOString();
 }
 
 /**
@@ -240,10 +271,14 @@ async function runSyncPlatform(
 
   try {
     // 全量重拉（不沿用可能属于其他账号/过期的增量起点）：last_sync_at 为空时 since 置空
-    const since =
+    const rawSince =
       daysWindow
         ? new Date(Date.now() - daysWindow * 86_400_000).toISOString()
         : !fullMode && account?.last_sync_at ? account.last_sync_at : undefined;
+    // 升序平台（AtCoder）额外回看一段：窗口式上游 + 只按秒定位的游标一旦停在最新提交之后，
+    // 这之间的提交就再也拉不回来（见 ASCENDING_SYNC_LOOKBACK_MS 注释）。回看拉到的重复提交
+    // 由唯一键去重，代价可控。降序平台依赖 knownExternalIds 增量，不做回看（会白扫整页）。
+    const since = isAscendingPlatform(platform) ? ascendingSinceWithLookback(rawSince) : rawSince;
     // 声明支持已知提交号过滤的适配器（CF/洛谷/牛客，拉取按新到旧排序）：
     // 注入库中该账号已有提交号，适配器整页已知即提前终止分页，实现真实增量。
     // days 窗口模式不注入（否则整页已知会提前终止，覆盖不到窗口内漏拉的历史），
@@ -332,11 +367,13 @@ async function runSyncPlatform(
     }
 
     // last_sync_at 推进策略：
-    // - 升序平台（AtCoder，按 epoch 升序、用 since/from_second 续拉）：被截断时推进到「本次拉到的
-    //   最新提交时间」，下次同步从该时间点继续向前补全；未截断则推进到当前时刻。
-    // - 降序平台（CF/洛谷/牛客等，按新→旧、用 knownIds 增量）：始终推进到当前时刻——它们的增量
-    //   依赖 knownExternalIds 而非 since，last_sync_at 仅用于换账号判定与增量标记，补全由
-    //   sync_truncated 驱动 backfill 跳页实现，与 last_sync_at 取值无关。
+    // - 升序平台（AtCoder，按 epoch 升序、用 since/from_second 续拉）：被截断时推进到**本批
+    //   最新一条提交的时间**。适配器返回的是「按提交时间升序的连续前缀」，且被单次上限砍掉时
+    //   会把砍点那一秒整秒收下（见 adapters/atcoder.ts），因此光标正好落在已导入区间的末尾，
+    //   下一轮从该时刻续拉不会漏（重复行由唯一键去重），也不会把已导入的区间反复重扫。
+    // - 降序平台（CF/洛谷/牛客等，按新→旧、用 knownIds 增量）：始终推进到当前时刻——它们的
+    //   增量依赖 knownExternalIds 而非 since，last_sync_at 仅用于换账号判定与增量标记，
+    //   补全由 sync_truncated 驱动 backfill 跳页实现，与 last_sync_at 取值无关。
     let nextLastSyncAt: string;
     if (truncated && isAscendingPlatform(platform) && rows.length > 0) {
       nextLastSyncAt = rows.reduce(

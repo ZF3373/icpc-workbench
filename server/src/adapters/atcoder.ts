@@ -11,6 +11,7 @@ import { asHttpClient, sleep, type HttpInit } from './http.ts';
 
 const API = 'https://kenkoooo.com/atcoder';
 const RESOURCES_TTL_MS = 24 * 3600 * 1000;
+/** 上游单次响应最多返回这么多行（窗口大小），实测确认：请求 `/user/submissions` 恒定最多 500 行 */
 const SUBMISSION_PAGE = 500;
 // 每次同步的保守页数上限（×1s sleep × 500/页：每次同步最多约 30 分钟），把全量分页拆成多次防封号
 const PER_SYNC_MAX_PAGES = 60;
@@ -111,19 +112,45 @@ export function createAtcoderAdapter(
         ? Math.floor(Date.parse(opts.since) / 1000)
         : 0;
       const maxSubmissions = opts?.maxSubmissions;
-      // 新增上限推算的页数预算（×2 裕量），上限 PER_SYNC_MAX_PAGES；首刷/增量无上限时取上限
-      const budget =
-        maxSubmissions && maxSubmissions > 0
-          ? Math.min(Math.ceil(maxSubmissions / SUBMISSION_PAGE) * 2, PER_SYNC_MAX_PAGES)
-          : PER_SYNC_MAX_PAGES;
+      /**
+       * 页数预算＝本次同步最多向上游发几次请求（页间 1s sleep ≈ 最多 30 分钟）。
+       *
+       * 与单次上限（maxSubmissions）解耦：上游是窗口式接口，游标只能按「秒」推进，
+       * 一次请求最多 500 行；单次上限只管「返回给同步层多少行」。旧实现按上限折算预算
+       * （`ceil(max/500)×2`），上限 300 时只有 3 次请求 —— 越过一段近期历史就可能用光，
+       * 扫描被腰斩、更晚的提交永远拉不到，表现为「点了同步，但最新提交一直不进来」。
+       */
+      const budget = Math.min(
+        PER_SYNC_MAX_PAGES,
+        Math.max(
+          4,
+          Math.ceil(((maxSubmissions ?? 0) + SUBMISSION_PAGE) / SUBMISSION_PAGE) * 3,
+        ),
+      );
+
+      /**
+       * 上游 `/user/submissions` 的真实语义（实测确认）：
+       * 返回**至多 500 行**的一个窗口 —— 从「第一条 epoch_second >= from_second 的提交」
+       * 开始、按 **id 升序**连续截取 500 行。`from_second` 是「从哪一秒开始」的下界，
+       * **没有按行数偏移的能力**（同一 from_second 的重复请求返回同一个窗口）。
+       *
+       * 游标按「本窗末行的秒 + 1」推进（旧实现也是这个思路，方向没错）：窗口是连续 500 行，
+       * 末行之后的提交都在更晚的秒上，因此这是唯一能持续前进的推法。
+       * 已知边界：若某一秒的提交数本身 ≥ 一整个窗口（>500，需连续刷题脚本才可能出现），
+       * 上游对该秒只会反复给出同一窗、无法取回该秒排不进窗口的行。这种极端形态无法在
+       * 适配器层解决；同步层的**回看窗口**（见 sync.ts 的 ASCENDING_SYNC_LOOKBACK_MS）
+       * 保证它不会连带把更晚的提交一起挡掉。
+       */
       const seen = new Set<string>();
       const raws: KenkoooSubmission[] = [];
-      let fromSecond = since;
-      let naturalEnd = false; // 空页 / 满页判定终止
-      let rowCapped = false;
+      let pageFrom = since;
+      let naturalEnd = false; // 已到最新一条（空页 / 短页）
+      let rowCapped = false; // 触及单次上限
 
       for (let page = 0; page < budget; page += 1) {
-        const url = `${API}/atcoder-api/v3/user/submissions?user=${encodeURIComponent(handle)}&from_second=${fromSecond}`;
+        // 官方要求页间访问间隔 >= 1s：只在「真的还要再发一次请求」前等待
+        if (page > 0) await sleep(PAGE_DELAY_MS);
+        const url = `${API}/atcoder-api/v3/user/submissions?user=${encodeURIComponent(handle)}&from_second=${pageFrom}`;
         const res = await http.fetch(url, {}, { timeoutMs: 20000 });
         if (!res.ok) {
           throw new Error(`AtCoder API HTTP ${res.status}`);
@@ -139,38 +166,51 @@ export function createAtcoderAdapter(
           break;
         }
 
-        let added = 0;
-        let maxSecond = fromSecond; // 初始化为当前起点：防止页内无更新时 fromSecond 回退导致重复请求
         for (const s of rows) {
           if (seen.has(String(s.id))) continue;
-          seen.add(String(s.id));
-          raws.push(s);
-          added += 1;
-          if (s.epoch_second > maxSecond) maxSecond = s.epoch_second;
           if (maxSubmissions && raws.length >= maxSubmissions) {
             rowCapped = true;
             break;
           }
+          seen.add(String(s.id));
+          raws.push(s);
         }
         if (rowCapped) break;
-        if (rows.length < SUBMISSION_PAGE || added === 0) {
+        // 短页（含空页）= 上游已给到最新一条：整段历史收工
+        if (rows.length < SUBMISSION_PAGE) {
           naturalEnd = true;
           break;
         }
-        // 防护：maxSecond 未推进（页内提交时间全 ≤ fromSecond）→ 强制 +1 跳过本页，避免死循环
-        if (maxSecond <= fromSecond) maxSecond = fromSecond + 1;
-        fromSecond = maxSecond;
-        await sleep(PAGE_DELAY_MS); // 官方要求访问间隔 >= 1s
+        pageFrom = Math.max(rows[rows.length - 1]!.epoch_second + 1, pageFrom + 1);
       }
 
-      // 截断：触及上限，或页数预算耗尽（未自然结束）且有新增 → 仍有更早历史待补全
-      // AtCoder 按 epoch 升序拉取，截断时同步层推进 last_sync_at 到本次最新提交时间，下次从此续拉
-      const truncated = rowCapped || (!naturalEnd && raws.length > 0);
+      if (raws.length === 0) {
+        // 预算耗尽却一无所获（异常上游行为）：不能谎报「已同步到最新」——
+        // 必须让同步层把 last_sync_at 留在原处，否则这段时间的提交会被永久跳过。
+        if (!naturalEnd && opts) opts.truncated = true;
+        return [];
+      }
+
+      /**
+       * 按提交时间（同秒再按 id）升序输出：AtCoder 的续拉语义要求升序（见 sync.ts 的 isAscendingPlatform）。
+       *
+       * 被单次上限砍掉时，把「砍点那一秒」的行**全部收下**（允许略微超过上限几十条）：
+       * 同步层把续拉光标设为**本批最新一条提交的时刻**，光标因此正好停在砍点那一秒，
+       * 下一轮从该秒重拉会补齐它、并靠唯一键去重。切忌只收该秒的前半段就把光标推过去 ——
+       * 那会把「上限正好落在某个秒中间」变成永久丢数据。
+       */
+      let out: KenkoooSubmission[] = raws;
+      if (rowCapped && raws.length > (maxSubmissions ?? 0)) {
+        const head = raws.slice(0, maxSubmissions);
+        const boundarySecond = head[head.length - 1]!.epoch_second;
+        out = raws.filter((s) => s.epoch_second <= boundarySecond);
+      }
+      out.sort((a, b) => a.epoch_second - b.epoch_second || a.id - b.id);
+      const truncated = rowCapped || !naturalEnd;
       if (truncated && opts) opts.truncated = true;
 
-      if (raws.length === 0) return [];
       await ensureMaps();
-      return raws.map((s) =>
+      return out.map((s) =>
         normalize(s, problems ?? new Map(), models ?? new Map()),
       );
     },
