@@ -519,18 +519,47 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     res.json(aiSettingsView(db, config).ai);
   });
 
-  // POST /api/settings/ai/providers/active  body: { id }
-  // 一键切换当前使用的提供商（不涉及密钥/列表改写，AI 请求即刻按新提供商的 baseURL/key/model 走）。
+  // POST /api/settings/ai/providers/active  body: { id, model? }
+  // 一键切换当前使用的提供商，可顺带指定该提供商下要用的模型（model 缺省/空白 = 模型不动）。
+  // 只写活跃项与 model 字段：AI 请求按活跃提供商实时解析（见 aiConfigFromDb），所以设置页
+  // 「当前使用」下拉靠它做到选完即生效，不必整表保存、也不会碰到任何密钥。
   r.post('/ai/providers/active', (req, res) => {
-    const id = typeof (req.body ?? {}).id === 'string' ? req.body.id.trim() : '';
+    const body = (req.body ?? {}) as { id?: unknown; model?: unknown };
+    const id = typeof body.id === 'string' ? body.id.trim() : '';
     const providers = readAiProviders(db, config);
-    if (!providers.some((p) => p.id === id)) {
+    const target = providers.find((p) => p.id === id);
+    if (!target) {
       return res.status(404).json({ error: `提供商不存在: ${id || '（空）'}` });
     }
-    db.prepare(
-      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-    ).run('ai.activeProvider', id);
-    res.json({ ok: true, activeProviderId: id });
+    const nextModel = (typeof body.model === 'string' ? body.model.trim() : '') || target.model;
+    if (nextModel === target.model) {
+      db.prepare(
+        'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      ).run('ai.activeProvider', id);
+    } else {
+      // 走 saveAiProviders 改写整表：活跃 id 一并显式传入，避免依赖「保持已存」的缺省分支
+      saveAiProviders(db, providers.map((p) => (p.id === id ? { ...p, model: nextModel } : p)), id);
+    }
+    res.json({ ok: true, activeProviderId: id, model: nextModel });
+  });
+
+  // POST /api/settings/ai/reveal  body: { providerId } | { target: 'searchApiKey' }
+  // 点眼睛按需取回**单个**密钥原文（与 /cookies/reveal 同款口径：GET 只回打码版，只有用户
+  // 显式要求看某一项时才下发裸值，缩小原文暴露面）。
+  // 提供商密钥取该提供商已存的原文——环境变量 AI_API_KEY 从不落库，取不到就回空串，
+  // 前端据此提示，避免把 env 密钥填进输入框、随下一次保存写进 settings。
+  // 搜索密钥取运行时生效值（env / config.json / DB 任一来源），与界面「已配置 xxx」同一口径。
+  r.post('/ai/reveal', (req, res) => {
+    const body = (req.body ?? {}) as { providerId?: unknown; target?: unknown };
+    if (body.target === 'searchApiKey') {
+      return res.json({ value: aiConfigFromDb(db, config).searchApiKey ?? '' });
+    }
+    const id = typeof body.providerId === 'string' ? body.providerId.trim() : '';
+    const provider = readAiProviders(db, config).find((p) => p.id === id);
+    if (!provider) {
+      return res.status(404).json({ error: `提供商不存在: ${id || '（空）'}` });
+    }
+    res.json({ value: provider.apiKey });
   });
 
   // POST /api/settings/ai/test  body: { providerId?, baseURL?, apiKey?, model? }

@@ -1256,6 +1256,9 @@ function newProviderId(): string {
   return `p_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
 }
 
+/** 「当前使用」下拉的选项值分隔符：值 = `提供商id::模型名`（id 由 newProviderId 生成，不含冒号） */
+const ACTIVE_PICKER_SEP = '::'
+
 const AiSettingsCard = ({
   ref,
   ai,
@@ -1351,6 +1354,92 @@ const AiSettingsCard = ({
 
   const patchProvider = (id: string, patch: Partial<ProviderDraft>) => {
     setProviders((ps) => ps.map((p) => (p.id === id ? { ...p, ...patch } : p)))
+  }
+
+  /**
+   * 设为当前使用（提供商 + 模型）：一步到位，不必展开面板去模型目录里点 radio 再滚到底保存。
+   * 本地草稿同步跟随（activeId + 该提供商的 model），已存库的提供商同时写库、AI 请求立即生效；
+   * 尚未保存的新增提供商服务端还不认识（按 id 切换会 404），只改草稿并提示先保存。
+   */
+  const activateModel = async (id: string, model: string) => {
+    const target = providers.find((p) => p.id === id)
+    if (!target) return
+    setActiveId(id)
+    if (model !== '') patchProvider(id, { model })
+    if (!storedIds.has(id)) {
+      message.info(`提供商「${target.name}」还没保存，点下方「保存 AI 配置」后即可使用`)
+      return
+    }
+    try {
+      await post('/api/settings/ai/providers/active', { id, model })
+      message.success(`当前使用：${target.name} · ${model}`)
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  /** 「当前使用」下拉候选：按提供商分组，组内是该提供商的可选模型（目录 + 目录外当前模型）。
+   *  框里显示「提供商 · 模型」（display），下拉里只列模型名（label），避免整组重复前缀；
+   *  searchText 带上提供商名，这样搜「大工」也能定位到它那组。 */
+  const activePickerOptions = providers.map((p) => {
+    const groupLabel = storedIds.has(p.id) ? p.name : `${p.name}（未保存）`
+    const ids = [...new Set([p.model.trim(), ...p.models.map((m) => m.id.trim())].filter((x) => x !== ''))]
+    return {
+      label: groupLabel,
+      options:
+        ids.length === 0
+          ? [{ value: `${p.id}${ACTIVE_PICKER_SEP}`, label: '还没有可选模型', display: groupLabel, disabled: true }]
+          : ids.map((id) => ({
+              value: `${p.id}${ACTIVE_PICKER_SEP}${id}`,
+              label: id,
+              display: `${p.name} · ${id}`,
+              searchText: `${p.name} ${id}`,
+            })),
+    }
+  })
+  const activeDraft = providers.find((p) => p.id === activeId)
+  /** 当前选中的模型不在目录里时也要能回显，所以候选含 p.model；模型为空（还没填）→ 显示占位 */
+  const activePickerValue =
+    activeDraft && activeDraft.model.trim() !== ''
+      ? `${activeId}${ACTIVE_PICKER_SEP}${activeDraft.model.trim()}`
+      : undefined
+
+  /** 点眼睛按需取回该提供商已存的密钥原文（平时只下发打码版，见 /ai/reveal）：填回输入框后，
+   *  眼睛就能正常在明文/掩码间切换。没存过就明确提示——环境变量 AI_API_KEY 从不落库，
+   *  服务端也不会把它当该提供商的密钥下发，否则一次保存就把它写进了 settings。 */
+  const revealProviderKey = async (p: ProviderDraft) => {
+    if (!storedIds.has(p.id)) {
+      message.info('该提供商还没保存，没有可显示的密钥')
+      return
+    }
+    try {
+      const r = await post<{ value: string }>('/api/settings/ai/reveal', { providerId: p.id })
+      if (r.value) {
+        patchProvider(p.id, { apiKey: r.value })
+        return
+      }
+      message.info(
+        ai.apiKeyFromEnv
+          ? '该提供商没单独存过密钥，用的是环境变量 AI_API_KEY（不落库，无法显示）'
+          : '该提供商还没有保存过密钥',
+      )
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  /** 搜索密钥同款按需回显（值存在 antd Form 里，取回后写回字段） */
+  const revealSearchApiKey = async () => {
+    try {
+      const r = await post<{ value: string }>('/api/settings/ai/reveal', { target: 'searchApiKey' })
+      if (r.value) {
+        form.setFieldsValue({ searchApiKey: r.value })
+        return
+      }
+      message.info('还没有可显示的搜索密钥')
+    } catch (e) {
+      message.error((e as Error).message)
+    }
   }
 
   /**
@@ -1684,17 +1773,29 @@ const AiSettingsCard = ({
         <div style={{ borderTop: '1px solid var(--line)', margin: '12px 0', paddingTop: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>模型提供商</div>
           <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 12px' }}>
-            可配置多个 OpenAI 兼容提供商，各自维护模型目录，随取随用；改动后点下方「保存 AI 配置」生效。
+            可配置多个 OpenAI 兼容提供商，各自维护模型目录。「当前使用」选完
+            <b>立即生效</b>（不用保存），其余改动点下方「保存 AI 配置」生效。
           </p>
           <Row gutter={8} align="middle" style={{ marginBottom: 8 }}>
-            <Col flex="auto">
-              <Select
-                style={{ width: '100%', maxWidth: 360 }}
-                value={activeId || undefined}
-                onChange={setActiveId}
-                placeholder={providers.length ? '选择当前使用的提供商' : '先添加一个提供商'}
-                options={providers.map((p) => ({ value: p.id, label: p.name }))}
-              />
+            {/* minWidth:0 —— 否则这一列撑到「当前使用 + 完整选项文字」的 min-content 宽，
+                卡片窄时把「添加提供商」按钮整个挤到下一行 */}
+            <Col flex="auto" style={{ minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, flexShrink: 0 }}>当前使用</span>
+                <Select
+                  style={{ width: '100%', maxWidth: 400 }}
+                  showSearch
+                  optionLabelProp="display"
+                  optionFilterProp="searchText"
+                  value={activePickerValue}
+                  onChange={(v: string) => {
+                    const sep = v.indexOf(ACTIVE_PICKER_SEP)
+                    void activateModel(v.slice(0, sep), v.slice(sep + ACTIVE_PICKER_SEP.length))
+                  }}
+                  placeholder={providers.length ? '选择提供商与模型' : '先添加一个提供商'}
+                  options={activePickerOptions}
+                />
+              </div>
             </Col>
             <Col>
               <Button icon={<PlusOutlined />} onClick={openAddModal}>
@@ -1770,6 +1871,11 @@ const AiSettingsCard = ({
                       <Input.Password
                         value={p.apiKey}
                         onChange={(e) => patchProvider(p.id, { apiKey: e.target.value })}
+                        visibilityToggle={{
+                          onVisibleChange: (v) => {
+                            if (v && p.apiKey.trim() === '') void revealProviderKey(p)
+                          },
+                        }}
                         placeholder={
                           p.hasApiKey
                             ? `已配置 ${p.apiKeyMasked || '••••••••'} · 留空保持不变，粘贴新值可覆盖`
@@ -1806,8 +1912,8 @@ const AiSettingsCard = ({
                       }]}
                     />
                     {/* ---- 模型目录（对齐 dsh 的模型管理）----
-                        一个区块统一承载「当前使用模型 + 各模型档位」：radio 选当前，
-                        行内可改模型 ID 与参数；当前模型不在目录时以「目录外」行呈现
+                        一个区块承载「该提供商使用的模型 + 各模型档位」：radio 点一下立即切过去用，
+                        行内可改模型 ID 与参数；当前模型不在目录时以「使用模型」行呈现
                         （其参数即提供商级默认档位，供目录内未填参数的模型兜底）。 */}
                     <div style={{ margin: '12px 0 12px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -1834,7 +1940,13 @@ const AiSettingsCard = ({
                           style={{ border: '1px solid var(--line-soft)', borderRadius: 8, padding: '6px 8px', marginBottom: 6, background: 'var(--bg-elevated)' }}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <Tag color="success" style={{ marginRight: 0 }}>当前</Tag>
+                            <Tag
+                              color="processing"
+                              style={{ marginRight: 0 }}
+                              title="该提供商使用的模型（不在模型目录里，可自由输入）；这里的改动要点「保存 AI 配置」才生效"
+                            >
+                              使用模型
+                            </Tag>
                             <AutoComplete
                               value={p.model}
                               onChange={(v) => patchProvider(p.id, { model: v })}
@@ -1882,9 +1994,9 @@ const AiSettingsCard = ({
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <Radio
                               checked={p.model === m.id && m.id !== ''}
-                              onChange={() => patchProvider(p.id, { model: m.id })}
+                              onChange={() => void activateModel(p.id, m.id)}
                               disabled={m.id === ''}
-                              title="设为当前使用的模型"
+                              title="立即改用该提供商的这个模型（选完即生效，无需保存）"
                             />
                             <Input
                               size="small"
@@ -1985,6 +2097,12 @@ const AiSettingsCard = ({
           </Form.Item>
         <Form.Item name="searchApiKey" label="搜索 API Key" tooltip="Tavily：api.tavily.com 注册获取；Brave：api.search.brave.com 注册获取。留空则不启用联网搜索。">
           <Input.Password
+            visibilityToggle={{
+              onVisibleChange: (v) => {
+                const cur = form.getFieldValue('searchApiKey')
+                if (v && (typeof cur === 'string' ? cur.trim() : '') === '') void revealSearchApiKey()
+              },
+            }}
             placeholder={
               ai.hasSearchApiKey
                 ? `已配置 ${ai.searchApiKeyMasked || '••••••••'} · 留空保持不变，粘贴新值可覆盖`
@@ -2125,6 +2243,8 @@ const AiSettingsCard = ({
                     value={addModal.apiKey}
                     onChange={(e) => setAddModal({ ...addModal, apiKey: e.target.value })}
                     placeholder="输入 API 密钥（可留空，如用环境变量 AI_API_KEY）"
+                    /* 弹窗里必然还没有已存密钥：空着时不挂眼睛，否则就是个点开没反应的死图标 */
+                    visibilityToggle={addModal.apiKey.trim() !== ''}
                   />
                 </div>
                 <Collapse
@@ -2165,6 +2285,7 @@ const AiSettingsCard = ({
                     value={addModal.apiKey}
                     onChange={(e) => setAddModal({ ...addModal, apiKey: e.target.value })}
                     placeholder="输入 API 密钥（可留空）"
+                    visibilityToggle={addModal.apiKey.trim() !== ''}
                   />
                 </div>
                 <div style={{ marginBottom: 12 }}>

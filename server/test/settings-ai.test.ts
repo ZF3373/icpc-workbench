@@ -368,6 +368,121 @@ test('POST /ai/providers/active 一键切换活跃提供商，AI 请求随之切
   await upstream.close();
 });
 
+test('POST /ai/providers/active 带 model 顺带改写该提供商模型，不带 model 时模型不动', async () => {
+  await withServer(async (_db, base) => {
+    await fetch(`${base}/ai`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providers: [
+          { id: 'pa', name: 'A', baseURL: 'https://a.example/v1', model: 'ma', apiKey: 'key-a' },
+          { id: 'pb', name: 'B', baseURL: 'https://b.example/v1', model: 'mb', apiKey: 'key-b' },
+        ],
+        activeProviderId: 'pa',
+      }),
+    });
+    /** 读回「活跃 id + 各提供商模型 + 运行时生效模型」：切换是否落库、是否只影响目标提供商 */
+    const snapshot = async () => {
+      const v = (await (await fetch(base)).json()) as {
+        ai: { activeProviderId: string; model: string; providers: Array<{ id: string; model: string }> };
+      };
+      return {
+        active: v.ai.activeProviderId,
+        effectiveModel: v.ai.model,
+        models: Object.fromEntries(v.ai.providers.map((p) => [p.id, p.model])),
+      };
+    };
+    const switchTo = async (body: Record<string, unknown>) =>
+      fetch(`${base}/ai/providers/active`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    // 切到 B 并指定模型：活跃项与 B 的模型一起生效，A 不受影响
+    const sw = await switchTo({ id: 'pb', model: 'mb-pro' });
+    assert.equal(sw.status, 200);
+    assert.deepEqual(await sw.json(), { ok: true, activeProviderId: 'pb', model: 'mb-pro' });
+    assert.deepEqual(await snapshot(), {
+      active: 'pb',
+      effectiveModel: 'mb-pro',
+      models: { pa: 'ma', pb: 'mb-pro' },
+    });
+
+    // 只切回 A（不带 model）：B 上次改写的模型保留，不被整表保存时的旧值冲回
+    assert.equal((await switchTo({ id: 'pa' })).status, 200);
+    assert.deepEqual(await snapshot(), {
+      active: 'pa',
+      effectiveModel: 'ma',
+      models: { pa: 'ma', pb: 'mb-pro' },
+    });
+
+    // 空白 model = 只切提供商，等价于不传
+    assert.equal((await switchTo({ id: 'pb', model: '   ' })).status, 200);
+    assert.deepEqual(await snapshot(), {
+      active: 'pb',
+      effectiveModel: 'mb-pro',
+      models: { pa: 'ma', pb: 'mb-pro' },
+    });
+
+    // 未知 id 仍是 404，且不改动任何已存值
+    assert.equal((await switchTo({ id: 'nope', model: 'x' })).status, 404);
+    assert.deepEqual(await snapshot(), {
+      active: 'pb',
+      effectiveModel: 'mb-pro',
+      models: { pa: 'ma', pb: 'mb-pro' },
+    });
+  });
+});
+
+test('POST /ai/reveal 点眼睛按需取回单个密钥原文；没存过的不下发', async () => {
+  const savedAi = process.env.AI_API_KEY;
+  const savedSearch = process.env.SEARCH_API_KEY;
+  delete process.env.AI_API_KEY; // 环境变量优先级高于 DB，避免污染断言
+  delete process.env.SEARCH_API_KEY;
+  try {
+    await withServer(async (_db, base) => {
+      await fetch(`${base}/ai`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          providers: [
+            { id: 'pa', name: 'A', baseURL: 'https://a.example/v1', model: 'ma', apiKey: 'key-a' },
+            { id: 'pb', name: 'B', baseURL: 'https://b.example/v1', model: 'mb' },
+          ],
+          activeProviderId: 'pa',
+          searchApiKey: 'tvly-secret',
+        }),
+      });
+      const reveal = async (body: Record<string, unknown>) => {
+        const res = await fetch(`${base}/ai/reveal`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        return { status: res.status, payload: await res.json() };
+      };
+
+      // 已存密钥的提供商：返回原文（GET 侧只有打码版，这是原文唯一的下发口）
+      assert.deepEqual(await reveal({ providerId: 'pa' }), { status: 200, payload: { value: 'key-a' } });
+      // 没配密钥的提供商：空串——即使环境变量 AI_API_KEY 生效中也不能借此下发，
+      // 否则前端把它填进输入框，下一次「保存 AI 配置」就写进 settings（env 密钥永不落库）
+      process.env.AI_API_KEY = 'env-secret-should-not-leak';
+      assert.deepEqual(await reveal({ providerId: 'pb' }), { status: 200, payload: { value: '' } });
+      delete process.env.AI_API_KEY;
+      // 未知提供商 → 404
+      assert.equal((await reveal({ providerId: 'nope' })).status, 404);
+      // 搜索密钥：与界面「已配置 xxx」同口径的运行时生效值
+      assert.deepEqual(await reveal({ target: 'searchApiKey' }), { status: 200, payload: { value: 'tvly-secret' } });
+    });
+  } finally {
+    if (savedAi === undefined) delete process.env.AI_API_KEY;
+    else process.env.AI_API_KEY = savedAi;
+    if (savedSearch === undefined) delete process.env.SEARCH_API_KEY;
+    else process.env.SEARCH_API_KEY = savedSearch;
+  }
+});
+
 test('POST /ai 校验提供商条目：坏 baseURL 返回 400 且不落库', async () => {
   await withServer(async (_db, base) => {
     const res = await fetch(`${base}/ai`, {
