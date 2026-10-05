@@ -189,18 +189,18 @@ node server/scripts/build-exe.mjs
 1. 「设置」→ 启用 AI 生成，在「模型提供商」里添加提供商并填入其 API 密钥
    - 内置预设一键带入：DeepSeek / OpenAI / Kimi / 智谱 / 通义千问 / 硅基流动 / OpenRouter，也可选「自定义」接任意 OpenAI 兼容网关（one-api / new-api / Ollama 等）
    - **可添加多个提供商**，各自保存 API Key 与默认模型，卡片顶部下拉一键切换当前使用；未选中的提供商配置完整保留
-   - **模型目录**：每个提供商可维护一份模型清单（含上下文窗口 / 最大输出档位）——「获取可用模型」拉取后勾选添加（OpenRouter 等网关会带真实档位），或手工添加；目录条目可一键「设为当前使用」，内置预设可「恢复默认模型」；条目参数优先于提供商级默认档位生效
+   - **模型目录**：每个提供商可维护一份模型清单（含上下文窗口 / 最大输出档位）——「获取可用模型」拉取后勾选添加（OpenRouter / DeepSeek / 百炼等网关会带真实档位），或手工添加；目录条目可一键「设为当前使用」，内置预设可「恢复默认模型」；条目参数优先于提供商级默认档位生效；模型 ID 失焦时按内置参数表智能填写档位，老配置可用「重填档位」按现行参数表覆盖一次
    - 每个提供商卡片内可「测试连接」
 2. 常用组合：
-   - DeepSeek：`https://api.deepseek.com/v1` + `deepseek-chat`
-   - OpenAI：`https://api.openai.com/v1` + `gpt-4o-mini`
+   - DeepSeek：`https://api.deepseek.com/v1` + `deepseek-flash`（旧别名 `deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 下线）
+   - OpenAI：`https://api.openai.com/v1` + `gpt-6.1-sol`
    - Ollama 本地：`http://localhost:11434/v1` + 已拉取的模型名
 3. 「训练计划」→ 生成新计划（AI 失败或未配置时自动降级为模板计划）
 
 进阶配置（均在「设置 → AI 配置」页）：
 
 - **对话超时**：AI 助手对话的最长等待时间，响应慢的模型可调大（默认 120 秒）
-- **最大输出 / 模型上下文长度**：按提供商单独设置——选预设或选模型时会按内置参数表自动填写；「获取可用模型」时若网关返回真实档位（如 OpenRouter）会优先采用；留空则跟随全局默认
+- **最大输出 / 模型上下文长度**：按提供商单独设置——选预设或选模型时会按内置参数表自动填写（表内数字按 2026-10 各家官方文档核对，现役模型普遍已是 1M 上下文：DeepSeek / GLM-5.2+ / Qwen 商用版 / Kimi-K3 / Claude 5 系 / Gemini 全系 / GPT-6 系）；「获取可用模型」时若网关返回真实档位（OpenRouter 的 `context_length`、DeepSeek 的 `context_window`、百炼的 `model_info`）会优先采用；模型名里写了窗口的（`-128k` / `-1m` 结尾）也能直接识别；留空则跟随全局默认
 - **联网搜索**：选择搜索引擎（Tavily / Brave，均有免费额度）并填入 API Key 即可启用，AI 需要时自动调用搜索并附来源链接；需模型支持 function calling
 
 > AI 助手使用用户自行配置的 OpenAI 兼容接口，响应速度和 token 费用由所选模型和接口决定。如果某个模型响应较慢或频繁超时，可在「设置 → AI 配置」切换为响应更快的模型。

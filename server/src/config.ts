@@ -46,7 +46,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     enabled: false,
     baseURL: 'https://api.deepseek.com/v1',
     apiKey: '',
-    model: 'deepseek-chat',
+    model: 'deepseek-flash',
     timeoutMs: 120000,
     maxTokens: 393216,
     contextWindow: 1024000,

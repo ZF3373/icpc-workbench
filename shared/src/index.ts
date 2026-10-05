@@ -690,6 +690,8 @@ export {
   AI_PROVIDERS_MAX,
   AI_PROVIDER_MODELS_MAX,
   guessModelCaps,
+  capsFromModelNameHint,
+  MODEL_CAPS_AS_OF,
   type AiProviderConfig,
   type AiProviderView,
   type AiProviderPreset,

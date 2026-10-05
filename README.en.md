@@ -186,8 +186,8 @@ Version number and build commit are injected by the packaging script (shown in `
 
 1. "Settings" → Enable AI generation, fill in Base URL / API Key / Model
 2. Common setups:
-   - DeepSeek: `https://api.deepseek.com/v1` + `deepseek-chat`
-   - OpenAI: `https://api.openai.com/v1` + `gpt-4o-mini`
+   - DeepSeek: `https://api.deepseek.com/v1` + `deepseek-flash` (the legacy aliases `deepseek-chat` / `deepseek-reasoner` were retired on 2026-07-24)
+   - OpenAI: `https://api.openai.com/v1` + `gpt-6.1-sol`
    - Ollama (local): `http://localhost:11434/v1` + a pulled model name
 3. "Training Plans" → Generate a new plan (auto-falls back to template plan if AI fails or is unconfigured)
 
@@ -195,7 +195,7 @@ Advanced settings (all in "Settings → AI Config"):
 
 - **Conversation timeout**: Max wait time for AI assistant responses; increase for slower models (default 120 seconds)
 - **Max output tokens**: Token limit per response; increase for long-output scenarios like batch template compilation; truncated replies show a notice at the end
-- **Model context length**: When conversation history exceeds this, the oldest messages are auto-trimmed with a notice, preventing API limit errors
+- **Model context length**: When conversation history exceeds this, the oldest messages are auto-trimmed with a notice, preventing API limit errors. Both fields are filled automatically from the built-in model table (numbers verified against vendor docs as of **2026-10** — current models are mostly 1M context), and real values returned by the gateway (`/models`) take precedence; use **重填档位 / Refill caps** to re-apply the current table to an older saved provider, or leave the fields empty to follow the global default
 - **Web search**: Select a search engine (Tavily / Brave, both with free tiers) and enter an API Key to enable; the AI auto-calls search when needed with source links; requires a model that supports function calling
 
 > The AI assistant uses a user-configured OpenAI-compatible interface; response speed and token costs depend on the chosen model and API. If a model is slow or frequently times out, switch to a faster model in "Settings → AI Config."

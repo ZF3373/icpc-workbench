@@ -7,6 +7,8 @@
     "enabled": false,
     "baseURL": "https://api.deepseek.com/v1",
     "apiKey": "",
-    "model": "deepseek-chat"
+    "model": "deepseek-flash",
+    "maxTokens": 393216,
+    "contextWindow": 1048576
   }
 }

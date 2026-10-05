@@ -699,6 +699,10 @@ test('POST /ai/models 下发网关返回的真实参数档位（OpenRouter 风�
             { id: 'openai/gpt-4o-mini', context_length: 128000, top_provider: { max_completion_tokens: 16384 } },
             { id: 'plain-model' },
             { id: 'ctx-only', context_length: 32768 },
+            // DeepSeek 官方 /models：档位平铺在条目顶层
+            { id: 'deepseek-flash', context_window: 1048576, max_output_tokens: 393216 },
+            // 百炼（DashScope）：嵌在 model_info 里
+            { id: 'qwen-plus', model_info: { context_window: 1000000, max_output_tokens: 32768 } },
           ],
         }));
         return;
@@ -720,9 +724,11 @@ test('POST /ai/models 下发网关返回的真实参数档位（OpenRouter 风�
       models: string[];
       caps?: Record<string, { maxTokens?: number; contextWindow?: number }>;
     };
-    assert.deepEqual(body.models, ['ctx-only', 'openai/gpt-4o-mini', 'plain-model']);
+    assert.deepEqual(body.models, ['ctx-only', 'deepseek-flash', 'openai/gpt-4o-mini', 'plain-model', 'qwen-plus']);
     assert.deepEqual(body.caps?.['openai/gpt-4o-mini'], { maxTokens: 16384, contextWindow: 128000 });
     assert.deepEqual(body.caps?.['ctx-only'], { contextWindow: 32768 });
+    assert.deepEqual(body.caps?.['deepseek-flash'], { maxTokens: 393216, contextWindow: 1048576 });
+    assert.deepEqual(body.caps?.['qwen-plus'], { maxTokens: 32768, contextWindow: 1000000 });
     assert.equal(body.caps?.['plain-model'], undefined);
   });
   await new Promise<void>((resolve) => srv.close(() => resolve()));

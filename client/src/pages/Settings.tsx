@@ -35,7 +35,7 @@ import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
 import { PLATFORMS, cookieFieldsOf } from '../../../shared/src/index.ts'
-import { AI_PROVIDER_PRESETS, AI_PROVIDER_CUSTOM_PRESET, AI_PROVIDERS_MAX, AI_PROVIDER_MODELS_MAX, guessModelCaps, type AiProviderModelEntry, type AiProviderView, type ModelCaps } from '../../../shared/src/index.ts'
+import { AI_PROVIDER_PRESETS, AI_PROVIDER_CUSTOM_PRESET, AI_PROVIDERS_MAX, AI_PROVIDER_MODELS_MAX, MODEL_CAPS_AS_OF, guessModelCaps, type AiProviderModelEntry, type AiProviderView, type ModelCaps } from '../../../shared/src/index.ts'
 import { mergePickedModels } from '../aiModelPicker'
 import PageHeader from '../components/PageHeader'
 import PageSkeleton from '../components/PageSkeleton'
@@ -1472,6 +1472,45 @@ const AiSettingsCard = ({
     )
   }
 
+  /**
+   * 按现行参数表重填档位。
+   *
+   * 为什么需要手动入口：失焦自动填写（autoFillCaps）只填「还没有参数」的条目，为的是保住用户
+   * 调过的值；代价是**老配置里存的旧参数表建议值永远不会被更新**（比如 2026-07 前按 deepseek-chat
+   * 128K 存下来的档位）。这里给一个明确的覆盖入口：认得出的模型按现表（网关真实档位优先）重填，
+   * 认不出的原样保留，手动调过的值会被覆盖——所以走 Popconfirm 确认。
+   */
+  const refillCaps = (id: string) => {
+    const target = providers.find((p) => p.id === id)
+    if (!target) return
+    const capsFor = (model: string): ModelCaps | null =>
+      capsBy[id]?.[model.trim()] ?? guessModelCaps(model)
+    const models = target.models.map((m) => {
+      const caps = capsFor(m.id)
+      return caps ? { id: m.id, ...capsPatch(caps) } : m
+    })
+    const activeModel = target.model.trim()
+    const activeCaps = activeModel ? capsFor(activeModel) : null
+    const hit = target.models.filter((m) => capsFor(m.id)).length + (activeCaps ? 1 : 0)
+    setProviders((ps) =>
+      ps.map((p) =>
+        p.id === id
+          ? {
+              ...p,
+              models,
+              ...(activeCaps ? capsPatch(activeCaps) : {}),
+              ...(activeCaps ? { capsModel: activeModel } : {}),
+            }
+          : p,
+      ),
+    )
+    message.success(
+      hit > 0
+        ? `已按 ${MODEL_CAPS_AS_OF} 参数表重填 ${hit} 个模型的档位（要点「保存 AI 配置」才落库）`
+        : '参数表认不出这些模型，档位保持不变',
+    )
+  }
+
   /** 「添加模型提供商」弹窗（对齐 dsh 的添加流程）：先选添加方式（第三方目录 / 自定义 API），
    *  明确填写后保存才创建——不静默预建任何默认提供商的草稿 */
   const [addModal, setAddModal] = useState<
@@ -1919,13 +1958,28 @@ const AiSettingsCard = ({
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                         <span
                           style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}
-                          title="目录条目的参数优先生效；未填参数的模型用「目录外」行里的提供商默认档位"
+                          title={`目录条目的参数优先生效；未填参数的模型用「目录外」行里的提供商默认档位。内置参数表口径：${MODEL_CAPS_AS_OF} 各家官方文档`}
                         >
                           模型目录
                         </span>
                         <span style={{ fontSize: 12, color: 'var(--text-3)', flex: 1, minWidth: 80 }}>
                           {p.models.length > 0 ? `${p.models.length} 个模型` : '未建目录'}
                         </span>
+                        <Popconfirm
+                          title="按内置参数表重填档位？"
+                          description={
+                            <span style={{ display: 'block', maxWidth: 320 }}>
+                              把认得出的模型（{MODEL_CAPS_AS_OF} 官方文档口径，网关返回过真实档位时优先采用）
+                              的「上下文 / 最大输出」覆盖为当前建议值；手动调过的值也会被覆盖。
+                            </span>
+                          }
+                          okText="重填"
+                          onConfirm={() => refillCaps(p.id)}
+                        >
+                          <Button size="small" title="老配置里存的可能是旧参数表的建议值，点这里按现行参数表重填">
+                            重填档位
+                          </Button>
+                        </Popconfirm>
                         {p.presetKey !== 'custom' && (
                           <Button size="small" onClick={() => resetModelCatalog(p.id)}>
                             恢复默认模型

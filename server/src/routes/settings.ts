@@ -941,20 +941,30 @@ interface ModelCatalog {
   caps: Record<string, { maxTokens?: number; contextWindow?: number }>;
 }
 
-/** 从 /models 单个条目读参数档位：context_length + max_completion_tokens 系字段（都是可选） */
+/** 从 /models 单个条目读参数档位：各网关字段口径不一，逐个兼容（都是可选） */
 function capsOfModelEntry(m: Record<string, unknown>): { maxTokens?: number; contextWindow?: number } {
   const num = (v: unknown): number | undefined =>
     typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined;
-  const top = (m.top_provider ?? m.topProvider) as Record<string, unknown> | undefined;
-  const contextWindow =
-    num(m.context_length) ?? num(top?.context_length) ?? num(m.context_window) ?? undefined;
-  const maxTokens =
-    num(top?.max_completion_tokens) ??
-    num(top?.completion_output_tokens) ??
-    num(m.max_completion_tokens) ??
-    num(m.max_output_tokens) ??
-    num(m.completion_output_tokens) ??
-    undefined;
+  const asRecord = (v: unknown): Record<string, unknown> | undefined =>
+    v && typeof v === 'object' ? (v as Record<string, unknown>) : undefined;
+  // OpenRouter = top_provider.*；DeepSeek 官方 = 条目顶层 context_window/max_output_tokens；
+  // 百炼（DashScope）= 嵌在 model_info 里
+  const nested = [
+    asRecord(m.top_provider) ?? asRecord(m.topProvider),
+    asRecord(m.model_info) ?? asRecord(m.modelInfo),
+    m,
+  ].filter((x): x is Record<string, unknown> => x !== undefined);
+  const read = (keys: string[]): number | undefined => {
+    for (const o of nested) {
+      for (const k of keys) {
+        const v = num(o[k]);
+        if (v !== undefined) return v;
+      }
+    }
+    return undefined;
+  };
+  const contextWindow = read(['context_length', 'context_window', 'context']);
+  const maxTokens = read(['max_completion_tokens', 'completion_output_tokens', 'max_output_tokens']);
   return {
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),

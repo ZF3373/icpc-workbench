@@ -75,37 +75,45 @@ export interface AiProviderPreset {
   consoleUrl: string;
 }
 
+/**
+ * 内置提供商预设的模型清单（`defaultModel` / `defaultModels`）。
+ *
+ * ⚠️ 与 `MODEL_CAPS_AS_OF` 同期核实（2026-10）：这里写的是**厂商 API 认的模型 ID**，
+ * 填了已下线的型号，新用户保存后第一次对话就 404（如 DeepSeek 的 deepseek-chat/reasoner
+ * 已于 2026-07-24 停服，换成 V4 代际命名）。每轮更新参数表时要顺带核对。
+ * 硅基流动 / OpenRouter 是聚合网关，条目按其 `/models` 实际返回的 id 写。
+ */
 export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     key: 'deepseek',
     name: 'DeepSeek',
     baseURL: 'https://api.deepseek.com/v1',
-    defaultModel: 'deepseek-chat',
-    defaultModels: ['deepseek-chat', 'deepseek-reasoner'],
+    defaultModel: 'deepseek-flash',
+    defaultModels: ['deepseek-flash', 'deepseek-v4-pro'],
     consoleUrl: 'https://platform.deepseek.com',
   },
   {
     key: 'openai',
     name: 'OpenAI',
     baseURL: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-4o-mini',
-    defaultModels: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1'],
+    defaultModel: 'gpt-6.1-sol',
+    defaultModels: ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.4-mini'],
     consoleUrl: 'https://platform.openai.com',
   },
   {
     key: 'moonshot',
     name: 'Kimi（月之暗面）',
     baseURL: 'https://api.moonshot.cn/v1',
-    defaultModel: 'moonshot-v1-8k',
-    defaultModels: ['kimi-k2-0905-preview', 'moonshot-v1-8k', 'moonshot-v1-128k'],
+    defaultModel: 'kimi-k3',
+    defaultModels: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6'],
     consoleUrl: 'https://platform.moonshot.cn',
   },
   {
     key: 'zhipu',
     name: '智谱 GLM',
     baseURL: 'https://open.bigmodel.cn/api/paas/v4',
-    defaultModel: 'glm-4.7',
-    defaultModels: ['glm-4.7', 'glm-4.6', 'glm-4.5-air'],
+    defaultModel: 'glm-5.3',
+    defaultModels: ['glm-5.3', 'glm-5.2', 'glm-4.7'],
     consoleUrl: 'https://open.bigmodel.cn',
   },
   {
@@ -113,7 +121,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     name: '通义千问 Qwen',
     baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     defaultModel: 'qwen-plus',
-    defaultModels: ['qwen-plus', 'qwen-max', 'qwen3-max'],
+    defaultModels: ['qwen-plus', 'qwen-flash', 'qwen3.8-max'],
     consoleUrl: 'https://bailian.console.aliyun.com',
   },
   {
@@ -128,8 +136,8 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     key: 'openrouter',
     name: 'OpenRouter',
     baseURL: 'https://openrouter.ai/api/v1',
-    defaultModel: 'openai/gpt-4o-mini',
-    defaultModels: ['openai/gpt-4o-mini', 'deepseek/deepseek-chat-v3-0324', 'anthropic/claude-sonnet-4.5'],
+    defaultModel: 'openai/gpt-6.1-sol',
+    defaultModels: ['openai/gpt-6.1-sol', 'anthropic/claude-sonnet-5.5', 'deepseek/deepseek-v4.1-flash'],
     consoleUrl: 'https://openrouter.ai/keys',
   },
 ];
@@ -152,6 +160,9 @@ export const AI_PROVIDER_MODELS_MAX = 50;
 
 // ---------- 模型参数识别（「最大输出 / 上下文长度」的自动智能填写） ----------
 
+/** 内置参数表的联网核实时间（官方文档口径）；设置页展示，便于判断档位是否该更新了 */
+export const MODEL_CAPS_AS_OF = '2026-10';
+
 /** 模型参数档位（token 数）：maxTokens = 单次回复上限；contextWindow = 上下文窗口（含输入+输出） */
 export interface ModelCaps {
   maxTokens?: number;
@@ -161,45 +172,119 @@ export interface ModelCaps {
 /**
  * 常见模型参数表（按模型名小写子串匹配，**先专后泛**，第一个命中即用）。
  *
- * 数字取官方文档/公开资料的常用档位，定位是「智能建议」而非保证——不同部署/版本可能
- * 缩水，界面 tooltip 始终提示按模型实际参数微调。命中不到的模型（本地 Ollama、小众网关）
- * 返回 null，两个输入框留空 = 运行时回退全局默认。
+ * ⚠️ 数据口径：`MODEL_CAPS_AS_OF` 标注这批数字的核实时间，全部取**各家官方文档**的现役档位，
+ * 2026-10 一轮按 platform 文档 + 聚合网关 /models 实测重新核对过（旧表里 DeepSeek 128K、
+ * GLM 200K、qwen-plus 128K 都是 2025 年的档位，现役模型已普遍升到 1M）。
+ * 定位仍是「智能建议」而非保证——不同部署/版本可能缩水，界面提示按模型实际参数微调；
+ * 网关能返回真实档位时（DeepSeek / DashScope / OpenRouter / Kimi 都带）优先用真实值。
+ *
+ * 命中不到的模型（本地 Ollama、小众网关）返回 null，两个输入框留空 = 运行时回退全局默认。
  */
 const MODEL_CAP_PATTERNS: Array<{ pattern: RegExp; caps: ModelCaps }> = [
-  // DeepSeek（V3.2 起官方口径：chat 128K 上下文 / 8K 输出，reasoner 128K / 64K）
-  { pattern: /deepseek-reasoner|deepseek-r1/, caps: { maxTokens: 65536, contextWindow: 131072 } },
-  { pattern: /deepseek-chat|deepseek-v3/, caps: { maxTokens: 8192, contextWindow: 131072 } },
-  { pattern: /deepseek/, caps: { maxTokens: 8192, contextWindow: 65536 } },
-  // OpenAI
-  { pattern: /gpt-5/, caps: { maxTokens: 128000, contextWindow: 400000 } },
-  { pattern: /gpt-4\.1/, caps: { maxTokens: 32768, contextWindow: 1047576 } },
-  { pattern: /gpt-4o|chatgpt-4o/, caps: { maxTokens: 16384, contextWindow: 131072 } },
-  { pattern: /(^|\/)o[134](-mini|-preview)?($|-)/, caps: { maxTokens: 100000, contextWindow: 200000 } },
-  { pattern: /gpt-3\.5/, caps: { maxTokens: 4096, contextWindow: 16385 } },
-  // Kimi / 月之暗面（moonshot-v1-* 的上下文写在名字里）
+  // DeepSeek（官方 2026-10 文档：现役 deepseek-flash / deepseek-v4-pro 均 1M 上下文、单次输出上限 384K；
+  // deepseek-chat|reasoner 已于 2026-07-24 停服，仍在列只为让存过这两个名字的老配置按 V4 档位走，
+  // 不被老的 128K/8K 建议值压住；开源权重版（deepseek-ai/DeepSeek-V3|R1 之类自部署）窗口按部署普遍只有 128K-160K）
+  { pattern: /deepseek-(flash|pro|v4)|deepseek-chat|deepseek-reasoner/, caps: { maxTokens: 393216, contextWindow: 1048576 } },
+  { pattern: /deepseek-v3\.2/, caps: { maxTokens: 65536, contextWindow: 163840 } },
+  { pattern: /deepseek/, caps: { maxTokens: 65536, contextWindow: 131072 } },
+  // Kimi / 月之暗面（kimi-k3 = 1M；k2.5/k2.6/k2.7 系 256K；
+  // 官方文档只公布上下文、未公布单次输出上限，输出取 64K 稳妥档，需要更长回复可自行调大；
+  // moonshot-v1-* 把上下文写在名字里，仍在列（老配置还能认出））
   { pattern: /moonshot-v1-8k/, caps: { maxTokens: 4096, contextWindow: 8192 } },
   { pattern: /moonshot-v1-32k/, caps: { maxTokens: 8192, contextWindow: 32768 } },
   { pattern: /moonshot-v1-128k/, caps: { maxTokens: 8192, contextWindow: 131072 } },
-  { pattern: /kimi/, caps: { maxTokens: 16384, contextWindow: 262144 } },
-  // 智谱 GLM（4.6：200K 上下文 / 128K 输出）
-  { pattern: /glm-4\.[67]/, caps: { maxTokens: 131072, contextWindow: 204800 } },
+  { pattern: /kimi-k3|kimi-latest/, caps: { maxTokens: 65536, contextWindow: 1048576 } },
+  { pattern: /kimi|moonshot/, caps: { maxTokens: 65536, contextWindow: 262144 } },
+  // 智谱 GLM（官方 model-overview 2026-10：glm-5.2/5.3 系 1M 上下文 / 128K 输出；
+  // glm-5、glm-4.7、glm-4.6 等 4.x-5.1 代 200K / 128K；glm-4.5 系 128K / 96K；glm-4-long 1M / 4K）
+  { pattern: /chatglm/, caps: { maxTokens: 8192, contextWindow: 32768 } },
+  { pattern: /glm-4-long/, caps: { maxTokens: 4096, contextWindow: 1048576 } },
   { pattern: /glm-4\.5/, caps: { maxTokens: 98304, contextWindow: 131072 } },
-  { pattern: /glm/, caps: { maxTokens: 8192, contextWindow: 131072 } },
-  // 通义千问（商用版 128K 档）
-  { pattern: /qwen3-max/, caps: { maxTokens: 32768, contextWindow: 262144 } },
+  { pattern: /glm-5\.[23]|glm-latest|glm-flash/, caps: { maxTokens: 131072, contextWindow: 1048576 } },
+  { pattern: /glm/, caps: { maxTokens: 131072, contextWindow: 204800 } },
+  // 通义千问（百炼 2026-10：qwen-plus / qwen-flash / qwen3.8-max 基础版已是 1M 上下文，
+  // 分档计价（≤128K / 128-256K / 256K-1M），输出上限 32K（qwen3.8 系 128K）；
+  // 老式 qwen-max（2.5 代）仍只有 32K 上下文——按代际分开匹配，泛匹配会误抬老模型）
+  { pattern: /qwen3\.[78]|qwen-max-latest/, caps: { maxTokens: 131072, contextWindow: 1000000 } },
+  { pattern: /qwen3-max/, caps: { maxTokens: 65536, contextWindow: 262144 } },
+  { pattern: /qwen[\w.]*-(?:plus|flash|turbo)/, caps: { maxTokens: 32768, contextWindow: 1000000 } },
+  { pattern: /qwen-max/, caps: { maxTokens: 8192, contextWindow: 32768 } },
+  { pattern: /qwq/, caps: { maxTokens: 16384, contextWindow: 32768 } },
   { pattern: /qwen/, caps: { maxTokens: 16384, contextWindow: 131072 } },
-  // Claude（4 系输出 64K，3 系及兜底 8K）
-  { pattern: /claude-(sonnet|opus|haiku)-4|claude-4/, caps: { maxTokens: 64000, contextWindow: 200000 } },
+  // 豆包 / 火山方舟（Seed 2.1 系 1024K 上下文 / 256K 输出；2.0-mini 256K / 128K；
+  // 方舟文档用小写带点型号，控制台里也接受连字符写法，两种都归到同一档）
+  { pattern: /doubao-seed-2[.-]?[01][.-]?(?:mini|turbo)/, caps: { maxTokens: 131072, contextWindow: 262144 } },
+  { pattern: /doubao-(?:pro|lite|1-[45]|vision)/, caps: { maxTokens: 16384, contextWindow: 131072 } },
+  { pattern: /doubao-seed-1-/, caps: { maxTokens: 65536, contextWindow: 262144 } },
+  { pattern: /doubao/, caps: { maxTokens: 262144, contextWindow: 1048576 } },
+  // MiniMax（M3 系 1M；M2 系 200K；官方未公布单次输出上限，取 64K 稳妥档）
+  { pattern: /minimax-m[3-9]/, caps: { maxTokens: 65536, contextWindow: 1000000 } },
+  { pattern: /minimax/, caps: { maxTokens: 65536, contextWindow: 204800 } },
+
+  // OpenAI（2026-10 口径：窗口大小跟「档位名」走而非代数——旗舰系（gpt-6*、gpt-5.4~5.9，
+  // 含 -sol/-luna/-astra/-terra/-pro 变体）1050K 上下文 / 128K 输出；-mini/-nano/-codex 与
+  // gpt-5~5.3 系 400K / 128K；带 -chat 的历史命名 128K / 16K 且已在退役窗口内。
+  // 注：platform.openai.com 文档站对本机 403，数字取 Azure Foundry 的 OpenAI 目录镜像
+  // （2026-09-21 更新）与聚合网关 /models 实测交叉核对）
+  { pattern: /gpt-oss/, caps: { maxTokens: 32768, contextWindow: 131072 } },
+  { pattern: /gpt-3\.5/, caps: { maxTokens: 4096, contextWindow: 16385 } },
+  { pattern: /gpt-4\.1/, caps: { maxTokens: 32768, contextWindow: 1047576 } },
+  { pattern: /gpt-4o|gpt-4-|chatgpt-4o/, caps: { maxTokens: 16384, contextWindow: 128000 } },
+  { pattern: /gpt-(5[.-][1-9]|6)-(mini|nano)/, caps: { maxTokens: 128000, contextWindow: 400000 } },
+  { pattern: /gpt-(6|5[.-][4-9])/, caps: { maxTokens: 128000, contextWindow: 1050000 } },
+  // 认不出的 gpt-*（含还没进表的新一代）按当代最低档 400K 建议，不再退回上代的 128K
+  { pattern: /gpt-/, caps: { maxTokens: 128000, contextWindow: 400000 } },
+  { pattern: /(^|\/)o[34](-mini|-preview)?($|-)/, caps: { maxTokens: 100000, contextWindow: 200000 } },
+  // Claude（Anthropic 文档站对本机区域封禁，档位取 AWS Bedrock 官方 model card 核对：
+  // 4.6 起含 5 系（sonnet/opus/fable/mythos）已 GA 到 1M 上下文 / 128K 输出，
+  // 4 与 4.5 系仍是 200K / 64K（当年的 1M beta 已停），3 系兜底 8K 输出）
+  { pattern: /claude-(sonnet|opus|fable|mythos)-(4[.-][678]|5([.-]\d+)?)/, caps: { maxTokens: 128000, contextWindow: 1000000 } },
+  { pattern: /claude-(sonnet|opus|haiku)-4([.-]\d+)?/, caps: { maxTokens: 64000, contextWindow: 200000 } },
   { pattern: /claude/, caps: { maxTokens: 8192, contextWindow: 200000 } },
-  // Gemini（2.5 系 1M 上下文 / 64K 输出）
+  // Gemini（2.5 起 pro/flash 全系 1M 上下文 / 64K 输出；-image 系列是独立小窗口档位。
+  // 注意思考（thinking）token 也从这 64K 输出额度里扣，长回复场景可能要手动调大）
+  { pattern: /gemini-[\w.-]*-image/, caps: { maxTokens: 32768, contextWindow: 131072 } },
   { pattern: /gemini/, caps: { maxTokens: 65536, contextWindow: 1048576 } },
-  // Grok / 豆包 / 其他
-  { pattern: /grok-4/, caps: { maxTokens: 32768, contextWindow: 262144 } },
-  { pattern: /grok/, caps: { maxTokens: 16384, contextWindow: 131072 } },
-  { pattern: /doubao/, caps: { maxTokens: 16384, contextWindow: 131072 } },
-  { pattern: /llama|meta-llama/, caps: { maxTokens: 8192, contextWindow: 131072 } },
-  { pattern: /mistral|mixtral/, caps: { maxTokens: 8192, contextWindow: 131072 } },
+  // Grok（xAI 一手档位与 Azure/Bedrock 渠道档位不一致，按一手文档取：4.5~4.7 = 500K/128K，
+  // 4.3 = 1M，4-fast 系 2M，4 基础款 256K；名字里的「4-20」是 2025-06 发布日期不是窗口大小）
+  { pattern: /grok-4(\.\d)?-fast/, caps: { maxTokens: 128000, contextWindow: 2000000 } },
+  { pattern: /grok-4\.[5-9]/, caps: { maxTokens: 128000, contextWindow: 500000 } },
+  { pattern: /grok-4\.3/, caps: { maxTokens: 128000, contextWindow: 1048576 } },
+  { pattern: /grok/, caps: { maxTokens: 65536, contextWindow: 262144 } },
+  // 其他开源权重：Llama 4 系原生 1M+（本地部署实际受 num_ctx 限制，这里只按官方标称建议），
+  // 3.x 系 128K；Mistral 的 large/codestral 256K，其余 128K（-2512/-2603 之类是版本月份，不是窗口）
+  { pattern: /llama[.-]?4|llama4/, caps: { maxTokens: 16384, contextWindow: 1048576 } },
+  { pattern: /llama/, caps: { maxTokens: 8192, contextWindow: 131072 } },
+  { pattern: /mistral-large|codestral|devstral/, caps: { maxTokens: 32768, contextWindow: 262144 } },
+  { pattern: /mistral|mixtral|pixtral|ministral/, caps: { maxTokens: 16384, contextWindow: 131072 } },
+  // 混元 / 文心 / 阶跃（各家文档未逐条核对，按聚合网关实测档位给建议值）
+  { pattern: /hunyuan|hy3|hy4/, caps: { maxTokens: 128000, contextWindow: 262144 } },
+  { pattern: /step-[3-9]/, caps: { maxTokens: 65536, contextWindow: 262144 } },
+  { pattern: /ernie/, caps: { maxTokens: 16384, contextWindow: 131072 } },
 ];
+
+/**
+ * 模型名里的「窗口标记」→ 上下文窗口（token）：`moonshot-v1-128k`、`qwen3-32b-instruct-1m`、
+ * `glm-4.6-200k` 这类把上下文写进名字的命名，档位不依赖参数表也能读出来。
+ *
+ * 只认「以 Nk / Nm 结尾（后面可再跟 instruct/chat/preview 之类角色词）」的整段：
+ * 参数量写法（`-7b`、`-223b-a22b`）里没有 k/m 结尾的段，不会被误读成窗口。
+ * 倍率按 1024 计（128k = 131072），与参数表里其余档位同一口径。
+ */
+const CONTEXT_HINT_RE =
+  /(?:^|[-./_])(\d+(?:\.\d+)?)([km])(?:[-./_](?:instruct|chat|preview|thinking|turbo|fast|code|reasoner|it|vl))?(?:[-.][\d.]+)*$/i;
+
+/** 从模型名后缀读上下文窗口；读不出返回 null（不编造数字，交给运行时全局兜底） */
+export function capsFromModelNameHint(model: string): ModelCaps | null {
+  const m = CONTEXT_HINT_RE.exec(model.trim().toLowerCase());
+  if (!m) return null;
+  const value = Number(m[1]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const contextWindow = Math.round(value * (m[2].toLowerCase() === 'm' ? 1024 * 1024 : 1024));
+  // 32K 以下的「窗口」多半是把别的数字（步数/版本号）当成了标记，宁可不填
+  if (contextWindow < 32768) return null;
+  return { contextWindow };
+}
 
 /** 按模型名猜测参数档位（智能填写的静态来源；网关若能返回真实参数则优先用真实值） */
 export function guessModelCaps(model: string): ModelCaps | null {
@@ -208,5 +293,5 @@ export function guessModelCaps(model: string): ModelCaps | null {
   for (const { pattern, caps } of MODEL_CAP_PATTERNS) {
     if (pattern.test(name)) return caps;
   }
-  return null;
+  return capsFromModelNameHint(name);
 }
