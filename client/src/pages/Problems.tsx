@@ -2229,6 +2229,13 @@ function BackfillDifficultyCard() {
     return () => clearInterval(timer)
   }, [active, refreshRun])
 
+  // 「停止回填」要等**服务端**真正收尾后才复位 stopping：跨页面/跨标签页发起的回填没有
+  // 本组件在途的 runBackfill 请求来复位（stop 接口返回 stopped:true 时也不复位），只能
+  // 靠轮询到的运行状态收尾 —— 漏了它，重开页面后点「停止」会让两个按钮永久卡死，只能刷新恢复
+  useEffect(() => {
+    if (stopping && !busy && run !== null && !run.running) setStopping(false)
+  }, [stopping, busy, run])
+
   const runBackfill = async () => {
     setBusy(true)
     setResult(undefined)

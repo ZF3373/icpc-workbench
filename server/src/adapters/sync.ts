@@ -135,6 +135,32 @@ export function ascendingSinceWithLookback(since: string | undefined): string | 
 }
 
 /**
+ * 升序平台（AtCoder）本批同步结束后的 last_sync_at 推进决策（纯函数，导出以便单测）：
+ * - 未截断：推进到当前时刻（本批已拉到最新一条，下一轮从 now 起算增量）。
+ * - 截断且本批有行：推进到**本批最新一条提交的时刻**——适配器返回的是「按提交时间升序的连续
+ *   前缀」，砍点那一秒整秒收下，故光标正好落在已导入区间末尾；下轮从该时刻（含 12h 回看）续拉
+ *   不会漏，也不会把已导入区间反复重扫。
+ * - 截断且本批一行都没有（页预算被已入库行吃满，见 atcoder.ts 的 scannedUntil 回传）：
+ *   推进到**实际扫描到的位置**，绝不能跳到当前时刻——(扫描点, now) 之间还没扫到的提交
+ *   否则会被回看窗口永久漏掉，成为空洞。适配器没回报扫描点时只能保守取 now。
+ */
+export function ascendingNextLastSyncAt(args: {
+  rows: Array<{ submittedAt: string }>;
+  truncated: boolean;
+  scannedUntil?: string;
+  now: string;
+}): string {
+  if (!args.truncated) return args.now;
+  if (args.rows.length > 0) {
+    return args.rows.reduce(
+      (max, x) => (x.submittedAt > max ? x.submittedAt : max),
+      args.rows[0]!.submittedAt,
+    );
+  }
+  return args.scannedUntil ?? args.now;
+}
+
+/**
  * 同平台互斥锁（进程内）：手动点击、一键同步、失败重试、days 补拉与后台分批续拉可能同时到达
  * 同一平台，并发请求会成倍放大平台风控/封号风险，故同一平台同时只允许一个同步在跑。
  *
@@ -277,15 +303,18 @@ async function runSyncPlatform(
         : !fullMode && account?.last_sync_at ? account.last_sync_at : undefined;
     // 升序平台（AtCoder）额外回看一段：窗口式上游 + 只按秒定位的游标一旦停在最新提交之后，
     // 这之间的提交就再也拉不回来（见 ASCENDING_SYNC_LOOKBACK_MS 注释）。回看拉到的重复提交
-    // 由唯一键去重，代价可控。降序平台依赖 knownExternalIds 增量，不做回看（会白扫整页）。
+    // 由 knownExternalIds 跳过（不占单次上限预算，见下）+ 唯一键去重兜底。
+    // 降序平台依赖 knownExternalIds 增量，不做回看（会白扫整页）。
     const since = isAscendingPlatform(platform) ? ascendingSinceWithLookback(rawSince) : rawSince;
-    // 声明支持已知提交号过滤的适配器（CF/洛谷/牛客，拉取按新到旧排序）：
-    // 注入库中该账号已有提交号，适配器整页已知即提前终止分页，实现真实增量。
-    // days 窗口模式不注入（否则整页已知会提前终止，覆盖不到窗口内漏拉的历史），
-    // 窗口终止由 since 早停承担，重复插入由唯一键去重兜底。全量模式同样注入：
-    // 重复绑定/重拉时已知页可直接跳过，唯一键保证不会漏插也不会重插。
+    // 声明支持已知提交号过滤的适配器（CF/洛谷/牛客/AtCoder）：注入库中该账号已有提交号。
+    // - 降序平台（CF/洛谷/牛客，拉取按新到旧排序）：适配器整页已知即提前终止分页，实现真实增量。
+    //   days 窗口模式不注入（否则整页已知会提前终止，覆盖不到窗口内漏拉的历史），
+    //   窗口终止由 since 早停承担，重复插入由唯一键去重兜底。全量模式同样注入：
+    //   重复绑定/重拉时已知页可直接跳过，唯一键保证不会漏插也不会重插。
+    // - 升序平台（AtCoder）：只用于跳过已入库行且不占单次上限预算（回看窗口重扫的旧行若计入
+    //   预算，重度用户会被旧行吃满预算、游标停滞），不做整页提前终止，因此 days 窗口模式同样注入。
     const knownSubs =
-      !daysWindow && adapter.knownIdsFilter
+      (!daysWindow || isAscendingPlatform(platform)) && adapter.knownIdsFilter
         ? loadKnownSubmissions(db, userId, platform, handle)
         : undefined;
     // 需登录平台：取该账号的生效凭据注入适配器。v0.9 起各账号**只用自己**的 Cookie
@@ -366,21 +395,19 @@ async function runSyncPlatform(
       return result;
     }
 
-    // last_sync_at 推进策略：
-    // - 升序平台（AtCoder，按 epoch 升序、用 since/from_second 续拉）：被截断时推进到**本批
-    //   最新一条提交的时间**。适配器返回的是「按提交时间升序的连续前缀」，且被单次上限砍掉时
-    //   会把砍点那一秒整秒收下（见 adapters/atcoder.ts），因此光标正好落在已导入区间的末尾，
-    //   下一轮从该时刻续拉不会漏（重复行由唯一键去重），也不会把已导入的区间反复重扫。
-    // - 降序平台（CF/洛谷/牛客等，按新→旧、用 knownIds 增量）：始终推进到当前时刻——它们的
-    //   增量依赖 knownExternalIds 而非 since，last_sync_at 仅用于换账号判定与增量标记，
-    //   补全由 sync_truncated 驱动 backfill 跳页实现，与 last_sync_at 取值无关。
+    // last_sync_at 推进策略：升序平台走 ascendingNextLastSyncAt（含「预算耗尽却一无所获时
+    // 停在扫描点」的分支，见该函数注释）；降序平台始终推进到当前时刻。
     let nextLastSyncAt: string;
-    if (truncated && isAscendingPlatform(platform) && rows.length > 0) {
-      nextLastSyncAt = rows.reduce(
-        (max, x) => (x.submittedAt > max ? x.submittedAt : max),
-        rows[0].submittedAt,
-      );
+    if (isAscendingPlatform(platform)) {
+      nextLastSyncAt = ascendingNextLastSyncAt({
+        rows,
+        truncated,
+        ...(fetchOpts.scannedUntil ? { scannedUntil: fetchOpts.scannedUntil } : {}),
+        now: new Date().toISOString(),
+      });
     } else {
+      // 降序平台：增量靠 knownExternalIds、补全靠 sync_truncated 驱动 backfill 跳页，
+      // last_sync_at 只用于换账号判定与增量标记 → 始终推进到当前时刻
       nextLastSyncAt = new Date().toISOString();
     }
     // sync_truncated：截断（仍有更早历史）置 1，否则（自然结束 / 补全一无所获）清 0

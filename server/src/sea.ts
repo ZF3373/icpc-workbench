@@ -23,6 +23,7 @@ import { tryLaunchWidget } from './widget-launcher.ts';
 import { createDb } from './db/index.ts';
 import { applyPendingRestore, createBackup, maybeDailyBackup } from './backup.ts';
 import { configureSyncScheduler } from './adapters/syncScheduler.ts';
+import { migratePlatformCookieToAccounts } from './adapters/accountCreds.ts';
 import { setRequestIntervalScale } from './net/hostThrottle.ts';
 import { backupsRoutes } from './routes/backups.ts';
 import { initAdapters } from './adapters/index.ts';
@@ -82,6 +83,15 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
   applyPendingRestore(config.dbPath);
   const db = createDb(config.dbPath);
   seedBuiltinBank(db); // 内置题库播种：版本变化时 upsert 一次，日常启动零开销
+  // 账号级凭据迁移（幂等）：与 index.ts 同序——漏了它，pre-0.9 升级的打包版/Docker 用户
+  // 的平台级旧 Cookie 永远不会播种到账号槽位，所有账号同步报「未配置 Cookie」
+  try {
+    if (migratePlatformCookieToAccounts(db)) {
+      console.log('[accountCreds] 已将平台级 Cookie 迁移到各绑定账号');
+    }
+  } catch (e) {
+    console.error(`[accountCreds] 平台级 Cookie 迁移失败（不影响启动）: ${(e as Error).message}`);
+  }
   initAdapters(config.dataDir);
   // 后台分批续拉调度器：截断的同步按平台节奏自动续拉下一批。SEA 与 Docker（非 SEA 分支）
   // 都走本入口，漏装配会让「已截断、待续拉」的同步永远停在第一轮

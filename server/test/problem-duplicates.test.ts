@@ -85,6 +85,12 @@ test('clean-tags: 删除重复题并把提交/计划任务并入保留行，复�
     d.prepare(
       "INSERT INTO review_items (user_id,problem_id,next_due_on,note) VALUES (1,2,'2024-01-11','保留行的笔记')",
     ).run();
+    // 复习反馈历史挂在重复行的条目上：review_events 两个外键都无级联，去重必须先清掉，
+    // 否则整个事务外键失败 500（与 problemMerge 的洛谷 T 号转正合并路径同款缺陷）
+    d.prepare(
+      `INSERT INTO review_events (user_id,review_item_id,problem_id,reviewed_at,feedback,stage_before,stage_after,due_on,interval_days)
+       VALUES (1, (SELECT id FROM review_items WHERE note = '重复行的笔记'), 1, '2024-01-05T00:00:00.000Z', 'hard', 0, 0, '2024-01-10', 1)`,
+    ).run();
 
     // 题单条目按 (platform, problem_key) 存串：去重时必须一起改键，否则条目永久指向被删的 '1a'，
     // 题单页的难度/标签/已 AC 全靠 key 匹配 → 同一道题也永远显示「未做/难度未知」
@@ -122,6 +128,11 @@ test('clean-tags: 删除重复题并把提交/计划任务并入保留行，复�
     assert.equal(reviews.length, 1);
     assert.equal(reviews[0].problem_id, 2);
     assert.equal(reviews[0].note, '保留行的笔记');
+    // 丢弃条目的反馈历史随之删除，不得残留指向已删题行的孤儿事件
+    assert.equal(
+      (d.prepare('SELECT COUNT(*) c FROM review_events').get() as { c: number }).c,
+      0,
+    );
 
     // 被删的重复题号记入 deleted_problems，题库重拉不得复活（保留行不动）
     assert.equal(
@@ -168,12 +179,19 @@ test('clean-tags: 保留行没有复习条目时，重复行的复习条目并�
     d.prepare(
       "INSERT INTO review_items (user_id,problem_id,next_due_on,note) VALUES (1,1,'2024-01-10','要搬走的笔记')",
     ).run();
+    d.prepare(
+      `INSERT INTO review_events (user_id,review_item_id,problem_id,reviewed_at,feedback,stage_before,stage_after,due_on,interval_days)
+       VALUES (1, (SELECT id FROM review_items WHERE note = '要搬走的笔记'), 1, '2024-01-05T00:00:00.000Z', 'ok', 0, 1, '2024-01-10', 1)`,
+    ).run();
 
     const res = await fetch(`${base}/clean-tags`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     assert.equal(res.status, 200);
     const review = d.prepare('SELECT problem_id, note FROM review_items').get() as { problem_id: number; note: string };
     assert.equal(review.problem_id, 2, '复习条目并入保留行');
     assert.equal(review.note, '要搬走的笔记');
+    // 搬移条目的反馈历史跟随对齐保留行（条目 id 不变，problem_id 改指保留行）
+    const ev = d.prepare('SELECT problem_id FROM review_events').get() as { problem_id: number };
+    assert.equal(ev.problem_id, 2, '反馈历史随条目并入保留行');
   });
 });
 

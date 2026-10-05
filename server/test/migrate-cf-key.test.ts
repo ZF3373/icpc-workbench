@@ -136,6 +136,76 @@ test('migrate: 斜杠行带卡点（submission_intents）时合并不炸启动',
 });
 
 /**
+ * review_events 的两个外键（review_item_id / problem_id）都无级联：斜杠行上的复习条目带
+ * 反馈历史时，合并里的 DELETE review_items / DELETE problems 会抛 FOREIGN KEY constraint
+ * failed → 迁移整体回滚 → createDb 抛错，应用再也打不开。与上面卡点/推荐两条完全同款，
+ * 只是漏了这张表（本用例是 db/index.ts 里 repointReviewEvents/dropReviewEvents 的回归）。
+ * 覆盖两条分支：搬移条目的历史跟随保留行、丢弃条目的历史随条目删除（多用户）。
+ */
+test('migrate: 斜杠行带复习反馈历史（review_events）时合并不炸启动', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'icpc-migrate-revevents-'));
+  const file = path.join(dir, 'icpc.db');
+  try {
+    const db1 = createDb(file);
+    db1.prepare("INSERT INTO problems (platform, problem_key, title) VALUES ('codeforces', '279B', 'Books')").run();
+    db1.prepare("INSERT INTO problems (platform, problem_key, title) VALUES ('codeforces', '279/B', 'Books')").run();
+    const keepId = (db1.prepare("SELECT id FROM problems WHERE problem_key = '279B'").get() as { id: number }).id;
+    const slashedId = (db1.prepare("SELECT id FROM problems WHERE problem_key = '279/B'").get() as { id: number }).id;
+    db1.prepare("INSERT INTO users (id, username) VALUES (2, 'second')").run();
+    const addReview = (userId: number, problemId: number): number =>
+      db1
+        .prepare("INSERT INTO review_items (user_id, problem_id, next_due_on) VALUES (?, ?, '2026-09-01')")
+        .run(userId, problemId).lastInsertRowid as number;
+    const addEvent = (userId: number, itemId: number, problemId: number): void => {
+      db1.prepare(
+        `INSERT INTO review_events (user_id, review_item_id, problem_id, reviewed_at, feedback,
+                                    stage_before, stage_after, due_on, interval_days)
+         VALUES (?, ?, ?, '2026-08-30T00:00:00.000Z', 'ok', 0, 1, '2026-09-01', 1)`,
+      ).run(userId, itemId, problemId);
+    };
+    // 用户 1：只有斜杠行有条目 + 反馈历史 → 条目搬移，历史必须跟着改指保留行
+    const movedItem = addReview(1, slashedId);
+    addEvent(1, movedItem, slashedId);
+    // 用户 2：保留行与斜杠行都有条目 → 斜杠行条目被丢弃，其反馈历史必须随之删除
+    const keepItem2 = addReview(2, keepId);
+    addEvent(2, keepItem2, keepId);
+    const dropItem2 = addReview(2, slashedId);
+    addEvent(2, dropItem2, slashedId);
+    db1.close();
+
+    const db2 = createDb(file); // 修复前：这里抛 FOREIGN KEY constraint failed
+    const items = db2
+      .prepare('SELECT id, user_id, problem_id FROM review_items ORDER BY id')
+      .all()
+      .map((r) => ({ ...r })) as Array<{ id: number; user_id: number; problem_id: number }>;
+    assert.deepEqual(items, [
+      { id: movedItem, user_id: 1, problem_id: keepId },
+      { id: keepItem2, user_id: 2, problem_id: keepId },
+    ], '撞 UNIQUE 的条目丢弃、未撞的搬移');
+    const events = db2
+      .prepare('SELECT user_id, review_item_id, problem_id FROM review_events ORDER BY id')
+      .all()
+      .map((r) => ({ ...r })) as Array<{ user_id: number; review_item_id: number; problem_id: number }>;
+    assert.deepEqual(events, [
+      { user_id: 1, review_item_id: movedItem, problem_id: keepId },
+      { user_id: 2, review_item_id: keepItem2, problem_id: keepId },
+    ], '搬移条目的历史改指保留行、丢弃条目的历史随之删除');
+    assert.equal(
+      (db2.prepare('PRAGMA foreign_key_check').all() as unknown[]).length,
+      0,
+      '迁移后不得留下外键孤儿（含 review_events 两个外键）',
+    );
+    db2.close();
+  } finally {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch {
+      // Windows 下 WAL 句柄释放可能滞后，删不掉就留给系统临时目录清理
+    }
+  }
+});
+
+/**
  * today_recommendations 的主键是 (user_id, problem_id)，problem_id 是 NOT NULL 外键且无 ON DELETE：
  * 斜杠行被「今日训练」推荐过时，合并里的 DELETE FROM problems 会抛外键错 → 迁移整体回滚 →
  * createDb 抛错，应用再也打不开（与上面卡点那条完全同款，只是漏了这张表）。

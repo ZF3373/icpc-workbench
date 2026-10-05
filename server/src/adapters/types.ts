@@ -88,6 +88,14 @@ export interface FetchOptions {
    */
   truncated?: boolean;
   /**
+   * 【适配器 → 同步层 回传】本批**实际扫描到**的最后一行时刻（ISO8601 UTC，升序平台专用）。
+   * 页预算耗尽却一行都没取到（扫描区间内全是已入库行）时回传：同步层据此把 last_sync_at
+   * 停在扫描点，而不是推进到「当前时刻」——否则 (扫描点, now) 之间还没扫到的提交会被
+   * 下一次的 12h 回看窗口漏掉，成为永久空洞（只置 truncated 而不回传本字段时同步层只能丢弃
+   * 这个位置信息）。
+   */
+  scannedUntil?: string;
+  /**
    * 补全续拉游标（同步层注入：platform_accounts.backfill_page）。
    * 页码型平台（洛谷/牛客/力扣/代码源）补全时从该页续拉更早历史，避免从头重扫已知页；
    * 缺省/1 表示从最新页开始。CF 用 from 偏移、AtCoder 用 since（升序续拉），不读此字段。
@@ -124,7 +132,12 @@ export interface FetchOptions {
 export interface PlatformAdapter {
   readonly platform: PlatformId;
 
-  /** 声明支持 knownExternalIds 提前终止（同步层才会注入该参数） */
+  /**
+   * 声明支持 knownExternalIds 过滤（同步层才会注入该参数）。
+   * 降序平台（CF/洛谷/牛客）用于「整页已知即提前终止」的真实增量；
+   * AtCoder（升序）只用于跳过已入库行、不占单次上限预算（回看窗口重扫的旧行计入预算
+   * 会让游标停滞），不做整页提前终止——升序扫描必须走到头才能发现新行。
+   */
   readonly knownIdsFilter?: boolean;
 
   /**

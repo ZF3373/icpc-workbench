@@ -2948,6 +2948,32 @@ button.dist-row:hover {
   padding-top: 4px !important;
 }
 
+/* AI 模型提供商折叠面板：每提供商一个独立圆角面板（与平台账号面板同风格） */
+.provider-collapse.ant-collapse {
+  border: none;
+  background: transparent;
+}
+.provider-collapse .ant-collapse-item {
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  margin-bottom: 12px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+.provider-collapse .ant-collapse-item:last-child {
+  margin-bottom: 0;
+}
+.provider-collapse .ant-collapse-item:hover {
+  border-color: rgba(134, 168, 255, 0.28);
+}
+.provider-collapse .ant-collapse-header {
+  align-items: center !important;
+}
+.provider-collapse .ant-collapse-content-box {
+  padding-top: 4px !important;
+}
+
 .adapter-label {
   font-size: 12px;
   color: var(--text-3);
@@ -4041,82 +4067,9 @@ button.dist-row:hover {
 }
 
 /* ============================================================
-   设置页分区导航（P4-1 / P3）
-   <1280px：页头下方吸顶横排（现状）；≥1280px：换成左侧竖排，内容区在右。
-   为什么宽度切换走 JS（useMediaQuery(BP.xlUp)）而不是纯 CSS：Segmented 的
-   横/竖是 antd 的 DOM 结构差异（竖排有独立的滑动指示块定位），CSS 改不动，
-   硬掰会得到一个滑块错位的伪竖排。DOM 仍只有一份，不存在重复 Tab 停靠点。
+   设置页：分区导航与设置项搜索均已移除——分区就五个、页面两列铺开，
+   跳转列表/搜索用不上还占地方；卡片锚点 id 保留（外部深链仍可用）。
    ============================================================ */
-
-.settings-nav {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  background: var(--bg);
-  border-bottom: 1px solid var(--line-soft);
-  padding: 8px 0;
-  margin-bottom: 16px;
-}
-
-.settings-nav-inner {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  width: fit-content;
-  max-width: 100%;
-}
-
-.settings-nav-seg {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow-x: auto;
-}
-
-.settings-nav-search {
-  position: relative;
-  flex: 1 1 200px;
-}
-
-@media (min-width: 1280px) {
-  .settings-shell {
-    display: grid;
-    grid-template-columns: 220px minmax(0, 1fr);
-    column-gap: 20px;
-    align-items: start;
-  }
-
-  /* 左侧栏自己吸顶：内容滚到哪，导航都留在视野里 */
-  .settings-nav {
-    top: 12px;
-    padding: 0;
-    margin-bottom: 0;
-    background: transparent;
-    border-bottom: none;
-  }
-
-  .settings-nav-inner {
-    flex-direction: column;
-    align-items: stretch;
-    width: 100%;
-  }
-
-  /* 竖排后不再需要横向滚动容器（否则会裁掉 Segmented 的滑块） */
-  .settings-nav-seg {
-    flex: 0 0 auto;
-    overflow: visible;
-  }
-
-  .settings-nav-search {
-    flex: 0 0 auto;
-    /* 顺序：搜索在上、分区列表在下，右栏内容与右边界对齐 */
-    order: -1;
-  }
-
-  .settings-body {
-    min-width: 0;
-  }
-}
 
 /* ============================================================
    键盘排序控件（拖拽的无障碍替代）

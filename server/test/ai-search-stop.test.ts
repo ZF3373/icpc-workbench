@@ -220,3 +220,67 @@ test('未闭合 DSML 残片（截断在参数中间）：DSML 噪音不出现在
     db.close();
   }
 });
+
+test('工具轮次中点「停止」：在途轮次被取消，不再发起后续轮次（回归）', async () => {
+  // 旧实现的缺口：abortController.signal 只传给了第一轮 chatStream；工具往返循环内的
+  // 后续轮次既不传 signal 也不检查 aborted —— 用户在第 2 轮生成途中点「停止」，
+  // 剩余轮次的生成与工具调用照常跑完（最多再烧 4 轮 + 工具），写入死连接。
+  let call = 0;
+  let upstreamAborted = false;
+  const { db, app } = makeApp(
+    CFG,
+    (async (_url: string, init: RequestInit) => {
+      call += 1;
+      if (call === 1) return nativeToolCallStream(); // 第一轮：发起 web_search
+      // 后续轮：按上游 OpenAI 流式格式先推一帧 content delta 证明在途，然后挂住直到被中断
+      const encoder = new TextEncoder();
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: '部分回复' } }] })}\n\n`),
+            );
+            init.signal?.addEventListener('abort', () => {
+              upstreamAborted = true;
+              controller.error(new DOMException('Aborted', 'AbortError'));
+            });
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof fetch,
+  );
+  const srv = await listenForTest(app);
+  try {
+    const port = (srv.address() as AddressInfo).port;
+    const ac = new AbortController();
+    const res = await fetch(`http://127.0.0.1:${port}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: '帮我查一下最近的比赛' }] }),
+      signal: ac.signal,
+    });
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    // 读到第一帧 delta：此刻第 2 轮（工具轮次）的上游流已在途
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (decoder.decode(value).includes('"delta"')) break;
+    }
+    assert.equal(call, 2, '读到第 2 轮 delta 时上游应共被调 2 次');
+    ac.abort(); // 用户点「停止生成」
+    // 客户端侧直接放弃响应流（abort 后再 read 会 reject，断言服务端状态即可）
+    await reader.cancel().catch(() => {});
+
+    // 给服务端一小段时间处理中断：修复后 abort → 在途上游请求立即取消 →
+    // 循环退出、不再发起后续轮次。旧实现：循环内的流没挂 signal 也无 aborted 检查，
+    // 上游继续挂着，后续轮次照常发起（烧配额）。
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.ok(upstreamAborted, '在途的上游请求应被取消');
+    assert.equal(call, 2, '中止后不得发起第 3 轮上游调用');
+  } finally {
+    srv.close();
+    db.close();
+  }
+});

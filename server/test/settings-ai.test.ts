@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { createDb, type Db } from '../src/db/index.ts';
 import { settingsRoutes } from '../src/routes/settings.ts';
 import { DEFAULT_CONFIG } from '../src/config.ts';
-import { saveAiConfig } from '../src/config.ts';
+import { aiConfigFromDb, saveAiConfig } from '../src/config.ts';
 
 /** mock OpenAI 兼容上游：可配置是否提供 /models、是否校验 Bearer key */
 interface Upstream {
@@ -227,4 +227,388 @@ test('POST /ai/test reports failure for unreachable host and invalid baseURL', a
     assert.equal(badBody.ok, false);
     assert.match(badBody.message, /http\(s\)/);
   });
+});
+
+// ---------- 多提供商（providers 批量保存 / 密钥合并 / 活跃切换） ----------
+
+interface ProviderView {
+  id: string;
+  name: string;
+  baseURL: string;
+  model: string;
+  hasApiKey: boolean;
+  apiKeyMasked: string;
+  maxTokens?: number;
+  contextWindow?: number;
+  models?: Array<{ id: string; maxTokens?: number; contextWindow?: number }>;
+}
+
+test('旧单配置自动迁移：GET 返回 default 提供商的打码视图，密钥原文不回传', async () => {
+  await withServer(async (db, base) => {
+    const savedEnv = process.env.AI_API_KEY;
+    delete process.env.AI_API_KEY;
+    try {
+      saveAiConfig(db, DEFAULT_CONFIG, { baseURL: 'https://legacy.example/v1', apiKey: 'legacy-key', model: 'legacy-model' });
+      const res = await fetch(base);
+      const body = (await res.json()) as {
+        ai: { activeProviderId?: string; providers?: ProviderView[]; baseURL: string; model: string };
+      };
+      assert.equal(body.ai.activeProviderId, 'default');
+      assert.deepEqual(body.ai.providers, [{
+        id: 'default',
+        name: '默认提供商',
+        baseURL: 'https://legacy.example/v1',
+        model: 'legacy-model',
+        hasApiKey: true,
+        apiKeyMasked: '••••••••',
+      }]);
+      assert.equal(body.ai.baseURL, 'https://legacy.example/v1');
+      assert.doesNotMatch(JSON.stringify(body), /legacy-key/);
+    } finally {
+      if (savedEnv !== undefined) process.env.AI_API_KEY = savedEnv;
+    }
+  });
+});
+
+test('POST /ai 保存提供商列表：密钥缺省保持已存值，非空覆盖，空串清空', async () => {
+  const upstream = await startUpstream({ withModels: true, requireKey: 'kept-key' });
+  await withServer(async (_db, base) => {
+    const postJson = async (body: unknown) =>
+      fetch(`${base}/ai`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    // 第一次保存：两家提供商，第一家带密钥（baseURL 指向 mock 上游，断言密钥真实送达）
+    const r1 = await postJson({
+      providers: [
+        { id: 'p1', name: 'DeepSeek', baseURL: upstream.base, model: 'deepseek-chat', apiKey: 'kept-key' },
+        { id: 'p2', name: 'OpenAI', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+      ],
+      activeProviderId: 'p1',
+    });
+    assert.equal(r1.status, 200);
+    const b1 = (await r1.json()) as { activeProviderId?: string; providers?: ProviderView[] };
+    assert.equal(b1.activeProviderId, 'p1');
+    assert.deepEqual(b1.providers?.map((p) => [p.id, p.hasApiKey]), [['p1', true], ['p2', false]]);
+    assert.doesNotMatch(JSON.stringify(b1), /kept-key/);
+
+    // 第二次保存：p1 不带 apiKey 字段（缺省语义）→ 已存密钥保持有效，可通 requireKey 上游
+    await postJson({
+      providers: [
+        { id: 'p1', name: 'DeepSeek 改名', baseURL: upstream.base, model: 'deepseek-reasoner' },
+        { id: 'p2', name: 'OpenAI', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+      ],
+      activeProviderId: 'p1',
+    });
+    const testRes = await fetch(`${base}/ai/test`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ providerId: 'p1' }),
+    });
+    const testBody = (await testRes.json()) as { ok: boolean; message: string };
+    assert.equal(testBody.ok, true);
+    assert.equal(upstream.requests[0]?.auth, 'Bearer kept-key');
+    // 测试用的是 p1 的最新模型名（mock 上游列表只有 model-a/b，自定义名必然提示不在列表，
+    // 报错文案里带出的正是服务端实际使用的模型 → 反向验证提供商数据流）
+    assert.match(testBody.message, /模型 deepseek-reasoner 不在列表中/);
+
+    // 空串 = 显式清空密钥
+    await postJson({
+      providers: [{ id: 'p1', name: 'DeepSeek 改名', baseURL: upstream.base, model: 'm', apiKey: '' }],
+      activeProviderId: 'p1',
+    });
+    const cleared = await fetch(base);
+    const clearedBody = (await cleared.json()) as { ai: { providers?: ProviderView[] } };
+    assert.equal(clearedBody.ai.providers?.[0]?.hasApiKey, false);
+  });
+  await upstream.close();
+});
+
+test('POST /ai/providers/active 一键切换活跃提供商，AI 请求随之切换', async () => {
+  const upstream = await startUpstream({ withModels: true, requireKey: 'key-b' });
+  await withServer(async (_db, base) => {
+    await fetch(`${base}/ai`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providers: [
+          { id: 'pa', name: 'A', baseURL: 'https://a.example/v1', model: 'ma', apiKey: 'key-a' },
+          { id: 'pb', name: 'B', baseURL: upstream.base, model: 'mb', apiKey: 'key-b' },
+        ],
+        activeProviderId: 'pa',
+      }),
+    });
+    // 切到 B：不带任何字段的 /ai/test 应回退到 B 的已存配置
+    const sw = await fetch(`${base}/ai/providers/active`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'pb' }),
+    });
+    assert.equal(sw.status, 200);
+    const testRes = await fetch(`${base}/ai/test`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const testBody = (await testRes.json()) as { ok: boolean; message: string };
+    assert.equal(testBody.ok, true);
+    assert.equal(upstream.requests[0]?.auth, 'Bearer key-b');
+    assert.match(testBody.message, /模型 mb 不在列表中/);
+
+    // 未知 id → 404
+    const missing = await fetch(`${base}/ai/providers/active`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'nope' }),
+    });
+    assert.equal(missing.status, 404);
+  });
+  await upstream.close();
+});
+
+test('POST /ai 校验提供商条目：坏 baseURL 返回 400 且不落库', async () => {
+  await withServer(async (_db, base) => {
+    const res = await fetch(`${base}/ai`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providers: [{ id: 'p1', name: '坏地址', baseURL: 'api.example.com/v1', model: 'm' }],
+        activeProviderId: 'p1',
+      }),
+    });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { error: string };
+    assert.match(body.error, /http\(s\)/);
+    // 未落库：GET 仍是迁移出的单个默认提供商
+    const get = await fetch(base);
+    const getBody = (await get.json()) as { ai: { providers?: ProviderView[] } };
+    assert.equal(getBody.ai.providers?.length, 1);
+    assert.equal(getBody.ai.providers?.[0]?.id, 'default');
+  });
+});
+
+test('POST /ai 保存提供商的输出/上下文档位；显式 null 清除单独设置', async () => {
+  await withServer(async (_db, base) => {
+    const postJson = async (body: unknown) =>
+      fetch(`${base}/ai`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    await postJson({
+      providers: [
+        { id: 'p1', name: 'A', baseURL: 'https://a.example/v1', model: 'ma', maxTokens: 8192, contextWindow: 131072 },
+        { id: 'p2', name: 'B', baseURL: 'https://b.example/v1', model: 'mb' },
+      ],
+      activeProviderId: 'p1',
+    });
+    let get = await fetch(base);
+    let body = (await get.json()) as {
+      ai: { providers?: ProviderView[]; globalMaxTokens?: number; globalContextWindow?: number; maxTokens?: number };
+    };
+    assert.deepEqual(
+      body.ai.providers?.map((p) => [p.id, p.maxTokens, p.contextWindow]),
+      [['p1', 8192, 131072], ['p2', undefined, undefined]],
+    );
+    // 活跃 p1 → 聚合口径带其档位；全局兜底字段是**不含提供商覆盖**的 config 默认值
+    assert.equal(body.ai.maxTokens, 8192);
+    assert.equal(body.ai.globalMaxTokens, DEFAULT_CONFIG.ai.maxTokens);
+    assert.equal(body.ai.globalContextWindow, DEFAULT_CONFIG.ai.contextWindow);
+
+    // 显式 null = 清除 p1 的单独设置（回退全局）
+    await postJson({
+      providers: [{ id: 'p1', name: 'A', baseURL: 'https://a.example/v1', model: 'ma', maxTokens: null, contextWindow: null }],
+      activeProviderId: 'p1',
+    });
+    get = await fetch(base);
+    body = (await get.json()) as { ai: { providers?: ProviderView[] } };
+    assert.equal(body.ai.providers?.[0]?.maxTokens, undefined);
+    assert.equal(body.ai.providers?.[0]?.contextWindow, undefined);
+  });
+});
+
+test('POST /ai 保存模型目录并原样回读；条目参数随后用于聚合口径', async () => {
+  const upstream = await startUpstream({ withModels: true, requireKey: 'k-catalog' });
+  await withServer(async (_db, base) => {
+    const r1 = await fetch(`${base}/ai`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providers: [{
+          id: 'p1',
+          name: 'A',
+          baseURL: upstream.base,
+          model: 'model-a',
+          apiKey: 'k-catalog',
+          models: [
+            { id: 'model-a', maxTokens: 16384, contextWindow: 131072 },
+            { id: 'model-b' },
+          ],
+        }],
+        activeProviderId: 'p1',
+      }),
+    });
+    assert.equal(r1.status, 200);
+    const b1 = (await r1.json()) as { providers?: ProviderView[] };
+    assert.deepEqual(b1.providers?.[0]?.models, [
+      { id: 'model-a', maxTokens: 16384, contextWindow: 131072 },
+      { id: 'model-b' },
+    ]);
+
+    // 活跃模型 model-a 命中目录条目 → 聚合口径用条目参数（而不是提供商级/全局）
+    const get = await fetch(base);
+    const body = (await get.json()) as { ai: { maxTokens?: number; contextWindow?: number } };
+    assert.equal(body.ai.maxTokens, 16384);
+    assert.equal(body.ai.contextWindow, 131072);
+  });
+  await upstream.close();
+});
+
+test('POST /ai 空串 searchApiKey 不清空已存联网搜索密钥（设置页密码框恒发空串）', async () => {
+  await withServer(async (db, base) => {
+    const postJson = async (body: unknown) =>
+      fetch(`${base}/ai`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    saveAiConfig(db, DEFAULT_CONFIG, { searchApiKey: 'tvly-SECRET-123456' });
+
+    // 客户端 collectSavePayload 的真实形状：搜索密钥框留空 → 恒带空串（旧行为会被当成显式清空）
+    const r1 = await postJson({
+      enabled: true,
+      searchEngine: 'tavily',
+      searchApiKey: '',
+      providers: [{
+        id: 'default', name: '默认提供商', baseURL: 'https://api.deepseek.com/v1',
+        model: 'deepseek-chat', maxTokens: null, contextWindow: null, models: [],
+      }],
+      activeProviderId: 'default',
+      timeoutMs: 120000,
+    });
+    assert.equal(r1.status, 200);
+    assert.equal(((await r1.json()) as { hasSearchApiKey: boolean }).hasSearchApiKey, true, '空串 = 保持已存密钥');
+    assert.equal(aiConfigFromDb(db, DEFAULT_CONFIG).searchApiKey, 'tvly-SECRET-123456');
+
+    // 非空 = 覆盖
+    await postJson({ searchApiKey: 'tvly-NEW-KEY-9999' });
+    assert.equal(aiConfigFromDb(db, DEFAULT_CONFIG).searchApiKey, 'tvly-NEW-KEY-9999');
+    // 纯空白同样不覆盖（密码框可能被敲进空格）
+    await postJson({ searchApiKey: '   ' });
+    assert.equal(aiConfigFromDb(db, DEFAULT_CONFIG).searchApiKey, 'tvly-NEW-KEY-9999');
+    // 不带字段 = 保持
+    const r4 = await postJson({ enabled: false });
+    assert.equal(((await r4.json()) as { hasSearchApiKey: boolean }).hasSearchApiKey, true);
+  });
+});
+
+test('POST /ai 传空 providers 数组 → 400（不再 500 + 同请求全局项静默丢失）', async () => {
+  await withServer(async (db, base) => {
+    saveAiConfig(db, DEFAULT_CONFIG, { apiKey: 'k-old', timeoutMs: 60000 });
+    const res = await fetch(`${base}/ai`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ providers: [], enabled: true, timeoutMs: 90000 }),
+    });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { error: string };
+    assert.match(body.error, /至少需要保留一个提供商/);
+    // 显式失败而不是半截保存：同请求的全局项不落库
+    assert.equal(aiConfigFromDb(db, DEFAULT_CONFIG).timeoutMs, 60000);
+  });
+});
+
+test('缺省 activeProviderId 保持已存活跃项（旧客户端/脚本不传时不静默切回首项）', async () => {
+  await withServer(async (_db, base) => {
+    const postJson = async (body: unknown) =>
+      fetch(`${base}/ai`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const providers = [
+      { id: 'p1', name: 'A', baseURL: 'https://a.example/v1', model: 'ma', apiKey: 'k1' },
+      { id: 'p2', name: 'B', baseURL: 'https://b.example/v1', model: 'mb', apiKey: 'k2' },
+    ];
+    await postJson({ providers, activeProviderId: 'p2' });
+    // 再保存一次（不带 activeProviderId）：活跃项保持不变
+    await postJson({ providers: providers.map(({ apiKey: _k, ...p }) => p) });
+    const view = (await (await fetch(base)).json()) as { ai: { activeProviderId?: string } };
+    assert.equal(view.ai.activeProviderId, 'p2');
+  });
+});
+
+test('环境变量 AI_API_KEY 生效时下发 apiKeyFromEnv，且不把它写成提供商密钥（回归）', async () => {
+  const savedEnv = process.env.AI_API_KEY;
+  process.env.AI_API_KEY = 'env-secret-key-1234';
+  try {
+    await withServer(async (db, base) => {
+      const view = (await (await fetch(base)).json()) as {
+        ai: { apiKeyFromEnv?: boolean; hasApiKey?: boolean; providers?: ProviderView[] };
+      };
+      assert.equal(view.ai.apiKeyFromEnv, true, '前端据此显示「密钥来自环境变量」而不是红标未配密钥');
+      assert.equal(view.ai.providers?.[0]?.hasApiKey, false, '提供商自己没有存密钥（env 不落库）');
+      // 按客户端形状保存（不下发 apiKey 字段）→ env 不会被写进 settings
+      const res = await fetch(`${base}/ai`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          providers: [{
+            id: 'default', name: '默认提供商', baseURL: 'https://api.deepseek.com/v1',
+            model: 'deepseek-chat', maxTokens: null, contextWindow: null, models: [],
+          }],
+          activeProviderId: 'default',
+        }),
+      });
+      assert.equal(res.status, 200);
+      const raw = (db.prepare("SELECT value FROM settings WHERE key = 'ai.providers'").get() as { value: string } | undefined)?.value ?? '';
+      assert.doesNotMatch(raw, /env-secret/, 'env 密钥绝不落库');
+    });
+  } finally {
+    if (savedEnv === undefined) delete process.env.AI_API_KEY;
+    else process.env.AI_API_KEY = savedEnv;
+  }
+});
+
+test('POST /ai/models 下发网关返回的真实参数档位（OpenRouter 风格 caps）', async () => {
+  const srv = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      if (req.url?.endsWith('/models')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          data: [
+            { id: 'openai/gpt-4o-mini', context_length: 128000, top_provider: { max_completion_tokens: 16384 } },
+            { id: 'plain-model' },
+            { id: 'ctx-only', context_length: 32768 },
+          ],
+        }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+  });
+  srv.listen(0);
+  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  await withServer(async (_db, base) => {
+    const res = await fetch(`${base}/ai/models`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ baseURL: `http://127.0.0.1:${(srv.address() as AddressInfo).port}/v1` }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      models: string[];
+      caps?: Record<string, { maxTokens?: number; contextWindow?: number }>;
+    };
+    assert.deepEqual(body.models, ['ctx-only', 'openai/gpt-4o-mini', 'plain-model']);
+    assert.deepEqual(body.caps?.['openai/gpt-4o-mini'], { maxTokens: 16384, contextWindow: 128000 });
+    assert.deepEqual(body.caps?.['ctx-only'], { contextWindow: 32768 });
+    assert.equal(body.caps?.['plain-model'], undefined);
+  });
+  await new Promise<void>((resolve) => srv.close(() => resolve()));
 });

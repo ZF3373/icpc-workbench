@@ -597,6 +597,15 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
          AND NOT EXISTS (SELECT 1 FROM review_items r WHERE r.user_id = review_items.user_id AND r.problem_id = ?)`,
     );
     const delReviews = db.prepare('DELETE FROM review_items WHERE problem_id = ?');
+    // review_events 两个外键都无级联（review_item_id / problem_id）：与 problemMerge 同款——
+    // 搬移条目的反馈历史对齐保留行、丢弃条目的反馈历史随之删除。漏了它们，含复习历史的
+    // 重复行会让整个去重事务因外键失败 500 回滚
+    const updReviewEvents = db.prepare(
+      `UPDATE review_events SET problem_id = ?
+        WHERE problem_id = ?
+          AND review_item_id IN (SELECT id FROM review_items WHERE problem_id = ?)`,
+    );
+    const delReviewEvents = db.prepare('DELETE FROM review_events WHERE problem_id = ?');
     const delKeypoints = db.prepare('DELETE FROM problem_keypoints WHERE platform = ? AND problem_key = ?');
     const delKnowledgeQueue = db.prepare('DELETE FROM knowledge_queue WHERE platform = ? AND problem_key = ?');
     const updListItems = db.prepare(
@@ -623,6 +632,8 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
           delRecos.run(dup.id);
           // 复习条目 (user_id, problem_id) 唯一：保留行已有同一用户的复习条目时丢弃重复行的
           updReviews.run(g.keep.id, dup.id, g.keep.id);
+          updReviewEvents.run(g.keep.id, dup.id, g.keep.id);
+          delReviewEvents.run(dup.id);
           delReviews.run(dup.id);
           delKeypoints.run(g.platform, dup.problemKey);
           delKnowledgeQueue.run(g.platform, dup.problemKey);

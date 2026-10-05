@@ -458,6 +458,10 @@ export class AiProvider {
     const connectController = new AbortController();
     const onCallerAbort = () => connectController.abort();
     opts.signal?.addEventListener('abort', onCallerAbort, { once: true });
+    // 调用方 signal 在进入本函数前就已 abort（例如「停止」恰好落在工具执行期间，路由在工具
+    // 之后才发起本轮）：addEventListener 对已 abort 的信号不会再触发，必须就地取消，否则这一轮
+    // 请求照发（回归「停止后不再发起新轮次」）。防御所有调用方，不只当前路由。
+    if (opts.signal?.aborted) connectController.abort();
     const connectTimer = setTimeout(
       () => connectController.abort(new DOMException(`AI 连接超时（${Math.ceil(timeoutMs / 1000)}s 内未收到响应头）`, 'TimeoutError')),
       timeoutMs,

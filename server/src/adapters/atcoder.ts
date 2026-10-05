@@ -103,6 +103,9 @@ export function createAtcoderAdapter(
 
   return {
     platform: 'atcoder',
+    // 同步层据此注入 knownExternalIds：升序平台回看窗口重扫的已入库行据此跳过、
+    // 不占单次上限预算（见 fetchUserSubmissions 行循环）；不做「整页已知提前终止」
+    knownIdsFilter: true,
 
     async fetchUserSubmissions(
       handle: string,
@@ -134,18 +137,35 @@ export function createAtcoderAdapter(
        * 开始、按 **id 升序**连续截取 500 行。`from_second` 是「从哪一秒开始」的下界，
        * **没有按行数偏移的能力**（同一 from_second 的重复请求返回同一个窗口）。
        *
-       * 游标按「本窗末行的秒 + 1」推进（旧实现也是这个思路，方向没错）：窗口是连续 500 行，
-       * 末行之后的提交都在更晚的秒上，因此这是唯一能持续前进的推法。
-       * 已知边界：若某一秒的提交数本身 ≥ 一整个窗口（>500，需连续刷题脚本才可能出现），
-       * 上游对该秒只会反复给出同一窗、无法取回该秒排不进窗口的行。这种极端形态无法在
-       * 适配器层解决；同步层的**回看窗口**（见 sync.ts 的 ASCENDING_SYNC_LOOKBACK_MS）
-       * 保证它不会连带把更晚的提交一起挡掉。
+       * 游标按「本窗末行的秒 + 1」推进：窗口是连续 500 行，但末行之后**可能仍有同秒行**——
+       * 因此触及单次上限砍批时，必须把「砍点那一秒」的行**整秒收下**（见下方行循环）；
+       * 页边界（窗口恰好切在同一秒中间）则靠「退回该秒重拉一次」补齐（见页尾推进逻辑）。
+       * 唯一无法在适配器层解决的形态：**某一秒自身的提交数 ≥ 一整个窗口（≥500 行）**时，
+       * 上游对同一 from_second 只会反复给出同一窗，该秒排不进窗口的行取不回来（此时如实置
+       * truncated）。这种形态需要连续刷题脚本才可能出现；同步层的**回看窗口**
+       * （见 sync.ts 的 ASCENDING_SYNC_LOOKBACK_MS）保证它不会连带把更晚的提交一起挡掉。
        */
       const seen = new Set<string>();
+      // 同步层注入的「库中已有提交号」（knownIdsFilter 声明后由 sync.ts 注入）：
+      // 回看窗口重扫到的已入库行据此跳过，且**不占单次上限预算**——旧行若计入预算，
+      // 回看窗口内提交较多时（比赛周末 ≥300 条/12h）预算被吃满，砍批后游标停在原处
+      // 甚至倒退，新提交永远同步不进来（2026-10 排查到的「增量同步又拉不到最新提交」）。
+      // 注意不做「整页已知即提前终止」：升序扫描必须走到头才能发现新行。
+      //
+      // 例外（**必须重发**，见 types.ts 的 FetchOptions 契约）：平台侧**改判**（提交时还在
+      // 评测队列 WJ/WR → 现在 AC/WA）或改题号的已知行。这类行若一并跳过，就再也不会进写入层，
+      // importService 的 refreshVerdict 无法刷新库里冻结的旧判定 ——「评测中」入库的行会永久
+      // 停在 SKIPPED（能力值/统计/已做判定全错，且无自愈路径）。改判行数量极少，照常计入上限
+      // 预算即可：判定没被刷新前它每轮都满足改判条件，不会被静默丢掉。
+      const known = opts?.knownExternalIds;
+      const knownVerdicts = opts?.knownVerdicts;
+      const knownProblemKeys = opts?.knownProblemKeys;
       const raws: KenkoooSubmission[] = [];
       let pageFrom = since;
       let naturalEnd = false; // 已到最新一条（空页 / 短页）
       let rowCapped = false; // 触及单次上限
+      let lastScannedSecond: number | undefined; // 本批已扫描到的最后一行时刻（秒）
+      let retriedSecond: number | undefined; // 已按「页边界同秒」退回重拉过的秒
 
       for (let page = 0; page < budget; page += 1) {
         // 官方要求页间访问间隔 >= 1s：只在「真的还要再发一次请求」前等待
@@ -165,14 +185,28 @@ export function createAtcoderAdapter(
           naturalEnd = true;
           break;
         }
+        lastScannedSecond = rows[rows.length - 1]!.epoch_second;
 
         for (const s of rows) {
-          if (seen.has(String(s.id))) continue;
-          if (maxSubmissions && raws.length >= maxSubmissions) {
-            rowCapped = true;
-            break;
+          const id = String(s.id);
+          if (seen.has(id)) continue;
+          if (known?.has(id)) {
+            // 已入库行：默认跳过；但平台侧改判 / 改题号的行必须重发（见上方说明）
+            const storedVerdict = knownVerdicts?.get(id);
+            const verdictChanged = storedVerdict !== undefined && storedVerdict !== (RESULT_MAP[s.result] ?? 'SKIPPED');
+            const storedKey = knownProblemKeys?.get(id);
+            const keyChanged = storedKey !== undefined && storedKey !== s.problem_id;
+            if (!verdictChanged && !keyChanged) continue;
           }
-          seen.add(String(s.id));
+          if (maxSubmissions && raws.length >= maxSubmissions) {
+            // 上限落在某一秒中间：该秒剩下的行继续收下（略微超过上限也在所不惜）再砍——
+            // 游标按「本窗末行秒 + 1」推进，只收半秒就会把同秒后半段永久跳过
+            if (s.epoch_second > raws[raws.length - 1]!.epoch_second) {
+              rowCapped = true;
+              break;
+            }
+          }
+          seen.add(id);
           raws.push(s);
         }
         if (rowCapped) break;
@@ -181,36 +215,56 @@ export function createAtcoderAdapter(
           naturalEnd = true;
           break;
         }
-        pageFrom = Math.max(rows[rows.length - 1]!.epoch_second + 1, pageFrom + 1);
+        /**
+         * 页边界推进：上游无「按行偏移」能力，游标只能按秒前进（末行秒 + 1）。若末行所在的
+         * **同一秒**还有行排在窗口外（该秒被 500 行窗口切开），直接 +1 续拉会把它们永久跳过，
+         * 且 truncated 不置位（同步中心仍显示成功）。先退回该秒重拉一次：窗口会从该秒的**首行**
+         * 开始，之前落在窗外的同秒行这次就在窗内（重复行由 seen 去重，已入库行由 known 跳过）。
+         */
+        const lastRow = rows[rows.length - 1]!;
+        if (rows[rows.length - 2]?.epoch_second === lastRow.epoch_second) {
+          if (retriedSecond !== lastRow.epoch_second) {
+            retriedSecond = lastRow.epoch_second;
+            pageFrom = lastRow.epoch_second;
+            continue;
+          }
+          // 该秒自身就有 ≥500 行：同一 from_second 只会反复给出同一窗，剩余行取不回来。
+          // 适配器层无法解决，但必须如实上报截断（不能让同步层谎报「已同步到最新」）
+          if (opts) opts.truncated = true;
+        }
+        pageFrom = Math.max(lastRow.epoch_second + 1, pageFrom + 1);
       }
 
       if (raws.length === 0) {
         // 预算耗尽却一无所获（异常上游行为）：不能谎报「已同步到最新」——
         // 必须让同步层把 last_sync_at 留在原处，否则这段时间的提交会被永久跳过。
-        if (!naturalEnd && opts) opts.truncated = true;
+        // 同时回报「已扫到的位置」：增量模式下扫描区间内可能**全是已入库行**（回看窗口的
+        // 常规形态），此时同步层若把 last_sync_at 推到当前时刻，(扫描点, now) 之间还没扫到的
+        // 提交就会被下一次的 12h 回看窗口漏掉 —— 停在扫描点则下轮从扫描点前 12h 重扫，不会丢。
+        if (!naturalEnd && opts) {
+          opts.truncated = true;
+          if (lastScannedSecond !== undefined) {
+            opts.scannedUntil = new Date(lastScannedSecond * 1000).toISOString();
+          }
+        }
         return [];
       }
 
       /**
        * 按提交时间（同秒再按 id）升序输出：AtCoder 的续拉语义要求升序（见 sync.ts 的 isAscendingPlatform）。
        *
-       * 被单次上限砍掉时，把「砍点那一秒」的行**全部收下**（允许略微超过上限几十条）：
+       * 「砍点那一秒整秒收下」已在行循环内完成（触及上限时同秒行继续收下，允许略超上限）：
        * 同步层把续拉光标设为**本批最新一条提交的时刻**，光标因此正好停在砍点那一秒，
-       * 下一轮从该秒重拉会补齐它、并靠唯一键去重。切忌只收该秒的前半段就把光标推过去 ——
+       * 下一轮从该秒重拉会补齐缺口——重拉行由 knownExternalIds 跳过（不占上限预算），
+       * 唯一键去重兜底。切忌只收该秒的前半段就把光标推过去——
        * 那会把「上限正好落在某个秒中间」变成永久丢数据。
        */
-      let out: KenkoooSubmission[] = raws;
-      if (rowCapped && raws.length > (maxSubmissions ?? 0)) {
-        const head = raws.slice(0, maxSubmissions);
-        const boundarySecond = head[head.length - 1]!.epoch_second;
-        out = raws.filter((s) => s.epoch_second <= boundarySecond);
-      }
-      out.sort((a, b) => a.epoch_second - b.epoch_second || a.id - b.id);
+      raws.sort((a, b) => a.epoch_second - b.epoch_second || a.id - b.id);
       const truncated = rowCapped || !naturalEnd;
       if (truncated && opts) opts.truncated = true;
 
       await ensureMaps();
-      return out.map((s) =>
+      return raws.map((s) =>
         normalize(s, problems ?? new Map(), models ?? new Map()),
       );
     },

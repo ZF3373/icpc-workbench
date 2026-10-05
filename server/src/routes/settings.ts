@@ -9,7 +9,17 @@ import {
   cookieOnlyFieldsOf,
   mergeCookieFields,
 } from '../../../shared/src/index.ts';
-import { aiConfigFromDb, saveAiConfig, type AiConfig, type AppConfig } from '../config.ts';
+import {
+  aiConfigFromDb,
+  saveAiConfig,
+  readAiProviders,
+  activeProviderIdOf,
+  saveAiProviders,
+  globalAiTuning,
+  type AiConfig,
+  type AppConfig,
+} from '../config.ts';
+import type { AiProviderConfig, AiProviderView } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
@@ -144,17 +154,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
 
   // GET /api/settings → AI 配置 + 平台账号 + 适配器开关 + Cookie 配置 + 打卡提醒
   r.get('/', (_req, res) => {
-    const savedAi = aiConfigFromDb(db, config);
-    // 秘密原文只用于服务端请求上游，不回传给 WebView/浏览器；只回传打码版供界面回显。
-    const ai = {
-      ...savedAi,
-      apiKey: '',
-      searchApiKey: '',
-      apiKeyMasked: maskSecret(savedAi.apiKey),
-      searchApiKeyMasked: maskSecret(savedAi.searchApiKey),
-      hasApiKey: Boolean(savedAi.apiKey),
-      hasSearchApiKey: Boolean(savedAi.searchApiKey),
-    };
+    const { ai } = aiSettingsView(db, config);
     const accounts = db
       .prepare(
         'SELECT platform, handle, last_sync_at, enabled FROM platform_accounts WHERE user_id = ?',
@@ -445,35 +445,97 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     res.json(result);
   }));
 
-  // POST /api/settings/ai  body: { enabled?, baseURL?, apiKey?, model?, timeoutMs?, maxTokens?, contextWindow?, searchEngine?, searchApiKey? }
+  // POST /api/settings/ai
+  // body: { enabled?, timeoutMs?, maxTokens?, contextWindow?, searchEngine?, searchApiKey?,
+  //         providers?: [{ id, name, baseURL, model, apiKey? }], activeProviderId? }
+  // providers 传了就整表覆盖保存（多提供商，空数组 = 400 而非半保存）；其中 apiKey 字段
+  // **缺省 = 保持该 id 已存密钥**、空串/非空 = 清空/覆盖（与旧版单密钥「留空保持不变」同款
+  // 语义——前端不回传密钥原文，未改动的密钥必须靠缺省语义保住，否则每次保存都会抹掉已有密钥）。
+  // activeProviderId 缺省 = 保持已存活跃项（不重置为首项）。
+  // searchApiKey 与密钥框同款语义：**空串/空白 = 保持已存值**。设置页的搜索密钥框是
+  // 「密码框留空 = 不修改」，每次保存都会原样带上空串，服务端若当成显式清空就会把用户
+  // 已配置的联网搜索密钥静默抹掉（界面还写着「留空保持不变」）。要清空请传非空白值后的
+  // 显式覆盖，或直接改库——当前没有任何 UI 需要「清空」这个动作。
+  // 旧版单提供商的顶层 baseURL/apiKey/model 字段不再接受：读取侧只认 ai.providers
+  // （无则自动从遗留键迁移，见 readAiProviders），写入侧沿用只会造成两套存储口径漂移。
   r.post('/ai', (req, res) => {
     const b = req.body ?? {};
+    if (Array.isArray(b.providers)) {
+      if (b.providers.length === 0) {
+        // 显式 400：saveAiProviders 会抛错（→ 500 且同请求的全局项一并丢失），
+        // 也避免调用方以为「清空列表」被接受了
+        return res.status(400).json({ error: '至少需要保留一个提供商（不想用 AI 可关掉「启用 AI 生成」开关）' });
+      }
+      const stored = readAiProviders(db, config);
+      const drafts: AiProviderConfig[] = [];
+      for (const item of b.providers) {
+        if (typeof item !== 'object' || item === null) continue;
+        const o = item as Record<string, unknown>;
+        const id = typeof o.id === 'string' ? o.id.trim() : '';
+        const name = typeof o.name === 'string' ? o.name.trim() : '';
+        const baseURL = typeof o.baseURL === 'string' ? o.baseURL.trim() : '';
+        const model = typeof o.model === 'string' ? o.model.trim() : '';
+        if (!id) return res.status(400).json({ error: 'providers[].id 必填' });
+        if (!name) return res.status(400).json({ error: `提供商 ${id} 缺少名称` });
+        if (!/^https?:\/\//.test(baseURL)) {
+          return res.status(400).json({ error: `提供商「${name}」的 Base URL 需为 http(s) 地址，当前：${baseURL || '（空）'}` });
+        }
+        const prev = stored.find((p) => p.id === id);
+        const apiKey = typeof o.apiKey === 'string' ? o.apiKey.trim() : (prev?.apiKey ?? '');
+        // 输出/上下文档位透传（正数才收，见 sanitizeProviders）；字段缺省 = 保持已存值，
+        // 显式 null/0 = 清除该覆盖（回退全局默认）
+        const mt = o.maxTokens === undefined ? prev?.maxTokens : Number(o.maxTokens);
+        const cw = o.contextWindow === undefined ? prev?.contextWindow : Number(o.contextWindow);
+        // 模型目录：客户端整表覆盖语义（目录无秘密，总是全量发送）；非数组 = 保持已存目录
+        const models = Array.isArray(o.models) ? o.models : prev?.models;
+        drafts.push({
+          id,
+          name,
+          baseURL,
+          model,
+          apiKey,
+          ...(mt !== undefined && Number.isFinite(mt) && mt > 0 ? { maxTokens: mt } : {}),
+          ...(cw !== undefined && Number.isFinite(cw) && cw > 0 ? { contextWindow: cw } : {}),
+          ...(models !== undefined ? { models } : {}),
+        });
+      }
+      saveAiProviders(
+        db,
+        drafts,
+        // 缺省 = 保持已存活跃项（旧客户端/脚本不传该字段时不该被静默切回首项）
+        typeof b.activeProviderId === 'string' ? b.activeProviderId.trim() : undefined,
+      );
+    }
     saveAiConfig(db, config, {
       enabled: typeof b.enabled === 'boolean' ? b.enabled : undefined,
-      baseURL: typeof b.baseURL === 'string' ? b.baseURL : undefined,
-      apiKey: typeof b.apiKey === 'string' ? b.apiKey : undefined,
-      model: typeof b.model === 'string' ? b.model : undefined,
       ...(typeof b.timeoutMs === 'number' && b.timeoutMs > 0 ? { timeoutMs: b.timeoutMs } : {}),
       ...(typeof b.maxTokens === 'number' && b.maxTokens > 0 ? { maxTokens: b.maxTokens } : {}),
       ...(typeof b.contextWindow === 'number' && b.contextWindow > 0 ? { contextWindow: b.contextWindow } : {}),
       ...(b.searchEngine === 'tavily' || b.searchEngine === 'brave' ? { searchEngine: b.searchEngine } : {}),
-      ...(typeof b.searchApiKey === 'string' ? { searchApiKey: b.searchApiKey } : {}),
+      // 空串/空白 = 保持已存搜索密钥（密码框「留空保持不变」语义，见路由头注）
+      ...(typeof b.searchApiKey === 'string' && b.searchApiKey.trim() !== '' ? { searchApiKey: b.searchApiKey } : {}),
     });
     // 与 GET 一致：保存后的响应同样不回传秘密原文，只回传打码版。
-    const saved = aiConfigFromDb(db, config);
-    res.json({
-      ...saved,
-      apiKey: '',
-      searchApiKey: '',
-      apiKeyMasked: maskSecret(saved.apiKey),
-      searchApiKeyMasked: maskSecret(saved.searchApiKey),
-      hasApiKey: Boolean(saved.apiKey),
-      hasSearchApiKey: Boolean(saved.searchApiKey),
-    });
+    res.json(aiSettingsView(db, config).ai);
   });
 
-  // POST /api/settings/ai/test  body: { baseURL?, apiKey?, model? }
-  // 连接测试：body 值优先（支持先测后存），缺省回退已保存配置。首选免费快速的 GET /models；
+  // POST /api/settings/ai/providers/active  body: { id }
+  // 一键切换当前使用的提供商（不涉及密钥/列表改写，AI 请求即刻按新提供商的 baseURL/key/model 走）。
+  r.post('/ai/providers/active', (req, res) => {
+    const id = typeof (req.body ?? {}).id === 'string' ? req.body.id.trim() : '';
+    const providers = readAiProviders(db, config);
+    if (!providers.some((p) => p.id === id)) {
+      return res.status(404).json({ error: `提供商不存在: ${id || '（空）'}` });
+    }
+    db.prepare(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    ).run('ai.activeProvider', id);
+    res.json({ ok: true, activeProviderId: id });
+  });
+
+  // POST /api/settings/ai/test  body: { providerId?, baseURL?, apiKey?, model? }
+  // 连接测试：body 值优先（支持先测后存），缺省回退已保存配置（providerId 指向已存提供商时
+  // 以该提供商为基底，见 effectiveAiConfig）。首选免费快速的 GET /models；
   // 部分兼容网关不实现该端点 → 退化用 1 token 的 chat/completions 真实验证。
   r.post('/ai/test', asyncHandler(async (req, res) => {
     const cfg = effectiveAiConfig(db, config, req.body ?? {});
@@ -483,7 +545,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     const started = Date.now();
     let models: string[] = [];
     try {
-      models = await fetchModelIds(cfg.baseURL, cfg.apiKey);
+      models = (await fetchModelCatalog(cfg.baseURL, cfg.apiKey)).ids;
     } catch (modelsErr) {
       try {
         await probeChat(cfg);
@@ -510,7 +572,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     });
   }));
 
-  // POST /api/settings/ai/models  body: { baseURL?, apiKey? }
+  // POST /api/settings/ai/models  body: { providerId?, baseURL?, apiKey? }
   // 一键获取可用模型列表（OpenAI GET /models，兼容 data[].id / models[].name 等变体）
   r.post('/ai/models', asyncHandler(async (req, res) => {
     const cfg = effectiveAiConfig(db, config, req.body ?? {});
@@ -518,7 +580,9 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       return res.status(400).json({ error: `Base URL 需为 http(s) 地址，当前：${cfg.baseURL || '（空）'}` });
     }
     try {
-      res.json({ models: await fetchModelIds(cfg.baseURL, cfg.apiKey) });
+      const { ids, caps } = await fetchModelCatalog(cfg.baseURL, cfg.apiKey);
+      // caps 仅在网关确实返回了参数档位时下发（旧断言/旧客户端按 { models } 口径兼容）
+      res.json({ models: ids, ...(Object.keys(caps).length > 0 ? { caps } : {}) });
     } catch (e) {
       res.status(502).json({ error: `获取模型列表失败：${(e as Error).message}` });
     }
@@ -747,22 +811,88 @@ function isPlatform(p: unknown): p is PlatformId {
   return typeof p === 'string' && PLATFORMS.some((x) => x.id === p);
 }
 
+// ---------- AI 配置回传视图（GET / 与 POST /ai 共用） ----------
+
+/** 单个提供商的前端视图：剥离密钥原文，只带打码版供「已配置 xxx」回显。 */
+function providerView(p: AiProviderConfig): AiProviderView {
+  return {
+    id: p.id,
+    name: p.name,
+    baseURL: p.baseURL,
+    model: p.model,
+    hasApiKey: Boolean(p.apiKey),
+    apiKeyMasked: maskSecret(p.apiKey),
+    ...(p.maxTokens !== undefined ? { maxTokens: p.maxTokens } : {}),
+    ...(p.contextWindow !== undefined ? { contextWindow: p.contextWindow } : {}),
+    // 模型目录无秘密，原样下发（净化口径在 sanitizeProviders 已保证）
+    ...(p.models !== undefined ? { models: p.models } : {}),
+  };
+}
+
+/**
+ * 组装回传给前端的 `ai` 配置块：全局项 + 活跃提供商聚合值 + 打码后的提供商列表。
+ * 秘密原文只用于服务端请求上游，绝不回传给 WebView/浏览器。
+ * globalMaxTokens/globalContextWindow 是**不含提供商覆盖**的全局兜底档位，供前端
+ * 在提供商参数留空时显示「留空 = 跟随全局默认 xxx」。
+ * apiKeyFromEnv：环境变量 AI_API_KEY 生效中（它是**全局运行时覆盖**，任何提供商的请求都会
+ * 用它）。它不落库，所以提供商卡片自己的 hasApiKey 可能仍是 false —— 前端据此显示
+ * 「密钥来自环境变量」而不是红标「未配密钥」，避免把「其实能用」误报成没配。
+ */
+function aiSettingsView(db: Db, config: AppConfig): { ai: Record<string, unknown> } {
+  const savedAi = aiConfigFromDb(db, config);
+  const providers = readAiProviders(db, config);
+  const global = globalAiTuning(db, config);
+  return {
+    ai: {
+      ...savedAi,
+      apiKey: '',
+      searchApiKey: '',
+      apiKeyMasked: maskSecret(savedAi.apiKey),
+      searchApiKeyMasked: maskSecret(savedAi.searchApiKey),
+      hasApiKey: Boolean(savedAi.apiKey),
+      hasSearchApiKey: Boolean(savedAi.searchApiKey),
+      apiKeyFromEnv: Boolean((process.env.AI_API_KEY ?? '').trim()),
+      activeProviderId: activeProviderIdOf(db, providers),
+      providers: providers.map(providerView),
+      ...(global.maxTokens !== undefined ? { globalMaxTokens: global.maxTokens } : {}),
+      ...(global.contextWindow !== undefined ? { globalContextWindow: global.contextWindow } : {}),
+    },
+  };
+}
+
 // ---------- AI 连接测试 / 模型列表 ----------
 
-/** 组装待测配置：body 值优先（先测后存），缺省回退已保存配置（apiKey 与实际请求一致，含环境变量覆盖） */
+/**
+ * 组装待测配置：body 值优先（先测后存），缺省回退已保存配置。
+ * `providerId` 指向已保存的某个提供商时以该提供商为基底（测试未保存的编辑仍走
+ * baseURL/apiKey 覆盖路径）；两者可叠加——提供商提供已存密钥，body 覆盖未保存的
+ * Base URL/模型编辑。apiKey 与实际请求一致，含环境变量覆盖。
+ */
 function effectiveAiConfig(
   db: Db,
   config: AppConfig,
-  b: { baseURL?: unknown; apiKey?: unknown; model?: unknown },
+  b: { providerId?: unknown; baseURL?: unknown; apiKey?: unknown; model?: unknown },
 ): AiConfig {
   const saved = aiConfigFromDb(db, config);
+  let baseURL = saved.baseURL;
+  let apiKey = saved.apiKey;
+  let model = saved.model;
+  const pid = typeof b.providerId === 'string' ? b.providerId.trim() : '';
+  if (pid) {
+    const p = readAiProviders(db, config).find((x) => x.id === pid);
+    if (p) {
+      baseURL = p.baseURL;
+      apiKey = (process.env.AI_API_KEY ?? p.apiKey).trim();
+      model = p.model;
+    }
+  }
   const pick = (v: unknown, fallback: string): string =>
     typeof v === 'string' && v.trim() !== '' ? v.trim() : fallback;
   return {
     enabled: saved.enabled,
-    baseURL: pick(b.baseURL, saved.baseURL),
-    apiKey: pick(b.apiKey, saved.apiKey),
-    model: pick(b.model, saved.model),
+    baseURL: pick(b.baseURL, baseURL),
+    apiKey: pick(b.apiKey, apiKey),
+    model: pick(b.model, model),
   };
 }
 
@@ -775,8 +905,35 @@ function modelsUrl(base: string): string {
   return `${root}/models`;
 }
 
-/** 拉取并解析模型列表：OpenAI { data: [{ id }] }，兼容 { models: [{ name|id }] } 与纯数组，去重排序 */
-async function fetchModelIds(baseURL: string, apiKey: string): Promise<string[]> {
+/** /models 目录：模型 id 列表 + 能从响应里读出的真实参数档位（OpenRouter 等网关会带） */
+interface ModelCatalog {
+  ids: string[];
+  /** modelId → { maxTokens?, contextWindow? }；只收录至少带一个数字的条目 */
+  caps: Record<string, { maxTokens?: number; contextWindow?: number }>;
+}
+
+/** 从 /models 单个条目读参数档位：context_length + max_completion_tokens 系字段（都是可选） */
+function capsOfModelEntry(m: Record<string, unknown>): { maxTokens?: number; contextWindow?: number } {
+  const num = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined;
+  const top = (m.top_provider ?? m.topProvider) as Record<string, unknown> | undefined;
+  const contextWindow =
+    num(m.context_length) ?? num(top?.context_length) ?? num(m.context_window) ?? undefined;
+  const maxTokens =
+    num(top?.max_completion_tokens) ??
+    num(top?.completion_output_tokens) ??
+    num(m.max_completion_tokens) ??
+    num(m.max_output_tokens) ??
+    num(m.completion_output_tokens) ??
+    undefined;
+  return {
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
+  };
+}
+
+/** 拉取并解析模型目录：OpenAI { data: [{ id }] }，兼容 { models: [{ name|id }] } 与纯数组，去重排序 */
+async function fetchModelCatalog(baseURL: string, apiKey: string): Promise<ModelCatalog> {
   const res = await fetch(modelsUrl(baseURL), {
     headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
     signal: AbortSignal.timeout(15_000),
@@ -795,15 +952,23 @@ async function fetchModelIds(baseURL: string, apiKey: string): Promise<string[]>
       : Array.isArray((payload as { models?: unknown })?.models)
         ? ((payload as { models: unknown[] }).models)
         : [];
+  const caps: ModelCatalog['caps'] = {};
   const ids = list
-    .map((m) =>
-      typeof m === 'string'
-        ? m
-        : ((m as { id?: unknown })?.id ?? (m as { name?: unknown })?.name),
-    )
+    .map((m) => {
+      if (typeof m === 'string') return m;
+      if (typeof m !== 'object' || m === null) return undefined;
+      const entry = m as Record<string, unknown>;
+      const id = entry.id ?? entry.name;
+      if (typeof id !== 'string' || id.trim() === '') return undefined;
+      const modelCaps = capsOfModelEntry(entry);
+      if (modelCaps.maxTokens !== undefined || modelCaps.contextWindow !== undefined) {
+        caps[id.trim()] = modelCaps;
+      }
+      return id;
+    })
     .filter((id): id is string => typeof id === 'string' && id.trim() !== '')
     .map((id) => id.trim());
-  return [...new Set(ids)].sort((a, b) => a.localeCompare(b));
+  return { ids: [...new Set(ids)].sort((a, b) => a.localeCompare(b)), caps };
 }
 
 /** 兜底连通性探测：1 token 的 chat/completions（/models 不可用但对话可用的网关，如部分 one-api 部署） */

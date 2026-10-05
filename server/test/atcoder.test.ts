@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createAtcoderAdapter } from '../src/adapters/atcoder.ts';
-import { ascendingSinceWithLookback } from '../src/adapters/sync.ts';
+import { ascendingNextLastSyncAt, ascendingSinceWithLookback } from '../src/adapters/sync.ts';
 
 function router(
   handlers: Record<string, (url: string) => unknown>,
@@ -320,4 +320,171 @@ test('maxSubmissions: empty result before cap does NOT truncate (natural end)', 
   assert.equal(rows.length, 1);
   assert.equal(opts.truncated, undefined); // 第 2 页空 → 自然结束不截断
 });
+
+test('回看窗口重扫的已入库行不占单次上限预算，游标能推进到新提交（回归）', async () => {
+  // 线报「AtCoder 最新提交同步不进来」的第二层成因：升序平台增量固定从
+  // last_sync_at − 12h 起拉（回看窗口），适配器把回看扫到的**已入库旧行**也计入
+  // 单次上限——窗口内 ≥300 条旧行时预算被吃满，砍批后游标停在原处甚至倒退，
+  // 新提交永远同步不进来。修复：knownExternalIds 注入后旧行跳过、不占预算。
+  const T = 1791000000;
+  // 回看窗口内 600 条旧行（占满两个 500 行窗口）+ 其后 50 条新提交；上限 300
+  const history = [
+    ...Array.from({ length: 600 }, (_, i) => submission({ id: 1000 + i, epoch_second: T + i, problem_id: 'abc478_a' })),
+    ...Array.from({ length: 50 }, (_, i) => submission({ id: 2000 + i, epoch_second: T + 2000 + i, problem_id: 'abc478_b' })),
+  ];
+  const adapter = makeAdapter(windowedApi(history));
+  const known = new Set(history.slice(0, 600).map((s) => String(s.id)));
+  const opts: {
+    maxSubmissions?: number;
+    truncated?: boolean;
+    since?: string;
+    knownExternalIds?: Set<string>;
+  } = { maxSubmissions: 300, since: new Date(T * 1000).toISOString(), knownExternalIds: known };
+  const rows = await adapter.fetchUserSubmissions('u', opts);
+  assert.equal(rows.length, 50, '50 条新提交全部拉到（600 条旧行不占预算）');
+  assert.ok(rows.every((r) => !known.has(r.externalId)), '已入库行不再返回');
+  assert.equal(opts.truncated, undefined, '新提交未触及上限且已拉到最新 → 不截断');
+});
+
+test('上限落在同一秒中间时整秒收下（略超上限），同秒行不丢失（回归）', async () => {
+  // 旧行为：raws 到上限即砍批，「整秒收下」的防护条件恒为假（死代码）——
+  // 同秒后半段被砍掉后，秒级游标（末行秒 + 1）永久跳过它们。
+  const T = 1791000000;
+  // 100 条各占一秒 + 边界秒（T+99）上 30 条同秒行 + 1 条更晚提交；上限 120
+  // → 旧行为砍在第 21 条同秒行上，丢 10 条；新行为把该秒 30 条全部收下（130 条）
+  const history = [
+    ...Array.from({ length: 100 }, (_, i) => submission({ id: 1000 + i, epoch_second: T + i, problem_id: 'abc478_a' })),
+    ...Array.from({ length: 30 }, (_, i) => submission({ id: 1700 + i, epoch_second: T + 99, problem_id: 'abc478_b' })),
+    submission({ id: 2000, epoch_second: T + 900, problem_id: 'abc478_c' }),
+  ];
+  const adapter = makeAdapter(windowedApi(history));
+  const opts: { maxSubmissions?: number; truncated?: boolean } = { maxSubmissions: 120 };
+  const rows = await adapter.fetchUserSubmissions('u', opts);
+  assert.equal(rows.length, 130, '砍点那一秒（T+99）的 30 条同秒行整秒收下，略超上限');
+  const ids = new Set(rows.map((r) => r.externalId));
+  for (let i = 1700; i < 1730; i += 1) {
+    assert.ok(ids.has(String(i)), `同秒行 ${i} 不应丢失`);
+  }
+  assert.ok(!ids.has('2000'), '更晚的提交留给下一轮（砍批即停）');
+  assert.equal(opts.truncated, true, '触及上限 → 截断，同步层推进光标到 T+99 后下轮续拉');
+  assert.ok(
+    rows.every((r, i) => i === 0 || rows[i - 1]!.submittedAt <= r.submittedAt),
+    '批内按提交时间升序（连续前缀）',
+  );
+});
+
+test('平台侧改判的已入库行必须重发（评测中 SKIPPED → AC），否则库里永远刷不回来（回归）', async () => {
+  // 同步时提交还在评测队列（WJ → SKIPPED）就已入库；判完之后库里那行的 verdict 只能靠
+  // 「适配器重发 + 写入层 refreshVerdict」刷新。knownIdsFilter 声明后同步层会注入
+  // knownExternalIds，若适配器对已知行一律 continue，该行再也不会进写入层 → 永久冻结在
+  // SKIPPED（能力值/统计/已做判定全错），这正是 FetchOptions.knownVerdicts 契约要求的例外。
+  const T = 1791000000;
+  const history = [submission({ id: 7001, epoch_second: T, result: 'AC', problem_id: 'abc478_a' })];
+  const adapter = makeAdapter(windowedApi(history));
+
+  // 库里存的是「评测中」（SKIPPED），上游已给 AC → 必须重发
+  const changed: {
+    maxSubmissions?: number; truncated?: boolean;
+    knownExternalIds?: Set<string>; knownVerdicts?: Map<string, string>;
+  } = {
+    maxSubmissions: 300,
+    knownExternalIds: new Set(['7001']),
+    knownVerdicts: new Map([['7001', 'SKIPPED']]),
+  };
+  const rows = await adapter.fetchUserSubmissions('u', changed as never);
+  assert.deepEqual(rows.map((r) => `${r.externalId}:${r.verdict}`), ['7001:AC'], '改判行重发');
+
+  // 判定没变（库里已是 AC）→ 维持跳过语义，不白占预算
+  const unchanged: typeof changed = {
+    maxSubmissions: 300,
+    knownExternalIds: new Set(['7001']),
+    knownVerdicts: new Map([['7001', 'AC']]),
+  };
+  assert.equal((await adapter.fetchUserSubmissions('u', unchanged as never)).length, 0, '未改判的已知行跳过');
+
+  // 未注入 knownVerdicts（旧调用方）→ 按「无改判」处理，维持原跳过语义
+  const noVerdicts: typeof changed = { maxSubmissions: 300, knownExternalIds: new Set(['7001']) };
+  assert.equal((await adapter.fetchUserSubmissions('u', noVerdicts as never)).length, 0);
+});
+
+test('平台侧改题号的已入库行必须重发（knownProblemKeys 变化）', async () => {
+  const T = 1791000000;
+  const history = [submission({ id: 8001, epoch_second: T, problem_id: 'abc478_b' })];
+  const adapter = makeAdapter(windowedApi(history));
+  const opts: {
+    maxSubmissions?: number;
+    knownExternalIds?: Set<string>;
+    knownProblemKeys?: Map<string, string>;
+  } = {
+    maxSubmissions: 300,
+    knownExternalIds: new Set(['8001']),
+    knownProblemKeys: new Map([['8001', 'abc478_a']]), // 库里还指向旧题号
+  };
+  const rows = await adapter.fetchUserSubmissions('u', opts as never);
+  assert.deepEqual(rows.map((r) => `${r.externalId}:${r.problem.problemKey}`), ['8001:abc478_b']);
+});
+
+test('页边界把同一秒切开时：退回该秒重拉，同秒行不丢且不谎报成功（回归）', async () => {
+  // 上游窗口固定 500 行：459 条逐秒 + 某一秒 101 条（跨过第 500 行边界）+ 1 条更晚。
+  // 旧行为：续拉游标取「末行秒 + 1」，该秒排在窗外的 60 行被永久跳过，且 truncated 不置位
+  //（同步中心谎报成功）。新行为：末行所在秒还有同秒行时退回该秒重拉一次补齐。
+  const T = 1791000000;
+  const history = [
+    ...Array.from({ length: 459 }, (_, i) => submission({ id: 1000 + i, epoch_second: T + i, problem_id: 'abc478_a' })),
+    ...Array.from({ length: 101 }, (_, i) => submission({ id: 5000 + i, epoch_second: T + 458, problem_id: 'abc478_b' })),
+    submission({ id: 9000, epoch_second: T + 900, problem_id: 'abc478_c' }),
+  ];
+  const adapter = makeAdapter(windowedApi(history));
+  const opts: { maxSubmissions?: number; truncated?: boolean } = { maxSubmissions: 3000 };
+  const rows = await adapter.fetchUserSubmissions('u', opts);
+  const got = new Set(rows.map((r) => r.externalId));
+  const lost = history.map((s) => String(s.id)).filter((id) => !got.has(id));
+  assert.deepEqual(lost, [], '一条都不丢');
+  assert.equal(rows.length, history.length);
+  assert.equal(opts.truncated, undefined, '完整拉到最新 → 不截断');
+});
+
+test('页预算被已入库行吃满：回报 scannedUntil 供同步层停在扫描点（回归）', async () => {
+  // 3000 条已入库行正好占满页预算（min(60, ceil((500+500)/500)*3) = 6 页 × 500 行）。
+  // 若只置 truncated 不回传扫描位置，同步层会把 last_sync_at 推到「当前时刻」，
+  // (扫描点, now) 之间没扫到的提交就被下一次的 12h 回看窗口永久漏掉。
+  const T = 1791000000;
+  const history = Array.from({ length: 3000 }, (_, i) => submission({ id: 1000 + i, epoch_second: T + i, problem_id: 'abc478_a' }));
+  const adapter = makeAdapter(windowedApi(history));
+  const opts: {
+    maxSubmissions?: number; truncated?: boolean; scannedUntil?: string;
+    since?: string; knownExternalIds?: Set<string>;
+  } = {
+    maxSubmissions: 500,
+    since: new Date(T * 1000).toISOString(),
+    knownExternalIds: new Set(history.map((s) => String(s.id))),
+  };
+  const rows = await adapter.fetchUserSubmissions('u', opts);
+  assert.equal(rows.length, 0, '全是已入库行 → 本批无新增');
+  assert.equal(opts.truncated, true);
+  assert.equal(opts.scannedUntil, new Date((T + 2999) * 1000).toISOString(), '回报扫描到的最后一行时刻');
+});
+
+test('升序平台 last_sync_at 推进决策：截断且无新增时停在扫描点，绝不跳到 now（回归）', () => {
+  const now = '2026-10-05T12:00:00.000Z';
+  // 未截断 → now
+  assert.equal(ascendingNextLastSyncAt({ rows: [], truncated: false, now }), now);
+  // 截断且有新增 → 本批最新一条提交时刻
+  assert.equal(
+    ascendingNextLastSyncAt({
+      rows: [{ submittedAt: '2026-10-05T01:00:00.000Z' }, { submittedAt: '2026-10-05T03:00:00.000Z' }],
+      truncated: true,
+      now,
+    }),
+    '2026-10-05T03:00:00.000Z',
+  );
+  // 截断且无新增 → 扫描点（不是 now）
+  assert.equal(
+    ascendingNextLastSyncAt({ rows: [], truncated: true, scannedUntil: '2026-10-01T00:00:00.000Z', now }),
+    '2026-10-01T00:00:00.000Z',
+  );
+  // 适配器没回报扫描点 → 只能保守取 now
+  assert.equal(ascendingNextLastSyncAt({ rows: [], truncated: true, now }), now);
+});
+
 

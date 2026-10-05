@@ -12,7 +12,8 @@ import type { Db } from '../db/index.ts';
  *
  * 引用迁移口径与 routes/problems.ts 的 clean-tags 去重合并一致（submissions /
  * submission_intents / plan_tasks 直改；review_items、today_recommendations 撞
- * UNIQUE 时丢弃旧行侧；problem_list_items 改键并把题面链接/标题对齐保留行；
+ * UNIQUE 时丢弃旧行侧，review_events 反馈历史随条目——搬移的对齐保留行、丢弃的删除；
+ * problem_list_items 改键并把题面链接/标题对齐保留行；
  * problem_keypoints / knowledge_queue / problem_statements 按旧键删除——知识点
  * 标注由管线对保留行重新生成）。差异点：clean-tags 面对的是「题库会再次下发的
  * 脏键」，必须记 JSONL 标注墓碑防复活；这里合并掉的是平台不再下发的临时键
@@ -66,6 +67,16 @@ export function mergeProblemRow(db: Db, opts: MergeProblemOpts): void {
     `UPDATE review_items SET problem_id = ? WHERE problem_id = ?
        AND NOT EXISTS (SELECT 1 FROM review_items r WHERE r.user_id = review_items.user_id AND r.problem_id = ?)`,
   ).run(toId, fromId, toId);
+  // 复习反馈历史（review_events）两个外键都无级联：被搬移条目的历史跟随条目对齐保留行，
+  // 被丢弃条目的历史随条目一起删。漏了它们，下面 DELETE review_items / DELETE problems
+  // 会抛 FOREIGN KEY constraint failed —— 整个同步事务回滚，旧键提交每次同步重新下发，
+  // 同步从此每次失败（洛谷 T 号转正 + 已复习题的路径）
+  db.prepare(
+    `UPDATE review_events SET problem_id = ?
+      WHERE problem_id = ?
+        AND review_item_id IN (SELECT id FROM review_items WHERE problem_id = ?)`,
+  ).run(toId, fromId, toId);
+  db.prepare('DELETE FROM review_events WHERE problem_id = ?').run(fromId);
   db.prepare('DELETE FROM review_items WHERE problem_id = ?').run(fromId);
   // 今日推荐 PK (user_id, problem_id)：与复习条目同一处理
   db.prepare(

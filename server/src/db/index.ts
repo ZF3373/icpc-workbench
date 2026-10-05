@@ -251,6 +251,15 @@ function mergeSlashedCfKeys(db: Db): void {
        AND NOT EXISTS (SELECT 1 FROM review_items r WHERE r.user_id = review_items.user_id AND r.problem_id = ?)`,
   );
   const dropReviews = db.prepare('DELETE FROM review_items WHERE problem_id = ?');
+  // review_events 两个外键都无级联：搬移条目的反馈历史对齐保留行、丢弃条目的反馈历史随之
+  // 删除（与 problemMerge.ts 同款）。漏掉它们，DELETE review_items / DELETE problems 会抛
+  // FOREIGN KEY constraint failed —— 迁移回滚、createDb 抛错，应用再也起不来
+  const repointReviewEvents = db.prepare(
+    `UPDATE review_events SET problem_id = ?
+      WHERE problem_id = ?
+        AND review_item_id IN (SELECT id FROM review_items WHERE problem_id = ?)`,
+  );
+  const dropReviewEvents = db.prepare('DELETE FROM review_events WHERE problem_id = ?');
   // 今日训练推荐 (user_id, problem_id) 是主键、外键无 ON DELETE：与复习条目同款处理，
   // 保留行已有同一用户的推荐时丢弃被合并行的，再清掉剩下的。漏掉它，下面的
   // DELETE FROM problems 同样会抛 FOREIGN KEY constraint failed —— 迁移回滚、createDb 抛错，
@@ -291,6 +300,8 @@ function mergeSlashedCfKeys(db: Db): void {
       repointPlanTasks.run(keep.id, row.id);
       repointIntents.run(keep.id, row.id);
       repointReviews.run(keep.id, row.id, keep.id);
+      repointReviewEvents.run(keep.id, row.id, keep.id);
+      dropReviewEvents.run(row.id);
       dropReviews.run(row.id);
       repointRecos.run(keep.id, row.id, keep.id);
       dropRecos.run(row.id);
@@ -536,9 +547,15 @@ function dedupeReviewItems(db: Db): void {
     .all() as Array<{ id: number }>;
   if (dupes.length === 0) return;
   const drop = db.prepare('DELETE FROM review_items WHERE id = ?');
+  // 被删条目的反馈历史先清掉：review_events.review_item_id 外键无级联，留着历史会让
+  // DELETE 抛 FOREIGN KEY constraint failed —— 迁移回滚、createDb 抛错，应用打不开
+  const dropEvents = db.prepare('DELETE FROM review_events WHERE review_item_id = ?');
   db.exec('BEGIN');
   try {
-    for (const row of dupes) drop.run(row.id);
+    for (const row of dupes) {
+      dropEvents.run(row.id);
+      drop.run(row.id);
+    }
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');

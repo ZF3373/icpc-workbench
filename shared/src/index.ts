@@ -682,6 +682,21 @@ export interface ContestReminderConfig {
   minutesBefore: number;
 }
 
+// ---------- AI 模型提供商（多提供商配置，见 aiProviders.ts 头注） ----------
+
+export {
+  AI_PROVIDER_PRESETS,
+  AI_PROVIDER_CUSTOM_PRESET,
+  AI_PROVIDERS_MAX,
+  AI_PROVIDER_MODELS_MAX,
+  guessModelCaps,
+  type AiProviderConfig,
+  type AiProviderView,
+  type AiProviderPreset,
+  type AiProviderModelEntry,
+  type ModelCaps,
+} from './aiProviders.ts';
+
 // ---------- 平台难度 → CF rating 统一标尺（唯一真源） ----------
 
 export {

@@ -31,6 +31,7 @@ test('sea.ts registers the same /api prefixes as index.ts', () => {
 const STARTUP_CALLS = [
   'applyPendingRestore(',
   'seedBuiltinBank(',
+  'migratePlatformCookieToAccounts(',
   'initAdapters(',
   'configureSyncScheduler(',
   'setRequestIntervalScale(',
@@ -46,5 +47,46 @@ test('sea.ts runs the same startup side effects as index.ts', () => {
   for (const call of STARTUP_CALLS) {
     assert.ok(indexSrc.includes(call), `index.ts 未调用 ${call}（清单过期，请同步维护）`);
     assert.ok(seaSrc.includes(call), `sea.ts 未调用 ${call}——打包版/Docker 会静默失效`);
+  }
+});
+
+/**
+ * 顺序也要一致（子串包含不够）：`applyPendingRestore` 必须早于 `createDb`（恢复点要先覆盖
+ * 数据库文件）、迁移/播种必须早于 `initAdapters`/listen。只查「有没有出现」时，把调用挪到
+ * 错误位置（甚至注释掉整行——注释里仍含同样的子串）都能通过。这里按清单顺序断言出现位置
+ * 单调递增，两个入口各自校验；注释里的调用用「行首去注释后匹配」剔除。
+ */
+function callOrder(src: string): Array<{ call: string; at: number }> {
+  const order: Array<{ call: string; at: number }> = [];
+  for (const call of STARTUP_CALLS) {
+    // 逐行扫描并跳过注释行（`//` 或 `*` 起头），避免「注释里的调用」被当成真实调用
+    let at = -1;
+    let offset = 0;
+    for (const line of src.split('\n')) {
+      const trimmed = line.trimStart();
+      const isComment = trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*');
+      if (!isComment && line.includes(call)) {
+        at = offset + line.indexOf(call);
+        break;
+      }
+      offset += line.length + 1;
+    }
+    order.push({ call, at });
+  }
+  return order;
+}
+
+test('sea.ts 与 index.ts 的启动副作用顺序一致且都不是注释', () => {
+  for (const file of ['index.ts', 'sea.ts']) {
+    const order = callOrder(fs.readFileSync(path.join(srcDir, file), 'utf8'));
+    for (const { call, at } of order) {
+      assert.ok(at >= 0, `${file}: ${call} 只在注释里出现（或已删除）——启动副作用实际未执行`);
+    }
+    for (let i = 1; i < order.length; i += 1) {
+      assert.ok(
+        order[i]!.at > order[i - 1]!.at,
+        `${file}: 启动顺序错位——${order[i - 1]!.call} 必须早于 ${order[i]!.call}`,
+      );
+    }
   }
 });

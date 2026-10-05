@@ -750,7 +750,13 @@ export function aiRoutes(
         let currentToolCalls: ToolCall[] | undefined = pendingToolCalls;
 
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+          // 用户已点「停止」：立即退出往返循环——不再执行队列里的工具、不再发起新一轮生成。
+          // （此前循环内既不传 signal 也不检查 aborted，「停止」只对第一轮生效，
+          // 之后每轮生成与工具调用照常跑完，白白烧配额。）
+          if (abortController.signal.aborted) break;
           for (const tc of currentToolCalls!) {
+            // 点停止后不再执行剩下的工具（web_search / fetch_url 单个就可能耗十几秒）
+            if (abortController.signal.aborted) break;
             let args: Record<string, unknown> = {};
             try {
               args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
@@ -795,6 +801,15 @@ export function aiRoutes(
             roundMsgs.push({ role: 'tool', content: result.content, tool_call_id: tc.id });
           }
 
+          // 工具执行期间用户点了「停止」：立即收尾，绝不再发起新一轮生成。
+          // 轮次顶部的检查只在每轮开始时生效、工具前检查只覆盖「下一个工具」，若停止恰好落在
+          // **最后一个工具执行中**（web_search / fetch_url 单个就可能耗十几秒，正是用户最可能
+          // 点停止的时刻），内层退出后控制流会带着**已 aborted** 的 signal 走到下面的 chatStream：
+          // provider 只在 signal 上挂监听、不检查注册时是否已 abort，已 aborted 信号的监听器
+          // 永不触发 → 照常发出完整一轮上游生成（白白烧配额）。抛 AbortError 交给外层
+          // catch 的 aborted 分支收尾（res.end + return，不写错误事件）。
+          if (abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
           // 后续流式轮次：解析 DSML（AI 可能再次发起工具调用）
           finishReason = null;
           let nextToolCalls: ToolCall[] | undefined;
@@ -807,6 +822,8 @@ export function aiRoutes(
               forcedFinal ? [...roundMsgs, { role: 'user', content: TOOL_ROUND_LIMIT_NOTICE }] : roundMsgs,
               {
                 maxTokens,
+                // 与第一轮同源的中断信号：点「停止」时在途的上游请求立即取消
+                signal: abortController.signal,
                 // 前 4 轮不传 tools：让 AI 基于搜索结果给出最终答案（DSML 泄漏仍可再发起工具）
                 // 最后一轮连 DSML 解析也关闭，杜绝误触发，强制产出最终回答
                 parseDsmlTools: !forcedFinal,
@@ -821,6 +838,9 @@ export function aiRoutes(
               if (!res.writableEnded) res.write(`data: ${JSON.stringify({ delta })}\n\n`);
             }
           } catch (eN) {
+            // 用户点「停止」触发的中断：交给外层 catch 的 aborted 分支收尾（res.end + return），
+            // 不能当「AI 调用失败」写错误事件
+            if (abortController.signal.aborted) throw eN;
             const msg = describeError(eN);
             console.error('[AI chat] 轮次', round + 2, '失败:', msg);
             if (!res.writableEnded) {
