@@ -172,3 +172,40 @@ test('view=submission 逐条流水 + 分页', async (t) => {
     assert.notEqual(page2.items[0].id, res.items[0].id);
   });
 });
+
+test('行内附带 tags 与卡点聚合（数据概览「卡在哪」入口依赖这两个字段）', async (t) => {
+  const db = seededDb();
+  t.after(() => db.close());
+  // 给 1919C 记两条卡点：upsolved(0.45) + wrong_approach(0.7) → 最差 upsolved，共 2 条
+  const pid = (db
+    .prepare("SELECT id FROM problems WHERE platform = 'codeforces' AND problem_key = '1919C'")
+    .get() as { id: number }).id;
+  const ins = db.prepare('INSERT INTO submission_intents (user_id, problem_id, outcome) VALUES (1, ?, ?)');
+  ins.run(pid, 'wrong_approach');
+  ins.run(pid, 'upsolved');
+  db.prepare("UPDATE problems SET tags = ? WHERE platform = 'luogu' AND problem_key = 'P1001'")
+    .run(JSON.stringify(['贪心', '数学（综合）']));
+
+  await withServer(db, async (base) => {
+    const q = async (qs: string) =>
+      (await (await fetch(`${base}/submissions?${qs}`)).json()) as HistoryResp;
+
+    const problem = await q('');
+    const c = problem.items.find((i) => i.problemKey === '1919C');
+    assert.equal(c!.intentCount, 2);
+    assert.equal(c!.worstIntent, 'upsolved', '最差卡点按 intentFactor 最小选取（与题目管理页同口径）');
+    const p = problem.items.find((i) => i.problemKey === 'P1001');
+    assert.equal(p!.intentCount, 0, '没记过的题计数为 0');
+    assert.equal(p!.worstIntent, null);
+    assert.deepEqual(p!.tags, ['贪心', '数学（综合）'], 'tags 随行下发（「卡在哪」的知识点候选）');
+
+    const sub = await q('view=submission');
+    const sc = sub.items.find((i) => i.problemKey === '1919C');
+    assert.equal(sc!.intentCount, 2);
+    assert.equal(sc!.worstIntent, 'upsolved');
+    assert.equal(sc!.acCount, 1, '逐条视图带该题 AC 总数（操作列据此决定是否显示「标记 AC」）');
+    const sa = sub.items.find((i) => i.problemKey === 'abc321_a');
+    assert.equal(sa!.intentCount, 0);
+    assert.equal(sa!.worstIntent, null);
+  });
+});

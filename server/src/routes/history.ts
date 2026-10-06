@@ -3,6 +3,8 @@ import type { PlatformId } from '../../../shared/src/index.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
+import { safeTags } from '../analysis/stats.ts';
+import { intentFactor } from '../today/ability.ts';
 
 /**
  * 写题历史（issue #19）：数据全部来自 submissions ⋈ problems（平台同步 / CSV 导入写入），
@@ -37,6 +39,7 @@ interface ProblemRow {
   title: string;
   difficulty: number | null;
   url: string | null;
+  tags: string;
   attempts: number;
   ac_count: number;
   last_submitted_at: string;
@@ -46,6 +49,7 @@ interface ProblemRow {
 
 interface SubmissionRow {
   id: number;
+  problem_id: number;
   platform: PlatformId;
   problem_key: string;
   title: string;
@@ -53,6 +57,9 @@ interface SubmissionRow {
   language: string | null;
   submitted_at: string;
   url: string | null;
+  tags: string;
+  /** 该题全部提交里的 AC 次数（操作列据此决定是否显示「标记 AC」） */
+  ac_count: number;
   review_item_id: number | null;
 }
 
@@ -63,14 +70,19 @@ const toProblemItem = (r: ProblemRow) => ({
   title: r.title,
   difficulty: r.difficulty,
   url: r.url,
+  tags: safeTags(r.tags),
   attempts: r.attempts,
   acCount: r.ac_count,
   lastSubmittedAt: r.last_submitted_at,
   reviewItemId: r.review_item_id,
+  /** 卡点聚合（attachIntentStats 填充）：「卡在哪」行内角标与 Popover 记录列表共用 */
+  intentCount: 0,
+  worstIntent: null as string | null,
 });
 
 const toSubmissionItem = (r: SubmissionRow) => ({
   id: r.id,
+  problemId: r.problem_id,
   platform: r.platform,
   problemKey: r.problem_key,
   title: r.title,
@@ -78,7 +90,11 @@ const toSubmissionItem = (r: SubmissionRow) => ({
   language: r.language,
   submittedAt: r.submitted_at,
   url: r.url,
+  tags: safeTags(r.tags),
+  acCount: r.ac_count,
   reviewItemId: r.review_item_id,
+  intentCount: 0,
+  worstIntent: null as string | null,
 });
 
 function clampInt(raw: unknown, fallback: number, min: number, max: number): number {
@@ -175,12 +191,55 @@ function resultHavingSql(result: ResultFilter): string {
 }
 
 /**
+ * 给历史行附加卡点聚合（intentCount / worstIntent），口径与题目管理页行角标一致：
+ * 计数 + intentFactor 最小者（弱项口径）。声明表很小，按用户分组一次取回、JS 侧定最差，
+ * 权重真相在 intentFactor（今日推荐/复习排序共用同一份），SQL 里不另写映射。
+ * 平局（cant_start/editorial/upsolved 同为 0.45）按 outcome 字母序取先到者，与题目管理页一致。
+ */
+function attachIntentStats(
+  db: Db,
+  items: Array<{ problemId: number; intentCount?: number; worstIntent?: string | null }>,
+): void {
+  for (const it of items) {
+    it.intentCount = 0;
+    it.worstIntent = null;
+  }
+  if (items.length === 0) return;
+  const groups = db
+    .prepare(
+      `SELECT problem_id, outcome, COUNT(*) AS cnt
+         FROM submission_intents
+        WHERE user_id = ?
+        GROUP BY problem_id, outcome
+        ORDER BY problem_id, outcome`,
+    )
+    .all(DEFAULT_USER_ID) as Array<{ problem_id: number; outcome: string; cnt: number }>;
+  if (groups.length === 0) return;
+  const byProblem = new Map<number, Array<{ outcome: string; cnt: number }>>();
+  for (const g of groups) {
+    const list = byProblem.get(g.problem_id);
+    if (list) list.push({ outcome: g.outcome, cnt: g.cnt });
+    else byProblem.set(g.problem_id, [{ outcome: g.outcome, cnt: g.cnt }]);
+  }
+  for (const it of items) {
+    const list = byProblem.get(it.problemId);
+    if (!list) continue;
+    let worst: string | null = null;
+    for (const g of list) {
+      it.intentCount = (it.intentCount ?? 0) + g.cnt;
+      if (worst === null || intentFactor(g.outcome) < intentFactor(worst)) worst = g.outcome;
+    }
+    it.worstIntent = worst;
+  }
+}
+
+/**
  * 按题聚合的子查询。列表、总数、平台聚合三处共用同一份 SQL，
  * 保证「共 N 题」与标签上的题数/提交数在任何过滤组合下口径一致。
  * p.title 等列函数依赖于 GROUP BY 的 p.id，SQLite 允许直接取。
  */
 function problemGroupSql(where: string, having: string): string {
-  return `SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
+  return `SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url, p.tags,
     COUNT(s.id) AS attempts,
     COALESCE(SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END), 0) AS ac_count,
     MAX(s.submitted_at) AS last_submitted_at,
@@ -225,7 +284,9 @@ export function historyRoutes(db: Db): Router {
       const base = `FROM submissions s JOIN problems p ON p.id = s.problem_id${where}`;
       items = (db
         .prepare(
-          `SELECT s.id, s.platform, p.problem_key, p.title, s.verdict, s.language, s.submitted_at, p.url,
+          `SELECT s.id, p.id AS problem_id, s.platform, p.problem_key, p.title, s.verdict, s.language, s.submitted_at, p.url, p.tags,
+    (SELECT COUNT(*) FROM submissions s3
+      WHERE s3.problem_id = p.id AND s3.user_id = ${DEFAULT_USER_ID} AND s3.verdict = 'AC') AS ac_count,
     (SELECT ri.id FROM review_items ri
       WHERE ri.problem_id = p.id AND ri.user_id = ${DEFAULT_USER_ID}) AS review_item_id
     ${base} ORDER BY s.submitted_at DESC, s.id DESC LIMIT ? OFFSET ?`,
@@ -237,6 +298,9 @@ export function historyRoutes(db: Db): Router {
     ${base} GROUP BY s.platform ORDER BY submissions DESC, platform`)
         .all(...params) as unknown as Array<{ platform: PlatformId; submissions: number; problems: number }>;
     }
+
+    // 两种视图的行都带 problemId：统一附上卡点聚合（「卡在哪」入口的行内角标）
+    attachIntentStats(db, items as Array<{ problemId: number; intentCount?: number; worstIntent?: string | null }>);
 
     res.json({
       view,

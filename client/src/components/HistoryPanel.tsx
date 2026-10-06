@@ -1,10 +1,11 @@
 /**
  * 写题历史查询面板（issue #19）：按平台/结果/时间/关键词查历史刷题记录。
- * 数据源为后端 submissions ⋈ problems（平台同步 / 导入写入），本面板只读。
+ * 数据源为后端 submissions ⋈ problems（平台同步 / 导入写入）。
+ * 查询本身只读；操作列提供就近的轻操作（标记 AC / 卡在哪 / 复习队列），不必切回题目管理。
  * 嵌在「数据概览」内，不单独占一个侧边栏板块。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Button, DatePicker, Input, Select, Table, Tag, Tooltip, Typography, App as AntdApp } from 'antd'
+import { Badge, Button, DatePicker, Input, Popconfirm, Select, Table, Tag, Tooltip, Typography, App as AntdApp } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { ClearOutlined, CheckOutlined, ReadOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -12,6 +13,8 @@ import type { PlatformId } from '../../../shared/src/index.ts'
 import { PLATFORMS } from '../../../shared/src/index.ts'
 import { del, get, post } from '../api'
 import PlatformTag from './PlatformTag'
+import IntentPopover from './IntentPopover'
+import { codeOptionsFromTags, intentBadgeSummary } from '../intentOptions'
 import { difficultyColor } from '../ui'
 
 type View = 'problem' | 'submission'
@@ -24,15 +27,21 @@ interface ProblemItem {
   title: string
   difficulty: number | null
   url: string | null
+  /** 题目标签（展示名）：「卡在哪」弹窗据此映射知识点候选 */
+  tags?: string[]
   attempts: number
   acCount: number
   lastSubmittedAt: string
   /** 已在复习队列时为复习条目 id（用于移出），旧服务端可能缺省 */
   reviewItemId?: number | null
+  /** 卡点聚合（服务端附加，旧服务端缺省 = 不显示角标） */
+  intentCount?: number
+  worstIntent?: string | null
 }
 
 interface SubmissionItem {
   id: number
+  problemId?: number
   platform: PlatformId
   problemKey: string
   title: string
@@ -40,7 +49,12 @@ interface SubmissionItem {
   language: string | null
   submittedAt: string
   url: string | null
+  tags?: string[]
+  /** 该题全部提交里的 AC 次数：操作列据此决定是否显示「标记 AC」 */
+  acCount?: number
   reviewItemId?: number | null
+  intentCount?: number
+  worstIntent?: string | null
 }
 
 /** 两种视图的行形状不同，按视图各自取字段 */
@@ -206,6 +220,75 @@ export default function HistoryPanel() {
       </Tooltip>
     )
 
+  /** 标记 AC（补录没有同步到的通过记录），与题目管理页同口径写 /api/import/manual */
+  const markAc = async (r: HistoryItem) => {
+    try {
+      await post('/api/import/manual', {
+        platform: r.platform,
+        rows: [
+          {
+            problemKey: r.problemKey,
+            title: r.title,
+            verdict: 'AC',
+            difficulty: r.difficulty ?? undefined,
+            tags: r.tags,
+            url: r.url ?? undefined,
+          },
+        ],
+      })
+      message.success(`已标记 ${r.problemKey} 为 AC`)
+      load(page)
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  /**
+   * 操作列：复习队列 + 「卡在哪」（数据概览也能就近声明卡点，不必切回题目管理）。
+   * 记过卡点的题在「卡在哪」按钮右上角挂计数角标（悬停给「卡过 N 次 · 最差卡点」全文），
+   * 记录/撤销后 onChanged 重拉当前页，角标随最新聚合走。
+   */
+  const actionsCell = (r: HistoryItem) => (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+      {view === 'problem' && (r.acCount ?? 0) === 0 && (
+        // 防误触：与题目管理页同款气泡确认（写入的 AC 记录无撤销入口）
+        <Popconfirm
+          title="标记为 AC？"
+          description="补录一条本地 AC 记录，计入 AC 率、已解题数与能力值估计"
+          okText="确认标记"
+          cancelText="取消"
+          onConfirm={() => void markAc(r)}
+        >
+          <Button size="small" type="text">
+            标记 AC
+          </Button>
+        </Popconfirm>
+      )}
+      {/*
+        platform / problemKey 两种视图的行都必带（HistoryItem 的 Partial 只为视图形状差异），
+        这里收窄成 undefined 守卫只为过类型；真缺省时整格退化为只有复习按钮
+      */}
+      {r.platform != null && r.problemKey != null && (
+        <Badge
+          count={r.intentCount ?? 0}
+          size="small"
+          title={intentBadgeSummary(r.intentCount ?? 0, r.worstIntent) ?? undefined}
+        >
+          <IntentPopover
+            platform={r.platform}
+            problemKey={r.problemKey}
+            codeOptions={codeOptionsFromTags(r.tags ?? [])}
+            onSuccess={(m) => message.success(m)}
+            onError={(m) => message.error(m)}
+            // 记录/撤销后重拉当前页：行内角标随最新聚合走；Popover 自行关闭，无需 onDone
+            onChanged={() => load(page)}
+          />
+        </Badge>
+      )}
+      {reviewCell(r)}
+    </span>
+  )
+
   const keyCell = (r: HistoryItem) => (
     <span className="mono">
       <ProblemLink url={r.url}>{r.problemKey}</ProblemLink>
@@ -253,8 +336,8 @@ export default function HistoryPanel() {
     {
       title: '操作',
       key: 'actions',
-      width: 56,
-      render: (_v, r) => reviewCell(r),
+      width: 170,
+      render: (_v, r) => actionsCell(r),
     },
   ]
 
@@ -295,8 +378,8 @@ export default function HistoryPanel() {
     {
       title: '操作',
       key: 'actions',
-      width: 56,
-      render: (_v, r) => reviewCell(r),
+      width: 104,
+      render: (_v, r) => actionsCell(r),
     },
   ]
 
@@ -368,8 +451,8 @@ export default function HistoryPanel() {
         loading={loading}
         columns={view === 'problem' ? problemCols : submissionCols}
         dataSource={rows}
-        // 逐条提交视图列宽合计约 764px，略放宽避免最后一列出横向滚动抖动
-        scroll={{ x: view === 'problem' ? 760 : 820 }}
+        // 操作列加宽（标记 AC + 卡在哪 + 复习）：按题 ~880px、逐条 ~870px，略放宽避免横向滚动抖动
+        scroll={{ x: view === 'problem' ? 880 : 870 }}
         pagination={{
           current: page,
           pageSize: PAGE_SIZE,
