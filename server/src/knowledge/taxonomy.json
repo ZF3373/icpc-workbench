@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "categories": [
     {
       "key": "basic",
@@ -46,6 +46,14 @@
           ]
         },
         {
+          "code": "basic.regret-greedy",
+          "name": "反悔贪心",
+          "fullName": "反悔贪心",
+          "templateIds": [
+            "basic-regret-greedy"
+          ]
+        },
+        {
           "code": "basic.binary-answer",
           "name": "二分答案",
           "fullName": "二分答案",
@@ -88,6 +96,14 @@
       "name": "搜索",
       "points": [
         {
+          "code": "search.floodfill",
+          "name": "连通块 Flood Fill",
+          "fullName": "连通块 Flood Fill",
+          "templateIds": [
+            "search-floodfill"
+          ]
+        },
+        {
           "code": "search.dfs-backtrack",
           "name": "DFS 与回溯",
           "fullName": "DFS 与回溯",
@@ -101,14 +117,6 @@
           "fullName": "BFS 最短路模型",
           "templateIds": [
             "search-bfs-grid"
-          ]
-        },
-        {
-          "code": "search.floodfill",
-          "name": "连通块 Flood Fill",
-          "fullName": "连通块 Flood Fill",
-          "templateIds": [
-            "search-floodfill"
           ]
         },
         {
@@ -128,6 +136,14 @@
           ]
         },
         {
+          "code": "search.annealing",
+          "name": "模拟退火",
+          "fullName": "模拟退火（随机化搜索）",
+          "templateIds": [
+            "search-annealing"
+          ]
+        },
+        {
           "code": "search.astar",
           "name": "A* 与 IDA*",
           "fullName": "A* 与 IDA*",
@@ -141,14 +157,6 @@
           "fullName": "折半搜索（meet in the middle）",
           "templateIds": [
             "search-meet-in-middle"
-          ]
-        },
-        {
-          "code": "search.annealing",
-          "name": "模拟退火",
-          "fullName": "模拟退火（随机化搜索）",
-          "templateIds": [
-            "search-annealing"
           ]
         },
         {
@@ -179,27 +187,11 @@
           ]
         },
         {
-          "code": "ds.bit",
-          "name": "树状数组",
-          "fullName": "树状数组（单点改 + 区间和）",
+          "code": "ds.heap",
+          "name": "堆",
+          "fullName": "堆（priority_queue 与对顶堆）",
           "templateIds": [
-            "ds-bit"
-          ]
-        },
-        {
-          "code": "ds.segtree",
-          "name": "线段树",
-          "fullName": "线段树（区间加 + 区间求和，懒标记）",
-          "templateIds": [
-            "ds-segtree"
-          ]
-        },
-        {
-          "code": "ds.sparse-table",
-          "name": "ST 表",
-          "fullName": "ST 表（静态 RMQ）",
-          "templateIds": [
-            "ds-sparse-table"
+            "ds-heap"
           ]
         },
         {
@@ -219,11 +211,35 @@
           ]
         },
         {
-          "code": "ds.heap",
-          "name": "堆",
-          "fullName": "堆（priority_queue 与对顶堆）",
+          "code": "ds.bit",
+          "name": "树状数组",
+          "fullName": "树状数组（单点改 + 区间和）",
           "templateIds": [
-            "ds-heap"
+            "ds-bit"
+          ]
+        },
+        {
+          "code": "ds.sparse-table",
+          "name": "ST 表",
+          "fullName": "ST 表（静态 RMQ）",
+          "templateIds": [
+            "ds-sparse-table"
+          ]
+        },
+        {
+          "code": "ds.segtree",
+          "name": "线段树",
+          "fullName": "线段树（区间加 + 区间求和，懒标记）",
+          "templateIds": [
+            "ds-segtree"
+          ]
+        },
+        {
+          "code": "ds.li-chao",
+          "name": "李超线段树",
+          "fullName": "李超线段树",
+          "templateIds": [
+            "ds-li-chao"
           ]
         },
         {
@@ -259,11 +275,43 @@
           ]
         },
         {
+          "code": "ds.sqrt-split",
+          "name": "根号分治",
+          "fullName": "根号分治",
+          "templateIds": [
+            "ds-sqrt-split"
+          ]
+        },
+        {
           "code": "ds.mo-algorithm",
           "name": "莫队",
           "fullName": "莫队（普通 + 带修）",
           "templateIds": [
             "ds-mo-algorithm"
+          ]
+        },
+        {
+          "code": "ds.cartesian-tree",
+          "name": "笛卡尔树",
+          "fullName": "笛卡尔树",
+          "templateIds": [
+            "ds-cartesian-tree"
+          ]
+        },
+        {
+          "code": "ds.majority-vote",
+          "name": "摩尔投票与绝对众数",
+          "fullName": "摩尔投票与绝对众数",
+          "templateIds": [
+            "ds-majority-vote"
+          ]
+        },
+        {
+          "code": "ds.segtree-divide",
+          "name": "线段树分治",
+          "fullName": "线段树分治",
+          "templateIds": [
+            "ds-segtree-divide"
           ]
         },
         {
@@ -340,6 +388,14 @@
           "fullName": "树链剖分（重链剖分）",
           "templateIds": [
             "tree-hld"
+          ]
+        },
+        {
+          "code": "tree.dsu-on-tree",
+          "name": "树上启发式合并",
+          "fullName": "树上启发式合并",
+          "templateIds": [
+            "tree-dsu-on-tree"
           ]
         },
         {
@@ -435,6 +491,14 @@
           ]
         },
         {
+          "code": "dp.sos",
+          "name": "高维前缀和（子集和变换）",
+          "fullName": "高维前缀和（子集和变换）",
+          "templateIds": [
+            "dp-sos"
+          ]
+        },
+        {
           "code": "dp.digit",
           "name": "数位 DP",
           "fullName": "数位 DP",
@@ -467,6 +531,22 @@
           ]
         },
         {
+          "code": "dp.decision-mono",
+          "name": "决策单调性优化 DP",
+          "fullName": "决策单调性优化 DP（四边形不等式）",
+          "templateIds": [
+            "dp-decision-mono"
+          ]
+        },
+        {
+          "code": "dp.wqs",
+          "name": "WQS 二分",
+          "fullName": "WQS 二分（凸优化）",
+          "templateIds": [
+            "dp-wqs"
+          ]
+        },
+        {
           "code": "dp.steiner",
           "name": "最小斯坦纳树",
           "fullName": "最小斯坦纳树",
@@ -494,6 +574,22 @@
       "name": "图论",
       "points": [
         {
+          "code": "graph.topo",
+          "name": "拓扑排序",
+          "fullName": "拓扑排序（Kahn）",
+          "templateIds": [
+            "graph-topo"
+          ]
+        },
+        {
+          "code": "graph.floyd",
+          "name": "Floyd",
+          "fullName": "Floyd（多源最短路 / 传递闭包）",
+          "templateIds": [
+            "graph-floyd"
+          ]
+        },
+        {
           "code": "graph.dijkstra",
           "name": "堆优化 Dijkstra",
           "fullName": "堆优化 Dijkstra",
@@ -518,30 +614,6 @@
           ]
         },
         {
-          "code": "graph.topo",
-          "name": "拓扑排序",
-          "fullName": "拓扑排序（Kahn）",
-          "templateIds": [
-            "graph-topo"
-          ]
-        },
-        {
-          "code": "graph.hungarian",
-          "name": "匈牙利算法",
-          "fullName": "匈牙利算法（二分图最大匹配）",
-          "templateIds": [
-            "graph-hungarian"
-          ]
-        },
-        {
-          "code": "graph.floyd",
-          "name": "Floyd",
-          "fullName": "Floyd（多源最短路 / 传递闭包）",
-          "templateIds": [
-            "graph-floyd"
-          ]
-        },
-        {
           "code": "graph.euler",
           "name": "欧拉路",
           "fullName": "欧拉路（Euler Path）",
@@ -555,6 +627,38 @@
           "fullName": "差分约束",
           "templateIds": [
             "graph-diff-constraint"
+          ]
+        },
+        {
+          "code": "graph.layered",
+          "name": "分层图与拆点建模",
+          "fullName": "分层图与拆点建模",
+          "templateIds": [
+            "graph-layered"
+          ]
+        },
+        {
+          "code": "graph.boruvka",
+          "name": "Boruvka",
+          "fullName": "Boruvka 最小生成树",
+          "templateIds": [
+            "graph-boruvka"
+          ]
+        },
+        {
+          "code": "graph.second-mst",
+          "name": "严格次小生成树",
+          "fullName": "严格次小生成树",
+          "templateIds": [
+            "graph-second-mst"
+          ]
+        },
+        {
+          "code": "graph.hungarian",
+          "name": "匈牙利算法",
+          "fullName": "匈牙利算法（二分图最大匹配）",
+          "templateIds": [
+            "graph-hungarian"
           ]
         },
         {
@@ -598,14 +702,6 @@
           ]
         },
         {
-          "code": "graph.second-mst",
-          "name": "严格次小生成树",
-          "fullName": "严格次小生成树",
-          "templateIds": [
-            "graph-second-mst"
-          ]
-        },
-        {
           "code": "graph.kth-path",
           "name": "k 短路",
           "fullName": "k 短路",
@@ -646,14 +742,14 @@
           ]
         },
         {
-          "code": "graph.shortest-path",
-          "name": "最短路"
-        },
-        {
           "code": "graph.general",
           "name": "图论（综合）",
           "fullName": "图论（综合，未细分）",
           "templateIds": []
+        },
+        {
+          "code": "graph.shortest-path",
+          "name": "最短路"
         }
       ]
     },
@@ -694,22 +790,6 @@
           ]
         },
         {
-          "code": "math.matrix-pow",
-          "name": "矩阵快速幂",
-          "fullName": "矩阵快速幂",
-          "templateIds": [
-            "math-matrix-pow"
-          ]
-        },
-        {
-          "code": "math.game-theory",
-          "name": "博弈论基础",
-          "fullName": "博弈论基础",
-          "templateIds": [
-            "math-game-theory"
-          ]
-        },
-        {
           "code": "math.euler-theorem",
           "name": "欧拉定理与降幂",
           "fullName": "欧拉定理与降幂",
@@ -726,6 +806,14 @@
           ]
         },
         {
+          "code": "math.game-theory",
+          "name": "博弈论基础",
+          "fullName": "博弈论基础",
+          "templateIds": [
+            "math-game-theory"
+          ]
+        },
+        {
           "code": "math.crt",
           "name": "中国剩余定理",
           "fullName": "中国剩余定理（CRT / EXCRT）",
@@ -734,11 +822,27 @@
           ]
         },
         {
+          "code": "math.matrix-pow",
+          "name": "矩阵快速幂",
+          "fullName": "矩阵快速幂",
+          "templateIds": [
+            "math-matrix-pow"
+          ]
+        },
+        {
           "code": "math.gauss",
           "name": "高斯消元",
           "fullName": "高斯消元",
           "templateIds": [
             "math-gauss"
+          ]
+        },
+        {
+          "code": "math.binomial-inversion",
+          "name": "二项式反演",
+          "fullName": "二项式反演",
+          "templateIds": [
+            "math-binomial-inversion"
           ]
         },
         {
@@ -758,6 +862,22 @@
           ]
         },
         {
+          "code": "math.bsgs",
+          "name": "BSGS",
+          "fullName": "BSGS（大步小步）",
+          "templateIds": [
+            "math-bsgs"
+          ]
+        },
+        {
+          "code": "math.lgv",
+          "name": "LGV 引理",
+          "fullName": "LGV 引理",
+          "templateIds": [
+            "math-lgv"
+          ]
+        },
+        {
           "code": "math.mobius",
           "name": "莫比乌斯反演",
           "fullName": "莫比乌斯反演",
@@ -771,14 +891,6 @@
           "fullName": "FFT / NTT",
           "templateIds": [
             "math-fft"
-          ]
-        },
-        {
-          "code": "math.bsgs",
-          "name": "BSGS",
-          "fullName": "BSGS（大步小步）",
-          "templateIds": [
-            "math-bsgs"
           ]
         },
         {
@@ -806,10 +918,6 @@
           ]
         },
         {
-          "code": "math.number-theory",
-          "name": "数论"
-        },
-        {
           "code": "math.combinatorics",
           "name": "组合计数"
         },
@@ -818,6 +926,10 @@
           "name": "数学（综合）",
           "fullName": "数学（综合，未细分）",
           "templateIds": []
+        },
+        {
+          "code": "math.number-theory",
+          "name": "数论"
         }
       ]
     },
@@ -825,14 +937,6 @@
       "key": "string",
       "name": "字符串",
       "points": [
-        {
-          "code": "string.kmp",
-          "name": "KMP",
-          "fullName": "KMP",
-          "templateIds": [
-            "str-kmp"
-          ]
-        },
         {
           "code": "string.hash",
           "name": "字符串哈希",
@@ -850,11 +954,11 @@
           ]
         },
         {
-          "code": "string.manacher",
-          "name": "Manacher",
-          "fullName": "Manacher（最长回文）",
+          "code": "string.kmp",
+          "name": "KMP",
+          "fullName": "KMP",
           "templateIds": [
-            "str-manacher"
+            "str-kmp"
           ]
         },
         {
@@ -863,6 +967,30 @@
           "fullName": "Z 函数（扩展 KMP）",
           "templateIds": [
             "str-z-function"
+          ]
+        },
+        {
+          "code": "string.minimal-rotation",
+          "name": "最小表示法",
+          "fullName": "最小表示法",
+          "templateIds": [
+            "str-minimal-rotation"
+          ]
+        },
+        {
+          "code": "string.01trie",
+          "name": "01-Trie",
+          "fullName": "01-Trie（异或极值）",
+          "templateIds": [
+            "str-01trie"
+          ]
+        },
+        {
+          "code": "string.manacher",
+          "name": "Manacher",
+          "fullName": "Manacher（最长回文）",
+          "templateIds": [
+            "str-manacher"
           ]
         },
         {
@@ -887,22 +1015,6 @@
           "fullName": "后缀自动机（SAM）",
           "templateIds": [
             "str-sam"
-          ]
-        },
-        {
-          "code": "string.minimal-rotation",
-          "name": "最小表示法",
-          "fullName": "最小表示法",
-          "templateIds": [
-            "str-minimal-rotation"
-          ]
-        },
-        {
-          "code": "string.01trie",
-          "name": "01-Trie",
-          "fullName": "01-Trie（异或极值）",
-          "templateIds": [
-            "str-01trie"
           ]
         },
         {
@@ -933,19 +1045,27 @@
           ]
         },
         {
+          "code": "geo.manhattan-chebyshev",
+          "name": "曼哈顿与切比雪夫距离互转",
+          "fullName": "曼哈顿与切比雪夫距离互转",
+          "templateIds": [
+            "geo-manhattan-chebyshev"
+          ]
+        },
+        {
+          "code": "geo.pick",
+          "name": "Pick 定理与格点计数",
+          "fullName": "Pick 定理与格点计数",
+          "templateIds": [
+            "geo-pick"
+          ]
+        },
+        {
           "code": "geo.convex-hull",
           "name": "凸包",
           "fullName": "凸包（Andrew 单调链）",
           "templateIds": [
             "geo-convex-hull"
-          ]
-        },
-        {
-          "code": "geo.point-in-polygon",
-          "name": "点在多边形内",
-          "fullName": "点在多边形内（射线法）",
-          "templateIds": [
-            "geo-point-in-polygon"
           ]
         },
         {
@@ -957,11 +1077,11 @@
           ]
         },
         {
-          "code": "geo.pick",
-          "name": "Pick 定理与格点计数",
-          "fullName": "Pick 定理与格点计数",
+          "code": "geo.point-in-polygon",
+          "name": "点在多边形内",
+          "fullName": "点在多边形内（射线法）",
           "templateIds": [
-            "geo-pick"
+            "geo-point-in-polygon"
           ]
         },
         {
@@ -1016,6 +1136,22 @@
           ]
         },
         {
+          "code": "misc.table-cast",
+          "name": "打表与卡常",
+          "fullName": "打表与卡常",
+          "templateIds": [
+            "misc-table-cast"
+          ]
+        },
+        {
+          "code": "misc.permutation",
+          "name": "置换与置换环",
+          "fullName": "置换与置换环",
+          "templateIds": [
+            "misc-permutation"
+          ]
+        },
+        {
           "code": "misc.bitset",
           "name": "bitset 压位优化",
           "fullName": "bitset 压位优化",
@@ -1032,21 +1168,9 @@
           ]
         },
         {
-          "code": "misc.table-cast",
-          "name": "打表与卡常",
-          "fullName": "打表与卡常",
-          "templateIds": [
-            "misc-table-cast"
-          ]
-        },
-        {
-          "code": "misc.sorting",
-          "name": "排序"
-        },
-        {
-          "code": "misc.simulation",
-          "name": "模拟",
-          "fullName": "模拟（按题意逐步实现）",
+          "code": "misc.array",
+          "name": "数组与实现",
+          "fullName": "数组与实现细节",
           "templateIds": []
         },
         {
@@ -1056,27 +1180,31 @@
           "templateIds": []
         },
         {
-          "code": "misc.array",
-          "name": "数组与实现",
-          "fullName": "数组与实现细节",
-          "templateIds": []
-        },
-        {
           "code": "misc.counting",
           "name": "计数",
           "fullName": "计数（方案数/统计）",
           "templateIds": []
         },
         {
-          "code": "misc.stack",
-          "name": "栈",
-          "fullName": "栈（含括号匹配/表达式）",
-          "templateIds": []
-        },
-        {
           "code": "misc.interactive",
           "name": "交互",
           "fullName": "交互题",
+          "templateIds": []
+        },
+        {
+          "code": "misc.simulation",
+          "name": "模拟",
+          "fullName": "模拟（按题意逐步实现）",
+          "templateIds": []
+        },
+        {
+          "code": "misc.sorting",
+          "name": "排序"
+        },
+        {
+          "code": "misc.stack",
+          "name": "栈",
+          "fullName": "栈（含括号匹配/表达式）",
           "templateIds": []
         }
       ]

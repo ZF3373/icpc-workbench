@@ -13,7 +13,7 @@ function codeSnippet(code: string, maxLines = 30): string {
 /**
  * 构建模板库摘要，注入 AI 助手系统提示词，让 AI 知道用户模板库中已有哪些模板。
  *
- * 内置模板来自 CURRICULUM 常量（114 条），用户写入的内容来自 template_progress 表；
+ * 内置模板来自 CURRICULUM 常量（130 条），用户写入的内容来自 template_progress 表；
  * 自定义模板来自 custom_templates 表。两者合并为紧凑的文本摘要。
  * 同时抽取少量已有代码片段，让 AI 后续输出代码时对齐用户已有风格。
  */

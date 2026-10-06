@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "comment": "L1 标题规则表：pattern/negative 为正则源码（统一 i 旗标）。规则是代码不是数据——改动必须 bump version 并触发管线重跑。code 必须存在于 taxonomy.json。",
+  "version": 2,
+  "comment": "L1 标题规则表：pattern/negative 为正则源码（统一 i 旗标）。规则是代码不是数据——改动必须 bump version 并触发管线重跑。code 必须存在于 taxonomy.json。r198-r213 为 AlgoWiki tricks 补课引入的 16 讲新课程的标题识别。",
   "rules": [
     { "id": "r001", "pattern": "二分答案", "code": "basic.binary-answer", "confidence": 0.9 },
     { "id": "r002", "pattern": "二分查找|binary search", "negative": "搜索树|binary search tree", "code": "basic.binary-search", "confidence": 0.9 },
@@ -17,7 +17,7 @@
     { "id": "r020", "pattern": "双向 ?BFS|双向搜索", "code": "search.bidirectional-bfs", "confidence": 0.9 },
     { "id": "r021", "pattern": "折半搜索|meet[- ]in[- ]the[- ]middle", "code": "search.meet-in-middle", "confidence": 0.9 },
     { "id": "r022", "pattern": "记忆化", "code": "search.memo", "confidence": 0.85 },
-    { "id": "r023", "pattern": "A\\*|IDA\\*|启发式", "code": "search.astar", "confidence": 0.85 },
+    { "id": "r023", "pattern": "A\\*|IDA\\*|启发式", "negative": "合并", "code": "search.astar", "confidence": 0.85 },
     { "id": "r024", "pattern": "模拟退火|annealing", "code": "search.annealing", "confidence": 0.9 },
     { "id": "r025", "pattern": "舞蹈链|\\bDLX\\b|精确覆盖", "code": "search.dlx", "confidence": 0.9 },
     { "id": "r026", "pattern": "flood ?fill|连通块|泛洪", "code": "search.floodfill", "confidence": 0.75 },
@@ -31,7 +31,7 @@
     { "id": "r042", "pattern": "树状数组|fenwick|binary indexed", "code": "ds.bit", "confidence": 0.9 },
     { "id": "r043", "pattern": "主席树|可持久化", "code": "ds.chairman-tree", "confidence": 0.9 },
     { "id": "r044", "pattern": "树套树", "code": "ds.tree-in-tree", "confidence": 0.9 },
-    { "id": "r045", "pattern": "线段树|segment tree", "negative": "可持久化|主席树|树套树", "code": "ds.segtree", "confidence": 0.9 },
+    { "id": "r045", "pattern": "线段树|segment tree", "negative": "可持久化|主席树|树套树|李超|线段树分治", "code": "ds.segtree", "confidence": 0.9 },
     { "id": "r046", "pattern": "ST ?表|稀疏表|sparse table|\\bRMQ\\b", "code": "ds.sparse-table", "confidence": 0.85 },
     { "id": "r047", "pattern": "单调栈|monotonic stack", "code": "ds.mono-stack", "confidence": 0.9 },
     { "id": "r048", "pattern": "单调队列|monotonic (queue|deque)", "negative": "优化", "code": "ds.mono-deque", "confidence": 0.85 },
@@ -141,6 +141,23 @@
     { "id": "r194", "pattern": "bitset", "code": "misc.bitset", "confidence": 0.85 },
     { "id": "r195", "pattern": "\\bCDQ\\b|整体二分", "code": "misc.cdq-whole", "confidence": 0.9 },
     { "id": "r196", "pattern": "打表|卡常", "code": "misc.table-cast", "confidence": 0.8 },
-    { "id": "r197", "pattern": "排序|sorting", "code": "misc.sorting", "confidence": 0.7 }
+    { "id": "r197", "pattern": "排序|sorting", "code": "misc.sorting", "confidence": 0.7 },
+
+    { "id": "r198", "pattern": "反悔贪心|反悔堆|regret greedy", "code": "basic.regret-greedy", "confidence": 0.9 },
+    { "id": "r199", "pattern": "李超|Li[- ]?Chao|LiChao", "code": "ds.li-chao", "confidence": 0.9 },
+    { "id": "r200", "pattern": "笛卡尔树|cartesian tree", "code": "ds.cartesian-tree", "confidence": 0.9 },
+    { "id": "r201", "pattern": "线段树分治|时间线段树", "code": "ds.segtree-divide", "confidence": 0.9 },
+    { "id": "r202", "pattern": "根号分治|根号平衡|阈值分治", "code": "ds.sqrt-split", "confidence": 0.85 },
+    { "id": "r203", "pattern": "摩尔投票|绝对众数|majority vote", "code": "ds.majority-vote", "confidence": 0.85 },
+    { "id": "r204", "pattern": "树上启发式合并|dsu on tree|启发式合并", "code": "tree.dsu-on-tree", "confidence": 0.85 },
+    { "id": "r205", "pattern": "WQS\\s*二分|wqs binary search|带权二分", "code": "dp.wqs", "confidence": 0.9 },
+    { "id": "r206", "pattern": "决策单调性|四边形不等式|divide and conquer optimization", "code": "dp.decision-mono", "confidence": 0.85 },
+    { "id": "r207", "pattern": "高维前缀和|SOS\\s*DP|sum over subsets|子集和变换", "code": "dp.sos", "confidence": 0.9 },
+    { "id": "r208", "pattern": "\\bBoruvka\\b|博鲁夫卡", "code": "graph.boruvka", "confidence": 0.9 },
+    { "id": "r209", "pattern": "分层图|拆点", "code": "graph.layered", "confidence": 0.85 },
+    { "id": "r210", "pattern": "二项式反演|binomial inversion", "code": "math.binomial-inversion", "confidence": 0.9 },
+    { "id": "r211", "pattern": "\\bLGV\\b|不交路径", "code": "math.lgv", "confidence": 0.9 },
+    { "id": "r212", "pattern": "曼哈顿|切比雪夫|manhattan|chebyshev", "code": "geo.manhattan-chebyshev", "confidence": 0.8 },
+    { "id": "r213", "pattern": "置换环|置换", "negative": "置换群|polya|波利亚", "code": "misc.permutation", "confidence": 0.8 }
   ]
 }

@@ -32,7 +32,7 @@ test('taxonomy: templateIds 全部存在于 curriculum（掌握度地图看课�
       assert.ok(templateIds.has(id), `${p.code} 挂了不存在的模板 ${id}`);
     }
   }
-  // 114 节课程应基本一一对应：挂课程的 code 数 = 模板总数
+  // 全部课程应基本一一对应（2026-10 tricks 补课后 130 讲）：挂课程的 code 数 = 模板总数
   const linked = allPoints().filter((p) => (p.templateIds ?? []).length > 0).length;
   assert.equal(linked, CURRICULUM.reduce((n, c) => n + c.templates.length, 0));
 });
