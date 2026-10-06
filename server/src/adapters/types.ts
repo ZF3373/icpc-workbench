@@ -112,6 +112,16 @@ export interface FetchOptions {
    */
   waitedMs?: number;
   /**
+   * 【适配器 → 同步层 回传】直连补充扫描（AtCoder Cookie 抓 own-submissions，见
+   * atcoderDirect.ts）的补充条数。同步层把它合入 result.note 展示（「直连通道补充 N 条」）。
+   */
+  directScanAdded?: number;
+  /**
+   * 【适配器 → 同步层 回传】直连补充扫描**失败原因**（Cookie 失效/风控/网络）。
+   * 直连是镜像路径的补充，失败不能让整次同步失败——同步层把它作为 note（而非 error）展示。
+   */
+  directScanNote?: string;
+  /**
    * 「仅同步最近 N 天」窗口起点（ISO8601 UTC，同步层仅在窗口模式下注入）。
    * 降序平台分页遇到早于该时间的提交时提前终止。与增量 since 严格区分：
    * 牛客等平台存在「提交早于上次同步时刻、却晚出现在列表」的真实场景，

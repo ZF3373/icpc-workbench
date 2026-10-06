@@ -8,14 +8,19 @@ import type {
 import { difficultyFields } from '../../../shared/src/difficulty.ts';
 import type { FetchOptions, PlatformAdapter } from './types.ts';
 import { asHttpClient, sleep, type HttpInit } from './http.ts';
+import { fetchOwnContestSubmissions, isAtcoderLoginPage, type KenkoooSubmission } from './atcoderDirect.ts';
+import { atcoderContestPrefix } from './problemKey.ts';
 
 const API = 'https://kenkoooo.com/atcoder';
+const SITE = 'https://atcoder.jp';
 const RESOURCES_TTL_MS = 24 * 3600 * 1000;
 /** 上游单次响应最多返回这么多行（窗口大小），实测确认：请求 `/user/submissions` 恒定最多 500 行 */
 const SUBMISSION_PAGE = 500;
 // 每次同步的保守页数上限（×1s sleep × 500/页：每次同步最多约 30 分钟），把全量分页拆成多次防封号
 const PER_SYNC_MAX_PAGES = 60;
 const PAGE_DELAY_MS = 1000; // 官方要求访问间隔 >= 1s
+/** 直连补充扫描单次最多覆盖的比赛数（每场 1 次请求起；补题只发生在提交过的比赛里，取最近即可） */
+const DIRECT_SCAN_MAX_CONTESTS = 8;
 
 const RESULT_MAP: Record<string, Verdict> = {
   AC: 'AC',
@@ -30,16 +35,6 @@ const RESULT_MAP: Record<string, Verdict> = {
   WR: 'SKIPPED',
   JUDGE: 'SKIPPED',
 };
-
-interface KenkoooSubmission {
-  id: number;
-  epoch_second: number;
-  problem_id: string;
-  contest_id: string;
-  user_id: string;
-  language: string;
-  result: string;
-}
 
 /**
  * AtCoder 适配器：使用社区维护的 kenkoooo/AtCoderProblems 公开 API（v3）。
@@ -151,15 +146,25 @@ export function createAtcoderAdapter(
       // 回看窗口内提交较多时（比赛周末 ≥300 条/12h）预算被吃满，砍批后游标停在原处
       // 甚至倒退，新提交永远同步不进来（2026-10 排查到的「增量同步又拉不到最新提交」）。
       // 注意不做「整页已知即提前终止」：升序扫描必须走到头才能发现新行。
-      //
-      // 例外（**必须重发**，见 types.ts 的 FetchOptions 契约）：平台侧**改判**（提交时还在
-      // 评测队列 WJ/WR → 现在 AC/WA）或改题号的已知行。这类行若一并跳过，就再也不会进写入层，
-      // importService 的 refreshVerdict 无法刷新库里冻结的旧判定 ——「评测中」入库的行会永久
-      // 停在 SKIPPED（能力值/统计/已做判定全错，且无自愈路径）。改判行数量极少，照常计入上限
-      // 预算即可：判定没被刷新前它每轮都满足改判条件，不会被静默丢掉。
+      // 例外（改判/改题号必须重发）见下方 isResend。
       const known = opts?.knownExternalIds;
       const knownVerdicts = opts?.knownVerdicts;
       const knownProblemKeys = opts?.knownProblemKeys;
+      /**
+       * 已入库行是否需要**重发**（镜像行与直连行共用同一判定，见 types.ts 的 FetchOptions 契约）：
+       * 平台侧**改判**（WJ/WR → 终态）或改题号的行必须重发，否则 importService 的 refreshVerdict
+       * 无法刷新库里冻结的旧判定——「评测中」入库的行会永久停在 SKIPPED 且无自愈路径。
+       * 改判行数量极少，照常计入上限预算：判定没被刷新前它每轮都满足重发条件，不会被静默丢掉。
+       */
+      const isResend = (s: KenkoooSubmission): boolean => {
+        if (!known?.has(String(s.id))) return false;
+        const storedVerdict = knownVerdicts?.get(String(s.id));
+        const verdictChanged =
+          storedVerdict !== undefined && storedVerdict !== (RESULT_MAP[s.result] ?? 'SKIPPED');
+        const storedKey = knownProblemKeys?.get(String(s.id));
+        const keyChanged = storedKey !== undefined && storedKey !== s.problem_id;
+        return verdictChanged || keyChanged;
+      };
       const raws: KenkoooSubmission[] = [];
       let pageFrom = since;
       let naturalEnd = false; // 已到最新一条（空页 / 短页）
@@ -190,14 +195,7 @@ export function createAtcoderAdapter(
         for (const s of rows) {
           const id = String(s.id);
           if (seen.has(id)) continue;
-          if (known?.has(id)) {
-            // 已入库行：默认跳过；但平台侧改判 / 改题号的行必须重发（见上方说明）
-            const storedVerdict = knownVerdicts?.get(id);
-            const verdictChanged = storedVerdict !== undefined && storedVerdict !== (RESULT_MAP[s.result] ?? 'SKIPPED');
-            const storedKey = knownProblemKeys?.get(id);
-            const keyChanged = storedKey !== undefined && storedKey !== s.problem_id;
-            if (!verdictChanged && !keyChanged) continue;
-          }
+          if (known?.has(id) && !isResend(s)) continue;
           if (maxSubmissions && raws.length >= maxSubmissions) {
             // 上限落在某一秒中间：该秒剩下的行继续收下（略微超过上限也在所不惜）再砍——
             // 游标按「本窗末行秒 + 1」推进，只收半秒就会把同秒后半段永久跳过
@@ -233,6 +231,56 @@ export function createAtcoderAdapter(
           if (opts) opts.truncated = true;
         }
         pageFrom = Math.max(lastRow.epoch_second + 1, pageFrom + 1);
+      }
+
+      /**
+       * 直连补充扫描（可选，仅当账号配置了 Cookie）：AtCoder 已把提交列表页全部加上登录墙，
+       * kenkoooo 对赛后补题/练习提交的收录延迟不可控（实测 abc478 补题 3 天未收录，而其爬虫
+       * 对其他比赛的轮转是分钟级），镜像「没收录」期间提交就一直进不来。库里有登录态时直接抓
+       * own-submissions 页补齐增量；提交号与镜像同源（AtCoder 全局提交号），按 id 合并无缝衔接。
+       *
+       * 候选比赛 = 本轮镜像扫到的比赛 ∪ 库中已提交的比赛（补题只会发生在提交过的比赛里；
+       * 库行按导入先后入表，倒序取前缀即「最近活跃」的比赛）。命中不了的形态：练习赛
+       * （practice/ADT）里从无库记录的比赛——这类新比赛的发现仍靠镜像（比赛当天通常即收录）。
+       *
+       * 刻意**不占用/不触发** maxSubmissions 与 truncated 语义：直连的请求次数由
+       * 「比赛数 × 封顶页数」约束（与新增行数无关），风控面在请求侧而非行侧。
+       * 失败只降级不失败：镜像仍是主通道，异常原因经 directScanNote 回传同步中心展示。
+       */
+      if (opts?.cookie) {
+        let directAdded = 0;
+        const directContests: string[] = [];
+        const pushContest = (c: string | null): void => {
+          if (c && !directContests.includes(c)) directContests.push(c);
+        };
+        for (const r of raws) pushContest(r.contest_id);
+        const knownKeys = opts.knownProblemKeys ? [...opts.knownProblemKeys.values()].reverse() : [];
+        for (const key of knownKeys) pushContest(atcoderContestPrefix(key));
+        try {
+          const direct = await fetchOwnContestSubmissions({
+            http,
+            cookie: opts.cookie,
+            handle,
+            ...(opts.ua ? { ua: opts.ua } : {}),
+            contests: directContests.slice(0, DIRECT_SCAN_MAX_CONTESTS),
+            knownIds: known,
+            ...(opts.pageDelayMs !== undefined ? { pageDelayMs: opts.pageDelayMs } : {}),
+          });
+          if (direct.droppedOtherUser > 0) {
+            opts.directScanNote =
+              `直连扫描丢弃了 ${direct.droppedOtherUser} 条归属不符的提交：Cookie 的登录账号与该账号（${handle}）不一致，请检查设置里的 Cookie 是否贴对了账号`;
+          }
+          for (const s of direct.rows) {
+            const id = String(s.id);
+            if (seen.has(id) || (known?.has(id) && !isResend(s))) continue;
+            seen.add(id);
+            raws.push(s);
+            directAdded += 1;
+          }
+          if (directAdded > 0) opts.directScanAdded = directAdded;
+        } catch (e) {
+          opts.directScanNote = (e as Error).message;
+        }
       }
 
       if (raws.length === 0) {
@@ -271,6 +319,32 @@ export function createAtcoderAdapter(
 
     problemUrl({ problemKey }) {
       return `https://atcoder.jp/tasks/${String(problemKey)}`;
+    },
+
+    /**
+     * 校验登录态（直连补充同步用）：访问需登录的设置页，落在登录页即 Cookie 失效。
+     * 普通同步不依赖 Cookie（镜像路径），故失效只提示、不影响主通道。
+     */
+    async checkAuth({ cookie, ua }) {
+      const res = await http.fetch(
+        `${SITE}/settings`,
+        {
+          headers: {
+            ...(cookie ? { cookie } : {}),
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            ...(ua ? { 'user-agent': ua } : {}),
+          },
+        },
+        { timeoutMs: 20000 },
+      );
+      const html = res.ok ? await res.text() : '';
+      if (isAtcoderLoginPage(res, html)) {
+        return { ok: false, message: 'Cookie 已失效（访问登录页受限内容被重定向），请重新粘贴' };
+      }
+      if (!res.ok) {
+        return { ok: false, message: `AtCoder HTTP ${res.status}` };
+      }
+      return { ok: true, message: '登录态有效：直连补充同步可用' };
     },
   };
 }

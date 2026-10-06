@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createAtcoderAdapter } from '../src/adapters/atcoder.ts';
-import { ascendingNextLastSyncAt, ascendingSinceWithLookback } from '../src/adapters/sync.ts';
+import { ascendingIncrementalSince, ascendingNextLastSyncAt, ascendingSinceWithLookback } from '../src/adapters/sync.ts';
 
 function router(
   handlers: Record<string, (url: string) => unknown>,
@@ -230,21 +230,30 @@ test('触及单次上限：返回的一定是连续前缀，续拉光标可安�
   assert.equal(collected.size, history.length, '最终应收全全部提交（无重复计入）');
 });
 
-test('升序平台增量同步带回看窗口：光标漂到最新提交之后也能把漏掉的提交拉回来（回归）', async () => {
-  // 这是线报「AtCoder 最新提交同步不进来」的核心成因：窗口式上游 + 只按秒定位的游标，
-  // 一旦 last_sync_at 因为瞬时上游空响应/时钟偏差落到最新提交之后，之间的提交永久拉不回来。
-  // 修复：升序平台的增量起点固定回看 12 小时（重复提交由唯一键去重）。
+test('升序平台增量起点：回看窗口 + 数据锚定（光标被空同步推远后仍能覆盖晚收录的提交）', async () => {
+  // 线报成因之一（2026-10-03）：窗口式上游 + 只按秒定位的游标，last_sync_at 落到最新提交之后
+  // 时，之间的提交永久拉不回来 → 修复为增量起点固定回看（12h）。
+  // 线报成因之二（2026-10-06）：上游是社区镜像，收录有延迟（赛后补题可晚数天）；每次
+  // 「一无所获但正常结束」的增量同步都把墙钟光标推到当前时刻，收录一旦晚于
+  // 「提交距上次同步的间隔 + 12h」，那段提交落在所有后续回看窗口之外，永久丢失。
+  // → 增量起点锚定 min(last_sync_at, 库中最新提交时刻) 再回看。
   const lastSyncAt = '2026-10-03T14:34:07.854Z';
-  const effective = ascendingSinceWithLookback(lastSyncAt);
-  assert.ok(effective, '有 last_sync_at 时必须算出回看后的起点');
+  // 仅墙钟光标（库中无提交）：退化为旧的「last_sync_at − 12h」行为
+  assert.equal(ascendingIncrementalSince(lastSyncAt, null), '2026-10-03T02:34:07.854Z');
+  assert.equal(ascendingIncrementalSince(lastSyncAt, undefined), '2026-10-03T02:34:07.854Z');
+  // 数据锚定：光标 10-06 被空同步推远，库中最新提交停在 10-03 12:46（abc478）→
+  // 起点必须锚回库中最新提交 −12h，晚收录的 10-03 之后的提交不丢（真实案例回归）
+  const anchored = ascendingIncrementalSince('2026-10-06T03:47:31.513Z', '2026-10-03T12:46:19.000Z');
+  assert.equal(anchored, '2026-10-03T00:46:19.000Z');
+  assert.ok(Date.parse(anchored!) < Date.parse('2026-10-03T12:05:16.000Z'),
+    '漏掉的 12:05–12:46 提交必须落在扫描范围内');
+  // 库中最新提交比光标新（days 补拉导入过超出光标的新行）：锚回较早的墙钟光标，不重复回扫
   assert.equal(
-    new Date(Date.parse(effective!)).toISOString(),
+    ascendingIncrementalSince('2026-10-03T14:34:07.854Z', '2026-10-05T08:00:00.000Z'),
     '2026-10-03T02:34:07.854Z',
-    '起点必须比 last_sync_at 早 12 小时，才能覆盖被跳过的 12:05–12:46 提交',
   );
-  // 漏掉的提交确实落在回看窗口内 → 会被重新拉到
-  assert.ok(Date.parse(effective!) < Date.parse('2026-10-03T12:05:16.000Z'));
   // 无起点（全量首刷）时保持 undefined，不能凭空造出一个时间点
+  assert.equal(ascendingIncrementalSince(undefined, '2026-10-03T12:46:19.000Z'), undefined);
   assert.equal(ascendingSinceWithLookback(undefined), undefined);
 });
 

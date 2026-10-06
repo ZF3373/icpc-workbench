@@ -214,7 +214,8 @@ export default function Settings() {
   useEffect(() => {
     if (!data) return
     for (const p of data.platforms) {
-      if (p.sync !== 'cookie') continue
+      // 可选凭据平台（atcoder：不配 Cookie 普通同步照常，配置后启用直连补充）也要自动检测
+      if (cookieFieldsOf(p.id).length === 0) continue
       for (const a of data.accounts.filter((x) => x.platform === p.id)) {
         if (acctCheck[p.id]?.[a.handle] !== undefined) continue
         if (!data.accountCreds?.[p.id]?.[a.handle]) continue
@@ -625,11 +626,13 @@ export default function Settings() {
   const acctCardContent = (p: (typeof PLATFORMS)[number], account: SettingsData['accounts'][number] | null) => {
     const handle = account?.handle ?? null
     const draftKey = handle ?? NEW_DRAFT_KEY
-    const isCookie = p.sync === 'cookie'
+    // 凭据是否为同步的**必需品**（cookie 类平台）还是增强项（atcoder：普通同步走镜像，
+    // Cookie 只用于直连补充扫描）——决定卡片里的文案与是否渲染凭据输入框
+    const credRequired = p.sync === 'cookie'
     const slotMasked = handle ? data.accountCreds?.[p.id]?.[handle]?.masked : undefined
     const aCheck = handle ? acctCheck[p.id]?.[handle] : undefined
     const vals = acctInputs[p.id]?.[draftKey] ?? {}
-    const fields = isCookie ? cookieFieldsOf(p.id) : []
+    const fields = cookieFieldsOf(p.id)
     const platformName = PLATFORMS.find((x) => x.id === p.id)?.name ?? p.id
     return (
       <div style={{ minWidth: 300, maxWidth: 520 }}>
@@ -646,10 +649,10 @@ export default function Settings() {
             style={{ width: '100%' }}
           />
         </div>
-        {isCookie && (
+        {fields.length > 0 && (
           <div style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 4 }}>
-              {handle ? '凭据' : '凭据（可留空）'}
+              {handle ? '凭据' : credRequired ? '凭据（可留空）' : '凭据（可选，不配置不影响普通同步）'}
             </div>
             {handle && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
@@ -867,7 +870,9 @@ export default function Settings() {
                                 : { cls: 'conn-dot-fail', title: '凭据无效或已过期，点开续期' }
                               : slotMasked
                                 ? { cls: '', title: '已配置凭据（未检测）' }
-                                : { cls: '', title: '未单独配置凭据：同步回退平台级 Cookie' }
+                                : p.sync === 'cookie'
+                                  ? { cls: '', title: '未单独配置凭据：同步回退平台级 Cookie' }
+                                  : { cls: '', title: '未配置凭据（普通同步不受影响；配置后启用直连补充）' }
                         return (
                           <Popover
                             key={a.handle}
@@ -883,7 +888,7 @@ export default function Settings() {
                               title={a.enabled === 1 ? '点击修改账号名 / 凭据' : '已停用（不参与同步），点击修改'}
                             >
                               {a.handle}
-                              {p.sync === 'cookie' && (
+                              {cookieFieldsOf(p.id).length > 0 && (
                                 <span
                                   className={`conn-dot ${credDot.cls}`}
                                   style={{

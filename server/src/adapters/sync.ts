@@ -60,7 +60,8 @@ export const DEFAULT_SYNC_MAX_SUBMISSIONS = 300;
 export const MIN_SYNC_MAX_SUBMISSIONS = 100;
 export const MAX_SYNC_MAX_SUBMISSIONS = 1500;
 
-/** 库中该账号已有的平台侧提交号与当前 verdict / 题目键（适配器提前终止分页 + 改判/改题号检测用）。
+/** 库中该账号已有的平台侧提交号与当前 verdict / 题目键（适配器提前终止分页 + 改判/改题号检测用），
+ *  以及该账号最新一条提交时刻 maxSubmittedAt（升序平台的增量锚点，见 ascendingIncrementalSince）。
  *  多账号（v0.8）后按账号过滤：增量「整页已知提前终止」只看本账号的提交号，
  *  否则 A 账号会把 B 账号已入库的页误判为已知而漏拉。 */
 function loadKnownSubmissions(
@@ -68,24 +69,40 @@ function loadKnownSubmissions(
   userId: number,
   platform: PlatformId,
   account: string,
-): { ids: Set<string>; verdicts: Map<string, Verdict>; problemKeys: Map<string, string> } {
+): {
+  ids: Set<string>;
+  verdicts: Map<string, Verdict>;
+  problemKeys: Map<string, string>;
+  maxSubmittedAt: string | null;
+} {
   const rows = db
     .prepare(
-      `SELECT s.external_id, s.verdict, p.problem_key AS problem_key
+      `SELECT s.external_id, s.verdict, s.submitted_at, p.problem_key AS problem_key
          FROM submissions s JOIN problems p ON p.id = s.problem_id
         WHERE s.user_id = ? AND s.platform = ? AND s.account = ?`,
     )
-    .all(userId, platform, account) as Array<{ external_id: string; verdict: Verdict; problem_key: string }>;
+    .all(userId, platform, account) as Array<{
+    external_id: string;
+    verdict: Verdict;
+    submitted_at: string;
+    problem_key: string;
+  }>;
   const ids = new Set<string>();
   const verdicts = new Map<string, Verdict>();
   const problemKeys = new Map<string, string>();
+  let maxSubmittedAt: string | null = null;
   for (const r of rows) {
     if (r.external_id == null) continue;
     ids.add(r.external_id);
     verdicts.set(r.external_id, r.verdict);
     if (r.problem_key != null) problemKeys.set(r.external_id, r.problem_key);
+    // Date.parse 比较而非字符串比较：提交时刻虽约定 ISO8601 UTC，但手动导入等路径
+    // 可能写入不带毫秒的变体格式，字符串序对毫秒位缺失的写法会判错
+    if (maxSubmittedAt === null || Date.parse(r.submitted_at) > Date.parse(maxSubmittedAt)) {
+      maxSubmittedAt = r.submitted_at;
+    }
   }
-  return { ids, verdicts, problemKeys };
+  return { ids, verdicts, problemKeys, maxSubmittedAt };
 }
 
 /** 读取单次同步上限设置（sync.maxSubmissions），越界回退默认值 */
@@ -116,15 +133,51 @@ function isAscendingPlatform(platform: PlatformId): boolean {
  * 停在「比最新提交更晚」的位置，那么这之间的提交**再也拉不回来**——用户看到的就是
  * 「点了同步，但是最新的提交一直不进来」。
  *
- * 因此升序平台的增量同步固定从「上次同步时间 - 回看窗口」开始拉：
+ * 但只有回看窗口是不够的（2026-10-06 第二轮排查）：窗口是**锚定墙钟**的（last_sync_at − 12h），
+ * 而 AtCoder 的上游是社区镜像 AtCoder Problems，收录存在延迟——比赛中的提交约几分钟到 2 小时，
+ * 赛后补题/练习提交依赖它重爬旧比赛页，延迟可达数天。每次「一无所获但正常结束」的增量同步
+ * 都会把 last_sync_at 推进到当前时刻，于是「提交发生 → 上游收录」之间每次同步都在把墙钟光标
+ * 越推越远；一旦收录延迟超过「提交距上次同步的间隔 + 12h」，那段提交就落在所有后续回看窗口
+ * 之外，永久丢失。当晚 abc478 的 7 条比赛提交就逼到过这个边缘（增量拉不到，靠 days 窗口补拉救回）。
+ *
+ * 因此升序平台的增量起点改为**锚定数据**：取「last_sync_at」与「库中该账号最新一条提交时刻」
+ * 的较早者再回看（见 ascendingIncrementalSince）。锚在数据上意味着：只要某条提交还没进库，
+ * 它就始终比锚点新、始终落在扫描范围内——收录延迟无论多长，收录后任意一次同步都能拉回，
+ * 不再依赖「用户在上游收录前别点同步」。
+ *
+ * 回看 12 小时的直接目的退居其次：覆盖「锚点同一秒边界」的取全与重扫去重的安全垫。
  * 重复的提交由唯一键（user_id, platform, account, external_id）去重，代价是每次多扫
- * `回看窗口 / 500 行窗口` 个请求，换来的是「任何边界抖动都不会造成永久空洞」。
- * 取 12 小时：常态下多数账号一天内的提交远不足 500 行，即多一次请求即可覆盖。
+ * `回看窗口 / 500 行窗口` 个请求（已知行不占单次上限预算，见 atcoder.ts 行循环）。
  */
 export const ASCENDING_SYNC_LOOKBACK_MS = 12 * 3600_000;
 
 /**
- * 升序平台的增量起点（含回看窗口）。`since` 缺失（全量首刷）时返回 undefined。
+ * 升序平台（AtCoder）的增量起点 = min(last_sync_at, 库中该账号最新提交时刻) − 回看窗口。
+ * 导出以便单测直接断言「锚定数据」确实生效。
+ *
+ * - last_sync_at 缺失（全量首刷）→ undefined，不得凭空造出时间点。
+ * - 库中最新提交比 last_sync_at 还早（常规形态：每次同步都把光标推进到墙钟当前时刻，而
+ *   上游收录延迟使最新提交晚于最后一次扫描）→ 锚到**库中最新提交**，扫描范围重新覆盖
+ *   「库末尾 → 现在」整段，晚收录的提交不丢。
+ * - 库中最新提交比 last_sync_at 晚（days 窗口补拉导入过超出光标的新行）→ 锚回 last_sync_at：
+ *   days 导入的行已知（唯一键/knownIds 跳过），从更晚的墙钟锚点扫起不重复回扫整段。
+ * - 库中一行都没有 → 锚回 last_sync_at，行为与旧实现一致。
+ */
+export function ascendingIncrementalSince(
+  lastSyncAt: string | undefined,
+  maxKnownSubmittedAt: string | null | undefined,
+): string | undefined {
+  if (!lastSyncAt) return undefined;
+  let anchor = lastSyncAt;
+  if (maxKnownSubmittedAt && Date.parse(maxKnownSubmittedAt) < Date.parse(anchor)) {
+    anchor = maxKnownSubmittedAt;
+  }
+  return ascendingSinceWithLookback(anchor);
+}
+
+/**
+ * 升序平台的增量起点（含回看窗口）：对给定锚点回看 `ASCENDING_SYNC_LOOKBACK_MS`。
+ * `since` 缺失（全量首刷）时返回 undefined。
  * 导出以便单测直接断言「回看窗口确实生效」。
  */
 export function ascendingSinceWithLookback(since: string | undefined): string | undefined {
@@ -301,11 +354,6 @@ async function runSyncPlatform(
       daysWindow
         ? new Date(Date.now() - daysWindow * 86_400_000).toISOString()
         : !fullMode && account?.last_sync_at ? account.last_sync_at : undefined;
-    // 升序平台（AtCoder）额外回看一段：窗口式上游 + 只按秒定位的游标一旦停在最新提交之后，
-    // 这之间的提交就再也拉不回来（见 ASCENDING_SYNC_LOOKBACK_MS 注释）。回看拉到的重复提交
-    // 由 knownExternalIds 跳过（不占单次上限预算，见下）+ 唯一键去重兜底。
-    // 降序平台依赖 knownExternalIds 增量，不做回看（会白扫整页）。
-    const since = isAscendingPlatform(platform) ? ascendingSinceWithLookback(rawSince) : rawSince;
     // 声明支持已知提交号过滤的适配器（CF/洛谷/牛客/AtCoder）：注入库中该账号已有提交号。
     // - 降序平台（CF/洛谷/牛客，拉取按新到旧排序）：适配器整页已知即提前终止分页，实现真实增量。
     //   days 窗口模式不注入（否则整页已知会提前终止，覆盖不到窗口内漏拉的历史），
@@ -313,10 +361,22 @@ async function runSyncPlatform(
     //   重复绑定/重拉时已知页可直接跳过，唯一键保证不会漏插也不会重插。
     // - 升序平台（AtCoder）：只用于跳过已入库行且不占单次上限预算（回看窗口重扫的旧行若计入
     //   预算，重度用户会被旧行吃满预算、游标停滞），不做整页提前终止，因此 days 窗口模式同样注入。
+    //   其 maxSubmittedAt 同时是增量锚点的数据侧输入（见 ascendingIncrementalSince），须在算 since 前加载。
     const knownSubs =
       (!daysWindow || isAscendingPlatform(platform)) && adapter.knownIdsFilter
         ? loadKnownSubmissions(db, userId, platform, handle)
         : undefined;
+    // 升序平台（AtCoder）的增量起点锚定「墙钟光标与库中最新提交的较早者」并回看一段：
+    // 窗口式上游 + 只按秒定位的游标一旦停在最新提交之后，这之间的提交就再也拉不回来；
+    // 且社区镜像收录有延迟，墙钟光标会在收录前被一次次空同步推远（详见
+    // ASCENDING_SYNC_LOOKBACK_MS 注释）。锚到数据上后，收录无论多晚，收录后的任意一次
+    // 同步都能把提交拉回。days 窗口模式是显式的补充拉取，锚点就是窗口起点（同样回看）。
+    // 降序平台依赖 knownExternalIds 增量，不做回看（会白扫整页）。
+    const since = isAscendingPlatform(platform)
+      ? daysWindow
+        ? ascendingSinceWithLookback(rawSince)
+        : ascendingIncrementalSince(rawSince, knownSubs?.maxSubmittedAt)
+      : rawSince;
     // 需登录平台：取该账号的生效凭据注入适配器。v0.9 起各账号**只用自己**的 Cookie
     //（accountCreds 槽位），不再回退平台级——没配置就明确报「未配置 Cookie」，
     // 谁过期续谁，互不牵连。UA 仍为平台级（浏览器属性，与账号无关）。
@@ -375,6 +435,15 @@ async function runSyncPlatform(
       result.incremental = true;
     }
 
+    // 直连补充扫描（AtCoder Cookie 抓 own-submissions）的结果说明：补充条数与失败原因都以
+    // note（而非 error）呈现——直连是镜像路径的补充，它的成败不改变本次同步的成败判定。
+    const applyDirectScanNote = (result: SyncResult): void => {
+      const parts: string[] = [];
+      if (fetchOpts.directScanAdded) parts.push(`直连通道补充 ${fetchOpts.directScanAdded} 条`);
+      if (fetchOpts.directScanNote) parts.push(fetchOpts.directScanNote);
+      if (parts.length > 0) result.note = result.note ? `${result.note}（${parts.join('；')}）` : parts.join('；');
+    };
+
     // days 窗口模式为补充拉取：不改 platform_accounts 状态（last_sync_at / 补全游标保持原样）；
     // 但触及上限时必须如实上报（result.truncated + sync_runs.truncated）——否则用户被告知
     // 「已同步最近 N 天」，窗口内未覆盖完的历史被静默丢弃。不注册后台续拉（避免无限循环），
@@ -388,6 +457,7 @@ async function runSyncPlatform(
       } else {
         result.note = `已同步最近 ${daysWindow} 天：新增 ${r.imported} 条（重复 ${r.skipped} 条自动跳过）。`;
       }
+      applyDirectScanNote(result);
       recordSyncRun(db, userId, platform, handle, startedAt, startedTick, {
         mode, status: 'ok', imported: r.imported, skipped: r.skipped, truncated, waitedMs,
         triggeredBy: opts.triggeredBy ?? 'days', nextSuggestedSyncAt: null,
@@ -437,6 +507,7 @@ async function runSyncPlatform(
         '补全检查完成：未发现更早的历史记录（库中已是最全），本次仅做检查、未新增提交' +
         (requests !== null && requests > 0 ? `，共发出 ${requests} 次请求。` : '。');
     }
+    applyDirectScanNote(result);
     // 截断后按平台节奏注册后台续拉：把「多次点击同步」变成自动分批。
     // days 窗口模式是补充拉取（不改账号状态）、auto 是续拉自身再截断——两者都不注册，避免无限续拉。
     if (truncated && opts.triggeredBy !== 'auto' && opts.triggeredBy !== 'days') {

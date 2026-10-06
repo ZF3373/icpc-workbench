@@ -548,3 +548,95 @@ test('sync: 注入 knownProblemKeys；平台侧改题号（比赛 T 号 → 赛�
   assert.equal(row.k, 'P17538');
   assert.equal(row.url, 'https://www.luogu.com.cn/problem/P17538');
 });
+
+test('atcoder 增量起点锚定库中最新提交：空同步推远光标后，晚收录的提交仍能拉回（2026-10 线报回归）', async () => {
+  // 真实场景：abc478 提交已入库；随后上游（kenkoooo 社区镜像）对新提交收录延迟数天，
+  // 期间每次同步都「正常结束、一无所获」并把 last_sync_at 推进到当前时刻——
+  // 墙钟回看窗口（12h）被甩在身后，收录到达时提交已落在所有后续窗口之外。
+  // 修复后增量起点锚定 min(last_sync_at, 库中最新提交时刻) − 12h：只要提交还没进库，
+  // 它就始终比锚点新，收录后的任意一次同步都能把它拉回。
+  let sinceCalls: Array<string | undefined> = [];
+  let upstream: NormalizedSubmission[] = [];
+  const fake: PlatformAdapter = {
+    platform: 'atcoder',
+    knownIdsFilter: true,
+    async fetchUserSubmissions(_handle, opts) {
+      sinceCalls.push(opts?.since);
+      return upstream;
+    },
+    problemUrl() {
+      return 'https://atcoder.jp/';
+    },
+  };
+  register(fake);
+  const atSub = (externalId: string, submittedAt: string): NormalizedSubmission => ({
+    problem: {
+      platform: 'atcoder',
+      problemKey: 'abc478_a',
+      title: 'T abc478_a',
+      difficulty: 300,
+      url: 'https://atcoder.jp/contests/abc478/tasks/abc478_a',
+      tags: [],
+    },
+    verdict: 'AC',
+    language: 'C++',
+    submittedAt,
+    externalId,
+  });
+
+  // 第 1 轮：全量拉到 abc478 提交（10-03 12:46）
+  upstream = [atSub('at-1', '2026-10-03T12:46:19.000Z')];
+  const first = await syncPlatform(db, 'atcoder', 'hieZF123');
+  assert.equal(first.imported, 1);
+
+  // 第 2 轮：上游还没有新提交（收录延迟中）→ 正常结束、一无所获，last_sync_at 推进到当前时刻
+  upstream = [];
+  await syncPlatform(db, 'atcoder', 'hieZF123');
+  const cursor = (db
+    .prepare("SELECT last_sync_at FROM platform_accounts WHERE platform='atcoder' AND handle='hieZF123'")
+    .get() as { last_sync_at: string }).last_sync_at;
+  assert.ok(Date.parse(cursor) > Date.parse('2026-10-03T12:46:19.000Z'), '光标已被空同步推到库中最新提交之后');
+
+  // 第 3 轮：上游数天后才收录新提交（10-05）→ since 必须锚回库中最新提交 −12h（10-03 00:46），
+  // 而不是「光标 −12h」（10-05 前后）——后者会让这条提交永远扫描不到
+  sinceCalls = [];
+  upstream = [atSub('at-2', '2026-10-05T08:00:00.000Z')];
+  const third = await syncPlatform(db, 'atcoder', 'hieZF123');
+  assert.equal(third.imported, 1, '晚收录的提交必须被拉回');
+  assert.equal(sinceCalls[0], '2026-10-03T00:46:19.000Z', `实际 since: ${sinceCalls[0]}`);
+  assert.ok(
+    Date.parse(sinceCalls[0]!) < Date.parse('2026-10-03T12:46:19.000Z'),
+    '扫描起点必须早于库中最新提交（12h 回看），覆盖空同步期间的全部空档',
+  );
+
+  // 第 4 轮：锚点随 at-2 进库前移（min(光标, 10-05 08:00) −12h）；重复行到达写入层由唯一键去重
+  sinceCalls = [];
+  upstream = [atSub('at-1', '2026-10-03T12:46:19.000Z'), atSub('at-2', '2026-10-05T08:00:00.000Z')];
+  const fourth = await syncPlatform(db, 'atcoder', 'hieZF123');
+  assert.equal(fourth.imported, 0);
+  assert.equal(fourth.skipped, 2, '重复行计入 skipped，不再重复导入');
+  assert.equal(sinceCalls[0], '2026-10-04T20:00:00.000Z', `实际 since: ${sinceCalls[0]}`);
+});
+
+test('直连补充扫描的结果说明合入 result.note（补充条数 + 失败原因都以 note 呈现，不算失败）', async () => {
+  // 直连（AtCoder Cookie 抓 own-submissions）是镜像路径的补充：它的成败不得改变同步成败判定，
+  // 但必须让用户看见——补充条数与失败原因经 FetchOptions out 字段回传，由同步层合入 note。
+  const fake: PlatformAdapter = {
+    platform: 'codeforces',
+    async fetchUserSubmissions(_handle, opts) {
+      if (opts) {
+        opts.directScanAdded = 2;
+        opts.directScanNote = '直连扫描测试说明';
+      }
+      return [sub('1919A', 'direct-1')];
+    },
+    problemUrl() {
+      return 'https://codeforces.com/';
+    },
+  };
+  register(fake);
+  const result = await syncPlatform(db, 'codeforces', 'tourist');
+  assert.equal(result.errors.length, 0, '直连信息不是错误');
+  assert.match(result.note ?? '', /直连通道补充 2 条/);
+  assert.match(result.note ?? '', /直连扫描测试说明/);
+});

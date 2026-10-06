@@ -36,12 +36,19 @@ export interface CookieFieldDef {
 
 /**
  * 需配置凭据的平台字段表。
- * 未在此表中的平台（纯公开 API 的 codeforces/atcoder/nowcoder）无需 Cookie。
+ * 未在此表中的平台（纯公开 API 的 codeforces/nowcoder）无需 Cookie。
  *
  * 注意：QOJ 的 cf_clearance 与浏览器/IP 绑定，除字段本身外还需用户填「浏览器 UA」
  * （见 CREDENTIAL_UA_FIELDS），否则同一凭据在服务端请求里必然被判失效。
  */
 export const COOKIE_FIELDS: Partial<Record<PlatformId, CookieFieldDef[]>> = {
+  // AtCoder：**可选凭据**。普通同步走社区镜像 kenkoooo（无需登录）；配置 Cookie 后适配器
+  // 额外直连官网抓「我的提交」页（atcoderDirect.ts），补上镜像迟迟未收录的赛后补题/练习提交
+  // ——AtCoder 已把提交列表页全部加上登录墙，镜像对这些提交的收录延迟可达数天（2026-10 实测）。
+  // 登录会话只有 REVEL_SESSION 一项；整段 Cookie 粘贴亦可（按名分派）。
+  atcoder: [
+    { key: 'revelSession', cookieName: 'REVEL_SESSION', label: '登录会话（可选：配置后补题/练习提交同步更及时）', placeholder: '粘贴 REVEL_SESSION 的值（整段 Cookie 亦可，会自动分派）', password: true },
+  ],
   luogu: [
     { key: 'uid', cookieName: '_uid', label: '用户 uid', placeholder: '粘贴 _uid 的值' },
     { key: 'clientId', cookieName: '__client_id', label: '登录令牌', placeholder: '粘贴 __client_id 的值', password: true },
