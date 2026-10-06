@@ -10,6 +10,7 @@ import {
   InputNumber,
   App as AntdApp,
   Modal,
+  Popconfirm,
   Select,
   Space,
   Switch,
@@ -40,7 +41,7 @@ import { difficultyColor, formatDifficulty, OFFICIAL_NO_DIFFICULTY_TEXT, PLATFOR
 import { DIFFICULTY_BUCKETS as DIFF_BUCKETS, type DifficultyBucket } from '../problemFilter'
 import { appendSortParams, sortFieldOf, sortFromAntd, sorterOrderOf, sortTooltip, type SortState } from '../problemSort'
 import { BP, useMediaQuery } from '../useMediaQuery'
-import { codeOptionsFromTags } from '../intentOptions'
+import { codeOptionsFromTags, intentBadgeSummary } from '../intentOptions'
 import { del, get, patch, post, put } from '../api'
 import {
   progressText,
@@ -128,6 +129,9 @@ interface ProblemRow {
   status: 'ac' | 'tried' | 'none'
   /** 已在复习队列时为复习条目 id（用于移出），旧服务端可能缺省 */
   reviewItemId?: number | null
+  /** 「卡在哪」记录条数与最差卡点（服务端列表聚合，缺省 = 旧服务端/未记过，不显示角标） */
+  intentCount?: number
+  worstIntent?: string | null
 }
 
 type StatusFilter = 'all' | 'ac' | 'tried' | 'none'
@@ -233,6 +237,8 @@ export default function Problems() {
   }, [urlQ])
   // 内置题库开箱即用：默认包含未做题库题（否则题库再大默认视图也只有做过的题）
   const [includeBank, setIncludeBank] = useState(true)
+  // 只看记过「卡在哪」的题：声明记录散在几百行里靠角标扫视找不过来，一键筛出
+  const [intentOnly, setIntentOnly] = useState(false)
   const [importOpen, setImportOpen] = useState(() => searchParams.get('import') === 'sync')
   /** 「导入刷题记录」弹窗当前页签（受控：SyncTab 用它判断自己是否活跃，从而刷新/轮询续拉状态） */
   const [importTab, setImportTab] = useState('sync')
@@ -279,6 +285,7 @@ export default function Problems() {
     if (platform) params.set('platform', platform)
     if (q) params.set('q', q)
     if (includeBank) params.set('bank', '1')
+    if (intentOnly) params.set('intent', '1')
     if (statusFilter !== 'all') params.set('status', statusFilter)
     // 难度：「未知」桶直接下发桶名（服务端 IS NULL 分支）；命中区间桶时用桶名，否则用显式区间
     const bucket = DIFF_BUCKETS.find((b) => b.min === (diffMin ?? null) && b.max === (diffMax ?? null))
@@ -297,7 +304,7 @@ export default function Problems() {
     // 排序（issue #38）：sort/order 下推到服务端 ORDER BY；未排序时不写参数 = 默认顺序
     appendSortParams(params, sort)
     return params
-  }, [platform, q, includeBank, statusFilter, diffMin, diffMax, diffUnknown, tagFilters, sort])
+  }, [platform, q, includeBank, intentOnly, statusFilter, diffMin, diffMax, diffUnknown, tagFilters, sort])
 
   // 只允许「最新一次请求」落地：连点筛选/翻页时多个请求在途，晚到的旧响应若照常写回，
   // 会把旧条件的行连同它的 total/page 一起盖上去，之后没有新请求来自愈（界面长期停在错数据上）
@@ -745,6 +752,7 @@ export default function Problems() {
     setQ(undefined)
     setQInput('')
     setIncludeBank(true)
+    setIntentOnly(false)
   }
 
   /**
@@ -901,7 +909,21 @@ export default function Problems() {
     after?.()
   }
 
-  const batchMarkAc = () => void runBatch('批量标记 AC', selectedRows, (r) => markAc(r, true))
+  const batchMarkAc = () => {
+    // 防误触：批量栏按钮相邻，点错「标记 AC」会一次写入 N 条本地 AC 记录（无撤销入口）。
+    // 空选先拦截（runBatch 里的警告留给真实执行路径，确认框不该对 0 道题弹出）
+    if (selectedRows.length === 0) {
+      message.warning('所选题目不在当前页，请翻到对应页后再试')
+      return
+    }
+    modal.confirm({
+      title: `标记选中的 ${selectedRows.length} 道题为 AC？`,
+      content: '将各写入一条本地 AC 记录，计入 AC 率、已解题数与能力值估计。',
+      okText: '确认标记',
+      cancelText: '取消',
+      onOk: () => void runBatch('批量标记 AC', selectedRows, (r) => markAc(r, true)),
+    })
+  }
 
   const batchAddToReview = () => void runBatch('批量加入复习队列', selectedRows, (r) => addToReview(r, true))
 
@@ -1151,17 +1173,29 @@ export default function Problems() {
       title: '标签',
       dataIndex: 'tags',
       width: 230,
-      render: (tags: string[]) =>
-        tags.length ? (
+      render: (tags: string[], row: ProblemRow) => {
+        // 卡点角标（可见可管）：记过「卡在哪」的题一眼可辨——角标直接给出
+        // 「卡过 N 次 · 最差卡点」全文（只显示数字的话，类型仍要悬停才能看到）。
+        // 跟在标签尾部而不新增列——它是辅助信号，不该占据一整列的布局预算。
+        const summary = intentBadgeSummary(row.intentCount ?? 0, row.worstIntent)
+        return tags.length || summary ? (
           <Space size={4} wrap>
             {tags.slice(0, 3).map((t) => (
               <Tag key={t}>{t}</Tag>
             ))}
             {tags.length > 3 && <span className="tag-more">+{tags.length - 3}</span>}
+            {summary && (
+              <Tooltip title="记过「卡在哪」，弱项判断与复习排序会据此调整；「更多操作 → 卡在哪」可查看与撤销">
+                <Tag color="warning" style={{ marginInlineEnd: 0 }}>
+                  {summary}
+                </Tag>
+              </Tooltip>
+            )}
           </Space>
         ) : (
           <span style={{ color: 'var(--text-dim)' }}>-</span>
-        ),
+        )
+      },
     },
     {
       title: '提交',
@@ -1181,9 +1215,17 @@ export default function Problems() {
       render: (_v, r) => (
         <Space size={4}>
           {r.status !== 'ac' && (
-            <Button size="small" onClick={() => void markAc(r)}>
-              标记 AC
-            </Button>
+            // 防误触（2026-10-06）：标记会写入一条真实生效的本地 AC 记录（影响 AC 率 /
+            // 已解题数 / 能力值估计，且界面没有撤销入口），气泡确认拦一下手滑
+            <Popconfirm
+              title="标记为 AC？"
+              description="补录一条本地 AC 记录，计入 AC 率、已解题数与能力值估计"
+              okText="确认标记"
+              cancelText="取消"
+              onConfirm={() => void markAc(r)}
+            >
+              <Button size="small">标记 AC</Button>
+            </Popconfirm>
           )}
           <Dropdown
             trigger={['click']}
@@ -1216,6 +1258,8 @@ export default function Problems() {
                         onSuccess={(m) => message.success(m)}
                         onError={(m) => message.error(m)}
                         onDone={() => setMenuRowId(null)}
+                        // 记录/撤销后刷新行数据（角标随最新聚合走）；Popover 不因此关闭
+                        onChanged={() => loadRef.current()}
                       />
                     </span>
                   ),
@@ -1427,6 +1471,9 @@ export default function Problems() {
             </Button>
             <Checkbox checked={includeBank} onChange={(e) => setIncludeBank(e.target.checked)}>
               含题库未做题
+            </Checkbox>
+            <Checkbox checked={intentOnly} onChange={(e) => setIntentOnly(e.target.checked)}>
+              只看记过卡点的
             </Checkbox>
           </div>
           {/* 「过滤问题」面板（CF 风格）：难度区间 + 标签多选，点「应用」生效 */}

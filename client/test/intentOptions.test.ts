@@ -8,13 +8,17 @@ import assert from 'node:assert/strict'
 import {
   INTENT_OPTIONS,
   codeOptionsFromTags,
+  intentBadgeSummary,
+  intentDeletePath,
+  intentLabel,
   intentPath,
+  intentsPath,
   buildIntentBody,
   type IntentOutcome,
 } from '../src/intentOptions.ts'
 
 /** 与服务端 routes/problems.ts 的 INTENT_OUTCOMES 白名单逐字一致 */
-const SERVER_ALLOWED: readonly string[] = ['cant_start', 'editorial', 'wrong_approach', 'implementation', 'slight_bug']
+const SERVER_ALLOWED: readonly string[] = ['cant_start', 'editorial', 'upsolved', 'wrong_approach', 'implementation', 'slight_bug']
 
 describe('INTENT_OPTIONS', () => {
   it('value 集合与服务端白名单完全一致', () => {
@@ -38,7 +42,7 @@ describe('INTENT_OPTIONS', () => {
 
   it('类型 IntentOutcome 覆盖全部 value', () => {
     const values: IntentOutcome[] = INTENT_OPTIONS.map((o) => o.value)
-    assert.equal(values.length, 5)
+    assert.equal(values.length, 6)
   })
 })
 
@@ -81,6 +85,17 @@ describe('请求契约', () => {
     )
   })
 
+  it('intentsPath / intentDeletePath 与 intentPath 同编码口径，指向记录列表与单条撤销', () => {
+    assert.equal(
+      intentsPath('codeforces', '1 / 2'),
+      '/api/problems/codeforces/1%20%2F%202/intents',
+    )
+    assert.equal(
+      intentDeletePath('codeforces', '1 / 2', 42),
+      '/api/problems/codeforces/1%20%2F%202/intents/42',
+    )
+  })
+
   it('buildIntentBody 仅在有 code 时才带上 code 字段', () => {
     assert.deepEqual(buildIntentBody('wrong_approach'), { outcome: 'wrong_approach' })
     assert.deepEqual(buildIntentBody('implementation', ''), { outcome: 'implementation' })
@@ -88,5 +103,29 @@ describe('请求契约', () => {
       outcome: 'cant_start',
       code: 'basic.greedy',
     })
+  })
+})
+
+describe('可见可管（记录回显）', () => {
+  it('intentLabel：已知 value 映射展示名，未知 value 原样回显（服务端新增类型不崩 UI）', () => {
+    assert.equal(intentLabel('wrong_approach'), '思路错')
+    assert.equal(intentLabel('slight_bug'), '差一点')
+    assert.equal(intentLabel('upsolved'), '赛后补题')
+    assert.equal(intentLabel('future_type'), 'future_type')
+  })
+
+  it('intentBadgeSummary：无记录（0/负数/非整数）返回 null，不渲染角标', () => {
+    assert.equal(intentBadgeSummary(0), null)
+    assert.equal(intentBadgeSummary(-1), null)
+    assert.equal(intentBadgeSummary(Number.NaN), null)
+    assert.equal(intentBadgeSummary(1.5), null)
+    assert.equal(intentBadgeSummary(0, 'wrong_approach'), null)
+  })
+
+  it('intentBadgeSummary：有记录给出「卡过 N 次」+ 可选最差卡点', () => {
+    assert.equal(intentBadgeSummary(1), '卡过 1 次')
+    assert.equal(intentBadgeSummary(2, 'wrong_approach'), '卡过 2 次 · 思路错')
+    // 未知 worst 同样原样回显
+    assert.equal(intentBadgeSummary(3, 'future_type'), '卡过 3 次 · future_type')
   })
 })

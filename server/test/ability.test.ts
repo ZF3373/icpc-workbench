@@ -68,9 +68,10 @@ test('contextFactor：practice 降权，contest/virtual/未知平台满权重', 
   assert.equal(contextFactor(null), 1); // 不下发语境的平台
 });
 
-test('intentFactor：看题解/完全不会打折最狠，未知 outcome 不打折', () => {
+test('intentFactor：看题解/完全不会/赛后补题打折最狠，未知 outcome 不打折', () => {
   assert.equal(intentFactor('cant_start'), 0.45);
   assert.equal(intentFactor('editorial'), 0.45);
+  assert.equal(intentFactor('upsolved'), 0.45);
   assert.equal(intentFactor('wrong_approach'), 0.7);
   assert.equal(intentFactor('implementation'), 0.85);
   assert.equal(intentFactor('slight_bug'), 0.95);

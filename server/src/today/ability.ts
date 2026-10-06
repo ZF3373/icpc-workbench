@@ -103,10 +103,11 @@ export const CONTEXT_FACTORS: Readonly<Record<string, number>> = {
   virtual: 1.0,
   practice: 0.85,
 };
-/** 卡点因子：看题解/视频讲解后才做出来（cant_start/editorial）证据强度打折最狠 */
+/** 卡点因子：看题解/视频讲解后才做出来（cant_start/editorial）、赛时未做出的赛后补题（upsolved）证据强度打折最狠 */
 export const INTENT_FACTORS: Readonly<Record<string, number>> = {
   cant_start: 0.45,
   editorial: 0.45,
+  upsolved: 0.45,
   wrong_approach: 0.7,
   implementation: 0.85,
   slight_bug: 0.95,
@@ -454,9 +455,10 @@ export function renderAbilityEvidence(db: Db, userId: number, summary: PracticeS
   const evidences = collectSolveEvidence(db, userId, windowDays);
   const upsolved = evidences.filter((e) => e.spanMs > DAY_MS).length;
   const helped = evidences.filter((e) => e.intent != null && intentFactor(e.intent) <= 0.7).length;
+  const upsolvedContest = evidences.filter((e) => e.intent === 'upsolved').length;
   L.push(
     `- 模型估算：难度基数 ${breakdown.base ?? '—'}，通过率校准 ${breakdown.performanceAdj >= 0 ? '+' : ''}${breakdown.performanceAdj}，目标 ${breakdown.target}（证据 ${breakdown.samples} 题）`,
-    `- 独立完成度：其中跨天解决（补题/长磨）${upsolved} 题、看题解或卡点后做出 ${helped} 题，这些在模型中已降权，不要因它们拉高基线`,
+    `- 独立完成度：其中跨天解决（补题/长磨）${upsolved} 题、看题解或记过卡点后做出 ${helped} 题（含赛后补题 ${upsolvedContest} 题：赛时未做出、赛后借助题解等方法补上），这些在模型中已降权，不要因它们拉高基线`,
   );
   L.push(
     `- 近 ${windowDays} 天 AC ${diffs.length} 题：难度分位 P25=${percentile(diffs, 25)} / P50=${percentile(diffs, 50)} / P75=${percentile(diffs, 75)}；区间最高 ${diffs[diffs.length - 1]}；全历史最高 ${maxAll.d ?? '未知'}`,

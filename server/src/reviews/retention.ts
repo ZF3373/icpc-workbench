@@ -7,7 +7,7 @@
  * 信号全部来自库里已有的数据，不引入新采集：
  * - review_events：该条目自己的复习史（次数 / 失手次数）
  * - problem_keypoints × submissions：知识点的掌握度档位（与掌握度地图同口径 levelFor）
- * - submission_intents：该题记过的卡点（看题解 / 完全没思路 = 留存最差）
+ * - submission_intents：该题记过的卡点（看题解 / 完全没思路 / 赛后补题 = 留存最差）
  */
 import type { Db } from '../db/index.ts';
 import { levelFor } from '../analysis/mastery.ts';
@@ -23,7 +23,7 @@ export interface RetentionSignals {
   weakConcept: boolean;
   /** 所属知识点全部 ≥ 掌握 */
   solidConcept: boolean;
-  /** 该题记过「看题解/完全没思路才做出」 */
+  /** 该题记过「看题解/完全没思路/赛后补题才做出」 */
   stuckByIntent: boolean;
 }
 
@@ -37,8 +37,8 @@ const WEAK_LEVEL = 1;
 /** 连续稳定判定所需的复习次数（不足则样本太少，不给放宽） */
 const STABLE_REVIEWS = 4;
 
-/** 卡点里最能说明「不是自己想出来」的两类 */
-const STUCK_OUTCOMES = ['cant_start', 'editorial'];
+/** 卡点里最能说明「不是自己想出来」的：看题解 / 完全没思路 / 赛时未做出的赛后补题 */
+const STUCK_OUTCOMES = ['cant_start', 'editorial', 'upsolved'];
 
 export function retentionFactor(s: RetentionSignals): number {
   let f = 1;

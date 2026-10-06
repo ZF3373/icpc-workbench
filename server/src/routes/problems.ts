@@ -27,6 +27,7 @@ import { upsertBankProblems } from '../import/bankService.ts';
 import { problemKeypointsCte, knowledgeTagsJoinSql, knowledgeTagsCoalesceSql, knowledgeTagsExpr, appendAnnotations, effectiveDataDir, tombstoneLine } from '../knowledge/store.ts';
 import { isValidCode } from '../knowledge/taxonomy.ts';
 import { annotateProblemsL1 } from '../knowledge/pipeline.ts';
+import { intentFactor } from '../today/ability.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
 
 interface ProblemRow {
@@ -51,6 +52,13 @@ interface ProblemRow {
   last_ac_at: string | null;
   /** 已在复习队列时为 review_items.id，否则 null */
   review_item_id: number | null;
+  /**
+   * 卡点聚合（列表接口由 attachIntentStats 附加；count 查询不带这两列）。
+   * intent_count = 该题被记过的卡点条数；worst_intent = 最差卡点类型
+   * （intentFactor 最小者，弱项口径与今日推荐/复习排序一致），没记过为 null。
+   */
+  intent_count?: number;
+  worst_intent?: string | null;
   /**
    * 负缓存两列（上游确认给不出的缺口维度 + 查证时刻，见 analysis/difficultyBackfill.ts）。
    * 只用于派生下面那个 `difficultyGap`，不原样下发。
@@ -153,6 +161,8 @@ interface ProblemFilters {
   status: StatusFilter;
   /** 只保留难度未知的题（difficulty=未知 分桶） */
   unknownOnly: boolean;
+  /** 只保留记过「卡在哪」的题（?intent=1） */
+  intentOnly: boolean;
 }
 
 /**
@@ -170,6 +180,12 @@ function buildProblemFilterSql(f: ProblemFilters): { where: string; params: Arra
   const params: Array<string | number> = [];
   if (!f.includeBank) {
     where += ' AND EXISTS (SELECT 1 FROM submissions s2 WHERE s2.problem_id = p.id AND s2.user_id = ?)';
+    params.push(DEFAULT_USER_ID);
+  }
+  if (f.intentOnly) {
+    // 记过「卡在哪」的题：声明表按 (user_id, problem_id) 建有索引，EXISTS 走索引；
+    // 不用 attachIntentStats 的聚合结果判——那是 JS 后处理，COUNT 查询里拿不到
+    where += ' AND EXISTS (SELECT 1 FROM submission_intents si WHERE si.user_id = ? AND si.problem_id = p.id)';
     params.push(DEFAULT_USER_ID);
   }
   if (f.platform !== undefined) {
@@ -225,6 +241,7 @@ function parseFilters(query: Record<string, unknown>): ProblemFilters {
     includeBank: query.bank === '1',
     status: 'all',
     unknownOnly: false,
+    intentOnly: query.intent === '1',
   };
   const platform = str(query.platform);
   if (platform !== undefined) out.platform = platform;
@@ -305,7 +322,45 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   };
 
   /**
-   * GET /api/problems?platform=&difficulty=&tag=&q=&bank=1
+   * 给列表行附加卡点聚合（intent_count / worst_intent，「卡在哪」的行角标与 Popover 记录列表共用）。
+   *
+   * 刻意**不塞进 coreSelect 的 LEFT JOIN**：最差卡点的权重真相在 intentFactor
+   * （今日推荐/复习排序共用同一份），SQL 里再写一份 CASE 权重迟早漂移。
+   * 单独一条按用户分组的查询取回（声明表极小，且与行数无关），在 JS 侧按 intentFactor 定最差。
+   * 平局（cant_start / editorial / upsolved 权重同为 0.45）按 outcome 字母序取先到者，稳定即可——
+   * 三者对用户本就是同一档「没思路/借助外力」。
+   */
+  const attachIntentStats = (rows: ProblemRow[]): void => {
+    for (const r of rows) {
+      r.intent_count = 0;
+      r.worst_intent = null;
+    }
+    if (rows.length === 0) return;
+    const groups = db
+      .prepare(
+        `SELECT problem_id, outcome, COUNT(*) AS cnt
+           FROM submission_intents
+          WHERE user_id = ?
+          GROUP BY problem_id, outcome
+          ORDER BY problem_id, outcome`,
+      )
+      .all(DEFAULT_USER_ID) as Array<{ problem_id: number; outcome: string; cnt: number }>;
+    if (groups.length === 0) return;
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    for (const g of groups) {
+      const row = byId.get(g.problem_id);
+      if (!row) continue;
+      row.intent_count = (row.intent_count ?? 0) + g.cnt;
+      const current = row.worst_intent ?? null;
+      if (current === null || intentFactor(g.outcome) < intentFactor(current)) {
+        row.worst_intent = g.outcome;
+      }
+    }
+  };
+
+  /**
+   * GET /api/problems?platform=&difficulty=&tag=&q=&bank=1&intent=1
+   * intent=1 = 只看记过「卡在哪」的题
    * 兼容路径：不传 page/pageSize 时返回**数组**（掌握度地图等既有调用方依赖此形态）。
    * 题库页请改用 /api/problems/page（分页 + 总数），否则 1.9 万行会一次性传回。
    */
@@ -324,6 +379,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       statusHavingSql(filters.status) +
       ' ORDER BY p.difficulty IS NULL, p.difficulty DESC, p.id DESC';
     const rows = db.prepare(sql).all(DEFAULT_USER_ID, ...params) as unknown as ProblemRow[];
+    attachIntentStats(rows);
     res.json(rows.map(toApiProblem));
   });
 
@@ -370,6 +426,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       ')';
     const total = (db.prepare(countSql).get(DEFAULT_USER_ID, ...params) as { c: number }).c;
 
+    attachIntentStats(items);
     res.json({
       items: items.map(toApiProblem),
       total,
@@ -756,8 +813,8 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     res.json({ ok: true, run: currentBackfillRun(), unknownLeft });
   });
 
-  /** 合法的卡点性质（与 client 的选项一一对应）。editorial = 看题解/视频讲解后才做出（能力值模型据此降权） */
-  const INTENT_OUTCOMES = new Set(['cant_start', 'editorial', 'wrong_approach', 'implementation', 'slight_bug']);
+  /** 合法的卡点性质（与 client 的选项一一对应）。editorial/upsolved = 借助题解才做出（能力值模型据此降权） */
+  const INTENT_OUTCOMES = new Set(['cant_start', 'editorial', 'upsolved', 'wrong_approach', 'implementation', 'slight_bug']);
 
   /**
    * PATCH /api/problems/:platform/:key/difficulty
@@ -826,7 +883,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   });
 
   // POST /api/problems/:platform/:key/intent
-  // body: { outcome: 'cant_start'|'editorial'|'wrong_approach'|'implementation'|'slight_bug', code?: string }
+  // body: { outcome: 'cant_start'|'editorial'|'upsolved'|'wrong_approach'|'implementation'|'slight_bug', code?: string }
   // 记录用户自述的卡点。code 可省略（= 非知识点摩擦）。
   r.post('/:platform/:key/intent', (req, res) => {
     const { platform, key } = req.params;
@@ -835,7 +892,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     }
     const outcome = req.body?.outcome;
     if (typeof outcome !== 'string' || !INTENT_OUTCOMES.has(outcome)) {
-      return res.status(400).json({ error: 'outcome 需为 cant_start / editorial / wrong_approach / implementation / slight_bug' });
+      return res.status(400).json({ error: 'outcome 需为 cant_start / editorial / upsolved / wrong_approach / implementation / slight_bug' });
     }
     const rawCode = req.body?.code;
     if (rawCode !== undefined && rawCode !== null && rawCode !== '') {
@@ -856,18 +913,58 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     res.json({ ok: true, id: Number(info.lastInsertRowid) });
   });
 
-  // GET /api/problems/:platform/:key/intents → 该题的卡点记录（时间倒序）
+  // GET /api/problems/:platform/:key/intents → 该题的卡点记录（时间倒序）。
+  // id 供单条撤销（DELETE 同路径前缀 /intents/:intentId）——卡点可见可管：记完看不见 = 白记。
+  // createdAt 归一成 ISO（补 T 与 Z）：表默认值是 SQLite datetime('now')（'YYYY-MM-DD HH:MM:SS'、
+  // 无时区），前端 Date.parse 会按**本地时区**解析——UTC+8 用户会把「刚刚」看成「8 小时前」。
   r.get('/:platform/:key/intents', (req, res) => {
     const { platform, key } = req.params;
     const rows = db
       .prepare(
-        `SELECT i.code, i.outcome, i.created_at AS createdAt
+        `SELECT i.id, i.code, i.outcome, i.created_at AS createdAt
            FROM submission_intents i JOIN problems p ON p.id = i.problem_id
           WHERE i.user_id = ? AND p.platform = ? AND p.problem_key = ?
           ORDER BY i.created_at DESC, i.id DESC`,
       )
-      .all(DEFAULT_USER_ID, platform, key);
-    res.json({ items: rows });
+      .all(DEFAULT_USER_ID, platform, key) as Array<{
+      id: number;
+      code: string | null;
+      outcome: string;
+      createdAt: string;
+    }>;
+    res.json({
+      items: rows.map((r) => ({
+        ...r,
+        createdAt:
+          r.createdAt.includes('T') || /[zZ]|[+-]\d{2}:?\d{2}$/.test(r.createdAt)
+            ? r.createdAt
+            : `${r.createdAt.replace(' ', 'T')}Z`,
+      })),
+    });
+  });
+
+  // DELETE /api/problems/:platform/:key/intents/:intentId → 撤销单条卡点记录。
+  // WHERE 带题目域与 user_id：id 是全局自增，不带域就成了「猜 id 删任意人记录」的越权口。
+  r.delete('/:platform/:key/intents/:intentId', (req, res) => {
+    const { platform, key } = req.params;
+    if (!PLATFORMS.some((p) => p.id === platform)) {
+      return res.status(400).json({ error: `platform 非法: ${platform}` });
+    }
+    const intentId = Number(req.params.intentId);
+    if (!Number.isInteger(intentId) || intentId <= 0) {
+      return res.status(400).json({ error: `intentId 非法: ${String(req.params.intentId)}` });
+    }
+    const problem = db
+      .prepare('SELECT id FROM problems WHERE platform = ? AND problem_key = ?')
+      .get(platform, key) as { id: number } | undefined;
+    if (!problem) return res.status(404).json({ error: '题目不存在：请先同步或导入该题' });
+    const info = db
+      .prepare('DELETE FROM submission_intents WHERE id = ? AND user_id = ? AND problem_id = ?')
+      .run(intentId, DEFAULT_USER_ID, problem.id);
+    if (info.changes === 0) {
+      return res.status(404).json({ error: '记录不存在（可能已被删除）' });
+    }
+    res.json({ ok: true });
   });
 
   // DELETE /api/problems/:id → 删除题目（issue #27：题库重复题目没有删除入口）。
@@ -1109,7 +1206,7 @@ function findDuplicateGroups(db: Db): DuplicateGroup[] {
  * shared/src/difficulty.ts 一份，路由层不做任何本地换算）；原生难度未知 → label 也是 null
  * （**未知一律 null，不猜**：绝不退回用 CF rating 反推一个「档位名」）。
  */
-function toApiProblem(r: ProblemRow): Omit<ProblemRow, 'tags' | 'native_difficulty' | 'difficulty_scale' | 'difficulty_source' | 'review_item_id' | 'gap_state' | 'gap_checked_at'> & {
+function toApiProblem(r: ProblemRow): Omit<ProblemRow, 'tags' | 'native_difficulty' | 'difficulty_scale' | 'difficulty_source' | 'review_item_id' | 'gap_state' | 'gap_checked_at' | 'intent_count' | 'worst_intent'> & {
   tags: string[];
   nativeDifficulty: string | null;
   difficultyScale: string | null;
@@ -1120,11 +1217,16 @@ function toApiProblem(r: ProblemRow): Omit<ProblemRow, 'tags' | 'native_difficul
   difficultyGap: boolean;
   status: 'ac' | 'tried' | 'none';
   reviewItemId: number | null;
+  /** 卡点聚合（「卡在哪」可见可管：行角标用；见 attachIntentStats） */
+  intentCount: number;
+  worstIntent: string | null;
 } {
   const { native_difficulty, difficulty_scale, difficulty_source, review_item_id, gap_state, gap_checked_at, ...rest } = r;
   return {
     ...rest,
     reviewItemId: review_item_id ?? null,
+    intentCount: r.intent_count ?? 0,
+    worstIntent: r.worst_intent ?? null,
     tags: safeTags(r.tags),
     nativeDifficulty: native_difficulty,
     difficultyScale: difficulty_scale,
