@@ -389,16 +389,37 @@ body {
   gap: 2px;
 }
 
+/* 侧栏排序按钮走「幽灵」样式：无框无底。侧栏是切页必经的 hover 通道，
+   带框按钮每次路过都闪出两个方块，太抢眼 —— 平时只显 45% 的淡箭头，
+   悬停按钮本体才点亮成品牌色 + 软底。
+   命中区仍是按钮本体 24×24（§2.3 U1），透明不改几何；行高 50 的取舍见下方历史注释：
+   两枚 24×24 + 2px 缝 = 50px，比 40px 的导航条目高 10px。试过用负外边距压回 40px，
+   但相邻两行排序按钮的命中区会互相重叠 8px（点击落在缝里可能触发上一行的下移）
+   —— 宁可让侧栏高一点，也不要一个会误触的目标。 */
 .sider-nav-row .reorder-btn {
-  /* 侧栏曾是全站最小的 18×15；命中区不达标（§2.3 U1）。视觉直接放大到 24×24 达标。
-     代价要说清：两枚 24×24 + 2px 缝 = 50px，比 40px 的导航条目高 10px，行高因此从
-     40 涨到 50（侧栏整体约 +100px）。试过用负外边距压回 40px，但那样相邻两行排序按钮的
-     命中区会互相重叠 8px（点击落在缝里可能触发上一行的下移）——宁可让侧栏高一点，
-     也不要一个会误触的目标。 */
   width: 24px;
   height: 24px;
   font-size: 11px;
   border-radius: 5px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-3);
+  opacity: 0.45;
+}
+
+.sider-nav-row .reorder-btn:hover:not(:disabled),
+.sider-nav-row .reorder-btn:focus-visible {
+  opacity: 1;
+  color: var(--brand);
+  border-color: transparent;
+  background: var(--brand-soft);
+}
+
+/* 显形加 160ms 意图延迟：鼠标快速滑过导航（切页）时箭头来不及出现，
+   停留（真想排序）才浮现。只作用于 hover 显形；隐藏走基础规则立即消失，
+   键盘 Tab 走 :focus-within 显形，同样即时。 */
+.sider-nav-row.reorder-host:hover > .reorder-controls {
+  transition: opacity 140ms ease 160ms;
 }
 
 .sider-nav-item {
