@@ -11,6 +11,12 @@ export interface TokenUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  /**
+   * 输入部分的缓存命中明细（DeepSeek / OpenAI 等兼容网关返回）。
+   * 这里只声明类型：onUsage 透传的是上游原始 usage 对象，多出来的字段随 SSE 原样
+   * 到达前端（AI 助手状态栏据此显示「缓存命中 xx%」）；上游没给时字段缺失。
+   */
+  prompt_tokens_details?: { cached_tokens?: number };
 }
 
 export interface ToolDefinition {

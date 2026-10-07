@@ -55,7 +55,13 @@ interface IncomingAttachment {
   filename?: unknown;
   /** 文本类附件的文件内容（服务端以代码块拼接到消息文本） */
   textContent?: unknown;
+  /** 图片附件的内联数据（data:image/...;base64,...）：网关无 Files API 时的降级通道 */
+  dataUrl?: unknown;
 }
+
+/** dataUrl 的形态与大小约束：必须是 base64 图片 data URL，单张 ≤8MiB 字符（≈6MiB 原图） */
+const INLINE_DATA_URL_RE = /^data:image\/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/;
+const MAX_INLINE_DATA_URL_CHARS = 8 * 1024 * 1024;
 
 /** 通过校验后的轮次（role/content 类型已在上方循环里确认；供后续 map/filter 使用） */
 type ValidTurn = IncomingTurn & { role: 'user' | 'assistant'; content: string };
@@ -399,6 +405,17 @@ export function aiRoutes(
               .status(400)
               .json({ error: 'attachments[].textContent 需为字符串且不超过 1 MiB' });
           }
+          // dataUrl 为可选字符串（内联图片，网关不支持 Files API 时的降级通道）
+          if (
+            a.dataUrl !== undefined &&
+            (typeof a.dataUrl !== 'string' ||
+              a.dataUrl.length > MAX_INLINE_DATA_URL_CHARS ||
+              !INLINE_DATA_URL_RE.test(a.dataUrl))
+          ) {
+            return res
+              .status(400)
+              .json({ error: 'attachments[].dataUrl 需为 data:image/*;base64 格式且不超过 8 MiB' });
+          }
         }
       }
     }
@@ -437,6 +454,11 @@ export function aiRoutes(
       for (const a of atts) {
         const fileId = (a.fileId as string).trim();
         const filename = typeof a.filename === 'string' && a.filename.trim() ? a.filename.trim() : undefined;
+        // 内联图片（网关不支持 Files API 时的降级通道）：直接作 image_url 内容块
+        if (typeof a.dataUrl === 'string' && INLINE_DATA_URL_RE.test(a.dataUrl)) {
+          fileBlocks.push({ type: 'image_url', image_url: { url: a.dataUrl } });
+          continue;
+        }
         // 文本附件：textContent 存在时拼接到消息文本
         if (typeof a.textContent === 'string' && a.textContent.length > 0) {
           if (filename && isPdfFilename(filename)) {

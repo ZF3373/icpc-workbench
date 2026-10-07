@@ -91,6 +91,11 @@ export interface ChatFileAttachment {
   bytes?: number
   /** 文本类附件的文件内容（图片附件无此字段；服务端将其以代码块拼接到消息文本） */
   textContent?: string
+  /**
+   * 图片附件的内联数据（data:image/...;base64,...）：网关不支持 Files API 时的降级通道，
+   * 服务端将其转为 image_url 内容块。仅存在于内存中的消息与请求体，持久化时会剥离。
+   */
+  dataUrl?: string
 }
 
 export interface PlanApplyResult {
@@ -113,6 +118,8 @@ export interface TokenUsage {
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number
+  /** 输入部分的缓存命中明细（服务端透传上游原始 usage；DeepSeek/OpenAI 等返回，缺失 = 网关未提供） */
+  prompt_tokens_details?: { cached_tokens?: number }
 }
 
 /**

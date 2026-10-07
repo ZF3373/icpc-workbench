@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Alert, App as AntdApp, Button, Card, Dropdown, Input, Modal, Select, Space, Spin, Tag, Tooltip } from 'antd'
+import type { MenuProps } from 'antd'
 import type { TextAreaRef } from 'antd/es/input/TextArea'
 import {
+  CheckOutlined,
+  CloudDownloadOutlined,
+  CloseOutlined,
   CopyOutlined,
+  DatabaseOutlined,
   DeleteOutlined,
+  DownOutlined,
   EditOutlined,
   HolderOutlined,
   InfoCircleOutlined,
@@ -15,10 +21,15 @@ import {
   PlusOutlined,
   PushpinFilled,
   PushpinOutlined,
+  RightOutlined,
   RobotOutlined,
+  SearchOutlined,
   SelectOutlined,
   SendOutlined,
+  SettingOutlined,
+  ThunderboltOutlined,
   UndoOutlined,
+  UnorderedListOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -38,6 +49,7 @@ import {
   type TokenUsage,
 } from '../api'
 import type { ParticipatedContest, PlanListItem } from '../types'
+import type { AiProviderView, ModelCaps } from '../../../shared/src/index.ts'
 import Markdown from '../components/Markdown'
 import PageHeader from '../components/PageHeader'
 import SessionMiniPanel from '../components/SessionMiniPanel'
@@ -53,6 +65,13 @@ import { createStreamBuffer } from '../streamBuffer'
 import { rememberSessionFiles, getSessionFileText, forgetSessionFiles } from './sessionFiles'
 import { moveSessionBy, pinFirstOrder, restoreSessionOrder, sessionIdOrder } from './assistantSessionOrder'
 import { sanitizeOutgoingTurns, describeToolStatus, EMPTY_REPLY_NOTICE } from './assistantTurns'
+import {
+  aggregateSessionStats,
+  contextPercent,
+  fmtTokenCount,
+  fmtTokPerSec,
+  SpeedTracker,
+} from './assistantStats'
 import {
   resolveTemplateTarget,
   templateCategoryLabel,
@@ -104,6 +123,8 @@ interface ChatMsg extends PlanChatTurn {
   reasoning?: string
   /** 本次回复的 token 用量（服务端 usage 事件） */
   usage?: TokenUsage
+  /** 本轮流式生成实测时长（首 delta → 末 delta，毫秒）：与 usage 配合算真实 tok/s */
+  durationMs?: number
   /** 该助手消息是一次失败回合（API 报错 / 空中止）：再次编辑时会被剔除，不回传给模型 */
   failed?: boolean
 }
@@ -128,16 +149,25 @@ interface ChatState {
   sendingIds: Set<string>
 }
 
+/** /api/settings 的 ai 切片（只取状态栏与模型下拉用到的字段；密钥字段不触碰） */
+interface AssistantAiView {
+  model?: string
+  /** 上下文窗口（token，含输入+输出）：「上下文占用 %」的分母，缺省由 contextPercent 自行兜底 */
+  contextWindow?: number
+  activeProviderId?: string
+  providers?: AiProviderView[]
+}
+
+/** 待发送附件（含图片本地预览用的 blob URL）：previewUrl 只活在这条消息发出/移除前，
+ *  绝不进会话存储与请求体（请求只需 fileId，blob URL 刷新即失效） */
+interface PendingAtt extends ChatFileAttachment {
+  previewUrl?: string
+}
+
 // ---------- localStorage 持久化 ----------
 
 const STORAGE_KEY = 'icpc-ai-sessions-v1'
 const MAX_SESSIONS = 50
-
-/**
- * 单条 AI 回复超过这个字数就默认折叠（§5.3）。
- * 1600 字约等于「一屏多一点」：短于它的回复折叠反而多一次点击。
- */
-const LONG_MSG_CHARS = 1600
 
 function loadFromStorage(): ChatSession[] {
   try {
@@ -168,7 +198,18 @@ function loadFromStorage(): ChatSession[] {
 
 function saveToStorage(sessions: ChatSession[]): void {
   try {
-    const toSave = sessions.filter((s) => s.messages.length > 0).slice(0, MAX_SESSIONS)
+    const toSave = sessions
+      .filter((s) => s.messages.length > 0)
+      .slice(0, MAX_SESSIONS)
+      .map((s) => ({
+        ...s,
+        // dataUrl 是内存里的内联图片（base64 动辄数 MB）：只活在本次页面会话，绝不落盘
+        messages: s.messages.map((m) =>
+          m.attachments?.some((a) => a.dataUrl !== undefined)
+            ? { ...m, attachments: m.attachments.map(({ dataUrl: _d, ...rest }) => rest) }
+            : m,
+        ),
+      }))
     localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave))
   } catch {
     /* localStorage 可能不可用或已满，静默忽略 */
@@ -207,6 +248,9 @@ const chatListeners = new Set<() => void>()
 
 /** 进行中的会话 → AbortController，用于停止生成（非 React 状态，不触发渲染） */
 const sessionAbortControllers = new Map<string, AbortController>()
+
+/** 进行中的会话 → 流式速率采样器（tok/s 估算）；生成结束/中止后在 finally 中移除 */
+const sessionSpeedTrackers = new Map<string, SpeedTracker>()
 
 function setChatState(updater: (prev: ChatState) => ChatState): void {
   const prev = chatState
@@ -399,10 +443,49 @@ function fmtBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
+/** 内联附图的单张上限：6 MiB 原图 ≈ 8MiB base64，给 12MB 的请求体限额留足余量 */
+const MAX_INLINE_IMAGE_BYTES = 6 * 1024 * 1024
+
+/** File → data:image/...;base64（上传降级为内联图片时用） */
+function fileToDataUrl(f: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error ?? new Error('读取图片失败'))
+    reader.readAsDataURL(f)
+  })
+}
+
 // ---------- 左侧栏折叠 ----------
 
 /** 折叠状态持久化：切页/刷新后保持用户的选择（localStorage 不可用时仅本次会话生效） */
 const SIDE_COLLAPSED_KEY = 'icpc-assistant-side-collapsed'
+
+/** 右侧对话导航的收起状态：同样持久化，默认展开 */
+const TOC_HIDDEN_KEY = 'icpc-assistant-toc-hidden'
+
+function readTocHidden(): boolean {
+  try {
+    return localStorage.getItem(TOC_HIDDEN_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 对话导航条目的摘要：取首个非空行的前 40 字；纯附件提问回退到附件名。
+ * 用户靠「我当时问了什么」认条目，长代码块的首行往往就是问题本身。
+ */
+function turnExcerpt(m: ChatMsg): string {
+  const firstLine =
+    (m.content ?? '')
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l !== '') ?? ''
+  if (firstLine) return firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine
+  const att = m.attachments?.[0]?.filename
+  return att ? `📎 ${att}` : '（图片提问）'
+}
 
 /**
  * 会话排序「撤销」提示的固定 message key：同一 key 会被 antd 替换而非叠加，
@@ -462,13 +545,6 @@ export default function Assistant() {
   const cmdCandidates = useMemo(() => matchChatCommands(input), [input])
   const [cmdIndex, setCmdIndex] = useState(0)
   const [cmdDismissed, setCmdDismissed] = useState(false)
-  /**
-   * 已展开全文的超长回复（按消息下标记，§5.3）。
-   * 默认折叠：AI 的长回复动辄几千字，一条就把输入框顶出视野，用户得一路滚到底才能接着问。
-   * 按内容长度而不是「分析/代码/建议」猜分段 —— 靠关键词猜标题会把普通段落误判成分节，
-   * 而 markdown 自带的标题结构在渲染层已经分层了。
-   */
-  const [expandedMsgs, setExpandedMsgs] = useState<Set<number>>(() => new Set())
   const cmdMenuOpen = cmdCandidates.length > 0 && !cmdDismissed
   // 候选变了就把高亮收回范围，避免停在一个已经不存在的项上
   useEffect(() => {
@@ -560,17 +636,126 @@ export default function Assistant() {
   /** 划选 AI 输出后的「引用到输入框」浮钮：x/y 为浮钮中心（viewport 坐标），text 是选区快照 */
   const [quoteFloat, setQuoteFloat] = useState<{ x: number; y: number; text: string } | null>(null)
 
+  // ---------- 右侧对话导航（快速跳转） ----------
+  /** 导航栏收起状态（持久化）；会话没有任何 user 消息时整个导航不渲染 */
+  const [tocHidden, setTocHidden] = useState(readTocHidden)
+  /** 滚动联动：当前视口顶部最近的那条 user 消息下标（导航里高亮） */
+  const [activeTurnIdx, setActiveTurnIdx] = useState<number | null>(null)
+  /** 点击跳转后目标消息的短暂高亮 */
+  const [jumpFlashIdx, setJumpFlashIdx] = useState<number | null>(null)
+  const spyRafRef = useRef(0)
+  const flashTimerRef = useRef(0)
+  /** 跳转锁定：点击条目后高亮锁定到该轮，直到锁定期过后用户再次滚动（对齐文档侧栏目录的行为） */
+  const pinnedTurnRef = useRef<{ idx: number; until: number } | null>(null)
+
+  const toggleToc = useCallback(() => {
+    setTocHidden((h) => {
+      try {
+        localStorage.setItem(TOC_HIDDEN_KEY, h ? '0' : '1')
+      } catch {
+        /* localStorage 不可用时仅本次会话生效 */
+      }
+      return !h
+    })
+  }, [])
+
+  /**
+   * 滚动联动（scroll spy）：找出视口顶部 96px 线以上的最后一条 user 消息。
+   * scroll 事件 60Hz 触发，用 rAF 合并到每帧一次；无变化时不 setState。
+   */
+  const scheduleSpy = useCallback(() => {
+    if (spyRafRef.current) return
+    spyRafRef.current = requestAnimationFrame(() => {
+      spyRafRef.current = 0
+      const container = msgsRef.current
+      if (!container) return
+      // 跳转锁定期内不重算：平滑滚动本身会触发一串 scroll 事件，若按滚动位置重算，
+      // 点靠近底部的条目（滚动被钳制、目标到不了顶部线）高亮会立刻弹回别的轮次
+      const pin = pinnedTurnRef.current
+      if (pin) {
+        if (Date.now() < pin.until) {
+          setActiveTurnIdx((prev) => (prev === pin.idx ? prev : pin.idx))
+          return
+        }
+        pinnedTurnRef.current = null
+      }
+      const cTop = container.getBoundingClientRect().top
+      let active: number | null = null
+      container.querySelectorAll<HTMLElement>('.plan-chat-msg[data-role="user"]').forEach((node) => {
+        if (node.getBoundingClientRect().top - cTop <= 96) {
+          const idx = Number(node.dataset.msgIndex)
+          if (Number.isFinite(idx)) active = idx
+        }
+      })
+      setActiveTurnIdx((prev) => (prev === active ? prev : active))
+    })
+  }, [])
+
+  useEffect(
+    () => () => {
+      // ⚠ 取消后必须把引用归零：StrictMode 双挂载会先卸载一次，若留着旧 id，
+      // scheduleSpy 的 `if (spyRafRef.current) return` 会把之后所有调度永久挡掉
+      if (spyRafRef.current) {
+        cancelAnimationFrame(spyRafRef.current)
+        spyRafRef.current = 0
+      }
+      if (flashTimerRef.current) {
+        window.clearTimeout(flashTimerRef.current)
+        flashTimerRef.current = 0
+      }
+    },
+    [],
+  )
+
+  /** 跳转到第 idx 条消息：滚动使其贴近视口顶部，锁定高亮并短暂描边 */
+  const jumpToTurn = (idx: number) => {
+    const container = msgsRef.current
+    if (!container) return
+    const node = container.querySelector<HTMLElement>(`.plan-chat-msg[data-msg-index="${idx}"]`)
+    if (!node) return
+    const delta = node.getBoundingClientRect().top - container.getBoundingClientRect().top
+    container.scrollTo({ top: container.scrollTop + delta - 12, behavior: 'smooth' })
+    pinnedTurnRef.current = { idx, until: Date.now() + 1500 }
+    setActiveTurnIdx(idx)
+    setJumpFlashIdx(idx)
+    if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current)
+    flashTimerRef.current = window.setTimeout(() => {
+      setJumpFlashIdx(null)
+      flashTimerRef.current = 0
+    }, 1400)
+  }
+
   // ---------- 图片附件（Files API） ----------
   /** 本条消息待发送的附件（上传成功后的 file_id 引用） */
-  const [pendingAtts, setPendingAtts] = useState<ChatFileAttachment[]>([])
+  const [pendingAtts, setPendingAtts] = useState<PendingAtt[]>([])
   const [uploadingAtts, setUploadingAtts] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  /** 释放并清空待发送附件（图片 blob URL 必须 revoke，否则整页生命周期内泄漏内存） */
+  const clearPendingAtts = () => {
+    setPendingAtts((prev) => {
+      // StrictMode 下 updater 会跑两次：revokeObjectURL 对已释放的 URL 幂等，无副作用
+      prev.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl))
+      return []
+    })
+  }
+
+  /** 移除单个待发送附件（连带释放其预览 URL） */
+  const removePendingAtt = (index: number) => {
+    const target = pendingAtts[index]
+    if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl)
+    setPendingAtts((prev) => prev.filter((_, j) => j !== index))
+  }
+
   // 切换会话时清空未发送的附件，避免串会话
   useEffect(() => {
-    setPendingAtts([])
+    clearPendingAtts()
     // 选区随消息列表一起换掉了，浮钮位置失效
     setQuoteFloat(null)
+    // 导航高亮与跳转锁定都属于旧会话，一并清掉（滚动联动随后按新会话重算）
+    pinnedTurnRef.current = null
+    setActiveTurnIdx(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId])
 
   // ---------- 划选 AI 输出 → 引用到输入框 ----------
@@ -807,13 +992,33 @@ export default function Assistant() {
     }
     setUploadingAtts(true)
     try {
-      const uploaded: ChatFileAttachment[] = []
+      const uploaded: PendingAtt[] = []
+      const inlined: PendingAtt[] = []
       for (const f of picked) {
         try {
           const obj = await uploadAiFile(f)
-          uploaded.push({ fileId: obj.id, filename: obj.filename || f.name, bytes: obj.bytes })
-        } catch (e) {
-          message.error(`上传「${f.name}」失败：${(e as Error).message}`)
+          // 本地 blob 预览：请求体里只有 file_id，预览图仅用于待发送区的缩略显示
+          uploaded.push({ fileId: obj.id, filename: obj.filename || f.name, bytes: obj.bytes, previewUrl: URL.createObjectURL(f) })
+        } catch {
+          // 聚合网关普遍没有 Files API（/files 404）：降级为内联 base64 图片，
+          // 服务端将其转为 image_url 内容块——主流 OpenAI 兼容网关都支持
+          if (f.size > MAX_INLINE_IMAGE_BYTES) {
+            message.error(`上传「${f.name}」失败：图片超过 6 MiB，且当前网关不支持文件上传接口`)
+            continue
+          }
+          try {
+            const dataUrl = await fileToDataUrl(f)
+            inlined.push({
+              fileId: `data-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              filename: f.name,
+              bytes: f.size,
+              dataUrl,
+              // data URL 可直接作 img src，无需另建 blob URL
+              previewUrl: dataUrl,
+            })
+          } catch {
+            message.error(`读取「${f.name}」失败，无法内联附图`)
+          }
         }
       }
       if (uploaded.length > 0) {
@@ -821,10 +1026,41 @@ export default function Assistant() {
         setPendingAtts((prev) => [...prev, ...uploaded])
         message.success(`已上传 ${uploaded.length} 个图片`)
       }
+      if (inlined.length > 0) {
+        const room = 8 - usedSlots
+        const pickedInline = inlined.slice(0, room)
+        if (pickedInline.length < inlined.length) message.warning('每条消息最多附带 8 个文件')
+        if (pickedInline.length > 0) {
+          usedSlots += pickedInline.length
+          setPendingAtts((prev) => [...prev, ...pickedInline])
+          message.info(`当前 AI 网关不支持文件上传，已改用内联方式附图（${pickedInline.length} 张）`)
+        }
+      }
     } finally {
       setUploadingAtts(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
+  }
+
+  // ---------- 粘贴上传 ----------
+  /**
+   * 输入框内粘贴截图 / 复制的图片文件 → 直接进附件区（与拖拽、附件按钮同一上传通道）。
+   *
+   * 只拦「纯图片」粘贴：剪贴板里同时有文本（复制网页/带说明的截图工具）时原样放行，
+   * 避免 preventDefault 把用户要粘的代码/说明吞掉；普通文本粘贴完全不受影响。
+   * 上传进行中不受理：handlePickFiles 按渲染闭包里的 pendingAtts 算剩余配额，
+   * 并发两批会把 8 个附件的上限数错。
+   */
+  const handlePasteUpload = (e: React.ClipboardEvent) => {
+    if (uploadingAtts) return
+    if ((e.clipboardData?.getData('text/plain') ?? '').trim() !== '') return
+    const files = Array.from(e.clipboardData?.items ?? [])
+      .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => f !== null)
+    if (files.length === 0) return
+    e.preventDefault()
+    void handlePickFiles(files as unknown as FileList)
   }
 
   // ---------- 拖拽上传 ----------
@@ -1023,29 +1259,233 @@ export default function Assistant() {
 
   useEffect(loadAbility, [loadAbility])
 
+  // ---------- AI 配置视图（模型切换 + 上下文占用） ----------
+  /**
+   * /api/settings 的 ai 切片：模型下拉（目录 / 切换提供商）与「上下文占用 %」的数据源。
+   * 切换模型后重拉一次，芯片上的名字与目录勾选保持一致。
+   */
+  const [aiInfo, setAiInfo] = useState<AssistantAiView | null>(null)
+  const [switchingModel, setSwitchingModel] = useState(false)
+  const loadAiInfo = useCallback(() => {
+    get<{ ai: AssistantAiView }>('/api/settings')
+      .then((s) => setAiInfo(s.ai))
+      .catch(() => {})
+  }, [])
+  useEffect(loadAiInfo, [loadAiInfo])
+
+  /**
+   * 面板内拉取的网关模型目录（按提供商 id 缓存）：提供商没建模型目录时也能直接在此面板
+   * 选模型，不必先去设置页「获取可用模型」。打不开面板不会触发请求；拉取失败记录原因，
+   * 在「拉取」项上就地显示并可点击重试（打开面板时的自动拉取不弹 toast）。
+   */
+  const [gwCatalog, setGwCatalog] = useState<Record<string, { ids: string[]; caps?: Record<string, ModelCaps> }>>({})
+  const [gwErrors, setGwErrors] = useState<Record<string, string>>({})
+  const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null)
+  /** 面板顶部搜索框的过滤词：网关动辄返回两三百个模型，不筛根本点不到目标 */
+  const [modelFilter, setModelFilter] = useState('')
+
+  const fetchGatewayModels = useCallback(
+    async (providerId: string) => {
+      if (fetchingProviderId !== null) return
+      setFetchingProviderId(providerId)
+      try {
+        const r = await post<{ models: string[]; caps?: Record<string, ModelCaps> }>('/api/settings/ai/models', {
+          providerId,
+        })
+        setGwCatalog((prev) => ({ ...prev, [providerId]: { ids: r.models ?? [], caps: r.caps } }))
+        setGwErrors((prev) => {
+          if (!(providerId in prev)) return prev
+          const next = { ...prev }
+          delete next[providerId]
+          return next
+        })
+      } catch (e) {
+        setGwErrors((prev) => ({ ...prev, [providerId]: (e as Error).message }))
+      } finally {
+        setFetchingProviderId(null)
+      }
+    },
+    [fetchingProviderId],
+  )
+
+  /** 打开面板且提供商没有模型目录时自动拉一次网关列表（失败就地标记，不弹 toast）；
+   *  关闭面板时清掉过滤词，避免下次打开面对一个被旧关键词筛空的列表 */
+  const onModelMenuOpenChange = (open: boolean) => {
+    if (!open) {
+      setModelFilter('')
+      return
+    }
+    const provider = aiInfo?.providers?.find((p) => p.id === aiInfo.activeProviderId)
+    if (
+      provider &&
+      !(provider.models?.length) &&
+      !gwCatalog[provider.id] &&
+      !(provider.id in gwErrors) &&
+      fetchingProviderId === null
+    ) {
+      void fetchGatewayModels(provider.id)
+    }
+  }
+
+  /** 切换活跃提供商或其模型（POST /api/settings/ai/providers/active）：全局配置，成功后重拉视图 */
+  const switchAiModel = async (providerId: string, model?: string) => {
+    if (switchingModel) return
+    setSwitchingModel(true)
+    try {
+      await post('/api/settings/ai/providers/active', { id: providerId, ...(model ? { model } : {}) })
+      message.success(model ? `已切换到模型 ${model}` : '已切换提供商')
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setSwitchingModel(false)
+      loadAiInfo()
+    }
+  }
+
+  /** 模型下拉：活跃提供商的模型目录（勾选当前）→ 网关可用模型 → 其他提供商 → 设置页入口。
+   *  顶部搜索词过滤模型条目（目录与网关列表都筛），操作类条目（拉取/切提供商/设置）不受影响 */
+  const modelMenu: MenuProps = useMemo(() => {
+    const items: MenuProps['items'] = []
+    const kw = modelFilter.trim().toLowerCase()
+    const match = (id: string) => kw === '' || id.toLowerCase().includes(kw)
+    const provider = aiInfo?.providers?.find((p) => p.id === aiInfo.activeProviderId)
+    if (provider) {
+      const catalog = provider.models ?? []
+      const gw = gwCatalog[provider.id]
+      const gwError = gwErrors[provider.id]
+      // 网关目录与手建目录去重；拉取失败时不用旧缓存，避免展示过期列表
+      const gwIds = gw && !gwError ? gw.ids.filter((id) => !catalog.some((m) => m.id === id)) : []
+      const catalogHits = catalog.filter((m) => match(m.id))
+      const gwHits = gwIds.filter((id) => match(id))
+      const currentVisible = match(provider.model)
+      if (catalog.length > 0) {
+        if (catalogHits.length > 0) {
+          items.push({ type: 'group', label: `${provider.name} · 模型目录` })
+          for (const m of catalogHits) {
+            items.push({
+              key: `model:${provider.id}:${m.id}`,
+              icon: m.id === provider.model ? <CheckOutlined /> : <span className="chat-model-check-holder" />,
+              label: m.id,
+            })
+          }
+        }
+      } else if (!(gwHits.includes(provider.model) && provider.model !== '') && currentVisible) {
+        // 当前模型没被（过滤后的）网关列表覆盖时单独展示，保证「现在用的是哪个」一眼可见
+        items.push({ type: 'group', label: '当前模型' })
+        items.push({
+          key: 'model:none',
+          disabled: true,
+          icon: <CheckOutlined />,
+          label: provider.model || '（未设置模型）',
+        })
+      }
+      if (gwHits.length > 0) {
+        items.push({ type: 'divider' })
+        items.push({ type: 'group', label: '网关可用模型' })
+        for (const id of gwHits) {
+          const ctx = gw?.caps?.[id]?.contextWindow
+          items.push({
+            key: `model:${provider.id}:${id}`,
+            icon: id === provider.model ? <CheckOutlined /> : <span className="chat-model-check-holder" />,
+            label: ctx && ctx > 0
+              ? (
+                <span>
+                  {id}
+                  <span className="chat-model-menu-ctx">{fmtTokenCount(ctx)} 上下文</span>
+                </span>
+              )
+              : id,
+          })
+        }
+      }
+      if (kw !== '' && catalogHits.length === 0 && gwHits.length === 0 && !currentVisible) {
+        items.push({ key: 'model:nomatch', disabled: true, label: '没有匹配的模型' })
+      }
+      items.push({ type: 'divider' })
+      items.push({
+        key: 'fetch-models',
+        icon: fetchingProviderId === provider.id ? <LoadingOutlined /> : <CloudDownloadOutlined />,
+        disabled: fetchingProviderId !== null,
+        label: gwError ? '拉取失败，点击重试' : gwCatalog[provider.id] ? '刷新网关模型列表' : '拉取网关模型列表',
+        ...(gwError ? { title: gwError } : {}),
+      })
+      const others = (aiInfo?.providers ?? []).filter((p) => p.id !== provider.id)
+      if (others.length > 0) {
+        items.push({ type: 'divider' })
+        items.push({ type: 'group', label: '切换提供商' })
+        for (const p of others) {
+          items.push({ key: `provider:${p.id}`, label: `${p.name}（${p.model}）` })
+        }
+      }
+    } else if (aiInfo?.model) {
+      items.push({ key: 'model:none', disabled: true, icon: <CheckOutlined />, label: aiInfo.model })
+    }
+    items.push({ type: 'divider' }, { key: 'settings', icon: <SettingOutlined />, label: '到设置页管理模型' })
+    return { items }
+  }, [aiInfo, gwCatalog, gwErrors, fetchingProviderId, modelFilter])
+
+  const onModelMenuClick: MenuProps['onClick'] = ({ key }) => {
+    if (key === 'settings') {
+      nav('/settings')
+      return
+    }
+    if (key === 'fetch-models') {
+      const provider = aiInfo?.providers?.find((p) => p.id === aiInfo.activeProviderId)
+      if (provider) void fetchGatewayModels(provider.id)
+      return
+    }
+    // model key 形如 `model:{providerId}:{modelId}`——模型 id 理论上可含冒号，用 rest 重组
+    const [kind, id, ...rest] = key.split(':')
+    if (kind === 'model' && id) void switchAiModel(id, rest.join(':') || undefined)
+    else if (kind === 'provider' && id) void switchAiModel(id)
+  }
+
+  // ---------- 会话状态栏（轮数/消息 · tok/s · 累计 token/缓存命中 · 上下文占用） ----------
+  // 直接算不 memo：O(消息数) 的轻量求和，比 memo 化带来的依赖警告便宜
+  const sessionStats = aggregateSessionStats(messages)
+  // 流式进行中读采样窗口的估算速度（delta 落库即重渲染，数字跟着流走）；空闲时用上一轮真实值
+  const liveTok = sending ? (sessionSpeedTrackers.get(activeId)?.liveTokPerSec() ?? null) : null
+  const tokPerSec = fmtTokPerSec(liveTok ?? sessionStats.lastTokPerSec)
+  const contextPct = contextPercent(sessionStats.lastPromptTokens, aiInfo?.contextWindow)
+  const showModelChip = !!aiInfo && ((aiInfo.model ?? '') !== '' || (aiInfo.providers?.length ?? 0) > 0)
+
+  // ---------- 右侧对话导航数据 ----------
+  const userTurns = messages
+    .map((m, i) => (m.role === 'user' ? { idx: i, msg: m } : null))
+    .filter((t): t is { idx: number; msg: ChatMsg } => t !== null)
+
   /**
    * 流式更新时只在用户已在底部附近时才跟随，不打断上滑查看历史。
    *
-   * 两个关键点：
+   * 三个关键点：
    *   1. 流式期间直接写 scrollTop 而不是 scrollIntoView({behavior:'smooth'})。
    *      平滑滚动是一段异步动画，每来一帧就新起一段，动画互相打断就会看到滚动条
    *      来回抽搐（"滚动跳动"）；而且 scrollIntoView 会把所有可滚动祖先一起滚。
    *      直接赋值是同步的，配合上面的节流，看起来就是匀速往下走。
-   *   2. 只有"发新消息 / 生成结束"这类一次性变化才用平滑滚动 —— 那种场景下
+   *   2. 只有"会话内追加消息 / 生成结束"这类一次性变化才用平滑滚动 —— 那种场景下
    *      内容是一大块跳变的，用动画过渡更自然。
+   *   3. 进入会话（页面挂载 / 切换会话）的第一次对位必须瞬时：组件每次进页都重新
+   *      挂载，若也走平滑滚动，整段对话就会当着用户的面从顶滚到底放一遍动画。
+   *      useLayoutEffect 在绘制前同步赋值，首帧即落在底部，看不到任何滚动过程。
    *
    * 用 useLayoutEffect：在浏览器绘制前就把位置调好，避免"内容先画在视口外、
    * 下一帧才滚过去"造成的一帧跳动。
    */
+  const lastAlignSessionRef = useRef<string | null>(null)
   useLayoutEffect(() => {
+    // 消息变化后同步一次导航高亮（切会话/新消息都会走到这里）
+    scheduleSpy()
+    // 先记账再判断：本次要不要滚与是否在底部无关，会话标识必须每次都更新
+    const isSessionEntry = lastAlignSessionRef.current !== activeId
+    lastAlignSessionRef.current = activeId
     const el = msgsRef.current
     if (!el || !stickToBottomRef.current) return
-    if (sending) {
+    if (sending || isSessionEntry) {
       el.scrollTop = el.scrollHeight
     } else {
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
     }
-  }, [messages, sending])
+  }, [messages, sending, scheduleSpy, activeId])
 
   const send = async () => {
     const text = input.trim()
@@ -1057,11 +1497,12 @@ export default function Assistant() {
     const session = sessions.find((s) => s.id === sessionId)
     if (!session) return
 
-    // 发送给服务端的附件（含 textContent），存入会话历史的附件（剥离 textContent 避免 localStorage 爆满）
-    const attsForSend = atts
+    // 发送给服务端的附件（含 textContent）：剥离本地预览的 blob URL（请求只需 fileId）
+    const attsForSend = atts.map(({ previewUrl: _p, ...rest }) => rest)
     // 附件全文入会话级缓存：后续任意轮次发送时从缓存回填，AI 不会"忘记"已上传文件
-    rememberSessionFiles(sessionId, atts)
-    const attsForStore = atts.map(({ textContent: _tc, ...rest }) => rest)
+    rememberSessionFiles(sessionId, attsForSend)
+    // 存入会话历史的附件（剥离 textContent 避免 localStorage 爆满；previewUrl 同样不入库）
+    const attsForStore = atts.map(({ textContent: _tc, previewUrl: _p, ...rest }) => rest)
     const userMsg: ChatMsg = {
       role: 'user',
       content: text,
@@ -1094,12 +1535,16 @@ export default function Assistant() {
           : s,
       ),
     }))
-    setPendingAtts([])
+    // 附件已并入消息：释放本地预览的 blob URL 并清空待发送区
+    clearPendingAtts()
     setNeedConfig(false)
 
     // 每次发送创建独立的 AbortController，支持用户主动停止生成
     const ac = new AbortController()
     sessionAbortControllers.set(sessionId, ac)
+    // 流式速率采样器：生成中给状态栏提供 tok/s 估算，结束时按 usage 折算整轮真实 tok/s
+    const speedTracker = new SpeedTracker()
+    sessionSpeedTrackers.set(sessionId, speedTracker)
 
     /**
      * 流式增量先攒起来再批量写库：
@@ -1109,6 +1554,8 @@ export default function Assistant() {
      */
     const buf = createStreamBuffer(({ delta, reasoning }) => {
       if (!delta && !reasoning) return
+      // 采样本轮字符增量（正文 + 思维链都是模型产出）：状态栏 tok/s 估算的数据源
+      speedTracker.push(delta.length + reasoning.length)
       // 正文重新开始输出 = 工具阶段结束，清掉「正在检索…」进度（否则会一直挂在输入栏）
       if (delta) setToolStatus((cur) => (cur && cur.sessionId === sessionId ? null : cur))
       patchActiveSessionMessages(sessionId, (msgs) => {
@@ -1149,9 +1596,10 @@ export default function Assistant() {
                           ? attsForSend.find((x) => x.fileId === a.fileId)?.textContent
                           : getSessionFileText(sessionId, a.fileId),
                     }))
-                    // 图片附件（file-api-…）必须保留（textContent 恒空）；
-                    // 仅剔除"本地文本附件但缓存未命中/超出容量"的残缺项
-                    .filter((a) => a.fileId.startsWith('file-') || a.textContent !== undefined),
+                    // 图片附件（file-api-…）必须保留（textContent 恒空）；内联图片（dataUrl）
+                    // 同样保留——后续轮次把图重新带给模型；仅剔除"本地文本附件但缓存未命中/
+                    // 超出容量"的残缺项
+                    .filter((a) => a.fileId.startsWith('file-') || a.textContent !== undefined || a.dataUrl !== undefined),
                 }
               : {}),
           })),
@@ -1168,12 +1616,16 @@ export default function Assistant() {
       // 流已结束：先把缓冲里剩下的内容落库，再处理用量/截断等收尾信息，
       // 否则这些内容会被追加到"还没有最后一段文字"的消息上
       buf.flush()
-      // token 用量：写入最后一条 assistant 消息（前端展示消耗）
+      // token 用量 + 整轮实测时长：写入最后一条 assistant 消息（状态栏展示 tok/s / 上下文占用）
       if (result.usage) {
+        const durationMs = speedTracker.finalizeDurationMs()
         patchActiveSessionMessages(sessionId, (msgs) => {
           const last = msgs[msgs.length - 1]
           if (last && last.role === 'assistant') {
-            return [...msgs.slice(0, -1), { ...last, usage: result.usage! }]
+            return [
+              ...msgs.slice(0, -1),
+              { ...last, usage: result.usage!, ...(durationMs > 0 ? { durationMs } : {}) },
+            ]
           }
           return msgs
         })
@@ -1292,6 +1744,7 @@ export default function Assistant() {
       // 这里对空缓冲是 no-op（保留它以免将来新增分支漏掉收尾）
       buf.dispose()
       sessionAbortControllers.delete(sessionId)
+      sessionSpeedTrackers.delete(sessionId)
       setToolStatus((cur) => (cur && cur.sessionId === sessionId ? null : cur))
       setChatState((prev) => {
         if (!prev.sendingIds.has(sessionId)) return prev
@@ -1516,6 +1969,8 @@ export default function Assistant() {
           filename: a.filename,
           bytes: a.bytes,
           textContent: getSessionFileText(activeId, a.fileId),
+          // 内存里的内联图片还能重发；刷新后 dataUrl 已剥离，退化为普通附件标签
+          previewUrl: a.dataUrl,
         }))
       // 与 handlePickFiles 三条分支同一配额：回填不截断就可能凑出 9+ 个附件，
       // send() 原样作为该 user 消息的 attachments 下发，服务端按「每条消息 1-8 个」整单 400
@@ -1943,17 +2398,20 @@ export default function Assistant() {
               <SelectOutlined /> 引用到输入框
             </button>
           )}
-          <div
-            className="plan-chat-msgs"
-            ref={msgsRef}
-            onScroll={(e) => {
-              const el = e.currentTarget
-              // 距底部 80px 以内视为"在底部"，允许自动滚动；超出则用户主动上滑，停止跟随
-              stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-              // 滚动后选区的 viewport 位置已失效，引用浮钮先收起（重新划选会再浮出）
-              setQuoteFloat(null)
-            }}
-          >
+          <div className="assistant-msgs-row">
+            <div
+              className="plan-chat-msgs"
+              ref={msgsRef}
+              onScroll={(e) => {
+                const el = e.currentTarget
+                // 距底部 80px 以内视为"在底部"，允许自动滚动；超出则用户主动上滑，停止跟随
+                stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+                // 滚动后选区的 viewport 位置已失效，引用浮钮先收起（重新划选会再浮出）
+                setQuoteFloat(null)
+                // 同步右侧对话导航的高亮（rAF 节流）
+                scheduleSpy()
+              }}
+            >
             {messages.length === 0 && !sending && (
               /* 空态建议做成可点的芯片：点击即填入输入框，不再只是装饰性文字 */
               <div className="chat-empty">
@@ -1983,21 +2441,45 @@ export default function Assistant() {
             {messages.map((m, i) => {
               if (m.role === 'user') {
                 return (
-                  <div key={i} className="plan-chat-msg plan-chat-msg-user">
+                  <div
+                    key={i}
+                    data-msg-index={i}
+                    data-role="user"
+                    className={`plan-chat-msg plan-chat-msg-user${jumpFlashIdx === i ? ' is-flash' : ''}`}
+                  >
                     {m.attachments && m.attachments.length > 0 && (
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: m.content ? 6 : 0 }}>
-                        {m.attachments.map((a, j) => (
-                          <Tag key={`${a.fileId}-${j}`} style={{ marginInlineEnd: 0 }}>
-                            <PaperClipOutlined /> {a.filename || a.fileId}
-                            {a.bytes !== undefined ? `（${fmtBytes(a.bytes)}）` : ''}
-                            {a.textContent !== undefined ? ' · 文本' : ''}
-                          </Tag>
-                        ))}
+                        {m.attachments.map((a, j) =>
+                          a.dataUrl ? (
+                            /* 内联图片：气泡内直接预览（刷新后 dataUrl 剥离，退化为标签） */
+                            <img
+                              key={`${a.fileId}-${j}`}
+                              src={a.dataUrl}
+                              alt={a.filename || '图片附件'}
+                              style={{
+                                maxWidth: 200,
+                                maxHeight: 160,
+                                borderRadius: 8,
+                                border: '1px solid var(--line)',
+                                display: 'block',
+                                objectFit: 'cover',
+                              }}
+                            />
+                          ) : (
+                            <Tag key={`${a.fileId}-${j}`} style={{ marginInlineEnd: 0 }}>
+                              <PaperClipOutlined /> {a.filename || a.fileId}
+                              {a.bytes !== undefined ? `（${fmtBytes(a.bytes)}）` : ''}
+                              {a.textContent !== undefined ? ' · 文本' : ''}
+                            </Tag>
+                          ),
+                        )}
                       </div>
                     )}
                     {m.content && <Markdown text={m.content} />}
-                    {m.content && (
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
+                    {/* 按钮行对纯附件消息（content 为空）同样渲染：否则粘贴图片直接发送后
+                        找不到「再次编辑」入口；「复制」无文本可复制，仅在有内容时出现 */}
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
+                      {m.content && (
                         <Button
                           size="small"
                           type="text"
@@ -2012,17 +2494,17 @@ export default function Assistant() {
                         >
                           复制
                         </Button>
-                        <Button
-                          size="small"
-                          type="text"
-                          className="msg-copy-btn"
-                          icon={<EditOutlined />}
-                          onClick={() => editUserMessage(i)}
-                        >
-                          再次编辑
-                        </Button>
-                      </div>
-                    )}
+                      )}
+                      <Button
+                        size="small"
+                        type="text"
+                        className="msg-copy-btn"
+                        icon={<EditOutlined />}
+                        onClick={() => editUserMessage(i)}
+                      >
+                        再次编辑
+                      </Button>
+                    </div>
                   </div>
                 )
               }
@@ -2034,7 +2516,12 @@ export default function Assistant() {
               const appliedTplSet = new Set(appliedTpl)
               const pendingTplCount = tplAdds.length - appliedTpl.length
               return (
-                <div key={i} className="plan-chat-msg plan-chat-msg-assistant">
+                <div
+                  key={i}
+                  data-msg-index={i}
+                  data-role="assistant"
+                  className={`plan-chat-msg plan-chat-msg-assistant${jumpFlashIdx === i ? ' is-flash' : ''}`}
+                >
                   {m.reasoning && (
                     <details
                       className="ai-reasoning"
@@ -2058,39 +2545,7 @@ export default function Assistant() {
                       </div>
                     </details>
                   )}
-                  <div
-                    className={
-                      text.length > LONG_MSG_CHARS && !(sending && i === messages.length - 1) && !expandedMsgs.has(i)
-                        ? 'msg-clamp'
-                        : undefined
-                    }
-                  >
-                    <Markdown text={text} streaming={sending && i === messages.length - 1} />
-                  </div>
-                  {(() => {
-                    // 超长回复（且已经输出完）默认折叠，给出「展开全文 / 收起」
-                    const tooLong = text.length > LONG_MSG_CHARS
-                    const isStreamingThis = sending && i === messages.length - 1
-                    if (!tooLong || isStreamingThis) return null
-                    const expanded = expandedMsgs.has(i)
-                    return (
-                      <Button
-                        size="small"
-                        type="text"
-                        className="msg-clamp-toggle"
-                        onClick={() =>
-                          setExpandedMsgs((prev) => {
-                            const next = new Set(prev)
-                            if (next.has(i)) next.delete(i)
-                            else next.add(i)
-                            return next
-                          })
-                        }
-                      >
-                        {expanded ? '收起' : `展开全文（约 ${Math.round(text.length / 100) / 10} 千字）`}
-                      </Button>
-                    )
-                  })()}
+                  <Markdown text={text} streaming={sending && i === messages.length - 1} />
                   {text.trim() && (
                     <Button
                       size="small"
@@ -2234,7 +2689,77 @@ export default function Assistant() {
                 <Spin size="small" />
               </div>
             )}
+            </div>
+            {userTurns.length > 0 && (
+              /* 右侧对话导航：列出每条发过的消息（摘要），点击跳转 + 滚动联动高亮 */
+              <aside className={`chat-toc${tocHidden ? ' is-collapsed' : ''}`}>
+                {tocHidden ? (
+                  <Tooltip title="对话导航：快速跳到你发过的消息" placement="left">
+                    <button type="button" className="chat-toc-toggle" aria-label="展开对话导航" onClick={toggleToc}>
+                      <UnorderedListOutlined />
+                    </button>
+                  </Tooltip>
+                ) : (
+                  <>
+                    <div className="chat-toc-head">
+                      <span className="chat-toc-title">对话导航</span>
+                      <Tooltip title="收起导航" placement="left">
+                        <button type="button" className="chat-toc-toggle" aria-label="收起对话导航" onClick={toggleToc}>
+                          <RightOutlined />
+                        </button>
+                      </Tooltip>
+                    </div>
+                    <div className="chat-toc-list">
+                      {userTurns.map((t, n) => (
+                        <button
+                          key={t.idx}
+                          type="button"
+                          className={`chat-toc-item${activeTurnIdx === t.idx ? ' is-active' : ''}`}
+                          title={turnExcerpt(t.msg)}
+                          onClick={() => jumpToTurn(t.idx)}
+                        >
+                          <span className="chat-toc-no">{n + 1}</span>
+                          <span className="chat-toc-excerpt">{turnExcerpt(t.msg)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </aside>
+            )}
           </div>
+          {showModelChip && (
+            /* 模型选择器（对齐 ZCode 输入框右上角的模型位）：点击切模型 / 切提供商，全局生效 */
+            <div className="chat-input-topbar">
+              <Dropdown
+                trigger={['click']}
+                placement="topRight"
+                menu={{ ...modelMenu, onClick: onModelMenuClick }}
+                onOpenChange={onModelMenuOpenChange}
+                overlayClassName="chat-model-dropdown"
+                popupRender={(menu) => (
+                  /* 面板壳：搜索框固定在顶部，模型列表在下方滚动（网关列表常有几百条） */
+                  <div className="chat-model-panel">
+                    <Input
+                      size="small"
+                      className="chat-model-filter"
+                      placeholder="搜索模型…"
+                      prefix={<SearchOutlined />}
+                      allowClear
+                      value={modelFilter}
+                      onChange={(e) => setModelFilter(e.target.value)}
+                    />
+                    {menu}
+                  </div>
+                )}
+              >
+                <button type="button" className="chat-model-chip" aria-label="切换 AI 模型">
+                  <span className="chat-model-chip-name">{aiInfo?.model || '未设置模型'}</span>
+                  <DownOutlined className="chat-model-chip-caret" />
+                </button>
+              </Dropdown>
+            </div>
+          )}
           <div className="plan-chat-input" style={{ position: 'relative' }}>
             {/* `/` 快捷指令候选（P3-5）：浮在输入框上方，不挤压消息区高度 */}
             {cmdMenuOpen && (
@@ -2263,25 +2788,42 @@ export default function Assistant() {
               </div>
             )}
             {pendingAtts.length > 0 && (
-              <div style={{ flexBasis: '100%', display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                {pendingAtts.map((a, i) => (
-                  <Tag
-                    key={`${a.fileId}-${i}`}
-                    closable
-                    onClose={() => setPendingAtts((prev) => prev.filter((_, j) => j !== i))}
-                  >
-                    <PaperClipOutlined /> {a.filename || a.fileId}
-                    {a.bytes !== undefined ? `（${fmtBytes(a.bytes)}）` : ''}
-                    {a.textContent !== undefined ? ' · 文本' : ''}
-                  </Tag>
-                ))}
+              <div style={{ flexBasis: '100%', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {pendingAtts.map((a, i) =>
+                  a.previewUrl ? (
+                    /* 图片附件：缩略图预览（对齐主流聊天产品的粘贴样式），悬停出移除钮 */
+                    <div key={`${a.fileId}-${i}`} className="pending-att-thumb">
+                      <img src={a.previewUrl} alt={a.filename || '图片附件'} />
+                      <button
+                        type="button"
+                        className="pending-att-remove"
+                        aria-label={`移除图片 ${a.filename || ''}`}
+                        title={a.filename || '图片附件'}
+                        onClick={() => removePendingAtt(i)}
+                      >
+                        <CloseOutlined />
+                      </button>
+                    </div>
+                  ) : (
+                    <Tag
+                      key={`${a.fileId}-${i}`}
+                      closable
+                      onClose={() => removePendingAtt(i)}
+                    >
+                      <PaperClipOutlined /> {a.filename || a.fileId}
+                      {a.bytes !== undefined ? `（${fmtBytes(a.bytes)}）` : ''}
+                      {a.textContent !== undefined ? ' · 文本' : ''}
+                    </Tag>
+                  ),
+                )}
               </div>
             )}
             <Input.TextArea
               ref={inputRef}
               value={input}
               onChange={(e) => setChatState((prev) => ({ ...prev, input: e.target.value }))}
-              placeholder="向 AI 教练提问…（可粘贴代码，拖入或附加图片/代码文件；输入 / 查看快捷指令）Enter 发送，Shift+Enter 换行"
+              placeholder="向 AI 教练提问…（可粘贴截图/代码，拖入或附加图片/代码文件；输入 / 查看快捷指令）Enter 发送，Shift+Enter 换行"
+              onPaste={handlePasteUpload}
               autoSize={{ minRows: 1, maxRows: 6 }}
               onKeyDown={(e) => {
                 // 菜单打开时先吃掉方向键/Enter/Esc，避免同时触发「发送」
@@ -2346,6 +2888,57 @@ export default function Assistant() {
               />
             )}
           </div>
+          {(messages.length > 0 || sending) && (
+            /* 会话状态栏（对齐 ZCode）：轮数/消息 · tok/s · 累计 token/缓存命中 · 上下文占用 */
+            <div className="chat-statusbar">
+              <Tooltip title="当前会话的对话轮数与消息总数；闪电后是流式生成速度（生成中为估算值，结束后按真实用量折算）">
+                <span className="chat-status-seg">
+                  {sessionStats.rounds} 轮 · {sessionStats.msgCount} 消息
+                  {tokPerSec && (
+                    <span className="chat-status-speed">
+                      <ThunderboltOutlined /> {tokPerSec} tok/s
+                    </span>
+                  )}
+                </span>
+              </Tooltip>
+              {sessionStats.totalTokens > 0 && (
+                <Tooltip title="本会话累计 token 用量；「缓存命中」是输入部分命中提示词缓存的比例（网关返回 cached_tokens 时才显示）">
+                  <span className="chat-status-seg">
+                    <DatabaseOutlined />
+                    {fmtTokenCount(sessionStats.totalTokens)} tok
+                    {sessionStats.cacheHit !== null && (
+                      <span>缓存命中 {(sessionStats.cacheHit * 100).toFixed(1)}%</span>
+                    )}
+                  </span>
+                </Tooltip>
+              )}
+              {contextPct !== null && (
+                <Tooltip title="最后一轮输入 token 占模型上下文窗口的比例（窗口大小取自设置页 AI 配置）">
+                  <span
+                    className={`chat-status-seg chat-status-ctx${
+                      contextPct >= 90 ? ' is-critical' : contextPct >= 70 ? ' is-warn' : ''
+                    }`}
+                  >
+                    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                      <circle cx="8" cy="8" r="6.5" fill="none" strokeWidth="2.5" style={{ stroke: 'var(--line)' }} />
+                      <circle
+                        cx="8"
+                        cy="8"
+                        r="6.5"
+                        fill="none"
+                        strokeWidth="2.5"
+                        strokeLinecap="round"
+                        strokeDasharray={`${Math.max((contextPct / 100) * 40.84, 0.6)} 40.84`}
+                        transform="rotate(-90 8 8)"
+                        style={{ stroke: 'currentColor' }}
+                      />
+                    </svg>
+                    {contextPct}%
+                  </span>
+                </Tooltip>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
