@@ -2098,6 +2098,13 @@ button.dist-row:hover {
   letter-spacing: 2px;
 }
 
+/* 段位名跟在星标后：比星标再弱一档，避免与课程标题抢视觉 */
+.template-tier {
+  color: var(--text-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .template-brief {
   display: flex;
   align-items: center;

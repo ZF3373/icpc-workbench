@@ -491,6 +491,14 @@ export {
   type TagSynonymGroup,
 } from './tags.ts';
 
+export {
+  TEMPLATE_TIER_LABELS,
+  TEMPLATE_TIER_OPTIONS,
+  templateTierLabel,
+  templateTierBadge,
+  type TemplateTier,
+} from './templateTiers.ts';
+
 // ---------- 平台凭据表单字段（client 渲染 + server 单字段合并校验的共享真相） ----------
 
 export {

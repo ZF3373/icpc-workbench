@@ -10,12 +10,12 @@ import { CURRICULUM } from '../src/templates/curriculum.ts';
 import { loadTaxonomy, allPoints, isValidCode, nameOfCode, templateIdsOfCode } from '../src/knowledge/taxonomy.ts';
 import { classifyTitle, loadRules } from '../src/knowledge/ruleEngine.ts';
 
-test('taxonomy: code 全局唯一、非空且锚定 curriculum 10 大类', () => {
+test('taxonomy: code 全局唯一、非空且锚定 curriculum 11 大类', () => {
   const taxonomy = loadTaxonomy();
-  assert.equal(taxonomy.categories.length, 10);
+  assert.equal(taxonomy.categories.length, 11);
   const codes = allPoints().map((p) => p.code);
   // code 数量下界：粗粒度层落地时应只增不减；显式断言可避免标题里的数字随时间失真
-  assert.ok(codes.length >= 134, `taxonomy code 数应 >= 134，实得 ${codes.length}`);
+  assert.ok(codes.length >= 201, `taxonomy code 数应 >= 201，实得 ${codes.length}`);
   assert.equal(new Set(codes).size, codes.length);
   // 每个 code 的命名空间前缀必须是所属大类 key
   for (const cat of taxonomy.categories) {
@@ -32,7 +32,7 @@ test('taxonomy: templateIds 全部存在于 curriculum（掌握度地图看课�
       assert.ok(templateIds.has(id), `${p.code} 挂了不存在的模板 ${id}`);
     }
   }
-  // 全部课程应基本一一对应（2026-10 tricks 补课后 130 讲）：挂课程的 code 数 = 模板总数
+  // 全部课程应一一对应（2026-10 两轮对照思维导图补位后 181 讲）：挂课程的 code 数 = 模板总数
   const linked = allPoints().filter((p) => (p.templateIds ?? []).length > 0).length;
   assert.equal(linked, CURRICULUM.reduce((n, c) => n + c.templates.length, 0));
 });

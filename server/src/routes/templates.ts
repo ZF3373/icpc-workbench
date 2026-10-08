@@ -15,7 +15,7 @@ import {
 import { upsertBankProblems } from '../import/bankService.ts';
 import { syncPlatform } from '../adapters/sync.ts';
 import type { PlatformId, SyncResult } from '../../../shared/src/index.ts';
-import { platformMeta } from '../../../shared/src/index.ts';
+import { platformMeta, templateTierBadge } from '../../../shared/src/index.ts';
 import { compileTypstToPdf, renderTemplatesTypst } from '../templates/typst.ts';
 
 interface ProgressRow {
@@ -201,8 +201,6 @@ const EXPORT_STATUS_LABEL: Record<string, string> = {
   mastered: '已掌握',
 };
 
-const difficultyStars = (d: number): string => '★'.repeat(d) + '☆'.repeat(5 - d);
-
 /** 生成能容纳 code 中任意反引号串的代码围栏，避免用户代码里的 ``` 破坏 Markdown 结构 */
 const codeFence = (lang: string, code: string): string => {
   const longest = Math.max(0, ...(code.match(/`+/g)?.map((s) => s.length) ?? [0]));
@@ -339,7 +337,7 @@ function renderTemplatesMarkdown(db: Db): string {
       n++;
       out.push(`### ${n}. ${t.name}`, '');
       out.push(`- **分类：** ${t.category}`);
-      out.push(`- **难度：** ${difficultyStars(t.difficulty)}（${t.difficulty}/5）`);
+      out.push(`- **难度：** ${templateTierBadge(t.difficulty)}`);
       if (t.tags.length) out.push(`- **标签：** ${t.tags.join('、')}`);
       if (t.complexity) out.push(`- **复杂度：** ${t.complexity}`);
       if (t.url) out.push(`- **出处：** ${t.url}`);
@@ -360,7 +358,7 @@ function renderTemplatesMarkdown(db: Db): string {
       m++;
       out.push(`### ${m}. ${t.name}`, '');
       out.push(`- **分类：** ${t.category}`);
-      out.push(`- **难度：** ${difficultyStars(t.difficulty)}（${t.difficulty}/5）`);
+      out.push(`- **难度：** ${templateTierBadge(t.difficulty)}`);
       if (t.tags.length) out.push(`- **标签：** ${t.tags.join('、')}`);
       if (t.complexity) out.push(`- **复杂度：** ${t.complexity}`);
       if (t.url) out.push(`- **参考链接：** ${t.url}`);

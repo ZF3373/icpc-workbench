@@ -4,6 +4,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { renderMarkdownToTypst } from './markdownTypst.ts';
 import { typstString } from './typstEscape.ts';
+import { templateTierLabel } from '../../../shared/src/index.ts';
 import type { ExportBundle } from '../routes/templates.ts';
 
 export { typstString };
@@ -225,7 +226,7 @@ export function renderTemplatesTypst(bundle: ExportBundle): string {
       index += 1;
       out.push(`#heading(level: 3)[${text(`${index}. ${item.name}`)}]`, '');
       out.push(`- *分类：* ${text(item.category)}`);
-      out.push(`- *难度：* ${difficultyStars(item.difficulty)} ${text(`（${item.difficulty}/5）`)}`);
+      out.push(`- *难度：* ${difficultyStars(item.difficulty)} ${text(templateTierLabel(item.difficulty))}`);
       if (item.tags.length) out.push(`- *标签：* ${text(item.tags.join('、'))}`);
       if (item.complexity) out.push(`- *复杂度：* ${text(item.complexity)}`);
       if (item.url) out.push(`- *出处：* #link(${typstString(item.url)})[${text(item.url)}]`);
@@ -257,7 +258,7 @@ export function renderTemplatesTypst(bundle: ExportBundle): string {
       builtinIndex += 1;
       out.push(`#heading(level: 3)[${text(`${builtinIndex}. ${item.name}`)}]`, '');
       out.push(`- *分类：* ${text(item.category)}`);
-      out.push(`- *难度：* ${difficultyStars(item.difficulty)} ${text(`（${item.difficulty}/5）`)}`);
+      out.push(`- *难度：* ${difficultyStars(item.difficulty)} ${text(templateTierLabel(item.difficulty))}`);
       if (item.tags.length) out.push(`- *标签：* ${text(item.tags.join('、'))}`);
       if (item.complexity) out.push(`- *复杂度：* ${text(item.complexity)}`);
       if (item.url) out.push(`- *参考链接：* #link(${typstString(item.url)})[${text(item.url)}]`);

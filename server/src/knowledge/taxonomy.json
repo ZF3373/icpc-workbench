@@ -1,6 +1,100 @@
 {
-  "version": 4,
+  "version": 6,
   "categories": [
+    {
+      "key": "intro",
+      "name": "入门基础",
+      "points": [
+        {
+          "code": "intro.array-loop",
+          "name": "数组下标与循环枚举",
+          "fullName": "数组下标与循环枚举",
+          "templateIds": [
+            "intro-array-loop"
+          ]
+        },
+        {
+          "code": "intro.complexity",
+          "name": "数据范围与复杂度分析",
+          "fullName": "数据范围与复杂度分析",
+          "templateIds": [
+            "intro-complexity"
+          ]
+        },
+        {
+          "code": "intro.sort-basic",
+          "name": "简单排序与结构体自定义比较",
+          "fullName": "简单排序与结构体自定义比较",
+          "templateIds": [
+            "intro-sort-basic"
+          ]
+        },
+        {
+          "code": "intro.sort-advanced",
+          "name": "高效排序与逆序对",
+          "fullName": "高效排序与逆序对",
+          "templateIds": [
+            "intro-sort-advanced"
+          ]
+        },
+        {
+          "code": "intro.simulation",
+          "name": "模拟与实现",
+          "fullName": "模拟与实现",
+          "templateIds": [
+            "intro-simulation"
+          ]
+        },
+        {
+          "code": "intro.string-basic",
+          "name": "字符串基础处理",
+          "fullName": "字符串基础处理",
+          "templateIds": [
+            "intro-string-basic"
+          ]
+        },
+        {
+          "code": "intro.recurrence",
+          "name": "递归与递推",
+          "fullName": "递归与递推",
+          "templateIds": [
+            "intro-recurrence"
+          ]
+        },
+        {
+          "code": "intro.stack-queue",
+          "name": "栈与队列",
+          "fullName": "栈与队列",
+          "templateIds": [
+            "intro-stack-queue"
+          ]
+        },
+        {
+          "code": "intro.linked-list",
+          "name": "数组模拟链表",
+          "fullName": "数组模拟链表",
+          "templateIds": [
+            "intro-linked-list"
+          ]
+        },
+        {
+          "code": "intro.brute-force",
+          "name": "枚举与剪枝",
+          "fullName": "枚举与剪枝",
+          "templateIds": [
+            "intro-brute-force"
+          ]
+        },
+        {
+          "code": "intro.duipai",
+          "name": "对拍与随机造数据",
+          "fullName": "对拍与随机造数据",
+          "templateIds": [
+            "intro-duipai"
+          ]
+        }
+      ]
+    },
     {
       "key": "basic",
       "name": "基础算法",
@@ -59,6 +153,14 @@
           "fullName": "二分答案",
           "templateIds": [
             "basic-binary-answer"
+          ]
+        },
+        {
+          "code": "basic.ternary-search",
+          "name": "三分法",
+          "fullName": "三分法（单峰函数极值）",
+          "templateIds": [
+            "basic-ternary-search"
           ]
         },
         {
@@ -219,6 +321,14 @@
           ]
         },
         {
+          "code": "ds.bit-2d",
+          "name": "二维树状数组",
+          "fullName": "二维树状数组",
+          "templateIds": [
+            "ds-bit-2d"
+          ]
+        },
+        {
           "code": "ds.sparse-table",
           "name": "ST 表",
           "fullName": "ST 表（静态 RMQ）",
@@ -259,11 +369,35 @@
           ]
         },
         {
+          "code": "ds.segtree-merge",
+          "name": "线段树合并",
+          "fullName": "线段树合并",
+          "templateIds": [
+            "ds-segtree-merge"
+          ]
+        },
+        {
+          "code": "ds.persistent-dsu",
+          "name": "可持久化并查集",
+          "fullName": "可持久化并查集",
+          "templateIds": [
+            "ds-persistent-dsu"
+          ]
+        },
+        {
           "code": "ds.fhq-treap",
           "name": "平衡树",
           "fullName": "平衡树（FHQ Treap）",
           "templateIds": [
             "ds-fhq-treap"
+          ]
+        },
+        {
+          "code": "ds.persistent-balanced",
+          "name": "可持久化平衡树",
+          "fullName": "可持久化平衡树",
+          "templateIds": [
+            "ds-persistent-balanced"
           ]
         },
         {
@@ -331,6 +465,14 @@
           ]
         },
         {
+          "code": "ds.xihe-tree",
+          "name": "析合树",
+          "fullName": "析合树",
+          "templateIds": [
+            "ds-xihe-tree"
+          ]
+        },
+        {
           "code": "ds.partition-tree",
           "name": "划分树",
           "fullName": "划分树",
@@ -347,115 +489,31 @@
       ]
     },
     {
-      "key": "tree",
-      "name": "树论",
-      "points": [
-        {
-          "code": "tree.diameter",
-          "name": "树的直径",
-          "fullName": "树的直径",
-          "templateIds": [
-            "tree-diameter"
-          ]
-        },
-        {
-          "code": "tree.centroid",
-          "name": "树的重心",
-          "fullName": "树的重心",
-          "templateIds": [
-            "tree-centroid"
-          ]
-        },
-        {
-          "code": "tree.lca",
-          "name": "最近公共祖先",
-          "fullName": "最近公共祖先（倍增）",
-          "templateIds": [
-            "tree-lca"
-          ]
-        },
-        {
-          "code": "tree.dfs-order",
-          "name": "DFS 序与子树统计",
-          "fullName": "DFS 序与子树统计",
-          "templateIds": [
-            "tree-dfs-order"
-          ]
-        },
-        {
-          "code": "tree.hld",
-          "name": "树链剖分",
-          "fullName": "树链剖分（重链剖分）",
-          "templateIds": [
-            "tree-hld"
-          ]
-        },
-        {
-          "code": "tree.dsu-on-tree",
-          "name": "树上启发式合并",
-          "fullName": "树上启发式合并",
-          "templateIds": [
-            "tree-dsu-on-tree"
-          ]
-        },
-        {
-          "code": "tree.centroid-decomp",
-          "name": "点分治",
-          "fullName": "点分治",
-          "templateIds": [
-            "tree-centroid-decomp"
-          ]
-        },
-        {
-          "code": "tree.pseudo",
-          "name": "基环树",
-          "fullName": "基环树（环套树）",
-          "templateIds": [
-            "tree-pseudo"
-          ]
-        },
-        {
-          "code": "tree.virtual",
-          "name": "虚树",
-          "fullName": "虚树",
-          "templateIds": [
-            "tree-virtual"
-          ]
-        },
-        {
-          "code": "tree.lct",
-          "name": "Link-Cut-Tree",
-          "fullName": "Link-Cut-Tree（动态树）",
-          "templateIds": [
-            "tree-lct"
-          ]
-        },
-        {
-          "code": "tree.cactus",
-          "name": "仙人掌",
-          "fullName": "仙人掌（圆方树）",
-          "templateIds": [
-            "tree-cactus"
-          ]
-        },
-        {
-          "code": "tree.general",
-          "name": "树上算法（综合）",
-          "fullName": "树上算法（综合，未细分）",
-          "templateIds": []
-        }
-      ]
-    },
-    {
       "key": "dp",
       "name": "动态规划",
       "points": [
+        {
+          "code": "dp.state-design",
+          "name": "DP 状态设计与转移",
+          "fullName": "DP 状态设计与转移（入门）",
+          "templateIds": [
+            "dp-state-design"
+          ]
+        },
         {
           "code": "dp.knapsack",
           "name": "背包 DP",
           "fullName": "背包 DP（01 / 完全）",
           "templateIds": [
             "dp-knapsack"
+          ]
+        },
+        {
+          "code": "dp.knapsack-variants",
+          "name": "多重背包与分组 / 混合背包",
+          "fullName": "多重背包与分组 / 混合背包",
+          "templateIds": [
+            "dp-knapsack-variants"
           ]
         },
         {
@@ -475,11 +533,35 @@
           ]
         },
         {
+          "code": "dp.counting",
+          "name": "计数 DP",
+          "fullName": "计数 DP",
+          "templateIds": [
+            "dp-counting"
+          ]
+        },
+        {
           "code": "dp.tree",
           "name": "树形 DP",
           "fullName": "树形 DP",
           "templateIds": [
             "dp-tree"
+          ]
+        },
+        {
+          "code": "dp.tree-reroot",
+          "name": "换根 DP",
+          "fullName": "换根 DP",
+          "templateIds": [
+            "dp-tree-reroot"
+          ]
+        },
+        {
+          "code": "dp.on-graph",
+          "name": "图上 DP",
+          "fullName": "图上 DP（拓扑序与基环树）",
+          "templateIds": [
+            "dp-on-graph"
           ]
         },
         {
@@ -523,6 +605,14 @@
           ]
         },
         {
+          "code": "dp.mono-stack-opt",
+          "name": "单调栈优化 DP",
+          "fullName": "单调栈优化 DP",
+          "templateIds": [
+            "dp-mono-stack-opt"
+          ]
+        },
+        {
           "code": "dp.slope-opt",
           "name": "斜率优化",
           "fullName": "斜率优化（凸壳转移）",
@@ -539,6 +629,14 @@
           ]
         },
         {
+          "code": "dp.ds-opt",
+          "name": "数据结构优化 DP",
+          "fullName": "数据结构优化 DP",
+          "templateIds": [
+            "dp-ds-opt"
+          ]
+        },
+        {
           "code": "dp.wqs",
           "name": "WQS 二分",
           "fullName": "WQS 二分（凸优化）",
@@ -547,11 +645,35 @@
           ]
         },
         {
+          "code": "dp.dynamic",
+          "name": "动态 DP",
+          "fullName": "动态 DP（矩阵加速树形 DP）",
+          "templateIds": [
+            "dp-dynamic"
+          ]
+        },
+        {
+          "code": "dp.nested",
+          "name": "dp 套 dp",
+          "fullName": "dp 套 dp",
+          "templateIds": [
+            "dp-nested"
+          ]
+        },
+        {
           "code": "dp.steiner",
           "name": "最小斯坦纳树",
           "fullName": "最小斯坦纳树",
           "templateIds": [
             "dp-steiner"
+          ]
+        },
+        {
+          "code": "dp.fill-board",
+          "name": "填坑 DP",
+          "fullName": "填坑 DP",
+          "templateIds": [
+            "dp-fill-board"
           ]
         },
         {
@@ -598,6 +720,14 @@
           ]
         },
         {
+          "code": "graph.shortest-path-tree",
+          "name": "最短路径树与最短路计数",
+          "fullName": "最短路径树与最短路计数",
+          "templateIds": [
+            "graph-shortest-path-tree"
+          ]
+        },
+        {
           "code": "graph.spfa",
           "name": "SPFA",
           "fullName": "SPFA（判负环）",
@@ -619,6 +749,14 @@
           "fullName": "欧拉路（Euler Path）",
           "templateIds": [
             "graph-euler"
+          ]
+        },
+        {
+          "code": "graph.tournament",
+          "name": "竞赛图",
+          "fullName": "竞赛图",
+          "templateIds": [
+            "graph-tournament"
           ]
         },
         {
@@ -662,6 +800,22 @@
           ]
         },
         {
+          "code": "graph.km",
+          "name": "KM 算法",
+          "fullName": "KM 算法（二分图最大权匹配）",
+          "templateIds": [
+            "graph-km"
+          ]
+        },
+        {
+          "code": "graph.blossom",
+          "name": "一般图最大匹配",
+          "fullName": "一般图最大匹配（带花树）",
+          "templateIds": [
+            "graph-blossom"
+          ]
+        },
+        {
           "code": "graph.tarjan-scc",
           "name": "Tarjan 缩点",
           "fullName": "Tarjan 缩点（强连通分量）",
@@ -675,6 +829,14 @@
           "fullName": "割点与桥（无向图双连通）",
           "templateIds": [
             "graph-cut"
+          ]
+        },
+        {
+          "code": "graph.dominator",
+          "name": "支配树",
+          "fullName": "支配树",
+          "templateIds": [
+            "graph-dominator"
           ]
         },
         {
@@ -694,11 +856,27 @@
           ]
         },
         {
+          "code": "graph.flow-bounds",
+          "name": "上下界网络流",
+          "fullName": "上下界网络流",
+          "templateIds": [
+            "graph-flow-bounds"
+          ]
+        },
+        {
           "code": "graph.mcmf",
           "name": "最小费用最大流",
           "fullName": "最小费用最大流（SSP）",
           "templateIds": [
             "graph-mcmf"
+          ]
+        },
+        {
+          "code": "graph.global-mincut",
+          "name": "全局最小割与最小割树",
+          "fullName": "全局最小割与最小割树",
+          "templateIds": [
+            "graph-global-mincut"
           ]
         },
         {
@@ -754,6 +932,130 @@
       ]
     },
     {
+      "key": "tree",
+      "name": "树论",
+      "points": [
+        {
+          "code": "tree.diameter",
+          "name": "树的直径",
+          "fullName": "树的直径",
+          "templateIds": [
+            "tree-diameter"
+          ]
+        },
+        {
+          "code": "tree.centroid",
+          "name": "树的重心",
+          "fullName": "树的重心",
+          "templateIds": [
+            "tree-centroid"
+          ]
+        },
+        {
+          "code": "tree.lca",
+          "name": "最近公共祖先",
+          "fullName": "最近公共祖先（倍增）",
+          "templateIds": [
+            "tree-lca"
+          ]
+        },
+        {
+          "code": "tree.dfs-order",
+          "name": "DFS 序与子树统计",
+          "fullName": "DFS 序与子树统计",
+          "templateIds": [
+            "tree-dfs-order"
+          ]
+        },
+        {
+          "code": "tree.hash",
+          "name": "树的哈希",
+          "fullName": "树的哈希（同构判定）",
+          "templateIds": [
+            "tree-hash"
+          ]
+        },
+        {
+          "code": "tree.hld",
+          "name": "树链剖分",
+          "fullName": "树链剖分（重链剖分）",
+          "templateIds": [
+            "tree-hld"
+          ]
+        },
+        {
+          "code": "tree.long-chain",
+          "name": "长链剖分",
+          "fullName": "长链剖分",
+          "templateIds": [
+            "tree-long-chain"
+          ]
+        },
+        {
+          "code": "tree.dsu-on-tree",
+          "name": "树上启发式合并",
+          "fullName": "树上启发式合并",
+          "templateIds": [
+            "tree-dsu-on-tree"
+          ]
+        },
+        {
+          "code": "tree.centroid-decomp",
+          "name": "点分治",
+          "fullName": "点分治",
+          "templateIds": [
+            "tree-centroid-decomp"
+          ]
+        },
+        {
+          "code": "tree.edge-divide",
+          "name": "边分治",
+          "fullName": "边分治",
+          "templateIds": [
+            "tree-edge-divide"
+          ]
+        },
+        {
+          "code": "tree.pseudo",
+          "name": "基环树",
+          "fullName": "基环树（环套树）",
+          "templateIds": [
+            "tree-pseudo"
+          ]
+        },
+        {
+          "code": "tree.virtual",
+          "name": "虚树",
+          "fullName": "虚树",
+          "templateIds": [
+            "tree-virtual"
+          ]
+        },
+        {
+          "code": "tree.lct",
+          "name": "Link-Cut-Tree",
+          "fullName": "Link-Cut-Tree（动态树）",
+          "templateIds": [
+            "tree-lct"
+          ]
+        },
+        {
+          "code": "tree.cactus",
+          "name": "仙人掌",
+          "fullName": "仙人掌（圆方树）",
+          "templateIds": [
+            "tree-cactus"
+          ]
+        },
+        {
+          "code": "tree.general",
+          "name": "树上算法（综合）",
+          "fullName": "树上算法（综合，未细分）",
+          "templateIds": []
+        }
+      ]
+    },
+    {
       "key": "math",
       "name": "数学",
       "points": [
@@ -774,6 +1076,14 @@
           ]
         },
         {
+          "code": "math.miller-rabin",
+          "name": "Miller-Rabin 与 Pollard-Rho",
+          "fullName": "Miller-Rabin 与 Pollard-Rho",
+          "templateIds": [
+            "math-miller-rabin"
+          ]
+        },
+        {
           "code": "math.exgcd",
           "name": "exgcd 与逆元",
           "fullName": "exgcd 与逆元",
@@ -790,11 +1100,43 @@
           ]
         },
         {
+          "code": "math.inc-exc",
+          "name": "容斥原理与 min-max 容斥",
+          "fullName": "容斥原理与 min-max 容斥",
+          "templateIds": [
+            "math-inc-exc"
+          ]
+        },
+        {
+          "code": "math.sequences",
+          "name": "卡特兰数、错排、斯特林数与拆分数",
+          "fullName": "卡特兰数、错排、斯特林数与拆分数",
+          "templateIds": [
+            "math-sequences"
+          ]
+        },
+        {
+          "code": "math.prufer",
+          "name": "Prüfer 序列",
+          "fullName": "Prüfer 序列",
+          "templateIds": [
+            "math-prufer"
+          ]
+        },
+        {
           "code": "math.euler-theorem",
           "name": "欧拉定理与降幂",
           "fullName": "欧拉定理与降幂",
           "templateIds": [
             "math-euler-theorem"
+          ]
+        },
+        {
+          "code": "math.primitive-root",
+          "name": "原根与指数",
+          "fullName": "原根与指数",
+          "templateIds": [
+            "math-primitive-root"
           ]
         },
         {
@@ -838,6 +1180,14 @@
           ]
         },
         {
+          "code": "math.berlekamp-massey",
+          "name": "BM 算法与常系数线性递推",
+          "fullName": "BM 算法与常系数线性递推",
+          "templateIds": [
+            "math-berlekamp-massey"
+          ]
+        },
+        {
           "code": "math.binomial-inversion",
           "name": "二项式反演",
           "fullName": "二项式反演",
@@ -859,6 +1209,14 @@
           "fullName": "拉格朗日插值",
           "templateIds": [
             "math-lagrange"
+          ]
+        },
+        {
+          "code": "math.ogf",
+          "name": "生成函数",
+          "fullName": "生成函数（OGF / EGF）",
+          "templateIds": [
+            "math-ogf"
           ]
         },
         {
@@ -886,11 +1244,35 @@
           ]
         },
         {
+          "code": "math.floor-sum",
+          "name": "类欧几里得",
+          "fullName": "类欧几里得（floor 和）",
+          "templateIds": [
+            "math-floor-sum"
+          ]
+        },
+        {
+          "code": "math.sieve-advanced",
+          "name": "杜教筛与 min_25 筛",
+          "fullName": "杜教筛与 min_25 筛",
+          "templateIds": [
+            "math-sieve-advanced"
+          ]
+        },
+        {
           "code": "math.fft",
           "name": "FFT / NTT",
           "fullName": "FFT / NTT",
           "templateIds": [
             "math-fft"
+          ]
+        },
+        {
+          "code": "math.fwt",
+          "name": "FWT 与 FMT",
+          "fullName": "FWT 与 FMT（集合幂级数）",
+          "templateIds": [
+            "math-fwt"
           ]
         },
         {
@@ -975,6 +1357,14 @@
           "fullName": "最小表示法",
           "templateIds": [
             "str-minimal-rotation"
+          ]
+        },
+        {
+          "code": "string.lyndon",
+          "name": "Lyndon 分解",
+          "fullName": "Lyndon 分解（Duval 算法）",
+          "templateIds": [
+            "str-lyndon"
           ]
         },
         {
@@ -1085,11 +1475,35 @@
           ]
         },
         {
+          "code": "geo.circle",
+          "name": "圆与直线/圆的交点、切线与面积交并",
+          "fullName": "圆与直线/圆的交点、切线与面积交并",
+          "templateIds": [
+            "geo-circle"
+          ]
+        },
+        {
+          "code": "geo.min-circle",
+          "name": "最小圆覆盖",
+          "fullName": "最小圆覆盖（Welzl 算法）",
+          "templateIds": [
+            "geo-min-circle"
+          ]
+        },
+        {
           "code": "geo.scanline",
           "name": "扫描线",
           "fullName": "扫描线（矩形面积并）",
           "templateIds": [
             "geo-scanline"
+          ]
+        },
+        {
+          "code": "geo.point-location",
+          "name": "点定位与 Voronoi 图",
+          "fullName": "点定位与 Voronoi 图",
+          "templateIds": [
+            "geo-point-location"
           ]
         },
         {

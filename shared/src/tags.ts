@@ -90,7 +90,7 @@ export const TAG_SYNONYM_GROUPS: TagSynonymGroup[] = [
   { name: '仙人掌', code: 'tree.cactus', tags: ['仙人掌', '圆方树', 'cactus', 'block-cut tree'] },
 
   // ---------- 动态规划 ----------
-  { name: '背包 DP', code: 'dp.knapsack', tags: ['背包 DP', '背包', '01背包', '完全背包', '多重背包', '分组背包', 'knapsack'] },
+  { name: '背包 DP', code: 'dp.knapsack', tags: ['背包 DP', '背包', '01背包', '完全背包', 'knapsack'] },
   { name: '最长上升子序列', code: 'dp.lis', tags: ['最长上升子序列', '最长递增子序列', '最长不下降子序列', 'LIS', 'longest increasing subsequence'] },
   { name: '区间 DP', code: 'dp.interval', tags: ['区间 DP', '区间DP', '区间动态规划', 'interval dp'] },
   { name: '树形 DP', code: 'dp.tree', tags: ['树形 DP', '树形DP', '树形动态规划', '树上DP', 'tree dp'] },
@@ -146,7 +146,7 @@ export const TAG_SYNONYM_GROUPS: TagSynonymGroup[] = [
   { name: '拉格朗日插值', code: 'math.lagrange', tags: ['拉格朗日插值', '拉格朗日', '插值', 'lagrange', 'lagrange interpolation'] },
   { name: 'LGV 引理', code: 'math.lgv', tags: ['LGV 引理', 'LGV', '不交路径计数', 'lindstrom gessel viennot'] },
   { name: '莫比乌斯反演', code: 'math.mobius', tags: ['莫比乌斯反演', '莫比乌斯', '莫反', 'mobius', 'mobius inversion'] },
-  { name: 'FFT / NTT', code: 'math.fft', tags: ['FFT / NTT', 'FFT', 'NTT', '快速傅里叶', '快速傅里叶变换', '多项式', '卷积', 'FWT', 'fft', 'ntt'] },
+  { name: 'FFT / NTT', code: 'math.fft', tags: ['FFT / NTT', 'FFT', 'NTT', '快速傅里叶', '快速傅里叶变换', '多项式', '卷积', 'fft', 'ntt'] },
   { name: 'BSGS', code: 'math.bsgs', tags: ['BSGS', '大步小步', '离散对数', 'baby-step giant-step'] },
   { name: 'Pólya 定理与置换群', code: 'math.polya', tags: ['Pólya 定理与置换群', 'polya', '波利亚', '置换群', 'burnside'] },
   { name: '自适应辛普森积分', code: 'math.simpson', tags: ['自适应辛普森积分', '辛普森', '数值积分', 'simpson'] },
@@ -188,6 +188,65 @@ export const TAG_SYNONYM_GROUPS: TagSynonymGroup[] = [
   { name: 'CDQ 分治与整体二分', code: 'misc.cdq-whole', tags: ['CDQ 分治与整体二分', 'CDQ', 'cdq', 'CDQ分治', '整体二分'] },
   { name: '打表与卡常', code: 'misc.table-cast', tags: ['打表与卡常', '打表', '卡常', '常数优化'] },
   { name: '排序', code: 'misc.sorting', tags: ['排序', '排序算法', '归并排序', '基数排序', '快速排序', '堆排序', '逆序对', 'sort', 'sorting', 'sortings'] },
+
+  // ---------- 入门基础 + 2026-10 对照 XCPC 思维导图补位 ----------
+  // 组名逐字等于 taxonomy 的 name（不变量 1）；已属于既有组的 tag 一律不重复收（不变量 4），
+  // 例如「排序」「模拟」「栈」「枚举」「暴力」「计数」仍归各自的粗粒度组，这里只收新的写法。
+  { name: '数组下标与循环枚举', code: 'intro.array-loop', tags: ['数组下标与循环枚举', '数组', '一维数组', '二维数组'] },
+  { name: '数据范围与复杂度分析', code: 'intro.complexity', tags: ['数据范围与复杂度分析', '复杂度', '时间复杂度', '空间复杂度', '复杂度分析'] },
+  { name: '简单排序与结构体自定义比较', code: 'intro.sort-basic', tags: ['简单排序与结构体自定义比较', '简单排序', '冒泡排序', '选择排序', '插入排序', 'cmp'] },
+  { name: '高效排序与逆序对', code: 'intro.sort-advanced', tags: ['高效排序与逆序对', '高效排序', '快排', '归并', 'nth_element', 'partial_sort'] },
+  { name: '模拟与实现', code: 'intro.simulation', tags: ['模拟与实现', '大模拟', '按题意模拟'] },
+  { name: '字符串基础处理', code: 'intro.string-basic', tags: ['字符串基础处理', '字符串基础', '简单字符串', 'getline'] },
+  { name: '递归与递推', code: 'intro.recurrence', tags: ['递归与递推', '递归', '递推式', '记忆化递归'] },
+  { name: '栈与队列', code: 'intro.stack-queue', tags: ['栈与队列', '队列', 'queues', 'queue', '表达式求值', '括号匹配', '后缀表达式'] },
+  { name: '数组模拟链表', code: 'intro.linked-list', tags: ['数组模拟链表', '链表', 'linked list', 'linked lists', '双向链表', '约瑟夫环'] },
+  { name: '枚举与剪枝', code: 'intro.brute-force', tags: ['枚举与剪枝', '剪枝', '枚举子集', '子集枚举', 'next_permutation'] },
+  { name: '对拍与随机造数据', code: 'intro.duipai', tags: ['对拍与随机造数据', '对拍', '随机造数据', '数据生成器'] },
+  { name: '三分法', code: 'basic.ternary-search', tags: ['三分法', '三分', 'ternary search'] },
+  { name: '线段树合并', code: 'ds.segtree-merge', tags: ['线段树合并', '动态开点线段树'] },
+  { name: '可持久化并查集', code: 'ds.persistent-dsu', tags: ['可持久化并查集', '持久化并查集'] },
+  { name: '计数 DP', code: 'dp.counting', tags: ['计数 DP', '计数dp', 'counting dp', '方案数'] },
+  { name: '图上 DP', code: 'dp.on-graph', tags: ['图上 DP', '图上dp', 'DAG 上 DP', '拓扑序 DP'] },
+  { name: '动态 DP', code: 'dp.dynamic', tags: ['动态 DP', '动态dp', 'DDP'] },
+  { name: '树的哈希', code: 'tree.hash', tags: ['树的哈希', '树哈希', 'tree hash', '同构判定'] },
+  { name: '长链剖分', code: 'tree.long-chain', tags: ['长链剖分', 'long chain decomposition'] },
+  { name: 'KM 算法', code: 'graph.km', tags: ['KM 算法', 'KM', '最大权匹配', '带权匹配', 'Kuhn-Munkres'] },
+  { name: '一般图最大匹配', code: 'graph.blossom', tags: ['一般图最大匹配', '一般图匹配', '带花树', 'blossom'] },
+  { name: '上下界网络流', code: 'graph.flow-bounds', tags: ['上下界网络流', '上下界', '有源汇上下界', '可行流'] },
+  { name: '全局最小割与最小割树', code: 'graph.global-mincut', tags: ['全局最小割与最小割树', '全局最小割', '最小割树', 'Stoer-Wagner', 'Gomory-Hu'] },
+  { name: '支配树', code: 'graph.dominator', tags: ['支配树', '必经点', 'dominator tree', 'Lengauer-Tarjan'] },
+  { name: 'Miller-Rabin 与 Pollard-Rho', code: 'math.miller-rabin', tags: ['Miller-Rabin 与 Pollard-Rho', 'Miller-Rabin', 'miller rabin', 'Pollard-Rho', 'pollard rho', '素性测试'] },
+  { name: '容斥原理与 min-max 容斥', code: 'math.inc-exc', tags: ['容斥原理与 min-max 容斥', '容斥原理', '容斥', 'min-max容斥', 'min-max 容斥', 'inclusion-exclusion'] },
+  { name: '卡特兰数、错排、斯特林数与拆分数', code: 'math.sequences', tags: ['卡特兰数、错排、斯特林数与拆分数', '常见数列', '错排', '斯特林数', '拆分数', 'Stirling'] },
+  { name: 'Prüfer 序列', code: 'math.prufer', tags: ['Prüfer 序列', 'prufer', 'Prufer 序列', 'Cayley'] },
+  { name: '原根与指数', code: 'math.primitive-root', tags: ['原根与指数', '原根', 'primitive root'] },
+  { name: 'BM 算法与常系数线性递推', code: 'math.berlekamp-massey', tags: ['BM 算法与常系数线性递推', 'Berlekamp-Massey', 'berlekamp massey', '常系数线性递推', '线性递推'] },
+  { name: '杜教筛与 min_25 筛', code: 'math.sieve-advanced', tags: ['杜教筛与 min_25 筛', '杜教筛', 'min_25', 'min25', 'min_25 筛'] },
+  { name: 'Lyndon 分解', code: 'string.lyndon', tags: ['Lyndon 分解', 'Lyndon', 'Duval'] },
+  { name: '圆与直线/圆的交点、切线与面积交并', code: 'geo.circle', tags: ['圆与直线/圆的交点、切线与面积交并', '圆相关', '圆的交点', '圆的切线', '圆面积交并'] },
+  { name: '最小圆覆盖', code: 'geo.min-circle', tags: ['最小圆覆盖', '最小覆盖圆', 'Welzl'] },
+
+  // ---------- 2026-10 第二轮对照补位（A/B 档 17 讲） ----------
+  // 「多重背包」「分组背包」从「背包 DP」组、「FWT」从「FFT / NTT」组迁到这里：
+  // 同一 tag 只能有一个归属组（不变量 4），而这两类题现在有了自己的课程位。
+  { name: 'DP 状态设计与转移', code: 'dp.state-design', tags: ['DP 状态设计与转移', '状态设计', '状态表示', '转移方程'] },
+  { name: '多重背包与分组 / 混合背包', code: 'dp.knapsack-variants', tags: ['多重背包与分组 / 混合背包', '多重背包', '分组背包', '混合背包', '多维背包', '依赖背包', '二进制优化'] },
+  { name: '换根 DP', code: 'dp.tree-reroot', tags: ['换根 DP', '换根dp', '换根', 'reroot dp'] },
+  { name: '单调栈优化 DP', code: 'dp.mono-stack-opt', tags: ['单调栈优化 DP', '单调栈优化', '单调栈优化dp'] },
+  { name: '数据结构优化 DP', code: 'dp.ds-opt', tags: ['数据结构优化 DP', '数据结构优化', '数据结构优化dp'] },
+  { name: '填坑 DP', code: 'dp.fill-board', tags: ['填坑 DP', '填坑dp', '填坑'] },
+  { name: 'dp 套 dp', code: 'dp.nested', tags: ['dp 套 dp', 'dp套dp'] },
+  { name: '二维树状数组', code: 'ds.bit-2d', tags: ['二维树状数组', '多维树状数组', '2D BIT', '二维 BIT'] },
+  { name: '可持久化平衡树', code: 'ds.persistent-balanced', tags: ['可持久化平衡树', '持久化平衡树', '可持久化 treap'] },
+  { name: '析合树', code: 'ds.xihe-tree', tags: ['析合树', '析合'] },
+  { name: '最短路径树与最短路计数', code: 'graph.shortest-path-tree', tags: ['最短路径树与最短路计数', '最短路径树', '最短路计数'] },
+  { name: '竞赛图', code: 'graph.tournament', tags: ['竞赛图', 'tournament graph', 'Landau'] },
+  { name: '边分治', code: 'tree.edge-divide', tags: ['边分治', 'edge divide and conquer'] },
+  { name: '类欧几里得', code: 'math.floor-sum', tags: ['类欧几里得', '类欧', 'floor sum', 'floor_sum'] },
+  { name: '生成函数', code: 'math.ogf', tags: ['生成函数', 'OGF', 'EGF', '母函数'] },
+  { name: 'FWT 与 FMT', code: 'math.fwt', tags: ['FWT 与 FMT', 'FWT', 'FMT', '快速沃尔什变换', '快速莫比乌斯变换', '集合幂级数'] },
+  { name: '点定位与 Voronoi 图', code: 'geo.point-location', tags: ['点定位与 Voronoi 图', '点定位', 'Voronoi', '沃罗诺伊', 'Delaunay', '梯形图'] },
 
   // ---------- 粗粒度层（为高频但无法细分的题源标签提供落点，见清洗重构 spec §2.1） ----------
   // 这批组带 code：组名必须逐字等于 taxonomy 的 name（不变量 1），否则掌握度地图会裂成两个点。

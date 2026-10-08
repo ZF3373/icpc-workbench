@@ -184,8 +184,8 @@ test('custom categories: GET /categories 下发可选分类清单（含自建标
     const body = (await (await fetch(`${base}/categories`)).json()) as {
       categories: Array<{ key: string; name: string; custom: boolean; templateCount?: number }>;
     };
-    // 内置分类在前且标记 custom:false
-    assert.equal(body.categories[0]!.key, 'basic');
+    // 内置分类在前且标记 custom:false（首类随大纲调整，取 CURRICULUM 第一个而非写死）
+    assert.equal(body.categories[0]!.key, CURRICULUM[0]!.key);
     assert.equal(body.categories[0]!.custom, false);
     const mine = body.categories.find((c) => c.key === key)!;
     assert.equal(mine.name, '图论进阶');

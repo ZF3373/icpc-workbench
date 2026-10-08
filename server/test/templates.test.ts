@@ -9,7 +9,7 @@ import { nextTemplate, type ProgressEntry } from '../src/templates/progress.ts';
 import { templatesRoutes } from '../src/routes/templates.ts';
 
 test('curriculum: outline slots, unique ids, no pre-baked content', () => {
-  assert.equal(CURRICULUM.length, 10);
+  assert.equal(CURRICULUM.length, 11);
   const ids = new Set<string>();
   for (const cat of CURRICULUM) {
     assert.ok(cat.templates.length >= 3, `${cat.key} 模板过少`);

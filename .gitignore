@@ -38,6 +38,10 @@ videos/
 # 本地诊断脚本（抓包/接口探测），非项目源码
 .probe/
 
+# AlgoWiki 对照用的原始抓取快照（180 条，含第三方贡献者的昵称/学校/头像/bio），
+# 仅作一次性比对依据，不被任何代码读取；不入库以免把他人个人信息发到公开仓库
+scripts/algowiki-tricks-raw.json
+
 # 渲染验证脚本的临时编译产物（client/test/renderCheck.mjs 每次运行重新生成）
 client/test/.render-out/
 

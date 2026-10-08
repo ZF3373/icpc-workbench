@@ -12,8 +12,8 @@ const NEW_COARSE_CODES = [
 
 test('粗粒度 code 全部存在于 taxonomy 且合法', () => {
   const tax = loadTaxonomy();
-  // v4（2026-10）：对照 AlgoWiki tricks 补课，新增 16 个细粒度知识点（WQS 二分 / 决策单调性等）
-  assert.equal(tax.version, 4);
+  // v6（2026-10）：两轮对照 XCPC 思维导图补位——入门基础大类 + 34 讲，再全量覆盖审计补 17 讲
+  assert.equal(tax.version, 6);
   for (const code of NEW_COARSE_CODES) {
     assert.ok(isValidCode(code), `${code} 应在 taxonomy 中`);
   }

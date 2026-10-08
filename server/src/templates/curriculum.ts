@@ -7,21 +7,45 @@
  *
  * 学习顺序设计（分类先后 = 数组顺序，分类内编号 = templates 数组顺序；
  * 「下一课」推荐 / 模板库页编号都按此顺序走，调整顺序前先想清楚依赖）：
- * 1. 阶段递进：工具与思维（basic）→ 状态空间（search）→ 结构（ds）→ 优化思想（dp）
- *    → 图上问题（graph）→ 树上专题（tree）→ 数学工具（math）→ 文本（string）
- *    → 几何（geo）→ 杂项收尾（misc）。
- * 2. 依赖前置：并查集先于 Kruskal / 线段树分治，线段树先于李超 / 主席树 / 树剖，
- *    单调栈先于笛卡尔树，状压先于 SOS，Tarjan 先于 2-SAT，高斯消元先于 LGV……
+ * 1. 阶段递进：零基础（intro）→ 工具与思维（basic）→ 状态空间（search）→ 结构（ds）
+ *    → 优化思想（dp）→ 图上问题（graph）→ 树上专题（tree）→ 数学工具（math）
+ *    → 文本（string）→ 几何（geo）→ 杂项收尾（misc）。
+ * 2. 依赖前置：并查集先于 Kruskal / 线段树分治，线段树先于李超 / 主席树 / 树剖 / 线段树合并，
+ *    单调栈先于笛卡尔树，状压先于 SOS，Tarjan 先于 2-SAT / 支配树，高斯消元先于 LGV，
+ *    栈与队列（intro）先于单调栈 / 单调队列，递归（intro）先于分治与 DFS。
  *    跨类强依赖（如斯坦纳树要最短路、WQS 例题是最小生成树）在 outline 里自含解释，
  *    线性跟随者可在例题处现学，不为此打散分类。
  * 3. 块内难度爬坡；块与块的接缝允许难度回落（每个新阶段的入口课总是简单的）。
  * 4. 分类显示顺序可被用户在模板库页拖拽自定义（localStorage）覆盖，这里只是默认值。
  *
- * 大纲覆盖面参考 AlgoWiki 竞赛技巧社区条目（https://www.algowiki.cn/competitions?tab=tricks）：
- * 2026-10 对照其全部 180 条 trick 筛选 —— 成体系的算法/技巧补成独立模板位
- * （WQS 二分、决策单调性、李超线段树、线段树分治、根号分治、Boruvka 等 16 讲），
- * 一句话级的小 trick（异或前缀和规律、minp 快速分解、光速幂、Dilworth 对偶等）
- * 并入最相近模板位的 outline；纯脑洞/趣味条目不收。
+ * difficulty 的 1-5 在界面上渲染成竞赛段位（入门 / 铜牌 / 银牌 / 金牌 / 争冠，
+ * 见 shared/src/templateTiers.ts）——段位口径参考 XCPC 算法知识思维导图
+ * 的节点配色：入门=不会就写不出任何题，铜牌=区域赛正常题的基本盘，
+ * 银牌=进区域赛奖项线要会，金牌/争冠=冲牌位才需要投入的板子。
+ *
+ * 大纲覆盖面参考两份外部材料：
+ * 1. AlgoWiki 竞赛技巧社区条目（https://www.algowiki.cn/competitions?tab=tricks）：
+ *    2026-10 对照其全部 180 条 trick 筛选 —— 成体系的算法/技巧补成独立模板位
+ *    （WQS 二分、决策单调性、李超线段树、线段树分治、根号分治、Boruvka 等 16 讲），
+ *    一句话级的小 trick（异或前缀和规律、minp 快速分解、光速幂、Dilworth 对偶等）
+ *    并入最相近模板位的 outline；纯脑洞/趣味条目不收。
+ * 2. XCPC 算法知识思维导图（杜老师、沃老师）：2026-10 两轮对照其全树 229 个叶子做覆盖审计。
+ *    第一轮——其「基础」分支几乎全是入门级节点（数组 / 简单排序 / 模拟 / 递归 / 栈队列 / 链表），
+ *    而原大纲第一课就是二分、默认这些已经会了，据此补出 intro「入门基础」11 讲；
+ *    其余分支补出高阶缺口 23 讲（计数 DP / 动态 DP / 线段树合并 / 可持久化并查集 /
+ *    长链剖分 / KM / 带花树 / 支配树 / 最小割树 / 上下界网络流 / 容斥 / 卡特兰与常见数列 /
+ *    原根 / Miller-Rabin 与 Pollard-Rho / 杜教筛与 min_25 / Prüfer 序列 / Lyndon 分解 /
+ *    圆相关与最小圆覆盖 / 树哈希 / 三分 / 图上 DP）。
+ *    第二轮——重跑审计后补 17 讲：基本盘 7 讲（DP 状态设计、多重/分组背包、换根 DP、
+ *    单调栈优化 DP、二维树状数组、竞赛图、最短路径树与最短路计数）+ 金牌/争冠板子 10 讲
+ *    （生成函数、FWT 与 FMT、类欧几里得、填坑 DP、dp 套 dp、数据结构优化 DP、边分治、
+ *    点定位与 Voronoi 图、可持久化平衡树、析合树）；另有 15 个知识点（括号序、链上/树上分块、
+ *    pbds、Kosaraju、Hopcroft-Karp、矩阵求逆、Burnside、狄利克雷卷积、动态高维前缀和、爬山、
+ *    桶/基数排序、循环链表、杨辉三角、动态点分治与边分治、替罪羊树）体量太小，
+ *    并入最相近一课的 outline 而不占独立位。
+ *    导图标灰（useless）的节点（堆排序 / 希尔排序 / A* / 斐波那契堆 / 遗传算法 / 拟阵 /
+ *    二次剩余 / 贝尔数 / 后缀树 / AVL / 红黑树 / ZKW 系 / 左偏堆 等 17 项）一律不补位；
+ *    标黑（板子）的节点是模板库该收的东西，全部收。
  */
 
 export interface TemplateExample {
@@ -67,6 +91,148 @@ const cf = (key: string, title: string): TemplateExample => ({
 });
 
 export const CURRICULUM: TemplateCategory[] = [
+  {
+    key: 'intro',
+    name: '入门基础',
+    description: '数组、排序、栈队列、递归与模拟——后面每一课都踩在这些之上',
+    templates: [
+      {
+        id: 'intro-array-loop',
+        name: '数组下标与循环枚举',
+        difficulty: 1,
+        tags: ['数组', '枚举'],
+        outline: '一维/二维数组的下标从 0 还是从 1 开始要一次定死；把「区间」「前缀」「全部配对」这三类循环模板写到不用想，注意越界与读入顺序。',
+        examples: [
+        lg('P1427', '小鱼的数字游戏'),
+        lg('P1428', '小鱼比可爱'),
+        lg('P1046', '[NOIP 2005 普及组] 陶陶摘苹果'),
+        lg('P1085', '[NOIP 2004 普及组] 不高兴的津津'),
+      ],
+      },
+      {
+        id: 'intro-complexity',
+        name: '数据范围与复杂度分析',
+        difficulty: 1,
+        tags: ['复杂度', '卡常'],
+        outline: '按 1e8 次/秒 估：看 n 反推可接受的复杂度，看值域反推要不要 long long / 高精度。会算读入量、内存上限和递归栈深度，别用 O(n²) 去撞 n=1e5。',
+        examples: [
+        lg('P1177', '【模板】排序'),
+        lg('P1923', '【深基9.例4】求第 k 小的数'),
+      ],
+      },
+      {
+        id: 'intro-sort-basic',
+        name: '简单排序与结构体自定义比较',
+        difficulty: 1,
+        tags: ['排序', '结构体'],
+        outline: '冒泡与插入排序各手写一遍，理解「相邻交换次数恰好等于逆序对数」，并说清选择排序为什么交换更少但比较仍是 O(n²)；多关键字排序用结构体 + 比较函数，想清楚相等时的次关键字方向和稳定性要求（不稳定就退化成手写 cmp 里再比原下标）。',
+        examples: [
+        lg('P1059', '[NOIP 2006 普及组] 明明的随机数'),
+        lg('P1093', '[NOIP 2007 普及组] 奖学金'),
+        lg('P1104', '生日'),
+        lg('P1786', '帮贡排序'),
+      ],
+      },
+      {
+        id: 'intro-sort-advanced',
+        name: '高效排序与逆序对',
+        difficulty: 2,
+        tags: ['排序', '归并', '逆序对'],
+        outline: '快排的划分与随机基准、归并的合并过程各自手写一遍（考场上仍用 sort）；归并时在合并步统计跨区间的逆序对数，这是树状数组求逆序对的预处理版。线性时间的桶/基数排序按位或按值域分桶再稳定收集，只在值域小或需要 O(n) 时才用；std::sort 搞不定的「第 k 小」用 nth_element 平均 O(n)。',
+        examples: [
+        lg('P1908', '逆序对'),
+        cf('2248/B', 'Merge to Match'),
+      ],
+      },
+      {
+        id: 'intro-simulation',
+        name: '模拟与实现',
+        difficulty: 1,
+        tags: ['模拟', '实现'],
+        outline: '把题目过程原样翻译成代码：先定状态变量与「每一步改什么」，再写循环。方向/朝向用偏移数组，环形下标统一用 (x + n) % n，边界条件按样例逐步打表验证。',
+        examples: [
+        lg('P1563', '[NOIP 2016 提高组] 玩具谜题'),
+        lg('P1014', '[NOIP 1999 普及组] Cantor 表'),
+        cf('2254/A', 'Riptide'),
+        cf('2256/B', 'Domino Tiles'),
+      ],
+      },
+      {
+        id: 'intro-string-basic',
+        name: '字符串基础处理',
+        difficulty: 1,
+        tags: ['字符串', '实现'],
+        outline: '读入方式（>> 遇空格断 / getline 整行 / 逐字符）先选对；分割、查找、截取、字典序比较与字符计数是四件套，注意下标类型 size_t 无符号减法的坑。',
+        examples: [
+        lg('P1308', '[NOIP 2011 普及组] 统计单词数'),
+        lg('P1321', '单词覆盖还原'),
+        lg('P1553', '数字反转（升级版）'),
+        cf('2257/A', 'Creating Abbreviations'),
+      ],
+      },
+      {
+        id: 'intro-recurrence',
+        name: '递归与递推',
+        difficulty: 1,
+        tags: ['递归', '递推'],
+        outline: '递归先写「参数表示什么、什么时候停、如何调更小规模」再考虑返回值；能把递归式子改成自底向上的递推数组，并说清这次改写省掉了多少重复计算。斐波那契数列是这条链的最小样本：朴素递归 O(φⁿ) → 记忆化 / 递推 O(n) → 矩阵快速幂 O(log n)，三种写法各跑过一次才知道差在哪。',
+        examples: [
+        lg('P1464', '[PacNW 1999] Function'),
+        lg('P1255', '数楼梯'),
+        lg('P1028', '[NOIP 2001 普及组] 数的计算'),
+      ],
+      },
+      {
+        id: 'intro-stack-queue',
+        name: '栈与队列',
+        difficulty: 2,
+        tags: ['栈', '队列'],
+        outline: '栈管「最近的还没配对的东西」——括号匹配、表达式求值、进制转换；队列管「先到先得」——BFS 的骨架就是它。两种容器都要能手写数组版，才知道 top/front 的判空时机。',
+        examples: [
+        lg('P1739', '表达式括号匹配'),
+        lg('P1449', '后缀表达式'),
+        lg('P4387', '【深基15.习9】验证栈序列'),
+        lg('P2186', '小 Z 的栈函数'),
+      ],
+      },
+      {
+        id: 'intro-linked-list',
+        name: '数组模拟链表',
+        difficulty: 2,
+        tags: ['链表', '模拟'],
+        outline: '竞赛里几乎不用 new 节点，一律 pre[]/nxt[] 数组模拟：删除就是两端接起来，插入就是先接后断。约瑟夫环、队列安排这类「反复在某个位置插删」的题是第一信号。双向用 pre/nxt 两个数组、循环链表靠取模回绕，判「下一个存活」时注意删最后一个点要同时更新头指针。',
+        examples: [
+        lg('P1160', '队列安排'),
+        lg('P1996', '约瑟夫问题'),
+      ],
+      },
+      {
+        id: 'intro-brute-force',
+        name: '枚举与剪枝',
+        difficulty: 2,
+        tags: ['枚举', '剪枝'],
+        outline: '先写出一定对但一定慢的全排列/子集/三元组枚举，再往上加剪枝：可行性提前判、剩余量不够就 return、枚举顺序按约束最紧的一维优先。位运算枚举子集 (s = (s-1) & m) 是子集类问题的暴力上限。',
+        examples: [
+        lg('P1618', '三连击（升级版）'),
+        lg('P1036', '[NOIP 2002 普及组] 选数'),
+        cf('2259/A', 'Moo Language School'),
+      ],
+      },
+      {
+        id: 'intro-duipai',
+        name: '对拍与随机造数据',
+        difficulty: 2,
+        tags: ['对拍', '调试'],
+        outline: '正解 + 暴力 + 随机数据 + 死循环比较，四件套脚本要能一次跑起来；生成器按「小数据密集、边界数据、最坏数据」三档出，发现自己与暴力不一致时先固定随机种子复现再改代码。',
+        examples: [
+        lg('P1309', '[NOIP 2011 普及组] 瑞士轮'),
+        lg('P1098', '[NOIP 2007 提高组] 字符串的展开'),
+        lg('P1052', '[NOIP 2005 提高组] 过河'),
+      ],
+      },
+    ],
+  },
+
   {
     key: 'basic',
     name: '基础算法',
@@ -168,6 +334,19 @@ export const CURRICULUM: TemplateCategory[] = [
         lg('P1462', '通往奥格瑞玛的道路'),
         cf('1983/C', 'Have Your Cake and Eat It Too'),
         cf('2028/B', 'Alice\'s Adventures in Permuting'),
+      ],
+      },
+
+      {
+        id: 'basic-ternary-search',
+        name: '三分法（单峰函数极值）',
+        difficulty: 3,
+        tags: ['三分', '二分'],
+        outline: '单峰函数上取两个内点比较函数值，砍掉不可能含峰的一侧区间；整数域要注意左右中点的取整方向否则会死循环。离散/浮点两种写法各备一份，浮点版用固定轮数迭代代替 while 判 eps。',
+        examples: [
+        lg('P1883', '【模板】三分 / 函数 / [ICPC 2010 Chengdu R] Error Curves'),
+        cf('1996/A', 'Legs'),
+        cf('1288/A', 'Deadline'),
       ],
       },
 
@@ -276,7 +455,7 @@ export const CURRICULUM: TemplateCategory[] = [
         name: '模拟退火（随机化搜索）',
         difficulty: 3,
         tags: ['随机化', '模拟退火'],
-        outline: '温度从高到低，以 exp(-Δ/T) 的概率接受劣解逃离局部最优；while 卡到时限边缘多跑几轮取最优。',
+        outline: '温度从高到低，以 exp(-Δ/T) 的概率接受劣解逃离局部最优；while 卡到时限边缘多跑几轮取最优。爬山（只接受更优、卡在局部最优就重启）是它的退化版，实现更短、多数构造类得分题先到这里就够了；两者都是「赌随机」，务必固定种子保证可复现。',
         examples: [
         lg('P1337', '[JSOI2004] 平衡点 / 吊打XXX'),
         lg('P2503', '[HAOI2006] 均分数据'),
@@ -406,6 +585,18 @@ export const CURRICULUM: TemplateCategory[] = [
       },
 
       {
+        id: 'ds-bit-2d',
+        name: '二维树状数组',
+        difficulty: 3,
+        tags: ['树状数组', '二维'],
+        outline: '把 lowbit 循环嵌套两层就是二维版：单点改 + 矩形和 O(log n log m)，内存 O(nm) 因此只用在 n,m 都 ≤ 1e3~2e3 的网格上。矩形改 + 单点查靠二维差分（4 次单点改），矩形改 + 矩形查要开 4 棵带系数 (x+1)(y+1) 的树。维数一高就得先算内存账。',
+        examples: [
+        lg('P1719', '最大加权矩形'),
+        lg('P2163', '[SHOI2007] 园丁的烦恼'),
+      ],
+      },
+
+      {
         id: 'ds-sparse-table',
         name: 'ST 表（静态 RMQ）',
         difficulty: 3,
@@ -474,11 +665,33 @@ export const CURRICULUM: TemplateCategory[] = [
       },
 
       {
+        id: 'ds-segtree-merge',
+        name: '线段树合并',
+        difficulty: 5,
+        tags: ['线段树合并', '线段树'],
+        outline: '动态开点两棵树递归合并：都空则返回空，只有一个非空就直接返回那棵（不新建节点），否则累加信息后左右合并。总复杂度按「被合并掉的节点数」算，n 棵单点树合并完是 O(n log n)。树上背包/权值线段树上树常用它替代树套树。',
+        examples: [
+        lg('P4556', '【模板】线段树合并 / [Vani 有约会] 雨天的尾巴'),
+      ],
+      },
+
+      {
+        id: 'ds-persistent-dsu',
+        name: '可持久化并查集',
+        difficulty: 4,
+        tags: ['可持久化并查集', '并查集', '可持久化'],
+        outline: '用主席树存 fa[i] 数组，每次 find 沿主席树版本往下查父亲、union 只改一个位置，从而保留历史版本。不能路径压缩（会改一堆点），只按秩合并，单次操作 O(log n · log n)。',
+        examples: [
+        lg('P3402', '【模板】可持久化并查集'),
+      ],
+      },
+
+      {
         id: 'ds-fhq-treap',
         name: '平衡树（FHQ Treap）',
         difficulty: 4,
         tags: ['平衡树', '数据结构'],
-        outline: '按权值分裂 + 按大小分裂，merge/split 两个函数撑起全部操作；随机键维持期望平衡，无需旋转。',
+        outline: '按权值分裂 + 按大小分裂，merge/split 两个函数撑起全部操作；随机键维持期望平衡，无需旋转。替罪羊树走另一条路：不存随机键，子树大小失衡就整棵重构，靠「重构代价摊到每次插入」证 O(log n) 均摊，写起来比旋转类平衡树短。',
         examples: [
         lg('P3369', '【模板】普通平衡树'),
         lg('P3391', '【模板】文艺平衡树'),
@@ -487,11 +700,22 @@ export const CURRICULUM: TemplateCategory[] = [
       },
 
       {
+        id: 'ds-persistent-balanced',
+        name: '可持久化平衡树',
+        difficulty: 5,
+        tags: ['可持久化', '平衡树'],
+        outline: 'FHQ Treap 天生好持久化：split/merge 每经过一个节点就复制一个（新随机键可复用），其余子树直接共享指针，单次操作只新建 O(log n) 个节点；根存进版本数组即得第 k 版。绝不能就地改 child 指针，那会污染历史版本。文艺平衡树（区间反转）再加一层可持久化就是「可持久化文艺平衡树」。',
+        examples: [
+        lg('P5055', '【模板】可持久化文艺平衡树'),
+      ],
+      },
+
+      {
         id: 'ds-sqrt-decomposition',
         name: '分块',
         difficulty: 4,
         tags: ['分块', '数据结构'],
-        outline: '整块打懒标记、散块暴力扫的维护框架，块长取 √n 附近平衡两类代价；「优雅的暴力」是万能保底。',
+        outline: '整块打懒标记、散块暴力扫的维护框架，块长取 √n 附近平衡两类代价；「优雅的暴力」是万能保底。链上分块把树按 √n 个关键点切成块、预处理块内两两信息，是树剖之外的另一类带修改路径查询；树上分块则按 DFS 序分块或按深度分块，专门接「k 层祖先 / 子树第 k 深」这类树剖不好写的操作。',
         examples: [
         lg('P2801', '教主的魔法'),
         lg('P3203', '[HNOI2010] 弹飞绵羊'),
@@ -574,10 +798,21 @@ export const CURRICULUM: TemplateCategory[] = [
         name: '树套树',
         difficulty: 5,
         tags: ['数据结构', '树套树', '平衡树'],
-        outline: '外层线段树按位置、内层平衡树/权值线段树按值域，查询 = O(log n) 个内层结构的拼合；单点版常见，带区间改要在内层打标记。',
+        outline: '线段树套平衡树（外层线段树按位置、内层平衡树 / 权值线段树按值域），查询 = O(log n) 个内层结构的拼合；单点版常见，带区间改要在内层打标记。',
         examples: [
         lg('P3380', '【模板】树套树'),
         lg('P3332', '[ZJOI2013] K 大数查询'),
+      ],
+      },
+
+      {
+        id: 'ds-xihe-tree',
+        name: '析合树',
+        difficulty: 5,
+        tags: ['析合树', '数据结构'],
+        outline: '把排列的所有「连续区间」（值域与下标域同时连续的段）组织成一棵树：析节点是若干个极大真子段的并、合节点是它们，交替出现，叶子是单个位置。用单调栈 + 集合并在线 O(n log n) 建树（或 O(n) 版）。它同时是笛卡尔树与「区间图分裂树」的推广，问「有多少个连续子段仍是连续值域」这类计数题时是标准工具。',
+        examples: [
+        lg('P4747', '[CERC2017] Intrinsic Interval'),
       ],
       },
 
@@ -587,7 +822,9 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['数据结构', '划分树'],
         outline: '按排序中位数逐层左右分层，记「进入左子树的前缀个数」即可 O(1) 下溯，静态区间第 k 小不用在线插入；空间 O(n log n) 比主席树省，已被其取代但值得会。',
-        examples: [],
+        examples: [
+        lg('P3834', '【模板】可持久化线段树 2（静态区间第 k 小）'),
+      ],
       },
     ],
   },
@@ -597,6 +834,18 @@ export const CURRICULUM: TemplateCategory[] = [
     name: '动态规划',
     description: '背包、区间、树形、状压——把大问题拆成无后效性的子问题',
     templates: [
+      {
+        id: 'dp-state-design',
+        name: 'DP 状态设计与转移（入门）',
+        difficulty: 2,
+        tags: ['动态规划', '状态设计'],
+        outline: '三步固定：f[…] 到底表示「前 i 个的最优」还是「恰好容量 j 的最优」；转移方程从「最后一步怎么来的」推，不是背；初值与非法态（-inf / +inf）先定下来再写循环。同时练「最优子结构」与「无后效性」——加一维把影响决策的历史信息显式记进状态，是无后效性不成立时唯一的出路。',
+        examples: [
+        lg('P1216', '[IOI 1994 / USACO1.5] 数字三角形 Number Triangles'),
+        lg('P1091', '[NOIP 2004 提高组] 合唱队形'),
+      ],
+      },
+
       {
         id: 'dp-knapsack',
         name: '背包 DP（01 / 完全）',
@@ -608,6 +857,20 @@ export const CURRICULUM: TemplateCategory[] = [
         lg('P1616', '疯狂的采药'),
         lg('P1064', '[NOIP 2006 提高组] 金明的预算方案'),
         lg('P1164', '小 A 点菜'),
+      ],
+      },
+
+      {
+        id: 'dp-knapsack-variants',
+        name: '多重背包与分组 / 混合背包',
+        difficulty: 3,
+        tags: ['背包', '动态规划'],
+        outline: '多重背包三种复杂度要分清：朴素 O(V·Σm)、二进制拆分件数后 O(V·Σlog m)、单调队列按余数分层优化到 O(V·n)。分组背包是「每组至多选一个」，三重循环必须按「组 → 容量（逆序）→ 组内物品」排，把容量放在组内物品外层才能保证同一组只选一件。混合背包先按 01 / 完全 / 多重逐件分类处理再统一转移；依赖型（选子物品必须先选父物品）就是树上分组背包；多维背包（体积 + 重量双限制）把 f 开成二维、每一维都各自逆序扫。',
+        examples: [
+        lg('P1776', '宝物筛选'),
+        lg('P1833', '樱花'),
+        lg('P2515', '[HAOI2010] 软件安装'),
+        lg('P1616', '疯狂的采药'),
       ],
       },
 
@@ -639,6 +902,18 @@ export const CURRICULUM: TemplateCategory[] = [
       },
 
       {
+        id: 'dp-counting',
+        name: '计数 DP',
+        difficulty: 3,
+        tags: ['计数DP', '动态规划'],
+        outline: '状态表示「方案数」而非最值：转移是加法原理的分情况求和，最后对 1e9+7 或 998244353 取模。想清「同一方案会不会被数两次」——按最后一个位置/最大值/最后一步分类是去重的标准手法。',
+        examples: [
+        lg('P2513', '[HAOI2009] 逆序对数列'),
+        lg('P4648', '[IOI 2007] pairs 动物对数'),
+      ],
+      },
+
+      {
         id: 'dp-tree',
         name: '树形 DP',
         difficulty: 4,
@@ -651,6 +926,29 @@ export const CURRICULUM: TemplateCategory[] = [
         lg('P3177', '[HAOI2015] 树上染色'),
         cf('161/D', 'Distance in Tree'),
         cf('1975/D', 'Paint the Tree'),
+      ],
+      },
+
+      {
+        id: 'dp-tree-reroot',
+        name: '换根 DP',
+        difficulty: 4,
+        tags: ['树形DP', '换根', '动态规划'],
+        outline: '先以任意点（1 号）为根跑一遍自底向上求出 f(1)，再自顶向下推「父亲的答案如何改写成儿子作为根的答案」的 delta 转移。转移里凡是取 max / min 的，必须同时维护最优与次优（或前缀后缀两个数组），否则把儿子那一份贡献去掉时取不到正确值。两次 DFS 出全部 n 个根的答案，O(n)。',
+        examples: [
+        lg('P3478', '[POI 2008] STA-Station'),
+      ],
+      },
+
+      {
+        id: 'dp-on-graph',
+        name: '图上 DP（拓扑序与基环树）',
+        difficulty: 4,
+        tags: ['图上DP', '动态规划', '拓扑排序'],
+        outline: 'DP 能上图的唯一前提是依赖关系无环：先在 DAG 上跑拓扑排序，按拓扑序转移就是「带后效性的图版递推」。图上带环时先缩点成 DAG 再 DP；基环树则断环成树、分别固定断边两端的状态跑两遍。',
+        examples: [
+        lg('P1137', '旅行计划'),
+        lg('P4017', '最大食物链计数'),
       ],
       },
 
@@ -672,7 +970,7 @@ export const CURRICULUM: TemplateCategory[] = [
         name: '高维前缀和（子集和变换）',
         difficulty: 3,
         tags: ['高维前缀和'],
-        outline: '对每个二进制位做一遍「含该位则从去掉该位的状态转移」，O(n·2ⁿ) 完成 ∑_{T⊆S} f_T（子集和/SOS）或其超集对偶；两个方向相反，别写反。',
+        outline: '对每个二进制位做一遍「含该位则从去掉该位的状态转移」，O(n·2ⁿ) 完成 ∑_{T⊆S} f_T（子集和/SOS）或其超集对偶；两个方向相反，别写反。要支持「改某个 f(S) 再查子集和」就把每一维的转移套一层树状数组（动态高维前缀和），代价乘一个 log。',
         examples: [
         cf('449/D', 'Jzzhu and Numbers'),
         cf('165/E', 'Compatible Numbers'),
@@ -719,6 +1017,17 @@ export const CURRICULUM: TemplateCategory[] = [
       },
 
       {
+        id: 'dp-mono-stack-opt',
+        name: '单调栈优化 DP',
+        difficulty: 4,
+        tags: ['单调栈', '动态规划'],
+        outline: '当转移形如 f[i] = max(f[j] + w(j,i))（j < i）且「j 是 i 左边第一个比它大的位置」这类单调关系成立时，候选 j 的集合恰好是单调栈里的内容：每个点只入栈出栈一次，把 O(n²) 降到 O(n)。先证明被弹掉的位置之后再也不可能成为最优转移点，这是这类 DP 的全部难点。',
+        examples: [
+        lg('P1901', '发射站'),
+      ],
+      },
+
+      {
         id: 'dp-slope-opt',
         name: '斜率优化（凸壳转移）',
         difficulty: 5,
@@ -745,6 +1054,18 @@ export const CURRICULUM: TemplateCategory[] = [
       },
 
       {
+        id: 'dp-ds-opt',
+        name: '数据结构优化 DP',
+        difficulty: 4,
+        tags: ['动态规划', '线段树', '树状数组'],
+        outline: '把「枚举上一个决策点」换成一次区间查询：转移是区间 max/sum 就开线段树或树状数组按 f 值下标维护，扫到 i 先查再插入。多维限制就升维（二维数点配二维 BIT / CDQ）。判据是转移方程里对 j 的约束能写成 j 的某个函数落在一个区间内。',
+        examples: [
+        lg('P3287', '[SCOI2014] 方伯伯的玉米田'),
+        lg('P2627', '[USACO11OPEN] Mowing the Lawn G'),
+      ],
+      },
+
+      {
         id: 'dp-wqs',
         name: 'WQS 二分（凸优化）',
         difficulty: 5,
@@ -752,6 +1073,30 @@ export const CURRICULUM: TemplateCategory[] = [
         outline: '「恰好选 k 个」的最优化给每个被选对象加惩罚 λ 后去掉限制，(选数, 最优值) 随 λ 单调且构成凸壳，二分 λ 命中 k；须同时记录选数并小心平局（斜率相等段）。',
         examples: [
         lg('P2619', '[国家集训队] Tree I'),
+      ],
+      },
+
+      {
+        id: 'dp-dynamic',
+        name: '动态 DP（矩阵加速树形 DP）',
+        difficulty: 5,
+        tags: ['动态DP', '树链剖分', '矩阵'],
+        outline: '把树形 DP 的转移写成「轻子树贡献已合并进 g 数组，重链上是一次 max-plus 矩阵乘法」，再用链剖 + 线段树维护每条重链的矩阵乘积；改点权只影响到链顶，O(log²n) 修改。核心是把 max+加法当成半区间跑矩阵乘法。',
+        examples: [
+        lg('P4719', '【模板】动态 DP'),
+        lg('P5024', '[NOIP 2018 提高组] 保卫王国'),
+      ],
+      },
+
+      {
+        id: 'dp-nested',
+        name: 'dp 套 dp',
+        difficulty: 5,
+        tags: ['dp套dp', '动态规划'],
+        outline: '外层 DP 的每个状态里还要再跑一遍内层 DP：常见形态是「外层枚举决策/位置、内层求该决策下的最优代价」，或「外层背包 + 内层子问题转移」。写之前先确认内层结果只依赖外层当前状态与一个可枚举的参数，否则两层会互相依赖而成环。复杂度是两层乘积，必须靠内层的单调性/前缀和优化把其中一层压下来。',
+        examples: [
+        lg('P4590', '[TJOI2018] 游园会'),
+        lg('P5279', '[ZJOI2019] 麻将'),
       ],
       },
 
@@ -764,6 +1109,17 @@ export const CURRICULUM: TemplateCategory[] = [
         examples: [
         lg('P6192', '【模板】最小斯坦纳树'),
         lg('P4294', '[WC2008] 游览计划'),
+      ],
+      },
+
+      {
+        id: 'dp-fill-board',
+        name: '填坑 DP',
+        difficulty: 5,
+        tags: ['填坑DP', '状态压缩', '动态规划'],
+        outline: '按「第一个空格」而不是按格推进：状态是整个棋盘占位压成的三进制/二进制串，每次枚举能盖住这个空格的骨牌或连通块放下去，转移到新状态。天然免重（永远填最靠前的坑），所以不需要像插头 DP 那样维护轮廓线连通性；代价是状态数随空格数指数增长，只适合 n·m ≤ 12~15 的小棋盘。',
+        examples: [
+        lg('P4363', '[九省联考 2018] 一双木棋 chess'),
       ],
       },
 
@@ -831,6 +1187,18 @@ export const CURRICULUM: TemplateCategory[] = [
       },
 
       {
+        id: 'graph-shortest-path-tree',
+        name: '最短路径树与最短路计数',
+        difficulty: 4,
+        tags: ['最短路', '图论'],
+        outline: '跑 Dijkstra 时只记录「第一个把 dist 放松到最优」的那条前驱边，n−1 条前驱边就构成最短路径树，树上路径即某一条最短路径。计数则在放松的同时挂 cnt：严格更短则继承 cnt，恰好相等则累加，最后对答案取模；边权为 0 时 Dijkstra 的松弛顺序不再唯一，要改成拓扑式处理或按层 BFS。',
+        examples: [
+        lg('P1144', '最短路计数'),
+        lg('P1364', '医院设置'),
+      ],
+      },
+
+      {
         id: 'graph-spfa',
         name: 'SPFA（判负环）',
         difficulty: 3,
@@ -867,6 +1235,20 @@ export const CURRICULUM: TemplateCategory[] = [
         lg('P7771', '【模板】欧拉路径'),
         lg('P2731', '[USACO3.3] 骑马修栅栏 Riding the Fences'),
         lg('P1341', '无序字母对'),
+      ],
+      },
+
+      {
+        id: 'graph-tournament',
+        name: '竞赛图',
+        difficulty: 3,
+        tags: ['竞赛图', '图论'],
+        outline: '每对点之间恰有一条有向边。两条必背结论：任意竞赛图都存在哈密顿路径（插入法归纳构造）；强连通竞赛图必有哈密顿回路。得分序列（出度序列）非降排列后满足 Landau 判据（前 k 项和 ≥ C(k,2) 且总和 = C(n,2)）才是可实现的。传递闭包 / 拓扑序在这类图上总能给出答案。',
+        examples: [
+        cf('27/B', 'Tournament'),
+        lg('P3561', '[POI 2017] Turysta'),
+        cf('850/D', 'Tournament Construction'),
+        cf('323/B', 'Tournament-graph'),
       ],
       },
 
@@ -924,7 +1306,7 @@ export const CURRICULUM: TemplateCategory[] = [
         name: '匈牙利算法（二分图最大匹配）',
         difficulty: 4,
         tags: ['图论', '二分图', '匹配'],
-        outline: '增广路递归腾位写法 + vis 每轮清空；matchR 下标方向（右 → 左）；König 定理三件套：最小点覆盖 = 最大匹配、最大独立集 = n − 最大匹配、最小边覆盖 = n − 最大匹配。',
+        outline: '增广路递归腾位写法 + vis 每轮清空；matchR 下标方向（右 → 左）；König 定理三件套：最小点覆盖 = 最大匹配、最大独立集 = n − 最大匹配、最小边覆盖 = n − 最大匹配。要跑更快就上 Hopcroft-Karp（BFS 分层 + 多路增广，O(E√V)），稠密图或 n 上千时匈牙利会 TLE。',
         examples: [
         lg('P3386', '【模板】二分图最大匹配'),
         lg('P2756', '飞行员配对方案问题'),
@@ -936,11 +1318,34 @@ export const CURRICULUM: TemplateCategory[] = [
       },
 
       {
+        id: 'graph-km',
+        name: 'KM 算法（二分图最大权匹配）',
+        difficulty: 4,
+        tags: ['KM', '二分图', '匹配'],
+        outline: '顶标 lx/ly 只允许匹配到满足 lx(x)+ly(y)=w(x,y) 的边（相等子图），先在相等子图里找增广路；找不到就把交错树覆盖到的顶标整体下调「最小的 lx+ly−w」，让至少一条新边进入相等子图再试。O(n³) 写法要背熟 slack 数组的增量维护，否则每次重扫会退化成 O(n⁴)。',
+        examples: [
+        lg('P6577', '【模板】二分图最大权完美匹配'),
+      ],
+      },
+
+      {
+        id: 'graph-blossom',
+        name: '一般图最大匹配（带花树）',
+        difficulty: 5,
+        tags: ['带花树', '一般图匹配'],
+        outline: '奇环会让匈牙利算法的增广路交替性失效，带花树把奇环整体缩成一朵「花」再交替树继续找路，找到外部点后逐层展开还原增广路。板子级代码，重点是 lca/merge/mark 三个子过程别写错，O(n³)。',
+        examples: [
+        lg('P6113', '【模板】一般图最大匹配'),
+        lg('P4258', '[WC2016] 挑战NPC'),
+      ],
+      },
+
+      {
         id: 'graph-tarjan-scc',
         name: 'Tarjan 缩点（强连通分量）',
         difficulty: 4,
         tags: ['图论', 'Tarjan', 'DAG'],
-        outline: 'dfn/low 回溯收分量（栈内即当前 SCC），缩点后成 DAG；通常接拓扑 DP 求最长链、可达性或点权并。',
+        outline: 'dfn/low 回溯收分量（栈内即当前 SCC），缩点后成 DAG；通常接拓扑 DP 求最长链、可达性或点权并。Kosaraju 两遍 DFS（正图完成序 + 反图染色）更好想也不易写错，代价是要建反图，作为对拍的另一份实现很合适。',
         examples: [
         lg('P3387', '【模板】缩点 / 强连通分量'),
         lg('P2341', '[USACO03FALL / HAOI2006] 受欢迎的牛 G'),
@@ -958,6 +1363,17 @@ export const CURRICULUM: TemplateCategory[] = [
         lg('P3388', '【模板】割点（割顶）'),
         lg('P2860', '[USACO06JAN] Redundant Paths G'),
         lg('P4320', '道路相遇'),
+      ],
+      },
+
+      {
+        id: 'graph-dominator',
+        name: '支配树',
+        difficulty: 4,
+        tags: ['支配树', '图论'],
+        outline: '以 s 为根跑 DFS 树，用半支配点 sdom(v) 与「路径上的最小 sdom」两次并查集压缩递推，Lengauer-Tarjan 求出每个点的直接支配者 idom，建成支配树。树上一条链就是必经点链，问「去掉哪些点 s 到 t 不连通」直接查 t 到根的路径。',
+        examples: [
+        cf('1864/I', 'Future Dominators'),
       ],
       },
 
@@ -993,6 +1409,17 @@ export const CURRICULUM: TemplateCategory[] = [
       },
 
       {
+        id: 'graph-flow-bounds',
+        name: '上下界网络流',
+        difficulty: 5,
+        tags: ['上下界网络流', '网络流'],
+        outline: '每条边容量改成 [l,r] 后先给每个点记 demand=入下界和−出下界和，边容量降为 r−l，再连超级源→demand>0 的点、demand<0 的点→超级汇求「可行流」，跑满才算有解。有源汇时先补一条 T→S 的 [0,∞] 边化成循环流；求最大流就在可行流之后删掉这条边、再从 S 到 T 增广，求最小流则反过来从 T 到 S 退流。',
+        examples: [
+        lg('P3254', '圆桌问题'),
+      ],
+      },
+
+      {
         id: 'graph-mcmf',
         name: '最小费用最大流（SSP）',
         difficulty: 4,
@@ -1004,6 +1431,17 @@ export const CURRICULUM: TemplateCategory[] = [
         lg('P4016', '负载平衡问题'),
         lg('P4013', '数字梯形问题'),
         cf('653/D', 'Delivery Bears'),
+      ],
+      },
+
+      {
+        id: 'graph-global-mincut',
+        name: '全局最小割与最小割树',
+        difficulty: 4,
+        tags: ['全局最小割', '最小割树', '网络流'],
+        outline: 'Stoer-Wagner 每轮用 Prim 式「挑与已选集合连边总权最大」的点扩出一个割阶段，设最后加入的两点依次为 s、t，则本轮割权 = t 加入时它与已选集合的连边总权，取所有轮次的最小值即全局最小割，随后把 s、t 合并继续下一轮，无向图 O(n³)。要回答任意两点间最小割就把合并过程建成最小割树（Gomory-Hu），n−1 次网络流后树上路径的最小边权即为答案。',
+        examples: [
+        lg('P4897', '【模板】最小割树（Gomory-Hu Tree）'),
       ],
       },
 
@@ -1059,7 +1497,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 5,
         tags: ['图论', '弦图', '完美消元'],
         outline: 'MCS 最大势搜索求完美消元序列判弦图，色数 = 最大团数、独立数 = 最小覆盖；区间图按右端点贪心即可直接建模。',
-        examples: [],
+        examples: [
+        lg('P14506', '【模板】弦图'),
+        lg('P3196', '[HNOI2008] 神奇的国度'),
+        lg('P3852', '[TJOI2007] 小朋友'),
+      ],
       },
     ],
   },
@@ -1113,11 +1555,22 @@ export const CURRICULUM: TemplateCategory[] = [
         name: 'DFS 序与子树统计',
         difficulty: 3,
         tags: ['DFS序', '树状数组', '树上算法'],
-        outline: '进出栈时间戳把子树映射成连续区间（tin/tout），子树修改查询即区间操作，接 BIT/线段树；换根的 delta 推导。',
+        outline: '进出栈时间戳把子树映射成连续区间（tin/tout），子树修改查询即区间操作，接 BIT/线段树；换根的 delta 推导。括号序（进栈记点、出栈记负点）是它的可逆版本——两棵树的括号序相同即同构，LCA 也能退成 RMQ。',
         examples: [
         lg('P3178', '[HAOI2015] 树上操作'),
         lg('P2146', '[NOI2015] 软件包管理器'),
         lg('P3258', '[JLOI2014] 松鼠的新家'),
+      ],
+      },
+
+      {
+        id: 'tree-hash',
+        name: '树的哈希（同构判定）',
+        difficulty: 4,
+        tags: ['树哈希', '树上算法'],
+        outline: '自底向上把每棵子树压成一个整数：hs(u)=∏(hs(v)+p[size(v)])，按子树大小取不同质数乘起来，保证「儿子多重集相同才同构」。有根树直接比根的 hs；无根树要先找重心（或直径中点）当根，否则两棵同构树可能算出不同值。',
+        examples: [
+        cf('1800/G', 'Symmetree'),
       ],
       },
 
@@ -1131,6 +1584,17 @@ export const CURRICULUM: TemplateCategory[] = [
         lg('P3384', '【模板】重链剖分 / 树链剖分'),
         lg('P2590', '[ZJOI2008] 树的统计'),
         lg('P2680', '[NOIP 2015 提高组] 运输计划'),
+      ],
+      },
+
+      {
+        id: 'tree-long-chain',
+        name: '长链剖分',
+        difficulty: 5,
+        tags: ['长链剖分', '树上算法'],
+        outline: '把重链剖分的「选最大子树」换成「选深度最大的儿子」。关键性质：u 往下的第 k 条长链恰好覆盖 u 子树内深度比 u 大 k 的所有点，所以所有长链长度之和只有 O(n)；于是 f[u][k] 这种按深度开的二维数组可以让轻链复用长链尾部的缓冲区，总空间从 O(n²) 降到 O(n)。适合「距根恰为 k 的点数」「树上定长路径计数」这类按深度维度的 DP。',
+        examples: [
+        lg('P5904', '[POI 2014] HOT-Hotels 加强版'),
       ],
       },
 
@@ -1151,11 +1615,22 @@ export const CURRICULUM: TemplateCategory[] = [
         name: '点分治',
         difficulty: 5,
         tags: ['树上算法', '点分治', '分治'],
-        outline: '每层选重心为根统计跨根路径再删根递归，共 O(log n) 层；容斥减去同子树路径防重复计数。',
+        outline: '每层选重心为根统计跨根路径再删根递归，共 O(log n) 层；容斥减去同子树路径防重复计数。点分树的版本（动态点分治）在重心树上前缀维护子树信息，可支持修改，常数与实现量都很大；边分治改成按边权中点拆（虚点重连后度数 ≤ 3），在「点对距离满足可合并关系」时比点分更好接 LCA。',
         examples: [
         lg('P3806', '【模板】点分治'),
         lg('P4178', 'Tree'),
         lg('P2634', '[国家集训队] 聪聪可可'),
+      ],
+      },
+
+      {
+        id: 'tree-edge-divide',
+        name: '边分治',
+        difficulty: 5,
+        tags: ['边分治', '树上算法', '分治'],
+        outline: '找一条「删掉后两侧点数都 ≤ n/2」的边拆开递归。直接枚举边不好找，先按度 > 2 的点挂虚边重构成二叉树（新边权 0、原边权 1），重心边就必然存在且好求。分治层用桶/树状数组按深度统计跨被拆边的点对，比点分治少一层容斥，代价是深度多算 1 要回扣。',
+        examples: [
+        lg('P4178', 'Tree'),
       ],
       },
 
@@ -1243,6 +1718,17 @@ export const CURRICULUM: TemplateCategory[] = [
       },
 
       {
+        id: 'math-miller-rabin',
+        name: 'Miller-Rabin 与 Pollard-Rho',
+        difficulty: 4,
+        tags: ['Miller-Rabin', 'Pollard-Rho', '素性测试'],
+        outline: 'Miller-Rabin 用 a^(d·2^r)≡1 的二次探测定素性，long long 范围内取固定基底 {2,3,5,7,11,13,17,19,23,29,31,37} 即无假阳；Pollard-Rho 用 f(x)=x²+c 的迭代序列撞 gcd 找非平凡因子，配合龟速乘防溢出，递归分解后因子排序即可。',
+        examples: [
+        lg('P1075', '[NOIP 2012 普及组] 质因数分解'),
+      ],
+      },
+
+      {
         id: 'math-exgcd',
         name: 'exgcd 与逆元',
         difficulty: 3,
@@ -1251,7 +1737,7 @@ export const CURRICULUM: TemplateCategory[] = [
         examples: [
         lg('P1082', '[NOIP 2012 提高组] 同余方程'),
         lg('P3811', '【模板】模意义下的乘法逆元'),
-        lg('P1516', '青蛙的约会'),
+        lg('P1516', '[ZJOI2002] 青蛙的约会'),
         lg('P2613', '【模板】有理数取余'),
       ],
       },
@@ -1261,11 +1747,46 @@ export const CURRICULUM: TemplateCategory[] = [
         name: '组合数预处理（阶乘 + 逆元）',
         difficulty: 3,
         tags: ['数学', '组合计数'],
-        outline: '阶乘 + 阶乘逆元线性预处理，C(a,b) O(1) 查询；适用前提模数为质数，除法取模可用 (N mod p·M)/M 规避先乘逆元。',
+        outline: '阶乘 + 阶乘逆元线性预处理，C(a,b) O(1) 查询；适用前提模数为质数，除法取模可用 (N mod p·M)/M 规避先乘逆元。模数不是质数或干脆不取模时退回杨辉三角 O(n²) 递推 C(n,m)=C(n−1,m−1)+C(n−1,m)，慢但没有任何前提。',
         examples: [
         lg('P2822', '[NOIP 2016 提高组] 组合数问题'),
         lg('P4071', '[SDOI2016] 排列计数'),
         lg('P1313', '[NOIP 2011 提高组] 计算系数'),
+      ],
+      },
+
+      {
+        id: 'math-inc-exc',
+        name: '容斥原理与 min-max 容斥',
+        difficulty: 3,
+        tags: ['容斥', '计数'],
+        outline: '「至少/恰好/全不」三类问法靠 ±1 符号交替统一：枚举哪些约束被强制违反，贡献乘 (−1)^|S|。min-max 容斥把「最早命中」换成「最后命中」的期望差，是处理「集齐所有」类期望题的标准一步。',
+        examples: [
+        lg('P2167', '[SDOI2009] Bill的挑战'),
+      ],
+      },
+
+      {
+        id: 'math-sequences',
+        name: '卡特兰数、错排、斯特林数与拆分数',
+        difficulty: 2,
+        tags: ['卡特兰数', '组合计数'],
+        outline: '四个必背递推/通项：卡特兰 C(n)=C(2n,n)/(n+1)（合法括号、出栈序列、凸多边形划分、不越过对角线路径）；错排 D(n)=(n−1)(D(n−1)+D(n−2))；第二类斯特林 S(n,k)=k·S(n−1,k)+S(n−1,k−1)（n 个有标号球放进 k 个无标号非空盒）；整数拆分数用一维完全背包型递推。模数不质数时卡特兰要退化成质因数分解计数。',
+        examples: [
+        lg('P1044', '[NOIP 2003 普及组] 栈'),
+        lg('P2181', '对角线'),
+        lg('P4841', '[集训队作业2013] 城市规划'),
+      ],
+      },
+
+      {
+        id: 'math-prufer',
+        name: 'Prüfer 序列',
+        difficulty: 4,
+        tags: ['Prüfer 序列', '计数'],
+        outline: 'n 个标号点的无根树与长度 n−2 的标号序列一一对应：每次删编号最小的叶子记录父亲，还原时每次取「未出现的最小标号」当叶子。度数 = 出现次数 + 1 这一条就推出 Cayley 公式 n^(n−2)，也是所有「给定度数序列求树数」「带限制标号树计数」的入口。',
+        examples: [
+        lg('P2290', '[HNOI2004] 树的计数'),
       ],
       },
 
@@ -1278,6 +1799,17 @@ export const CURRICULUM: TemplateCategory[] = [
         examples: [
         lg('P5091', '【模板】扩展欧拉定理'),
         lg('P4139', '上帝与集合的正确用法'),
+      ],
+      },
+
+      {
+        id: 'math-primitive-root',
+        name: '原根与指数',
+        difficulty: 4,
+        tags: ['原根', '数论'],
+        outline: '模 m 简化剩余系里阶等于 φ(m) 的元素就是原根，它把乘法群同构到加法群（于是乘法变加法、离散对数可查表）。求法：枚举 g 从 2 起，对 φ(m) 的每个质因子 p 验证 g^(φ(m)/p) ≢ 1 (mod m)；只有 2、4、p^k、2p^k（p 为奇素数）这些模数存在原根。NTT 的 n 次单位根就是素数模下原根的 g^((p−1)/n)，前提 n | p−1。',
+        examples: [
+        cf('284/A', 'Cows and Primitive Roots'),
       ],
       },
 
@@ -1346,11 +1878,22 @@ export const CURRICULUM: TemplateCategory[] = [
         name: '高斯消元',
         difficulty: 3,
         tags: ['数学', '线性代数'],
-        outline: '列主元消元 + 回代解线性方程组；用 eps 判无解/无穷解，01 异或方程组按 bit 消元且行数 = 状态维数。',
+        outline: '列主元消元 + 回代解线性方程组；用 eps 判无解/无穷解，01 异或方程组按 bit 消元且行数 = 状态维数。同一次消元顺手把增广矩阵左边换成单位矩阵就得到逆矩阵，判行列式则只看主元乘积（换行变号）。',
         examples: [
         lg('P3389', '【模板】高斯消元法'),
         lg('P2455', '[SDOI2006] 线性方程组'),
         lg('P2447', '[SDOI2010] 外星千足虫'),
+      ],
+      },
+
+      {
+        id: 'math-berlekamp-massey',
+        name: 'BM 算法与常系数线性递推',
+        difficulty: 4,
+        tags: ['BM', '线性递推'],
+        outline: 'BM 在模素数下从数列前若干项在线求出最短线性递推式（每次用上一条失败转移序列修正 discrepancy）；拿到 k 阶递推后用多项式快速幂/线性递推第 n 项把 O(n) 降到 O(k²log n) 或 NTT 版 O(k log k log n)。',
+        examples: [
+        lg('P4723', '【模板】常系数齐次线性递推'),
       ],
       },
 
@@ -1388,6 +1931,17 @@ export const CURRICULUM: TemplateCategory[] = [
         examples: [
         lg('P4781', '【模板】拉格朗日插值'),
         cf('622/F', 'The Sum of the k-th Powers'),
+      ],
+      },
+
+      {
+        id: 'math-ogf',
+        name: '生成函数（OGF / EGF）',
+        difficulty: 5,
+        tags: ['生成函数', '多项式', '组合计数'],
+        outline: '把数列装进形式幂级数，组合构造逐项对应：序列 = 1/(1−A)、无序选取 = 乘积、有标号结构用 EGF（乘积对应「划分成两个有标号子集」）。计数题先写出生成函数再用多项式求逆 / ln / exp / sqrt 算出前 n 项。注意区分「有标号用 EGF、无标号用 OGF」，用错会差一个 n!。',
+        examples: [
+        lg('P4389', '付公主的背包'),
       ],
       },
 
@@ -1430,6 +1984,29 @@ export const CURRICULUM: TemplateCategory[] = [
       },
 
       {
+        id: 'math-floor-sum',
+        name: '类欧几里得（floor 和）',
+        difficulty: 4,
+        tags: ['类欧几里得', '数论'],
+        outline: '求 f(a,b,c,n)=Σ_{i=0..n}⌊(ai+b)/c⌋ 以及同族的 Σ i⌊…⌋、Σ⌊…⌋²。做法是把求和看成「斜率直线下方的整点数」，用一次几何对偶（交换求和轴、对矩形做平移与转置）得到与 a、c 互换的递归式，每层 (a,c)→(c mod a, a)，形态与欧几里得一样，O(log max(a,c))。是 AtCoder practice2_i 那一类题的正解。',
+        examples: [
+        lg('P5170', '【模板】类欧几里德算法'),
+        lg('P5171', 'Earthquake'),
+      ],
+      },
+
+      {
+        id: 'math-sieve-advanced',
+        name: '杜教筛与 min_25 筛',
+        difficulty: 5,
+        tags: ['杜教筛', 'min_25 筛', '数论分块'],
+        outline: '杜教筛：挑一个好算前缀和的 g 使 f*g 也好算，用 S(n)=(Σ(f*g)−Σ_{d≥2}g(d)S(⌊n/d⌋))/g(1) 配整除分块 + 哈希表记忆化，先把前 n^(2/3) 线性筛出来，复杂度 O(n^(2/3))。min_25 筛则处理 f(p) 是关于 p 的低次多项式、且可扩展成完全积性的 Σ_{p≤n}f(p)，把质数求和拆成「合数按最小质因子分类」的递归。前置是狄利克雷卷积 (f*g)(n)=Σ_{d|n}f(d)g(n/d)：莫比乌斯 μ 是 1 的卷积逆，很多恒等式（Σ_{d|n}φ(d)=n 即 φ*1=id）一句话就能推出来。',
+        examples: [
+        lg('P3768', '简单的数学题'),
+      ],
+      },
+
+      {
         id: 'math-fft',
         name: 'FFT / NTT',
         difficulty: 5,
@@ -1445,11 +2022,22 @@ export const CURRICULUM: TemplateCategory[] = [
       },
 
       {
+        id: 'math-fwt',
+        name: 'FWT 与 FMT（集合幂级数）',
+        difficulty: 4,
+        tags: ['FWT', 'FMT', '集合幂级数'],
+        outline: '对子集卷积 / 超集卷积 / 对称差（异或）卷积做点值化：FMT 是「含该位则加上不含该位的那份」的 O(n·2ⁿ) 变换，FWT-AND / OR / XOR 各自有正逆变换与对应的逐点乘规则，XOR 版要记得除 2 归一。子集和（SOS）就是 FMT-AND 的另一种叫法；卷积结果只对「恰好不相交」成立时还要按 popcount 分维做子集卷积。',
+        examples: [
+        lg('P4717', '【模板】快速莫比乌斯 / 沃尔什变换 (FMT / FWT)'),
+      ],
+      },
+
+      {
         id: 'math-polya',
         name: 'Pólya 定理与置换群',
         difficulty: 5,
         tags: ['数学', '置换群', '组合计数'],
-        outline: '在置换群下计不等价染色数：等价类数 = 各置换不动点数的平均，不动点数由循环节个数决定（c^轮数）。',
+        outline: '在置换群下计不等价染色数：等价类数 = 各置换不动点数的平均，不动点数由循环节个数决定（c^轮数）。Burnside 是它的一般形式（群元个数取平均、Polya 再把 c^轮数 换成权值和），只问「不等价方案数」时用 Burnside 更短；轮数用置换的 gcd 结构 O(√n) 算出来。',
         examples: [
         lg('P4980', '【模板】Pólya 定理'),
         lg('P1446', '[HNOI2008] Cards'),
@@ -1546,6 +2134,17 @@ export const CURRICULUM: TemplateCategory[] = [
         outline: '双指针比较循环同构串，失配时按结果 i += k+1 跳过整段，均摊线性求最小循环起点。',
         examples: [
         lg('P1368', '工艺'),
+      ],
+      },
+
+      {
+        id: 'str-lyndon',
+        name: 'Lyndon 分解（Duval 算法）',
+        difficulty: 4,
+        tags: ['Lyndon 分解', '字符串'],
+        outline: 'Lyndon 词 = 严格小于自己所有非平凡后缀的串；Duval 用 i/j/k 三个指针一遍扫把串分解成 s₁s₂…sₜ（sᵢ ≥ sᵢ₊₁ 且每个都是 Lyndon 词），O(n) 且只用常数额外空间。最小表示法、最小后缀、以及「至少改几个字符使串最小」这类题都直接套这个分解。',
+        examples: [
+        lg('P6114', '【模板】Lyndon 分解'),
       ],
       },
 
@@ -1704,7 +2303,33 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['计算几何'],
         outline: '奇偶穿越法 + 半开区间约定处理顶点穿越；点在边上的单独判定。',
-        examples: [],
+        examples: [
+        lg('P1355', '神秘大三角'),
+        lg('P3738', '[HAOI2014] 穿越封锁线'),
+        lg('P8645', '[蓝桥杯 2016 国 B] 广场舞'),
+      ],
+      },
+
+      {
+        id: 'geo-circle',
+        name: '圆与直线/圆的交点、切线与面积交并',
+        difficulty: 3,
+        tags: ['计算几何', '圆'],
+        outline: '全套只用两个量：圆心到直线的距离 d 和半径。d=r 判切、d<r 用垂足±沿方向·√(r²−d²) 求交点；两圆按 |r₁−r₂| 与 r₁+r₂ 分内含/内切/相交/外切/相离，公切线条数同判；面积交用两弓形相减，多圆面积并可直接随机化或扫描线。所有比较用 eps 而不是 ==。',
+        examples: [
+        cf('600/D', "Area of Two Circles' Intersection"),
+      ],
+      },
+
+      {
+        id: 'geo-min-circle',
+        name: '最小圆覆盖（Welzl 算法）',
+        difficulty: 4,
+        tags: ['最小圆覆盖', '计算几何'],
+        outline: '随机增量：把点打乱后逐个加入，新点落在当前圆外时，它必然在答案边界上，退化成「两点定圆」；再加一层循环处理「两点在边界」，最后三点定圆就是外接圆。期望 O(n)，边界情况（共线、重合点）要在增量循环里显式判掉。',
+        examples: [
+        lg('P1742', '最小圆覆盖'),
+      ],
       },
 
       {
@@ -1717,6 +2342,19 @@ export const CURRICULUM: TemplateCategory[] = [
         lg('P5490', '【模板】扫描线 & 矩形面积并'),
         lg('P1856', '[IOI 1998 / USACO5.5] 矩形周长 Picture'),
         lg('P1904', '天际线'),
+      ],
+      },
+
+      {
+        id: 'geo-point-location',
+        name: '点定位与 Voronoi 图',
+        difficulty: 5,
+        tags: ['点定位', 'Voronoi 图', '计算几何'],
+        outline: '点定位：把平面剖分成梯形（Sweep 建梯形图）后逐层二分下降，O(n log n) 建、O(log n) 查，是「给很多点问落在哪个多边形/哪个区域」的标准结构。Voronoi 图是它的对偶问题——n 个点的最近点划分，边数 ≤ 3n−6，可用随机增量（和最小圆覆盖同一套框架）或半平面交（每个点对的垂直平分半平面）求；Delaunay 三角剖分是其对偶，空圆性质是判据。',
+        examples: [
+        lg('P4073', '[WC2013] 平面图'),
+        lg('P2588', '[ZJOI2008] Risk'),
+        lg('P6505', 'Run Away'),
       ],
       },
 
@@ -1744,7 +2382,7 @@ export const CURRICULUM: TemplateCategory[] = [
         name: 'STL 容器速用（map / set / priority_queue / deque）',
         difficulty: 1,
         tags: ['STL'],
-        outline: 'map/set 的 lower_bound/erase 迭代器陷阱、multiset 只删一个的正确写法、deque 两端 O(1) 的适用边界。',
+        outline: 'map/set 的 lower_bound/erase 迭代器陷阱、multiset 只删一个的正确写法、deque 两端 O(1) 的适用边界。pbds（__gnu_pbds 的 tree / priority_queue / cc_hash_table）能当 order_statistics_tree 用，直接查第 k 小与排名，但常数大且不能删除重复键，赛场要先确认评测机支持。',
         examples: [
         lg('P1449', '后缀表达式'),
         lg('P1177', '【模板】排序'),
@@ -1788,7 +2426,11 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 2,
         tags: ['打表', '卡常', '技巧'],
         outline: '打表：本地暴力 + 脚本生成答案数组直接查表（分段打表控制代码长度）；卡常：快读、减少取模、循环展开、内存连续访问。',
-        examples: [],
+        examples: [
+        lg('P10508', '质因子'),
+        lg('B3615', '测测你的矩阵乘法'),
+        lg('P1366', '有序表的合并'),
+      ],
       },
 
       {
@@ -1797,7 +2439,9 @@ export const CURRICULUM: TemplateCategory[] = [
         difficulty: 3,
         tags: ['置换环'],
         outline: '「任意交换/按规则交换」先抽象成置换：最少交换次数 = n − 环数、交换奇偶性 = n − 环数的奇偶；目标是把给定排列变成目标置换时从环上拆解。',
-        examples: [],
+        examples: [
+        lg('P8637', '[蓝桥杯 2016 省 B] 交换瓶子'),
+      ],
       },
 
       {

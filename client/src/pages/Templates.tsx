@@ -8,7 +8,6 @@ import {
   Dropdown,
   Form,
   Input,
-  InputNumber,
   Modal,
   Popconfirm,
   Select,
@@ -37,6 +36,7 @@ import {
   SyncOutlined,
   UndoOutlined,
 } from '@ant-design/icons'
+import { TEMPLATE_TIER_OPTIONS, templateTierLabel } from '../../../shared/src/templateTiers.ts'
 import PageHeader from '../components/PageHeader'
 import StatStrip from '../components/StatStrip'
 import PageSkeleton from '../components/PageSkeleton'
@@ -565,7 +565,7 @@ export default function Templates() {
           <Space wrap>
             <IndentSwitch />
             {data.next && (
-              <Tooltip title={`难度 ${data.next.difficulty}/5`}>
+              <Tooltip title={`${templateTierLabel(data.next.difficulty)} · 难度 ${data.next.difficulty}/5`}>
                 <Button type="primary" icon={<RightOutlined />} onClick={jumpNext}>
                   下一课：{data.next.name}
                 </Button>
@@ -781,6 +781,7 @@ export default function Templates() {
                           <span className="template-stars" title={`难度 ${t.difficulty}/5`}>
                             {'★'.repeat(t.difficulty)}
                           </span>
+                          <span className="template-tier">{templateTierLabel(t.difficulty)}</span>
                           {t.custom && <Tag color="geekblue">自建</Tag>}
                           {t.status === 'mastered' && (
                             <Tag color="success" className="dot-tag">
@@ -1023,8 +1024,8 @@ export default function Templates() {
             <Form.Item name="name" label="模板名称" rules={[{ required: true, message: '填写名称' }]} style={{ flex: 1, minWidth: 240 }}>
               <Input placeholder="如：线段树二分（自用版）" maxLength={100} />
             </Form.Item>
-            <Form.Item name="difficulty" label="难度（1-5）" rules={[{ required: true }]} style={{ width: 120 }}>
-              <InputNumber min={1} max={5} style={{ width: '100%' }} />
+            <Form.Item name="difficulty" label="难度段位" rules={[{ required: true }]} style={{ width: 130 }}>
+              <Select options={TEMPLATE_TIER_OPTIONS} />
             </Form.Item>
           </Space>
           <Form.Item name="tags" label="标签（与刷题标签同词表，回车添加）">
