@@ -818,14 +818,20 @@ test('provider 映射：CF user.rating / AtCoder history（stub fetch，不访�
 
   const atFetch: typeof fetch = (async () =>
     new Response(JSON.stringify([
-      { ContestScreenName: 'abc459.contest.atcoder.jp', ContestName: 'ABC459', EndTimeStamp: Date.parse('2026-05-23T13:40:00.000Z') / 1000, Place: 8970, IsRated: true, OldRating: 0, NewRating: 34 },
+      // 2026-10-08 实测 /users/{h}/history/json 的真实字段是 `EndTime`（ISO 串），不是早期
+      // fixture 里的 `EndTimeStamp`：只认后者的话老场次（日历未命中）会落 end_ms=NULL，
+      // 复盘时间窗与能力值的 rating 锚点都会失去这些场次
+      { ContestScreenName: 'abc459.contest.atcoder.jp', ContestName: 'ABC459', EndTime: '2026-05-23T22:40:00+09:00', Place: 8970, IsRated: true, OldRating: 0, NewRating: 34 },
       { ContestScreenName: 'abc458', ContestName: 'ABC458', EndTimeStamp: Date.parse('2026-05-16T13:40:00.000Z') / 1000, Place: 5000, IsRated: false, OldRating: 34, NewRating: 34 },
     ]), { status: 200 })) as typeof fetch;
   const at = await fetchAtcoderParticipation('hieZF123', calendarIndex([]), atFetch);
   assert.equal(at[0]!.contestId, 'abc459', 'slug 剥掉 .contest.atcoder.jp 后缀');
   assert.equal(at[0]!.rank, 8970);
   assert.equal(at[0]!.rating, 34);
+  assert.equal(at[0]!.endTimeMs, Date.parse('2026-05-23T13:40:00.000Z'), 'EndTime(ISO) 解析为毫秒');
+  assert.equal(at[0]!.startTimeMs, Date.parse('2026-05-23T13:40:00.000Z') - 2 * 3_600_000, '无日历命中时按结束时间回推近似窗口');
   assert.equal(at[1]!.rating, null, 'unrated 场次不携带 rating');
+  assert.equal(at[1]!.endTimeMs, Date.parse('2026-05-16T13:40:00.000Z'), 'EndTimeStamp(Unix 秒) 仍兼容');
 });
 
 test('provider 映射：AtCoder 日历命中时用日历规范名（history ContestName 有脏值）', async () => {

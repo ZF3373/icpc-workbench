@@ -201,6 +201,16 @@ export async function fetchCodeforcesParticipation(
   });
 }
 
+/** AtCoder history 的结算时间：接口实际给 `EndTime`（ISO，如 2026-10-04T23:00:00+09:00，
+ *  2026-10-08 实测 /users/{h}/history/json），`EndTimeStamp`（Unix 秒）是早期 fixture 口径，
+ *  两者都要认。解析不出来返回 NaN，由调用方回退日历时间窗。
+ *  这不只是展示问题：落 NULL 的场次既进不了复盘时间窗，也无法作为能力值 rating 锚点的时效依据。 */
+function atcoderEndMs(r: Record<string, unknown>): number {
+  const stamp = Number(r.EndTimeStamp);
+  if (Number.isFinite(stamp) && stamp > 0) return stamp * 1000;
+  return typeof r.EndTime === 'string' ? Date.parse(r.EndTime) : NaN;
+}
+
 /** AtCoder：官方 history/json——rated 场次（ContestScreenName 即比赛 slug） */
 export async function fetchAtcoderParticipation(
   handle: string,
@@ -219,7 +229,7 @@ export async function fetchAtcoderParticipation(
       ? r.ContestScreenName.replace(/\.contest\.atcoder\.jp$/, '')
       : null;
     if (!slug) continue;
-    const endMs = Number(r.EndTimeStamp) * 1000;
+    const endMs = atcoderEndMs(r);
     // 日历命中即取官方赛名：history 的 ContestName 偶有脏值（实测 ARC219 为
     // 「AtCoder Regular Contest-- 219」），而日历条目（官方 contests 页解析）恒为规范名；
     // 未命中日历（太久远的场次）才回退 ContestName / slug

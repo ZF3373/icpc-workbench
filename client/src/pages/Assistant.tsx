@@ -49,7 +49,7 @@ import {
   type TokenUsage,
 } from '../api'
 import type { ParticipatedContest, PlanListItem } from '../types'
-import type { AiProviderView, ModelCaps } from '../../../shared/src/index.ts'
+import type { AbilityLevelDetail, AiProviderView, ModelCaps } from '../../../shared/src/index.ts'
 import Markdown from '../components/Markdown'
 import PageHeader from '../components/PageHeader'
 import SessionMiniPanel from '../components/SessionMiniPanel'
@@ -499,6 +499,25 @@ function readSideCollapsed(): boolean {
   } catch {
     return false
   }
+}
+
+/** 能力值卡片里的 rating 证据行：没有合格锚点、也没有分差趋势时返回 null（不占行） */
+function ratingEvidenceLine(detail?: AbilityLevelDetail): string | null {
+  if (!detail) return null
+  const bits: string[] = []
+  if (detail.ratingAnchor !== null) {
+    const conv =
+      detail.ratingAnchorRaw !== null && detail.ratingAnchorRaw !== detail.ratingAnchor
+        ? ` 原分 ${detail.ratingAnchorRaw} 换算`
+        : ''
+    bits.push(
+      `${detail.ratingAnchorPlatform ?? '赛事中心'}${conv} ${detail.ratingAnchor}（${detail.ratingSamples} 场，权重 ${Math.round(detail.ratingWeight * 100)}%）`,
+    )
+  }
+  if (detail.ratingTrendAdj !== 0) {
+    bits.push(`其余平台分差趋势 ${detail.ratingTrendAdj > 0 ? '+' : ''}${detail.ratingTrendAdj}`)
+  }
+  return bits.length > 0 ? `rating 锚点（多平台取最高）：${bits.join(' · ')}` : null
 }
 
 // ---------- 组件 ----------
@@ -1991,6 +2010,8 @@ export default function Assistant() {
     inputRef.current?.focus()
   }
 
+  const abilityRatingLine = ratingEvidenceLine(ability?.detail)
+
   return (
     <div>
       <PageHeader
@@ -2356,6 +2377,10 @@ export default function Assistant() {
                   </div>
                 ) : (
                   <div style={{ fontSize: 12, color: 'var(--text-3)' }}>加权解题证据估算</div>
+                )}
+                {/* 赛事中心的 rating 记录参与了计算值时说明贡献了多少（AI 调整过也照样透出，便于核对计算值） */}
+                {abilityRatingLine && (
+                  <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>{abilityRatingLine}</div>
                 )}
               </>
             ) : abilityError ? (

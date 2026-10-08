@@ -363,9 +363,23 @@ export interface AbilityLevelDetail {
   base: number | null;
   /** 通过率校准修正（同段难度 AC 率推导，±150 封顶） */
   performanceAdj: number;
-  /** 基数 + 校准后的目标值（未做平滑） */
+  /** 解题证据口径下的目标值（base + performanceAdj，未混入 rating）；无 rating 证据时与 target 相同 */
+  solveTarget: number;
+  /** rating 锚点：各平台近期 rated 场次各自算时效加权均值、换算到 CF 标尺后**取最高**（含保守折扣）；无合格锚点为 null */
+  ratingAnchor: number | null;
+  /** 胜出锚点来自哪个平台（如「Codeforces」「AtCoder」「牛客」） */
+  ratingAnchorPlatform: string | null;
+  /** 胜出平台的原分（换算前）；与 ratingAnchor 不同即说明这一项是换算来的 */
+  ratingAnchorRaw: number | null;
+  /** 胜出平台的 rated 场次数 */
+  ratingSamples: number;
+  /** 锚点在目标值中的混合权重（0–0.45，随有效场数上升；0 = rating 不参与计算） */
+  ratingWeight: number;
+  /** 未胜出平台按近期分差给出的方向性修正（绝对分不进模型的部分只走这里，±80 内） */
+  ratingTrendAdj: number;
+  /** 最终目标值：解题估算与 rating 锚点按权重混合，再叠分差趋势（未做平滑） */
   target: number;
-  /** 自上次校准以来的新练习提交数（含失败；0 = 能力值保持不动） */
+  /** 自上次校准以来的新证据数（练习提交 + 新同步的带 rating 参赛场次；0 = 能力值保持不动） */
   newEvidence: number;
   /** 窗口内参与估算的解题证据条数 */
   samples: number;
@@ -375,7 +389,8 @@ export interface TodayPlan {
   date: string;
   /**
    * 估算能力值（加权解题证据模型：难度加权中位数 × 独立完成度降权 × 通过率校准，
-   * 再做有状态的缓慢校准；千人千面的三档分档基准）
+   * 再与赛事中心的 CF rating 锚点按置信权重混合、按 AtCoder/牛客 近期分差微调，
+   * 最后做有状态的缓慢校准；千人千面的三档分档基准）
    */
   level: number;
   /** 能力值构成明细（缺失时 UI 不展示构成） */

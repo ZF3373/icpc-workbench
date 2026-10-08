@@ -2,6 +2,13 @@ import type { Db } from '../db/index.ts';
 import { estimateLevel } from './select.ts';
 import type { AbilityLevelDetail } from '../../../shared/src/index.ts';
 import type { PracticeSummary } from '../analysis/summary.ts';
+import {
+  countRatedContests,
+  collectRatedContests,
+  ratingEvidence,
+  renderRatingEvidence,
+  type RatingEvidence,
+} from './abilityRating.ts';
 
 /** AI 能力值调整的持久化结构（settings 表 key = ability.override） */
 export interface AbilityOverride {
@@ -19,6 +26,8 @@ export interface AbilityState {
   level: number;
   /** 上次校准时的全历史提交总数（排除 SKIPPED，含失败）：任何新练习都允许重新校准 */
   totalAttempts: number;
+  /** 上次校准时的带 rating 参赛场次总数：新同步的 rating 记录同样算新证据 */
+  totalRatedContests: number;
   updatedAt: string;
 }
 
@@ -54,7 +63,13 @@ export function getAbilityState(db: Db): AbilityState | null {
   if (!row) return null;
   try {
     const v = JSON.parse(row.value) as AbilityState;
-    return Number.isFinite(v?.level) && v.level > 0 && Number.isInteger(v?.totalAttempts) ? v : null;
+    if (!(Number.isFinite(v?.level) && v.level > 0 && Number.isInteger(v?.totalAttempts))) return null;
+    // 旧版本状态里没有 totalRatedContests：按 0 起算，让已同步的 rating 历史在首次生效时
+    // 算作新证据推一步（否则同步进来的 rating 要等下一次刷题提交才会影响能力值）
+    return {
+      ...v,
+      totalRatedContests: Number.isInteger(v?.totalRatedContests) ? v.totalRatedContests : 0,
+    };
   } catch {
     return null;
   }
@@ -76,8 +91,14 @@ export function saveAbilityState(db: Db, state: AbilityState): void {
 //   2. 证据难度做加权中位数（高出未加权中位数 400+ 的离群样本再打五折）→ 难度基数
 //   3. 同段难度（基数 ±200）的提交通过率做校准修正：高难度一发 AC 拉得上限，
 //      低难度 AC 但失败成堆（通过率低）往下修
-//   4. 有状态的缓慢校准：无新练习提交不动；有新证据时向目标值走夹紧的小步
-//      （升 +80 / 降 −150 封顶，升慢、回调略快），训练后的能力值渐进爬升
+//   4. 赛事中心的 rating 记录做外部锚点：每个平台各自算近期 rated 场次的时效加权均值并
+//      换算到 CF 标尺，**取换算后最高的那个**（备赛的人往往只在一个平台持续参赛，过期的
+//      平台分不该拖住锚点）；混合权重上限 45%，单场只有 15%。只有换算有实测依据的平台
+//      进锚点，其余平台的绝对分只按 rating_change 给 ±80 内的方向修正（标尺依据见
+//      abilityRating.ts 文件头）
+//   5. 有状态的缓慢校准：无新证据（练习提交 / 新同步的 rated 场次）不动；
+//      有新证据时向目标值走夹紧的小步（升 +80 / 降 −150 封顶，升慢、回调略快），
+//      训练后的能力值渐进爬升
 // 全部权重集中在下方常量区，调整只改这里。
 // ---------------------------------------------------------------------------
 
@@ -310,22 +331,69 @@ function worstIntentByProblem(db: Db, userId: number): Map<number, string> {
   return map;
 }
 
-/** 只读估算（不触碰校准状态）：基数 / 通过率校准 / 目标值 */
+/** 只读估算（不触碰校准状态）：基数 / 通过率校准 / rating 锚点 / 目标值 */
 export interface AbilityBreakdown {
-  /** 难度基数（round 到百展示；样本不足回退时与 target 相同） */
+  /** 难度基数（round 到百展示；样本不足回退时与 solveTarget 相同） */
   base: number | null;
   performanceAdj: number;
+  /** rating 锚点：各平台换算到 CF 标尺后取最高的那个（打折后）；无合格锚点 = null */
+  ratingAnchor: number | null;
+  /** 胜出锚点来自哪个平台（UI/AI 说明口径用） */
+  ratingAnchorPlatform: string | null;
+  /** 胜出平台的原分（换算前）；与 ratingAnchor 不同时说明这是换算来的 */
+  ratingAnchorRaw: number | null;
+  /** 胜出平台的 rated 场次数 */
+  ratingSamples: number;
+  /** 锚点在目标值里的混合权重（0–0.45；0 = rating 不参与，目标值纯由解题证据决定） */
+  ratingWeight: number;
+  /** AtCoder/牛客 等无标尺桥平台的近期分差修正（绝对分不进模型，±80 内） */
+  ratingTrendAdj: number;
+  /** 解题证据口径下的目标值（base + performanceAdj，未混 rating）；无 rating 证据时与 target 相同 */
+  solveTarget: number;
+  /** 最终目标值：解题估算与 rating 锚点按权重混合，再叠分差趋势（未做平滑） */
   target: number;
   samples: number;
 }
 
+/** rating 分量落进明细（anchor 取整便于展示，混合本身用未取整的均值） */
+function ratingDetail(ev: RatingEvidence): Pick<AbilityBreakdown, 'ratingAnchor' | 'ratingAnchorPlatform' | 'ratingAnchorRaw' | 'ratingSamples' | 'ratingWeight' | 'ratingTrendAdj'> {
+  return {
+    ratingAnchor: ev.anchor === null ? null : Math.round(ev.anchor),
+    ratingAnchorPlatform: ev.anchorPlatform,
+    ratingAnchorRaw: ev.anchorRaw,
+    ratingSamples: ev.anchorSamples,
+    ratingWeight: ev.anchorWeight,
+    ratingTrendAdj: ev.trendAdj,
+  };
+}
+
+/**
+ * 目标值 = 解题估算与 rating 锚点按置信权重混合 + 分差趋势。
+ * 锚点取「各平台换算后最高的那个」（见 abilityRating.ts），单场只有 15% 权重，不会独裁。
+ * 这里刻意不再 round 到百：基数与通过率校准已保证「无 rating 时目标值仍是整百」，
+ * 而锚点是连续量、趋势只有 ±80 级，过早取整会把 rating 的影响抹平。
+ */
+function blendTarget(solveTarget: number, ev: RatingEvidence): number {
+  const anchored =
+    ev.anchor === null ? solveTarget : solveTarget * (1 - ev.anchorWeight) + ev.anchor * ev.anchorWeight;
+  return clampLevel(Math.round(anchored + ev.trendAdj));
+}
+
 export function estimateBreakdown(db: Db, userId: number, windowDays: number, now: Date = new Date()): AbilityBreakdown {
+  const rating = ratingEvidence(collectRatedContests(db, userId), now);
   const evidences = collectSolveEvidence(db, userId, windowDays, now);
   if (evidences.length < MIN_SAMPLES) {
     // 回退：全历史去重中位数（沿用 estimateLevel 口径），不做通过率校准
     const allTime = collectSolveEvidence(db, userId, null, now);
-    const target = estimateLevel(allTime.map((e) => e.difficulty));
-    return { base: allTime.length > 0 ? target : null, performanceAdj: 0, target, samples: allTime.length };
+    const solveTarget = estimateLevel(allTime.map((e) => e.difficulty));
+    return {
+      ...ratingDetail(rating),
+      base: allTime.length > 0 ? solveTarget : null,
+      performanceAdj: 0,
+      solveTarget,
+      target: blendTarget(solveTarget, rating),
+      samples: allTime.length,
+    };
   }
   const halfLifeMs = Math.max(1, windowDays * HALF_LIFE_RATIO) * DAY_MS;
   const base = weightedBase(evidences, halfLifeMs) ?? 1200;
@@ -341,10 +409,13 @@ export function estimateBreakdown(db: Db, userId: number, windowDays: number, no
     )
     .get(userId, since, base - ADJ_BAND, base + ADJ_BAND) as { attempts: number; ac: number };
   const performanceAdj = performanceAdjustment(band.attempts, band.ac);
+  const solveTarget = clampLevel(round100(base + performanceAdj));
   return {
+    ...ratingDetail(rating),
     base: round100(base),
     performanceAdj,
-    target: clampLevel(round100(base + performanceAdj)),
+    solveTarget,
+    target: blendTarget(solveTarget, rating),
     samples: evidences.length,
   };
 }
@@ -365,8 +436,9 @@ export interface AbilityComputation {
 /**
  * 完整能力值计算（含缓慢校准状态）：
  * - 首次无状态（老用户升级 / 空库）：从旧口径（全历史中位数）出发走一步夹紧步长，避免首见跳变
- * - 无新练习提交（含失败）：发布值保持不动（刷新页面不漂移），detail 里仍透出当前目标值
- * - 有新练习：状态向目标值走一小步并落库（失败堆出来的低通过率同样触发向下校准）
+ * - 无新证据（练习提交 + 新同步的 rated 参赛场次）：发布值保持不动（刷新页面不漂移），
+ *   detail 里仍透出当前目标值
+ * - 有新证据：状态向目标值走一小步并落库（失败堆出来的低通过率同样触发向下校准）
  *
  * 能力值**不按账号作用域**（2026-10 决定）：它估计的是「你这个人的水平」，
  * 校准轨迹只有 settings 里一行（ability.state）。描述性统计（AC 率 / 弱项 / 掌握度 /
@@ -376,25 +448,28 @@ export interface AbilityComputation {
 export function computeAbilityDetail(db: Db, userId: number, windowDays = 60, now: Date = new Date()): AbilityComputation {
   const breakdown = estimateBreakdown(db, userId, windowDays, now);
   const totalAttempts = countPracticeAttempts(db, userId);
+  const totalRatedContests = countRatedContests(db, userId);
   const state = getAbilityState(db);
+  const evidence = totalAttempts + totalRatedContests;
 
   if (!state) {
     const start = bootstrapStart(db, userId, now);
-    // 全部练习都算新证据（空库时 start=target=1200 原地落定）
-    const level = calibrateStep(start, breakdown.target, Math.max(1, totalAttempts));
-    saveAbilityState(db, { level, totalAttempts, updatedAt: now.toISOString() });
+    // 全部练习与参赛记录都算新证据（空库时 start=target=1200 原地落定）
+    const level = calibrateStep(start, breakdown.target, Math.max(1, evidence));
+    saveAbilityState(db, { level, totalAttempts, totalRatedContests, updatedAt: now.toISOString() });
     return {
       level: round100(level),
-      detail: { ...breakdown, newEvidence: totalAttempts },
+      detail: { ...breakdown, newEvidence: evidence },
     };
   }
 
-  const newEvidence = Math.max(0, totalAttempts - state.totalAttempts);
+  const newEvidence =
+    Math.max(0, totalAttempts - state.totalAttempts) + Math.max(0, totalRatedContests - state.totalRatedContests);
   if (newEvidence <= 0) {
     return { level: round100(state.level), detail: { ...breakdown, newEvidence: 0 } };
   }
   const level = calibrateStep(state.level, breakdown.target, newEvidence);
-  saveAbilityState(db, { level, totalAttempts, updatedAt: now.toISOString() });
+  saveAbilityState(db, { level, totalAttempts, totalRatedContests, updatedAt: now.toISOString() });
   return { level: round100(level), detail: { ...breakdown, newEvidence } };
 }
 
@@ -409,11 +484,21 @@ export function computeAbility(db: Db, userId: number, windowDays = 60): number 
   return computeAbilityDetail(db, userId, windowDays).level;
 }
 
-/** 生效能力值：AI 调整优先于计算值 */
-export function effectiveAbility(db: Db, userId: number, windowDays = 60): { computed: number; override: AbilityOverride | null; effective: number } {
-  const computed = computeAbility(db, userId, windowDays);
+/** 生效能力值：AI 调整优先于计算值；detail 透出构成（含 rating 锚点），供 UI 解释来源 */
+export function effectiveAbility(db: Db, userId: number, windowDays = 60): {
+  computed: number;
+  detail: AbilityLevelDetail;
+  override: AbilityOverride | null;
+  effective: number;
+} {
+  const computed = computeAbilityDetail(db, userId, windowDays);
   const override = getAbilityOverride(db);
-  return { computed, override, effective: override?.level ?? computed };
+  return {
+    computed: computed.level,
+    detail: computed.detail,
+    override,
+    effective: override?.level ?? computed.level,
+  };
 }
 
 const percentile = (sorted: number[], p: number): number | null => {
@@ -423,7 +508,8 @@ const percentile = (sorted: number[], p: number): number | null => {
 };
 
 /**
- * 能力评估数据（注入 AI 助手，Markdown）：模型明细（基数/通过率校准/目标/独立完成度）、
+ * 能力评估数据（注入 AI 助手，Markdown）：赛事中心 rating 证据（锚点/趋势/最近场次）、
+ * 模型明细（基数/通过率校准/解题口径目标/rating 混合后的目标/独立完成度）、
  * 近 60 天逐次 AC 难度的分位数/分布直方图/明细、全历史最高、12 周趋势、卡壳题——
  * 让 AI 能基于完整刷题情况独立判断真实水平，而不是默认信任计算基线。
  */
@@ -444,20 +530,39 @@ export function renderAbilityEvidence(db: Db, userId: number, summary: PracticeS
     )
     .get(userId) as { d: number | null };
 
-  const L: string[] = [`### 近 ${windowDays} 天 AC 证据`];
+  const L: string[] = [];
+  const rated = collectRatedContests(db, userId);
+  const rating = ratingEvidence(rated);
+  L.push(...renderRatingEvidence(rated, rating));
+  L.push(`### 近 ${windowDays} 天 AC 证据`);
   const diffs = recent.map((r) => r.difficulty).sort((a, b) => a - b);
   if (diffs.length === 0) {
-    L.push(`- 近 ${windowDays} 天无带难度的 AC 记录，证据不足：不要建议调整能力值，先引导用户同步刷题数据`);
+    L.push(
+      rating.ratedRecords > 0
+        ? `- 近 ${windowDays} 天无带难度的 AC 记录：解题证据不足，只能依据上方 rating 记录评估，调整幅度要保守`
+        : `- 近 ${windowDays} 天无带难度的 AC 记录，证据不足：不要建议调整能力值，先引导用户同步刷题数据`,
+    );
     return L.join('\n');
   }
-  // 模型明细：让 AI 知道计算基线怎么来的、哪些证据被降权了
+  // 模型明细：让 AI 知道计算基线怎么来的、哪些证据被降权了、rating 参与了多少
   const breakdown = estimateBreakdown(db, userId, windowDays);
+  const signed = (n: number): string => `${n >= 0 ? '+' : ''}${n}`;
+  const ratingNote =
+    breakdown.ratingAnchor === null && breakdown.ratingTrendAdj === 0
+      ? ''
+      : `，混入 rating 锚点（多平台换算取最高：${breakdown.ratingAnchorPlatform ?? '无'} ${
+          breakdown.ratingAnchor ?? '—'
+        }、权重 ${Math.round(breakdown.ratingWeight * 100)}%、其余平台分差趋势 ${signed(
+          breakdown.ratingTrendAdj,
+        )}）后`;
   const evidences = collectSolveEvidence(db, userId, windowDays);
   const upsolved = evidences.filter((e) => e.spanMs > DAY_MS).length;
   const helped = evidences.filter((e) => e.intent != null && intentFactor(e.intent) <= 0.7).length;
   const upsolvedContest = evidences.filter((e) => e.intent === 'upsolved').length;
   L.push(
-    `- 模型估算：难度基数 ${breakdown.base ?? '—'}，通过率校准 ${breakdown.performanceAdj >= 0 ? '+' : ''}${breakdown.performanceAdj}，目标 ${breakdown.target}（证据 ${breakdown.samples} 题）`,
+    `- 模型估算：难度基数 ${breakdown.base ?? '—'}，通过率校准 ${signed(breakdown.performanceAdj)}，解题口径目标 ${
+      breakdown.solveTarget
+    }${ratingNote}目标 ${breakdown.target}（证据 ${breakdown.samples} 题）`,
     `- 独立完成度：其中跨天解决（补题/长磨）${upsolved} 题、看题解或记过卡点后做出 ${helped} 题（含赛后补题 ${upsolvedContest} 题：赛时未做出、赛后借助题解等方法补上），这些在模型中已降权，不要因它们拉高基线`,
   );
   L.push(

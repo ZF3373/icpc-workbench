@@ -18,7 +18,7 @@ import InlineError from '../components/InlineError'
 import { difficultyColor, tagColor } from '../ui'
 import { del, get, post } from '../api'
 import type { StreakInfo, TodayPlan, TodayBandKey, TodayProblem } from '../types'
-import type { PlatformId } from '../../../shared/src/index.ts'
+import type { AbilityLevelDetail, PlatformId } from '../../../shared/src/index.ts'
 
 /** 每档题量（与后端默认一致；「换一批」在同一档内轮换） */
 const BAND_TONE: Record<TodayBandKey, string> = {
@@ -56,6 +56,27 @@ function writeStoredRotate(rotate: number): void {
   } catch {
     /* 隐私模式下写不了 localStorage，换一批照样能用 */
   }
+}
+
+/** 能力值构成 tooltip：解题口径 → 赛事 rating 混合 → 目标值，逐项拆开让用户核对 */
+function levelDetailTip(detail?: AbilityLevelDetail): string | undefined {
+  if (!detail || detail.base == null) return undefined
+  const signed = (n: number) => `${n >= 0 ? '+' : ''}${n}`
+  const parts = [`难度基数 ${detail.base}`, `通过率校准 ${signed(detail.performanceAdj)} → 解题口径 ${detail.solveTarget}`]
+  if (detail.ratingAnchor !== null) {
+    const conv =
+      detail.ratingAnchorRaw !== null && detail.ratingAnchorRaw !== detail.ratingAnchor
+        ? ` 原分 ${detail.ratingAnchorRaw} 换算`
+        : ''
+    parts.push(
+      `rating 锚点 ${detail.ratingAnchor}（${detail.ratingAnchorPlatform ?? '赛事中心'}${conv}，${detail.ratingSamples} 场，权重 ${Math.round(detail.ratingWeight * 100)}%，多平台换算后取最高）`,
+    )
+  }
+  if (detail.ratingTrendAdj !== 0) {
+    parts.push(`其余平台分差趋势 ${signed(detail.ratingTrendAdj)}`)
+  }
+  parts.push(`目标 ${detail.target}`, `新证据 ${detail.newEvidence} 条（提交 + 参赛场次）`)
+  return parts.join(' · ')
 }
 
 export default function Today() {
@@ -390,14 +411,10 @@ export default function Today() {
             <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
               <span
                 style={{ color: 'var(--text-3)', fontSize: 12 }}
-                title={
-                  plan.levelDetail && plan.levelDetail.base != null
-                    ? `难度基数 ${plan.levelDetail.base} · 通过率校准 ${plan.levelDetail.performanceAdj >= 0 ? '+' : ''}${plan.levelDetail.performanceAdj} · 新练习 ${plan.levelDetail.newEvidence} 次`
-                    : undefined
-                }
+                title={levelDetailTip(plan.levelDetail)}
               >
                 <SendOutlined />{' '}
-                {`能力值由解题难度与独立完成度加权估算；近 ${plan.cooldownDays} 天推荐过的题不再重复出现，做完题后同步数据，推荐会随之进化。`}
+                {`能力值由解题难度与独立完成度加权估算，并按赛事中心同步到的 rating 记录纠偏；近 ${plan.cooldownDays} 天推荐过的题不再重复出现，做完题后同步数据，推荐会随之进化。`}
               </span>
               {plan.planProgress && (
                 <Progress

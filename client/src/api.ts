@@ -1,5 +1,7 @@
 /** 后端 API 封装：统一 JSON 请求与错误提取。 */
 
+import type { AbilityLevelDetail } from '../../shared/src/index.ts'
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -251,6 +253,8 @@ export async function generateSessionTitle(
 
 export type AbilityInfo = {
   computed: number
+  /** 计算值的构成明细（含赛事中心 rating 锚点与分差趋势） */
+  detail: AbilityLevelDetail
   override: { level: number; reason?: string; updatedAt: string } | null
   effective: number
 }
