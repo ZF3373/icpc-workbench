@@ -325,6 +325,20 @@ export interface ReviewItem {
   addedAt: string;
 }
 
+/**
+ * 月历角标用的一天复习量。
+ * overdue 只挂在「今天」那一格：逾期项原本该在更早的日子做，把它们摊回各自的历史日期
+ * 会让过去的格子凭空多出任务（那天用户确实没这些题），而它们现在的实际归属就是今天。
+ */
+export interface ReviewCalendarDay {
+  /** YYYY-MM-DD */
+  date: string;
+  /** 该日到期数（不含逾期） */
+  due: number;
+  /** 逾期未做的数量（仅今天那一格非 0） */
+  overdue: number;
+}
+
 // ---------- 今日训练（三档题单，借鉴 cf-compass） ----------
 
 export type TodayBandKey = 'consolidation' | 'core' | 'challenge';
@@ -398,8 +412,15 @@ export interface TodayPlan {
   /** 标准冷却窗口：近 N 天推荐过的题不再出现 */
   cooldownDays: number;
   bands: TodayBand[];
-  /** 到期复习数（来自复习库） */
+  /** 到期复习数（来自复习库；等于 dueReviewItems.length，保留计数字段供挂件等只读消费方使用） */
   dueReviews: number;
+  /**
+   * 今天及以前到期的复习条目（含逾期），按到期日升序。
+   * 三档题单刻意排除复习队列中的题（见 today/select.ts 的 SUPPRESSION_TIERS），
+   * 只给一个计数会让用户看到「有 N 道题该复习」却不知道是哪几道——
+   * 这里把条目本身带出来，界面可直接给反馈推进排期。
+   */
+  dueReviewItems: ReviewItem[];
   /** 今日计划任务完成度（无计划时为 null） */
   planProgress: { total: number; checked: number } | null;
 }

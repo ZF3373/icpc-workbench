@@ -1,61 +1,15 @@
 import { Router } from 'express';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
-import { safeTags } from '../analysis/stats.ts';
-import { dateAfterDays, intervalDaysForStage, jitterDaysFor, scheduleNext } from '../reviews/schedule.ts';
+import { dateAfterDays, jitterDaysFor, scheduleNext } from '../reviews/schedule.ts';
 import { collectRetentionSignals, retentionFactor } from '../reviews/retention.ts';
-import { knowledgeTagsSql } from '../knowledge/store.ts';
+import {
+  listReviewItems,
+  listReviewItemsOn,
+  reviewCalendar,
+  reviewLoad,
+} from '../reviews/query.ts';
 import { localToday } from '../dates.ts';
-import type { ReviewItem } from '../../../shared/src/index.ts';
-
-interface RawReviewRow {
-  id: number;
-  platform: string;
-  problem_key: string;
-  title: string;
-  difficulty: number | null;
-  url: string | null;
-  tags: string;
-  stage: number;
-  note: string | null;
-  added_at: string;
-  last_reviewed_at: string | null;
-  next_due_on: string;
-  review_count: number;
-  lapse_count: number;
-}
-
-function toReviewItem(r: RawReviewRow): ReviewItem {
-  return {
-    id: r.id,
-    platform: r.platform as ReviewItem['platform'],
-    problemKey: r.problem_key,
-    title: r.title,
-    difficulty: r.difficulty,
-    url: r.url,
-    tags: safeTags(r.tags),
-    stage: r.stage,
-    intervalDays: intervalDaysForStage(r.stage),
-    reviewCount: r.review_count,
-    lapseCount: r.lapse_count,
-    note: r.note,
-    nextDueOn: r.next_due_on,
-    lastReviewedAt: r.last_reviewed_at,
-    addedAt: r.added_at,
-  };
-}
-
-const selectSql = (db: Db): string => `
-  SELECT ri.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
-         ${knowledgeTagsSql(db)},
-         ri.stage, ri.note, ri.added_at, ri.last_reviewed_at, ri.next_due_on,
-         (SELECT COUNT(*) FROM review_events re WHERE re.review_item_id = ri.id) AS review_count,
-         (SELECT COALESCE(SUM(CASE WHEN re.feedback = 'hard' THEN 1 ELSE 0 END), 0)
-            FROM review_events re WHERE re.review_item_id = ri.id) AS lapse_count
-    FROM review_items ri
-    JOIN problems p ON p.id = ri.problem_id
-   WHERE ri.user_id = ?
-`;
 
 export function reviewsRoutes(db: Db): Router {
   const r = Router();
@@ -90,36 +44,32 @@ export function reviewsRoutes(db: Db): Router {
   });
 
   // GET /api/reviews?due=1 → 复习队列（due=1 只看到期与逾期）
+  // GET /api/reviews?date=YYYY-MM-DD → 指定日期该复习的条目（日历板块用；该日=今天时含逾期）
   r.get('/', (req, res) => {
-    let sql = selectSql(db);
-    const params: Array<string | number> = [DEFAULT_USER_ID];
-    if (req.query.due === '1') {
-      sql += ' AND ri.next_due_on <= ?';
-      params.push(todayStr());
+    const date = req.query.date;
+    if (date !== undefined) {
+      if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ error: 'date 格式需为 YYYY-MM-DD' });
+      }
+      return res.json(listReviewItemsOn(db, DEFAULT_USER_ID, date, todayStr()));
     }
-    sql += ' ORDER BY ri.next_due_on, p.difficulty IS NULL, p.difficulty';
-    const rows = db.prepare(sql).all(...params) as unknown as RawReviewRow[];
-    res.json(rows.map(toReviewItem));
+    res.json(listReviewItems(db, DEFAULT_USER_ID, { dueOnly: req.query.due === '1', today: todayStr() }));
+  });
+
+  // GET /api/reviews/calendar?month=YYYY-MM → 月历角标 [{ date, due, overdue }]
+  // 只回有到期项的日子；overdue 只挂在今天那一格（见 reviews/query.ts 的注释）。
+  // 必须注册在 /:id 类路由之前（本路由是 GET，:id 路由均为写方法，当前不冲突，仍按惯例前置）。
+  r.get('/calendar', (req, res) => {
+    const month = String(req.query.month ?? '');
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+      return res.status(400).json({ error: 'month 格式需为 YYYY-MM' });
+    }
+    res.json(reviewCalendar(db, DEFAULT_USER_ID, month, todayStr()));
   });
 
   // GET /api/reviews/due-count → 到期数（今日训练 / 挂件用）+ 负载分布（界面据此提示排队量）
   r.get('/due-count', (_req, res) => {
-    const today = todayStr();
-    const weekEnd = dateAfterDays(today, 7);
-    const row = db
-      .prepare(
-        `SELECT COUNT(*) AS total,
-                COALESCE(SUM(CASE WHEN next_due_on < ? THEN 1 ELSE 0 END), 0) AS overdue,
-                COALESCE(SUM(CASE WHEN next_due_on = ? THEN 1 ELSE 0 END), 0) AS dueToday,
-                COALESCE(SUM(CASE WHEN next_due_on > ? AND next_due_on <= ? THEN 1 ELSE 0 END), 0) AS next7
-           FROM review_items WHERE user_id = ?`,
-      )
-      .get(today, today, today, weekEnd, DEFAULT_USER_ID) as {
-      total: number;
-      overdue: number;
-      dueToday: number;
-      next7: number;
-    };
+    const row = reviewLoad(db, DEFAULT_USER_ID, todayStr());
     res.json({
       // count 保持原口径（逾期 + 今日 = 现在就该做的量），新增字段只做透出
       count: row.overdue + row.dueToday,

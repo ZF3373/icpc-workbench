@@ -185,6 +185,7 @@ export interface UpdateProgress {
 export type {
   ContestInfo,
   ParticipatedContest,
+  ReviewCalendarDay,
   ReviewFeedback,
   ReviewItem,
   TodayBand,

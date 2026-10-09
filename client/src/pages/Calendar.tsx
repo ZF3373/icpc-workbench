@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Calendar, Card, Col, Row, Space, Tag, App as AntdApp } from 'antd'
-import { CheckOutlined, FieldTimeOutlined, FireOutlined, TrophyOutlined } from '@ant-design/icons'
+import { CheckOutlined, FieldTimeOutlined, FireOutlined, ReadOutlined, TrophyOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
@@ -9,8 +9,10 @@ import StatStrip from '../components/StatStrip'
 import CardSkeleton from '../components/CardSkeleton'
 import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
+import DueReviewList from '../components/DueReviewList'
+import { sortDueItems } from '../reviewDue'
 import { get, post, del } from '../api'
-import type { DayPlanInfo, DayTask, StreakInfo } from '../types'
+import type { DayPlanInfo, DayTask, ReviewCalendarDay, ReviewItem, StreakInfo } from '../types'
 
 const KIND_LABEL: Record<DayTask['kind'], string> = {
   practice: '练习',
@@ -30,8 +32,12 @@ export default function CalendarPage() {
   const navigate = useNavigate()
   const [month, setMonth] = useState(dayjs().format('YYYY-MM'))
   const [monthData, setMonthData] = useState<Record<string, DayPlanInfo>>({})
+  /** 该月每日到期复习数（角标用；不参与打卡口径） */
+  const [reviewDays, setReviewDays] = useState<Record<string, ReviewCalendarDay>>({})
   const [selected, setSelected] = useState(dayjs().format('YYYY-MM-DD'))
   const [tasks, setTasks] = useState<DayTask[]>([])
+  /** 选中日的到期复习条目（与计划任务分开展示，不计入打卡） */
+  const [reviewItems, setReviewItems] = useState<ReviewItem[]>([])
   const [loadingTasks, setLoadingTasks] = useState(false)
   const [streak, setStreak] = useState<StreakInfo>({ current: 0, longest: 0, totalDays: 0 })
   /** 月历 / 当天任务各自的取数失败原因：失败不能伪装成「这天没有任务」 */
@@ -56,6 +62,18 @@ export default function CalendarPage() {
         if (seq === monthSeq.current) setMonthError(e.message)
         message.error(e.message)
       })
+    // 复习到期角标：独立接口，失败只影响角标，不该让整个月历报错
+    //（复习数据缺失时角标不显示，计划任务的打卡视图仍然完整可信）
+    get<ReviewCalendarDay[]>(`/api/reviews/calendar?month=${m}`)
+      .then((rows) => {
+        if (seq !== monthSeq.current) return
+        const map: Record<string, ReviewCalendarDay> = {}
+        for (const r of rows) map[r.date] = r
+        setReviewDays(map)
+      })
+      .catch(() => {
+        if (seq === monthSeq.current) setReviewDays({})
+      })
   }, [])
 
   const daySeq = useRef(0)
@@ -78,6 +96,14 @@ export default function CalendarPage() {
       })
       .finally(() => {
         if (seq === daySeq.current) setLoadingTasks(false)
+      })
+    // 该日到期复习：与计划任务并行取，单独失败只清空复习区
+    get<ReviewItem[]>(`/api/reviews?date=${d}`)
+      .then((rows) => {
+        if (seq === daySeq.current) setReviewItems(rows)
+      })
+      .catch(() => {
+        if (seq === daySeq.current) setReviewItems([])
       })
   }, [])
 
@@ -127,12 +153,14 @@ export default function CalendarPage() {
   const renderCell = (date: Dayjs) => {
     const key = date.format('YYYY-MM-DD')
     const info = monthData[key]
+    const review = reviewDays[key]
     const isSelected = key === selected
     const hasTasks = Boolean(info && info.total > 0)
     const done = hasTasks && info.checked === info.total
     const pct = hasTasks ? Math.round((info.checked / info.total) * 100) : 0
     // 有任务的日期弧线至少显示 8%：0/N 未开打也要有蓝色标识，否则与「无任务」无法区分
     const arcPct = done ? 100 : Math.max(pct, 8)
+    const reviewCount = (review?.due ?? 0) + (review?.overdue ?? 0)
     const cellCls = [
       'calendar-cell',
       isSelected ? 'calendar-cell-selected' : '',
@@ -142,8 +170,18 @@ export default function CalendarPage() {
     ]
       .filter(Boolean)
       .join(' ')
+    // 角标只标「有到期复习」：复习不是计划任务，不参与打卡进度与连续天数，
+    // 因此不并入下面的 checked/total 数字，只用一个小标记提示这天还有复习要做
+    const cellTitle = [
+      hasTasks ? `${info.checked}/${info.total} 已打卡` : null,
+      reviewCount > 0
+        ? `到期复习 ${reviewCount} 道${review?.overdue ? `（含逾期 ${review.overdue} 道）` : ''}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(' · ')
     return (
-      <div className={cellCls} title={hasTasks ? `${info.checked}/${info.total} 已打卡` : undefined}>
+      <div className={cellCls} title={cellTitle || undefined}>
         <span className="cell-ring-wrap">
           <svg className="cell-ring" viewBox="0 0 36 36" aria-hidden>
             <circle className="cell-ring-track" cx="18" cy="18" r={RING_R} />
@@ -159,10 +197,21 @@ export default function CalendarPage() {
           </svg>
           <span className="cell-date">{date.date()}</span>
         </span>
-        {hasTasks && (
-          <span className="cell-count">
-            {done && <span className="cell-count-check">✓ </span>}
-            {info.checked}/{info.total}
+        {(reviewCount > 0 || hasTasks) && (
+          /* 复习角标与打卡数字同一行：日历格子高度固定（antd 表格行高），
+             再添一整行会把内容挤到裁切。两者语义不同，用颜色与文案区分。 */
+          <span className="cell-foot">
+            {reviewCount > 0 && (
+              <span className={`cell-review${review?.overdue ? ' cell-review-overdue' : ''}`}>
+                复习{reviewCount}
+              </span>
+            )}
+            {hasTasks && (
+              <span className="cell-count">
+                {done && <span className="cell-count-check">✓ </span>}
+                {info.checked}/{info.total}
+              </span>
+            )}
           </span>
         )}
       </div>
@@ -266,7 +315,7 @@ export default function CalendarPage() {
                 onRetry={() => loadDay(selected)}
                 retrying={loadingTasks}
               />
-            ) : tasks.length === 0 ? (
+            ) : tasks.length === 0 && reviewItems.length === 0 ? (
               <EmptyState
                 compact
                 title="当天没有计划任务"
@@ -277,50 +326,87 @@ export default function CalendarPage() {
                 ]}
               />
             ) : (
-              tasks.map((t) => {
-                const link = t.problem_url ?? t.url
-                const done = Boolean(t.checked)
-                return (
-                  <Card
-                    key={t.id}
-                    size="small"
-                    className={`task-card task-card-${t.kind}${done ? ' task-done' : ''}`}
-                    style={{ marginBottom: 8 }}
-                    styles={{ body: { padding: 12 } }}
-                  >
-                    <div className="task-row">
-                      <div className="task-main">
-                        <Space size={8} wrap>
-                          <Tag color={KIND_COLOR[t.kind]}>{KIND_LABEL[t.kind]}</Tag>
-                          {link ? (
-                            <a className="task-title" href={link} target="_blank" rel="noreferrer">
-                              <b>{t.title}</b>
-                            </a>
+              <>
+                {tasks.length === 0 ? (
+                  /* 只有复习、没有计划任务：说清「这天没排计划，但有复习要做」，
+                     而不是让复习区孤零零地挂在「当天没有计划任务」的旧空态下面 */
+                  <p className="muted-note" style={{ marginTop: 0 }}>
+                    当天没有计划任务，但有 {reviewItems.length} 道复习到期。
+                  </p>
+                ) : (
+                  tasks.map((t) => {
+                    const link = t.problem_url ?? t.url
+                    const done = Boolean(t.checked)
+                    return (
+                      <Card
+                        key={t.id}
+                        size="small"
+                        className={`task-card task-card-${t.kind}${done ? ' task-done' : ''}`}
+                        style={{ marginBottom: 8 }}
+                        styles={{ body: { padding: 12 } }}
+                      >
+                        <div className="task-row">
+                          <div className="task-main">
+                            <Space size={8} wrap>
+                              <Tag color={KIND_COLOR[t.kind]}>{KIND_LABEL[t.kind]}</Tag>
+                              {link ? (
+                                <a className="task-title" href={link} target="_blank" rel="noreferrer">
+                                  <b>{t.title}</b>
+                                </a>
+                              ) : (
+                                <b className="task-title">{t.title}</b>
+                              )}
+                              {t.problem_key && <span className="task-key">{t.problem_key}</span>}
+                            </Space>
+                            {t.note && <p className="task-note">{t.note}</p>}
+                            {link && (
+                              <a className="task-link" href={link} target="_blank" rel="noreferrer">
+                                {t.problem_title ?? '跳转做题'} ↗
+                              </a>
+                            )}
+                          </div>
+                          {done ? (
+                            <Button size="small" icon={<CheckOutlined />} onClick={() => toggle(t)}>
+                              已打卡
+                            </Button>
                           ) : (
-                            <b className="task-title">{t.title}</b>
+                            <Button size="small" type="primary" onClick={() => toggle(t)}>
+                              打卡
+                            </Button>
                           )}
-                          {t.problem_key && <span className="task-key">{t.problem_key}</span>}
-                        </Space>
-                        {t.note && <p className="task-note">{t.note}</p>}
-                        {link && (
-                          <a className="task-link" href={link} target="_blank" rel="noreferrer">
-                            {t.problem_title ?? '跳转做题'} ↗
-                          </a>
-                        )}
-                      </div>
-                      {done ? (
-                        <Button size="small" icon={<CheckOutlined />} onClick={() => toggle(t)}>
-                          已打卡
-                        </Button>
-                      ) : (
-                        <Button size="small" type="primary" onClick={() => toggle(t)}>
-                          打卡
-                        </Button>
-                      )}
-                    </div>
+                        </div>
+                      </Card>
+                    )
+                  })
+                )}
+                {/* 到期复习：只读合并展示（可反馈推进排期、可跳题），刻意不提供打卡按钮——
+                    复习条目不是 plan_task，勾选打卡会污染连续打卡与格子完成度的口径 */}
+                {reviewItems.length > 0 && (
+                  <Card
+                    size="small"
+                    style={{ marginTop: tasks.length > 0 ? 12 : 0 }}
+                    title={
+                      <Space>
+                        <ReadOutlined style={{ color: 'var(--brand)' }} />
+                        <span>
+                          到期复习 · <b>{reviewItems.length}</b> 道
+                        </span>
+                      </Space>
+                    }
+                    extra={
+                      <span className="muted-note" style={{ fontSize: 12 }}>
+                        不计入打卡
+                      </span>
+                    }
+                  >
+                    <DueReviewList
+                      compact
+                      items={sortDueItems(reviewItems)}
+                      onChanged={() => loadDay(selected)}
+                    />
                   </Card>
-                )
-              })
+                )}
+              </>
             )}
           </Card>
         </Col>

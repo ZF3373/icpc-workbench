@@ -18,6 +18,16 @@ import { computeTrend } from './trend.ts';
 import { computeStreak } from '../routes/checkins.ts';
 import { CURRICULUM } from '../templates/curriculum.ts';
 import { computeUserLevel, type UserLevel } from '../plans/planService.ts';
+import { countUpcomingReviewItems, listUpcomingReviewItems } from '../reviews/query.ts';
+
+/**
+ * AI 提示词里复习排期的视野与条数上限。
+ * 视野 30 天：训练计划最长 90 天，但复习条目按 1/3/7/14/30… 阶梯排期，
+ * 30 天足以覆盖计划首周的全部复习 + 次周的绝大部分，更远的条目 AI 也排不进近期计划。
+ * 上限 40 条：控制提示词体积（复习库可以堆到几百条），超出部分用「共 N 条」说明。
+ */
+const REVIEW_WINDOW_DAYS = 30;
+const REVIEW_ITEM_LIMIT = 40;
 
 export interface PlatformSummary {
   platform: PlatformId;
@@ -76,6 +86,23 @@ export interface TemplateCategoryProgress {
   learning: number;
 }
 
+/** 复习库排期条目（注入 AI 提示词用）：让 AI 按具体日期与题目安排 review 任务，而不是只看到一个计数 */
+export interface ReviewScheduleItem {
+  platform: PlatformId;
+  problemKey: string;
+  title: string;
+  difficulty: number | null;
+  url: string | null;
+  /** 下次到期日 YYYY-MM-DD（早于今天 = 逾期） */
+  nextDueOn: string;
+  /** 间隔阶梯档位（0 起步）与当前档位对应天数 */
+  stage: number;
+  intervalDays: number;
+  /** 该条目累计复习次数 / 其中判为困难的次数 */
+  reviewCount: number;
+  lapseCount: number;
+}
+
 export interface PracticeSummary {
   generatedAt: string;
   /** 训练时间跨度与活跃度 */
@@ -110,7 +137,16 @@ export interface PracticeSummary {
   trend: Array<{ week: string; attempts: number; ac: number; solved: number }>;
   recentAc: RecentAcProblem[];
   stuckProblems: StuckProblem[];
-  reviewQueue: { total: number; dueCount: number };
+  reviewQueue: {
+    total: number;
+    dueCount: number;
+    /** 未来窗口内到期的具体条目（按到期日升序，可能被 limit 截断） */
+    upcoming: ReviewScheduleItem[];
+    /** 窗口内到期条目总数（upcoming 被截断时据此说明「共 N 条」） */
+    upcomingTotal: number;
+    /** upcoming 的视野天数 */
+    windowDays: number;
+  };
   templates: {
     total: number;
     mastered: number;
@@ -217,16 +253,7 @@ export function buildPracticeSummary(db: Db, userId: number): PracticeSummary {
     })),
     recentAc: loadRecentAc(db, userId),
     stuckProblems: loadStuckProblems(db, userId),
-    reviewQueue: {
-      total: (
-        db.prepare('SELECT COUNT(*) AS n FROM review_items WHERE user_id = ?').get(userId) as { n: number }
-      ).n,
-      dueCount: (
-        db
-          .prepare('SELECT COUNT(*) AS n FROM review_items WHERE user_id = ? AND next_due_on <= ?')
-          .get(userId, todayStr()) as { n: number }
-      ).n,
-    },
+    reviewQueue: loadReviewQueue(db, userId),
     templates: loadTemplateProgress(db, userId),
     checkins: loadCheckins(db, userId),
     level: computeUserLevel(db, userId),
@@ -315,6 +342,37 @@ function loadStuckProblems(db: Db, userId: number): StuckProblem[] {
     attempts: r.attempts,
     lastAttemptAt: r.last_at,
   }));
+}
+
+/** 复习队列概览 + 窗口内到期的具体条目（按到期日升序） */
+function loadReviewQueue(db: Db, userId: number): PracticeSummary['reviewQueue'] {
+  const today = todayStr();
+  const windowDays = REVIEW_WINDOW_DAYS;
+  const items = listUpcomingReviewItems(db, userId, { from: today, days: windowDays, limit: REVIEW_ITEM_LIMIT });
+  return {
+    total: (
+      db.prepare('SELECT COUNT(*) AS n FROM review_items WHERE user_id = ?').get(userId) as { n: number }
+    ).n,
+    dueCount: (
+      db
+        .prepare('SELECT COUNT(*) AS n FROM review_items WHERE user_id = ? AND next_due_on <= ?')
+        .get(userId, today) as { n: number }
+    ).n,
+    upcoming: items.map((i) => ({
+      platform: i.platform,
+      problemKey: i.problemKey,
+      title: i.title,
+      difficulty: i.difficulty,
+      url: i.url,
+      nextDueOn: i.nextDueOn,
+      stage: i.stage,
+      intervalDays: i.intervalDays,
+      reviewCount: i.reviewCount,
+      lapseCount: i.lapseCount,
+    })),
+    upcomingTotal: countUpcomingReviewItems(db, userId, { from: today, days: windowDays }),
+    windowDays,
+  };
 }
 
 /** 模板课程学习进度（内置课程按分类统计） */
@@ -453,6 +511,21 @@ export function renderSummaryMarkdown(s: PracticeSummary): string {
   L.push(
     `- 复习库：在队列 ${s.reviewQueue.total} 条，今日到期 ${s.reviewQueue.dueCount} 条`,
   );
+  if (s.reviewQueue.upcoming.length > 0) {
+    const today = todayStr();
+    L.push('');
+    L.push(`### 复习排期（未来 ${s.reviewQueue.windowDays} 天内到期，按到期日排序）`);
+    L.push(`| 到期日 | 题目 | 难度 | 间隔档位 | 复习次数 | 链接 |`);
+    L.push(`|---|---|---|---|---|---|`);
+    for (const r of s.reviewQueue.upcoming) {
+      const overdue = r.nextDueOn < today ? ' ⚠已逾期' : '';
+      L.push(
+        `| ${r.nextDueOn}${overdue} | ${r.platform}/${r.problemKey}《${r.title}》 | ${r.difficulty ?? '未知'} | 第 ${r.stage + 1} 档（${r.intervalDays} 天）${r.lapseCount > 0 ? `，失手 ${r.lapseCount} 次` : ''} | ${r.reviewCount} | ${r.url ?? ''} |`,
+      );
+    }
+    const truncated = s.reviewQueue.upcomingTotal - s.reviewQueue.upcoming.length;
+    if (truncated > 0) L.push(`- 另有 ${truncated} 条到期项未列出（窗口内共 ${s.reviewQueue.upcomingTotal} 条）`);
+  }
   L.push(
     `- 模板课程：共 ${s.templates.total} 讲，已掌握 ${s.templates.mastered}、学习中 ${s.templates.learning}；${s.templates.byCategory.map((c) => `${c.name} ${c.mastered}/${c.total}`).join('，')}`,
   );
@@ -498,6 +571,24 @@ export function renderSummaryForPrompt(s: PracticeSummary): string {
   }
   if (s.reviewQueue.total > 0 || s.reviewQueue.dueCount > 0) {
     L.push(`- 复习库：在队列 ${s.reviewQueue.total} 条，到期 ${s.reviewQueue.dueCount} 条`);
+  }
+  if (s.reviewQueue.upcoming.length > 0) {
+    // 逐条给出题号与到期日：AI 必须能把这些题排到对应日期的 review 任务上，
+    // 只给一个计数它就只能编造题目（或干脆不排）。
+    const today = todayStr();
+    L.push(
+      `- 复习排期（未来 ${s.reviewQueue.windowDays} 天内到期，**请按到期日排到对应日期的 review 任务上，逾期项排在计划首日**）：`,
+    );
+    for (const r of s.reviewQueue.upcoming) {
+      const overdue = r.nextDueOn < today ? '［已逾期］' : '';
+      L.push(
+        `  - ${r.nextDueOn}${overdue} ${r.platform}/${r.problemKey}《${r.title}》难度${r.difficulty ?? '未知'} 第${r.stage + 1}档/${r.intervalDays}天${r.lapseCount > 0 ? ` 失手${r.lapseCount}次` : ''}${r.url ? ` ${r.url}` : ''}`,
+      );
+    }
+    const truncated = s.reviewQueue.upcomingTotal - s.reviewQueue.upcoming.length;
+    if (truncated > 0) {
+      L.push(`  - （另有 ${truncated} 条到期项未列出；窗口内共 ${s.reviewQueue.upcomingTotal} 条）`);
+    }
   }
   L.push(
     `- 模板课程：已掌握 ${s.templates.mastered}/${s.templates.total}，学习中 ${s.templates.learning}`,

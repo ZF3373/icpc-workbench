@@ -12,14 +12,8 @@ import NoteEditor from '../components/NoteEditor'
 import NotePreview from '../components/NotePreview'
 import { difficultyColor } from '../ui'
 import { del, get, patch, post } from '../api'
+import { FEEDBACK_META } from '../reviewDue'
 import type { ReviewFeedback, ReviewItem } from '../types'
-
-const FEEDBACK_META: Array<{ key: ReviewFeedback; label: string; tone: 'danger' | 'primary' | 'default' }> = [
-  // 「 · 」后是调度后果说明（按钮只显前半，整句挂在悬停提示上）
-  { key: 'hard', label: '困难 · 退回两档（不是从头再来）', tone: 'danger' },
-  { key: 'ok', label: '掌握 · 前进一档', tone: 'primary' },
-  { key: 'easy', label: '轻松 · 跳进两档', tone: 'default' },
-]
 
 function dueText(item: ReviewItem): { text: string; overdue: boolean } {
   // 本地日界（dayjs）：与日历页「今天」一致；UTC 取日会让本地 0–8 点的「今日到期」错位一天
@@ -216,14 +210,14 @@ export default function Reviews() {
                   {/* ≤768px：反馈 / 编辑 / 移除按钮行由横排转竖排下沉，避免窄屏被压成两行截断 */}
                   <Space size={6} wrap className="card-actions-row">
                     {FEEDBACK_META.map((f) => (
-                      <Tooltip key={f.key} title={f.label}>
+                      <Tooltip key={f.key} title={f.tip}>
                         <Button
                           size="small"
                           type={f.key === 'ok' ? 'primary' : 'default'}
-                          danger={f.key === 'hard'}
+                          danger={f.danger}
                           onClick={() => feedback(item, f.key)}
                         >
-                          {f.label.split(' · ')[0]}
+                          {f.label}
                         </Button>
                       </Tooltip>
                     ))}

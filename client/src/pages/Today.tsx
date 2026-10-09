@@ -15,7 +15,9 @@ import PlatformTag from '../components/PlatformTag'
 import PageSkeleton from '../components/PageSkeleton'
 import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
+import DueReviewList from '../components/DueReviewList'
 import { difficultyColor, tagColor } from '../ui'
+import { sortDueItems } from '../reviewDue'
 import { del, get, post } from '../api'
 import type { StreakInfo, TodayPlan, TodayBandKey, TodayProblem } from '../types'
 import type { AbilityLevelDetail, PlatformId } from '../../../shared/src/index.ts'
@@ -299,15 +301,26 @@ export default function Today() {
             </div>
           </div>
 
-          {plan.dueReviews > 0 && (
-            <Card size="small" style={{ marginBottom: 16 }}>
-              <Space>
-                <ReadOutlined style={{ color: 'var(--brand)' }} />
-                <span>
-                  有 <b>{plan.dueReviews}</b> 道题到了复习时间 ——
-                  <Link to="/reviews">去复习库处理 →</Link>
-                </span>
-              </Space>
+          {plan.dueReviewItems.length > 0 && (
+            <Card
+              size="small"
+              style={{ marginBottom: 16 }}
+              title={
+                <Space>
+                  <ReadOutlined style={{ color: 'var(--brand)' }} />
+                  <span>
+                    到期复习 · <b>{plan.dueReviews}</b> 道
+                  </span>
+                </Space>
+              }
+              extra={<Link to="/reviews">去复习库 →</Link>}
+            >
+              {/* 三档题单刻意排除了复习队列中的题，所以复习题必须在这里单独给出，
+                  否则用户只知道「有 N 道该复习」却看不到是哪几道 */}
+              <DueReviewList
+                items={sortDueItems(plan.dueReviewItems)}
+                onChanged={() => load(rotate, true)}
+              />
             </Card>
           )}
 

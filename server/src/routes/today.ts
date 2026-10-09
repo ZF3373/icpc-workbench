@@ -14,6 +14,7 @@ import {
   type CandidateProblem,
 } from '../today/select.ts';
 import { computeAbilityDetail, getAbilityOverride } from '../today/ability.ts';
+import { listDueReviewItems } from '../reviews/query.ts';
 import type { TodayBandKey, TodayProblem } from '../../../shared/src/index.ts';
 
 /** 每档默认题量：巩固 2 / 同段 3 / 挑战 1（cf-compass 同段承担主训练量） */
@@ -169,12 +170,10 @@ export function todayRoutes(db: Db): Router {
       throw e;
     }
 
-    // 6) 到期复习数 + 今日计划进度
-    const dueReviews = (
-      db
-        .prepare('SELECT COUNT(*) AS c FROM review_items WHERE user_id = ? AND next_due_on <= ?')
-        .get(DEFAULT_USER_ID, todayStr) as { c: number }
-    ).c;
+    // 6) 到期复习条目 + 今日计划进度
+    //    条目本身要带出来（不只是计数）：三档题单刻意排除了复习队列中的题，
+    //    若只回数字，用户知道「有 3 道该复习」却不知道是哪几道，还得自己跑去复习库翻。
+    const dueReviewItems = listDueReviewItems(db, DEFAULT_USER_ID, todayStr);
     const planProgressRow = db
       .prepare(
         `SELECT COUNT(*) AS total,
@@ -191,7 +190,8 @@ export function todayRoutes(db: Db): Router {
       levelOverride: override,
       cooldownDays: BASE_COOLDOWN_DAYS,
       bands,
-      dueReviews,
+      dueReviews: dueReviewItems.length,
+      dueReviewItems,
       planProgress: planProgressRow.total > 0 ? { total: planProgressRow.total, checked: planProgressRow.checked } : null,
     });
   });
