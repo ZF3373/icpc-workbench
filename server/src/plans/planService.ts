@@ -13,6 +13,7 @@ import { computeWeakness, type WeaknessProfile } from '../analysis/weakness.ts';
 import { buildPracticeSummary, renderSummaryForPrompt, type PracticeSummary } from '../analysis/summary.ts';
 import { filterNoiseTags } from '../analysis/tags.ts';
 import { getAdapter } from '../adapters/registry.ts';
+import { listUpcomingReviewItems } from '../reviews/query.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1003,7 +1004,52 @@ export function templatePlan(
     weakTags.length > 0
       ? `针对性突破弱项：${weakTags.slice(0, 3).join('、')}，保持每日练习节奏。`
       : '保持每日练习节奏，稳步提升。';
+  // 复习库排期：按真实到期日排成具体题目的 review 任务（与 AI 路径同口径——
+  // 同一份数据包喂给 AI 时它也必须这么排，两条路径的行为不该有差别）。
+  // 同一天同名任务会撞 UNIQUE(plan_id, task_date, title)：主循环已生成的任务先占位，
+  // 复习题重名时补题号后缀区分，而不是把这条复习丢掉（不同平台存在大量同名题）。
+  const taken = new Set(tasks.map((t) => `${t.date}|${t.title}`));
+  for (const rt of reviewTasksForPlan(db, startDate, days)) {
+    const key0 = `${rt.date}|${rt.title}`;
+    const title = taken.has(key0) ? `${rt.title}（${rt.problemKey}）` : rt.title;
+    const key = `${rt.date}|${title}`;
+    if (taken.has(key)) continue; // 同名题 + 同题号：极端情况，跳过而非让整份计划保存失败
+    taken.add(key);
+    tasks.push({ ...rt, title });
+  }
   return { title: `模板训练计划（${days} 天）`, goal, startDate, days, tasks };
+}
+
+/** 模板计划里复习任务的总量上限：复习库可以堆到几百条，全排进计划会把日历砸穿 */
+const TEMPLATE_REVIEW_LIMIT = 60;
+
+/**
+ * 按真实到期日把复习库条目排成计划任务（无 AI 降级路径用）。
+ *
+ * 与提示词里给 AI 的约束保持一致：逾期项排在计划首日（已经欠着了，越早补越好）、
+ * 到期日落在计划期外的条目直接不排（不为凑数提前）。返回的任务已带题目链接与题号，
+ * 落库后即可点击跳转。
+ */
+function reviewTasksForPlan(db: Db, startDate: string, days: number): PlanTaskInput[] {
+  const endDate = addDays(startDate, days - 1);
+  // 视野 = 计划期：from=startDate 起 days-1 天，正好覆盖到 endDate（含逾期项）
+  const items = listUpcomingReviewItems(db, DEFAULT_USER_ID, {
+    from: startDate,
+    days: days - 1,
+    limit: TEMPLATE_REVIEW_LIMIT,
+  });
+  return items.map((i) => ({
+    // 逾期（到期日早于计划首日）一律落到首日；期内的按原到期日
+    date: i.nextDueOn < startDate ? startDate : i.nextDueOn,
+    title: i.title,
+    kind: 'review',
+    platform: i.platform,
+    problemKey: i.problemKey,
+    url: i.url ?? undefined,
+    note: `复习库到期（第 ${i.stage + 1} 档 / 间隔 ${i.intervalDays} 天${
+      i.lapseCount > 0 ? `，失手 ${i.lapseCount} 次` : ''
+    }）${i.nextDueOn < startDate ? `；原定 ${i.nextDueOn} 已逾期` : ''}`,
+  })).filter((t) => t.date <= endDate);
 }
 
 /**
