@@ -59,6 +59,35 @@ test('parseOwnSubmissionsHtml: 提取提交号/时刻/题号/语言/判定，忽
   assert.equal(old!.epoch_second, Date.parse('2026-10-03T11:46:19.000Z') / 1000);
 });
 
+test('parseOwnSubmissionsHtml: HTML 实体被正确反解码（&gt; 回归）', () => {
+  /**
+   * decodeEntities 曾把 `&gt;` 写成 `>`（自替换空操作），于是 `&gt;` 原样进入
+   * language/result；判定文本带实体时还会匹配不上 RESULT_MAP、静默降级成 SKIPPED。
+   * 这里用与官方页面同款的 `&gt;` 形态回归。
+   */
+  const html = `<html><body><table>
+<tr>
+<td class="text-center"><time class="submission-time" title="2026-10-06T11:44:02+0900">t</time></td>
+<td><a href="/contests/abc478/tasks/abc478_d">D</a></td>
+<td><a href="/users/u">u</a></td>
+<td class="text-center">C&#43;&#43;23 &gt;=17</td>
+<td class="text-center">0</td>
+<td class="text-right">300 Byte</td>
+<td class="text-center"><span class="label label-warning">TLE</span></td>
+<td class="text-right">&gt;2000 ms</td>
+<td class="text-right">&gt;1048576 KiB</td>
+<td class="text-center"><a href="/contests/abc478/submissions/1">Detail</a></td>
+</tr></table></body></html>`;
+  const rows = parseOwnSubmissionsHtml(html);
+  assert.equal(rows.length, 1);
+  const row = rows[0]!;
+  assert.ok(!String(row.language).includes('&gt;'), `language 残留实体: ${row.language}`);
+  assert.ok(String(row.language).includes('>='), `language 未解码: ${row.language}`);
+  assert.ok(!String(row.result).includes('&gt;'), `result 残留实体: ${row.result}`);
+  // 判定单元格（第 7 列）是 TLE，必须仍能映射成 TLE 而不是因实体失配降级
+  assert.equal(row.result, 'TLE');
+});
+
 // ---------- 适配器接入（cookie 注入 / 合并 / 降级 / 翻页） ----------
 
 const PROBLEMS = [{ id: 'abc478_d', contest_id: 'abc478', title: 'Range Set Insertion Query' }];

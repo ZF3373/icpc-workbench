@@ -42,8 +42,7 @@ test('parseManualRow: tags string split by |', () => {
   assert.deepEqual(sub.problem.tags, ['图论', '最短路']);
 });
 
-test('parseCsv: quotes, commas, escaped quotes, CRLF', () => {
-  const rows = parseCsv('a,b\r\n"x,y","say ""hi"""\r\nz,w\n');
+test('parseCsv: quotes, commas, escaped quotes, CRLF', () => {  const rows = parseCsv('a,b\r\n"x,y","say ""hi"""\r\nz,w\n');
   assert.deepEqual(rows, [
     ['a', 'b'],
     ['x,y', 'say "hi"'],
@@ -270,4 +269,59 @@ test('insertNormalized: 同步侧只带来题号当标题（拉取失败兜底�
   insertNormalized(db, 1, mk('1900C', 'WA'));
   const t = db.prepare("SELECT title FROM problems WHERE problem_key = '1900C'").get() as { title: string };
   assert.equal(t.title, 'Who Ntired the Editor', 'title === problemKey 视作未知，不得覆盖好标题');
+});
+
+test('insertNormalized: 同一行同时命中「改题号」与「改判定」时计数不重复扣减（B6 回归）', () => {
+  /**
+   * 既有提交同时满足「平台改了题号」（洛谷 T→P）与「平台改了判定」（重判/终态）时，
+   * 原实现两处各自 `skipped -= 1`，但 `skipped += 1` 只加过一次，
+   * 实测返回 {"imported":2,"skipped":-1} —— 一次逻辑提交被算成两条新增、跳过数为负。
+   * 这个计数会写进 sync_runs 并展示在同步中心。
+   */
+  const db = createDb(':memory:');
+  const mk = (key: string, verdict: 'AC' | 'WA', ext: string) => [
+    {
+      problem: { platform: 'luogu' as const, problemKey: key, title: `T ${key}`, tags: [] as string[] },
+      verdict,
+      language: 'C++',
+      submittedAt: '2026-10-01T00:00:00.000Z',
+      externalId: ext,
+    },
+  ];
+  const r1 = insertNormalized(db, 1, mk('T1', 'WA', 'ext-1'), { account: 'acc' });
+  assert.deepEqual(r1, { imported: 1, skipped: 0 });
+
+  // 同提交号、题号变了（T1→P1）且判定变了（WA→AC）
+  const r2 = insertNormalized(db, 1, mk('P1', 'AC', 'ext-1'), { account: 'acc' });
+  assert.equal(r2.imported, 1, '一次逻辑提交只应算一条有效写入');
+  assert.equal(r2.skipped, 0, 'skipped 不得为负，也不得重复扣减');
+  assert.ok(r2.skipped >= 0, `skipped 为负: ${r2.skipped}`);
+
+  // 数据库状态本身正确
+  assert.equal((db.prepare('SELECT COUNT(*) AS c FROM submissions').get() as { c: number }).c, 1);
+  const p = db.prepare('SELECT problem_key FROM problems').all() as Array<{ problem_key: string }>;
+  assert.deepEqual(p.map((x) => x.problem_key), ['P1']);
+  db.close();
+});
+
+test('insertNormalized: 只改题号或只改判定时仍各计一次有效写入', () => {
+  const db = createDb(':memory:');
+  const mk = (key: string, verdict: 'AC' | 'WA', ext: string) => [
+    {
+      problem: { platform: 'luogu' as const, problemKey: key, title: `T ${key}`, tags: [] as string[] },
+      verdict,
+      language: 'C++',
+      submittedAt: '2026-10-01T00:00:00.000Z',
+      externalId: ext,
+    },
+  ];
+  // 场景一：只改判定
+  insertNormalized(db, 1, mk('A1', 'WA', 'e1'), { account: 'a' });
+  assert.deepEqual(insertNormalized(db, 1, mk('A1', 'AC', 'e1'), { account: 'a' }), { imported: 1, skipped: 0 });
+  // 场景二：只改题号
+  insertNormalized(db, 1, mk('T2', 'WA', 'e2'), { account: 'a' });
+  assert.deepEqual(insertNormalized(db, 1, mk('P2', 'WA', 'e2'), { account: 'a' }), { imported: 1, skipped: 0 });
+  // 场景三：什么都没变 → 纯跳过
+  assert.deepEqual(insertNormalized(db, 1, mk('P2', 'WA', 'e2'), { account: 'a' }), { imported: 0, skipped: 1 });
+  db.close();
 });

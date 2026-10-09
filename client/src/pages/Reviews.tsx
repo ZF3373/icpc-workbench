@@ -12,16 +12,8 @@ import NoteEditor from '../components/NoteEditor'
 import NotePreview from '../components/NotePreview'
 import { difficultyColor } from '../ui'
 import { del, get, patch, post } from '../api'
-import { FEEDBACK_META } from '../reviewDue'
+import { FEEDBACK_META, dueText } from '../reviewDue'
 import type { ReviewFeedback, ReviewItem } from '../types'
-
-function dueText(item: ReviewItem): { text: string; overdue: boolean } {
-  // 本地日界（dayjs）：与日历页「今天」一致；UTC 取日会让本地 0–8 点的「今日到期」错位一天
-  const today = dayjs().format('YYYY-MM-DD')
-  if (item.nextDueOn < today) return { text: `逾期 ${item.nextDueOn}`, overdue: true }
-  if (item.nextDueOn === today) return { text: '今日到期', overdue: true }
-  return { text: item.nextDueOn, overdue: false }
-}
 
 export default function Reviews() {
   const { message } = AntdApp.useApp()
@@ -182,7 +174,7 @@ export default function Reviews() {
                         item.lapseCount > 0 ? `（其中 ${item.lapseCount} 次判为困难）` : ''
                       }`}
                     >
-                      <Tag className="dot-tag" color={due.overdue ? 'error' : 'processing'}>
+                      <Tag className="dot-tag" color={due.overdue ? 'error' : due.due ? 'processing' : 'default'}>
                         {due.text}
                       </Tag>
                     </Tooltip>

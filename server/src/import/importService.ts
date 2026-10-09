@@ -169,8 +169,12 @@ export function insertNormalized(
       );
       if (r.changes > 0) imported += 1;
       else {
-        skipped += 1;
-        // 已存在的同账号提交号：补语境列（见 backfillContext 注释）并检测平台侧改判
+        // 已存在的同账号提交号：本行先按「跳过」记账，下面两条修复路径任一命中就改判为
+        // 「一次有效写入」。用 effective 累积、在末尾**统一结账** —— 原实现在两处各自
+        // `skipped -= 1`，一行同时命中「平台改题号」与「平台改判定」时 skipped 被扣两次，
+        // 实测返回 {"imported":2,"skipped":-1}（一次逻辑提交被算成两条新增、跳过数为负）。
+        let effective = false;
+        // 补语境列（见 backfillContext 注释）
         if (s.context) backfillContext.run(s.context, userId, s.problem.platform, account, s.externalId);
         // 平台侧改题号（洛谷比赛题赛后 T 号转正式 P 号等）：既有行被 INSERT OR IGNORE
         // 冻结在失效的旧题行上（链接打不开、标题退化为题号），把旧题行并入新键行、
@@ -191,19 +195,18 @@ export function insertNormalized(
           });
           // 合并写入了新墓碑：失效该平台的墓碑缓存，让本批后续行看到一致状态
           tombstones.forget(s.problem.platform);
-          // 一次有效写入（同步中心可见「这条同步修了东西」）
-          imported += 1;
-          skipped -= 1;
+          effective = true;
         }
+        // verdict 实际变化（评测中→终态、平台重判）同样是有效写入
         if (
           refreshVerdict
             .run(s.verdict, userId, s.problem.platform, account, s.externalId, s.verdict)
             .changes > 0
         ) {
-          // verdict 实际变化：计入 imported（一次有效写入），同步中心可见
-          imported += 1;
-          skipped -= 1;
+          effective = true;
         }
+        if (effective) imported += 1;
+        else skipped += 1;
       }
     }
     db.exec('COMMIT');

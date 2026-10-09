@@ -10,7 +10,7 @@ import {
   nightlyCommitSha,
   resolveUpdate,
 } from '../src/routes/update.ts';
-import { parseChecksums, verifyChecksums, buildRanges, candidateUrls, mirrorPrefixes } from '../src/updater.ts';
+import { parseChecksums, verifyChecksums, buildRanges, candidateUrls, mirrorPrefixes, replaceStagedFiles } from '../src/updater.ts';
 
 test('compareVersions 基本比较', () => {
   assert.equal(compareVersions('v0.2.1', 'v0.2.2'), -1);
@@ -220,4 +220,69 @@ test('mirrorPrefixes 可用环境变量覆盖，容忍尾斜杠与空值', () =>
   assert.deepEqual(mirrorPrefixes('https://a.cn/,https://b.cn/mirror//'), ['https://a.cn', 'https://b.cn/mirror']);
   assert.ok(mirrorPrefixes('').length >= 1); // 空值回默认镜像
   assert.ok(mirrorPrefixes().length >= 1);
+});
+
+// ---------- 原地替换的原子性（B19 回归） ----------
+
+test('replaceStagedFiles：暂存文件缺失时预检失败，安装目录完全不动', () => {
+  /**
+   * 原实现逐个替换，只在**当前**文件拷贝失败时回滚该文件；之前已替换成功的保持新版本，
+   * 实测会留下「新 shell.exe + 旧 core.exe」的半更新安装（壳与核心版本不一致可能起不来）。
+   */
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'upd-'));
+  const staging = path.join(dir, 'staging');
+  const exeDir = path.join(dir, 'exe');
+  fs.mkdirSync(staging, { recursive: true });
+  fs.mkdirSync(exeDir, { recursive: true });
+  fs.writeFileSync(path.join(exeDir, 'shell.exe'), 'OLD-SHELL');
+  fs.writeFileSync(path.join(exeDir, 'core.exe'), 'OLD-CORE');
+  fs.writeFileSync(path.join(staging, 'shell.exe'), 'NEW-SHELL');
+  // core.exe 未暂存 → 预检必须直接失败
+  assert.throws(() => replaceStagedFiles(staging, exeDir, ['shell.exe', 'core.exe']), /缺少|core\.exe/);
+  assert.equal(fs.readFileSync(path.join(exeDir, 'shell.exe'), 'utf8'), 'OLD-SHELL', '第一个文件不得被替换');
+  assert.equal(fs.readFileSync(path.join(exeDir, 'core.exe'), 'utf8'), 'OLD-CORE');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('replaceStagedFiles：中途拷贝失败时把本次已替换的文件全部还原', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'upd2-'));
+  const staging = path.join(dir, 'staging');
+  const exeDir = path.join(dir, 'exe');
+  fs.mkdirSync(staging, { recursive: true });
+  fs.mkdirSync(exeDir, { recursive: true });
+  fs.writeFileSync(path.join(exeDir, 'shell.exe'), 'OLD-SHELL');
+  fs.writeFileSync(path.join(staging, 'shell.exe'), 'NEW-SHELL');
+  fs.writeFileSync(path.join(staging, 'core.exe'), 'NEW-CORE');
+  // core.exe 是**非空目录**：rename 走不通、copyFileSync 抛 EPERM —— 真实的中途失败
+  fs.mkdirSync(path.join(exeDir, 'core.exe'));
+  fs.writeFileSync(path.join(exeDir, 'core.exe', 'blocker'), 'x');
+  fs.mkdirSync(path.join(exeDir, 'core.exe.old'));
+  fs.writeFileSync(path.join(exeDir, 'core.exe.old', 'blocker'), 'y');
+
+  assert.throws(() => replaceStagedFiles(staging, exeDir, ['shell.exe', 'core.exe']));
+  assert.equal(
+    fs.readFileSync(path.join(exeDir, 'shell.exe'), 'utf8'),
+    'OLD-SHELL',
+    '已替换的第一个文件必须被回滚，否则是半更新安装',
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('replaceStagedFiles：全部成功时两个文件都是新版本', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'upd3-'));
+  const staging = path.join(dir, 'staging');
+  const exeDir = path.join(dir, 'exe');
+  fs.mkdirSync(staging, { recursive: true });
+  fs.mkdirSync(exeDir, { recursive: true });
+  fs.writeFileSync(path.join(exeDir, 'shell.exe'), 'OLD-SHELL');
+  fs.writeFileSync(path.join(exeDir, 'core.exe'), 'OLD-CORE');
+  fs.writeFileSync(path.join(staging, 'shell.exe'), 'NEW-SHELL');
+  fs.writeFileSync(path.join(staging, 'core.exe'), 'NEW-CORE');
+
+  assert.doesNotThrow(() => replaceStagedFiles(staging, exeDir, ['shell.exe', 'core.exe']));
+  assert.equal(fs.readFileSync(path.join(exeDir, 'shell.exe'), 'utf8'), 'NEW-SHELL');
+  assert.equal(fs.readFileSync(path.join(exeDir, 'core.exe'), 'utf8'), 'NEW-CORE');
+  // 旧版本留有 .old 备份（便于人工回退）
+  assert.equal(fs.readFileSync(path.join(exeDir, 'shell.exe.old'), 'utf8'), 'OLD-SHELL');
+  fs.rmSync(dir, { recursive: true, force: true });
 });

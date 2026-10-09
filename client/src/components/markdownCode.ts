@@ -107,6 +107,17 @@ export function looksLikeCode(text: string): boolean {
     //   (?!\s*[[(])  变量名右侧不能紧跟 [ 或 (（排除 min(a) = x 这类函数调用）
     /\b(?:int|long|double|float|char|bool|void|string|auto|vector|pair|map|set|queue|unsigned|size_t)(?<![_\]}])\s+(?<![_\]}])\w+(?!\s*[[(])\s*[=;([]/,
     /\([^()\n]*\)\s*(?:->\s*[\w*&]+)?\s*;/, // 函数调用语句
+    /**
+     * 编程语言的关系运算符 `==` / `===` / `!=`：**数学里没有这种写法**
+     * （相等是单个 `=`，不等是 `≠`），所以出现 2 个及以上连续等号基本可以断定是代码。
+     *
+     * 这是 B4 的根因：`print(a == b)`、`x == y` 这类裸围栏内容原先不含任何代码特征，
+     * 于是被 `shouldConvertFenceToMath` 判成公式 → 整个代码块变成 KaTeX，
+     * `==` 还会被 normalizeMathSymbols 压成 `=`，等号语义彻底丢失。
+     * 同理 `` `a == b` `` 这类行内代码也被升级成公式。
+     * 要求 `[^=\n]*=[^=]` 之外的两连等号，避免误伤 LaTeX 的 `&=&` 对齐写法（那是公式）。
+     */
+    /={2,}/,
   ].some((re) => re.test(text))
 }
 
@@ -201,7 +212,7 @@ const PSEUDO_CODE =
  * 所以判定顺序必须是：**先看语句级代码特征，再看关系符，最后才看弱形态**。
  */
 const CODE_STATEMENT =
-  /;|::|->|\/\/|\/\*|#\s*(?:include|define|pragma|ifdef|ifndef)|\+\+|--|\.[A-Za-z_]\w*|\b(?:int|long|double|float|char|bool|void|unsigned|size_t|const|struct|class|namespace|typedef|using|return|def|if|else|for|while|switch|case|break|continue|new|delete|import|from|assert|sizeof|printf|scanf|cout|cin|endl|malloc|free|nullptr)\b/
+  /;|::|->|\/\/|\/\*|#\s*(?:include|define|pragma|ifdef|ifndef)|\+\+|--|\.[A-Za-z_]\w*|={2,}|\b(?:int|long|double|float|char|bool|void|unsigned|size_t|const|struct|class|namespace|typedef|using|return|def|if|else|for|while|switch|case|break|continue|new|delete|import|from|assert|sizeof|printf|scanf|cout|cin|endl|malloc|free|nullptr)\b/
 
 /**
  * 这段内容是**数学记号**还是**代码** —— 用于把「说明正文里的数学」从代码外观

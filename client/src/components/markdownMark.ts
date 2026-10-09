@@ -79,6 +79,25 @@ export function scanMarkDelimiters(
       i += 2
       continue
     }
+    /**
+     * 只认「**恰好** 2 个等号」构成的定界符。
+     *
+     * 更长的等号串有别的 Markdown 含义：`Heading\n=======` 是 Setext 一级标题下划线，
+     * `====` 单独成行是分隔线。原实现从 run 的头部取 `==` 当 open、再从 run 中段取 `==`
+     * 当 close，于是 `====` 被当成一对高亮定界符：4 个等号全被吞掉、只剩一对哨兵，
+     * 渲染出一个空的 <mark>，Setext 标题随之从 <h1> 降级成段落。
+     * `a ==== b` → `a  b`（等号消失）也是同一条路径。
+     */
+    if (line[i - 1] === '=') {
+      // 不是等号串的起点（起点在更左边，那里已经处理过）
+      i += 1
+      continue
+    }
+    if (line[i + 2] === '=') {
+      // 等号串长度 > 2：整段跳过，不产生任何定界符
+      while (i < line.length && line[i] === '=') i += 1
+      continue
+    }
     const prev = i > 0 ? line[i - 1]! : ''
     const next = line[i + 2] ?? ''
     const canOpen = (prev === '' || !WORD.test(prev)) && next !== '' && !/\s/.test(next)

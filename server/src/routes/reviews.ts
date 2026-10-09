@@ -147,8 +147,12 @@ export function reviewsRoutes(db: Db): Router {
   // DELETE /api/reviews/:id → 移出队列（连带清掉它的复习日志：外键开着，留孤儿行会让删除直接失败）
   r.delete('/:id', (req, res) => {
     const id = Number(req.params.id);
+    // 与列表/计划等兄弟端点同口径：非法 id 400、不存在 404，而不是一律回 ok:true
+    // （原实现不校验也不看 changes，前端无从判断「是否真的删掉了」）
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'id 非法' });
     db.prepare('DELETE FROM review_events WHERE review_item_id = ? AND user_id = ?').run(id, DEFAULT_USER_ID);
-    db.prepare('DELETE FROM review_items WHERE id = ? AND user_id = ?').run(id, DEFAULT_USER_ID);
+    const result = db.prepare('DELETE FROM review_items WHERE id = ? AND user_id = ?').run(id, DEFAULT_USER_ID);
+    if (result.changes === 0) return res.status(404).json({ error: '复习条目不存在' });
     res.json({ ok: true });
   });
 

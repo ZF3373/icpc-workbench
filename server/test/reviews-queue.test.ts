@@ -126,3 +126,23 @@ test('hard 反馈走折返档：练到 60 天的题失手一次不该回到明�
   assert.equal(next.stage, 3, '60 天档失手 → 退到 14 天档，而不是明天');
   assert.equal(next.nextDueOn, dayPlus(14));
 });
+
+test('DELETE /api/reviews/:id 对非法 id 回 400、对不存在的 id 回 404（B21 回归）', async () => {
+  /**
+   * 原实现既不校验 id 也不看 changes，一律回 {"ok":true} —— 与 lists/plans 等兄弟端点
+   * （不存在回 404）不一致，前端无从判断「是否真的删掉了」。
+   */
+  const bad = await api('DELETE', '/api/reviews/abc');
+  assert.equal(bad.status, 400);
+
+  const missing = await api('DELETE', '/api/reviews/99999');
+  assert.equal(missing.status, 404);
+
+  // 真实条目仍能正常删除
+  const id = addProblem('A');
+  await api('POST', '/api/reviews', { platform: 'codeforces', problemKey: 'A' });
+  const itemId = (db.prepare('SELECT id FROM review_items WHERE problem_id = ?').get(id) as { id: number }).id;
+  const ok = await api('DELETE', `/api/reviews/${itemId}`);
+  assert.equal(ok.status, 200);
+  assert.equal((db.prepare('SELECT COUNT(*) AS c FROM review_items').get() as { c: number }).c, 0);
+});

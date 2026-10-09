@@ -58,3 +58,21 @@ test('dateAfterDays rolls over month boundaries', () => {
   assert.equal(dateAfterDays('2026-08-30', 3), '2026-09-02');
   assert.equal(dateAfterDays('2026-12-30', 5), '2027-01-04');
 });
+
+test('nextStage: 三个分支都夹紧下界（负数档位回归）', () => {
+  /**
+   * 原先只有 hard 分支带 Math.max(0, …)，ok/easy 只夹上界：库内出现负数 stage 时
+   * （脏数据/历史行/导入；schema 无 CHECK 约束）会被原样写回，档位越推越负。
+   * 正常路径产生不了负数，这里是防御性夹紧。
+   */
+  for (const s of [-1, -5, -100]) {
+    assert.equal(nextStage(s, 'hard'), 0, `hard 未夹下界 (stage=${s})`);
+    assert.ok(nextStage(s, 'ok') >= 0, `ok 产出负数 (stage=${s})`);
+    assert.ok(nextStage(s, 'easy') >= 0, `easy 产出负数 (stage=${s})`);
+  }
+  // scheduleNext 透传后同样不为负
+  assert.equal(scheduleNext(-5, 'ok', '2026-10-09').stage, 1);
+  assert.equal(scheduleNext(-5, 'easy', '2026-10-09').stage, 2);
+  // 小数档位（脏数据）也被规整
+  assert.equal(nextStage(2.7, 'ok'), 3);
+});

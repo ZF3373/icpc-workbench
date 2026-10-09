@@ -361,8 +361,20 @@ function unclosedDelimiters(text: string, scan: ScanResult): string {
       }
       if (len > 0 && run.canOpen) stack.push({ at: run.at + (run.len - len), len, canOpen: true, canClose: false })
     }
-    const opener = stack[stack.length - 1]
-    if (opener) pending.push({ at: opener.at, closer: ch.repeat(opener.len) })
+    /**
+     * 栈里**所有**未闭合的开定界符都要收尾，而不只是栈顶那个。
+     *
+     * 原实现只取 stack[stack.length - 1]（最内层），与本函数末尾「后开的先收」的注释
+     * 相矛盾：嵌套未闭合时外层永远补不上，可见文本里就留下字面的 `**`。
+     * 实测流式半成品 `**bold and *italic` → 只补成 `**bold and *italic*`，
+     * 渲染结果是字面的 `**bold and ` + 斜体，用户看到的正是那串星号。
+     * 正确收尾是 `**bold and *italic***`（先闭 em、再闭 strong）。
+     * 这里按「最内层 → 最外层」推入 pending，外层靠下面的 at 降序排到后面。
+     */
+    for (let k = stack.length - 1; k >= 0; k -= 1) {
+      const opener = stack[k]!
+      pending.push({ at: opener.at, closer: ch.repeat(opener.len) })
+    }
   }
   // 后开的先收（`**外层` 里再开 `_内层` → 收尾顺序是 `_**`）
   return pending

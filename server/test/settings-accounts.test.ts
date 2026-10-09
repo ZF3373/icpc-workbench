@@ -292,6 +292,113 @@ test('rename migrates binding, submissions and credential slot atomically', asyn
   });
 });
 
+// ---------- 改名 / 删号必须一并处理参赛记录两表（B17 / B18 回归） ----------
+
+/** 给某账号播下参赛记录 + 增量游标（两表主键都含 account） */
+function seedParticipation(handle: string): void {
+  db.prepare(
+    `INSERT INTO participated_contests (user_id, platform, account, contest_id, name, fetched_at)
+     VALUES (?, 'codeforces', ?, 'c1', 'Round 1', '2026-01-01T00:00:00.000Z')`,
+  ).run(DEFAULT_USER_ID, handle);
+  db.prepare(
+    `INSERT INTO participation_sync (user_id, platform, account, last_sync_at, backlog_done)
+     VALUES (?, 'codeforces', ?, '2026-01-01T00:00:00.000Z', 1)`,
+  ).run(DEFAULT_USER_ID, handle);
+}
+
+test('accounts/rename: 参赛记录与增量游标随账号一起迁移（不留幽灵 handle）', async () => {
+  await withServer(async (db, base) => {
+    db.prepare(
+      "INSERT INTO platform_accounts (user_id, platform, handle, enabled) VALUES (?, 'codeforces', 'oldname', 1)",
+    ).run(DEFAULT_USER_ID);
+    seedParticipation('oldname');
+
+    const res = await fetch(`${base}/accounts/rename`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'oldname', newHandle: 'newname' }),
+    });
+    assert.equal(res.status, 200);
+
+    // 两表都迁到新 handle：否则新 handle 在 participation_sync 里没有行，
+    // 会被判为「从未同步」而触发参赛记录全量重拉，旧 handle 的行则永久残留
+    assert.deepEqual(
+      (db.prepare('SELECT account FROM participated_contests').all() as Array<{ account: string }>).map((r) => r.account),
+      ['newname'],
+    );
+    assert.deepEqual(
+      (db.prepare('SELECT account FROM participation_sync').all() as Array<{ account: string }>).map((r) => r.account),
+      ['newname'],
+    );
+    // backlog_done 一并保留（否则会重新翻完整页历史）
+    const sync = db.prepare('SELECT backlog_done FROM participation_sync').get() as { backlog_done: number };
+    assert.equal(sync.backlog_done, 1);
+  });
+});
+
+test('accounts/rename: 目标 handle 残留过参赛记录时改名不撞主键', async () => {
+  await withServer(async (db, base) => {
+    db.prepare(
+      "INSERT INTO platform_accounts (user_id, platform, handle, enabled) VALUES (?, 'codeforces', 'from1', 1)",
+    ).run(DEFAULT_USER_ID);
+    seedParticipation('from1');
+    // 历史上同名账号留下的残留行（绑定表里已无该 handle）
+    seedParticipation('to1');
+
+    const res = await fetch(`${base}/accounts/rename`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'from1', newHandle: 'to1' }),
+    });
+    assert.equal(res.status, 200, '残留行不得让改名因 UNIQUE 冲突而 500');
+    assert.deepEqual(
+      (db.prepare('SELECT DISTINCT account FROM participated_contests').all() as Array<{ account: string }>).map((r) => r.account),
+      ['to1'],
+    );
+  });
+});
+
+test('accounts/remove: 参赛记录与增量游标随账号一起清除', async () => {
+  /**
+   * accounts/remove 会先建「删除前恢复点」，而 createBackup 需要真实的库文件路径
+   * （内存库拿不到 → 500），所以这里必须用文件库，不能复用 withServer 的内存库。
+   */
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acct-rm-'));
+  const fileDb = createDb(path.join(dir, 'icpc.db'));
+  const app = express();
+  app.use(express.json());
+  app.use('/api/settings', settingsRoutes(fileDb, { ...DEFAULT_CONFIG, dbPath: path.join(dir, 'icpc.db'), dataDir: dir }));
+  const srv = await listenForTest(app);
+  const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/settings`;
+  try {
+    fileDb.prepare(
+      "INSERT INTO platform_accounts (user_id, platform, handle, enabled) VALUES (?, 'codeforces', 'goner', 1)",
+    ).run(DEFAULT_USER_ID);
+    fileDb.prepare(
+      `INSERT INTO participated_contests (user_id, platform, account, contest_id, name, fetched_at)
+       VALUES (?, 'codeforces', 'goner', 'c1', 'Round 1', '2026-01-01T00:00:00.000Z')`,
+    ).run(DEFAULT_USER_ID);
+    fileDb.prepare(
+      `INSERT INTO participation_sync (user_id, platform, account, last_sync_at, backlog_done)
+       VALUES (?, 'codeforces', 'goner', '2026-01-01T00:00:00.000Z', 1)`,
+    ).run(DEFAULT_USER_ID);
+
+    const res = await fetch(`${base}/accounts/remove`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'goner' }),
+    });
+    assert.equal(res.status, 200);
+    // 「删除账号」承诺清掉该账号数据，就不该留下无主的参赛记录与游标
+    assert.equal((fileDb.prepare('SELECT COUNT(*) AS c FROM participated_contests').get() as { c: number }).c, 0);
+    assert.equal((fileDb.prepare('SELECT COUNT(*) AS c FROM participation_sync').get() as { c: number }).c, 0);
+  } finally {
+    srv.close();
+    fileDb.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---------- Cookie 字段按需揭示（点眼睛显示原文） ----------
 
 test('cookies/reveal: 平台级字段按名取回原文；configOnly 取 UA；未知字段拒绝', async () => {

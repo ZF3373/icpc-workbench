@@ -465,10 +465,43 @@ export function verifyChecksums(checksumsText: string, dir: string, names: strin
  * 文件替换：target 改名为 *.old（Windows 允许改名运行中的 exe）→ 新文件拷入原位。
  * - 改名失败（上次更新后的运行进程仍锁着 *.old）→ 目标文件本身未被占用，直接覆盖拷入；
  *   这是「未重启就再次一键更新」的场景，不回退直接拷贝即可继续更新。
- * - 拷入失败（磁盘满等）→ 把刚改名的旧文件改回原位，避免软件目录只剩 *.old 无法启动。
+ * - 拷入失败（磁盘满、暂存文件缺失等）→ **回滚本次已替换的全部文件**。
+ *   原实现只回滚「当前失败的那一个」，之前已替换成功的文件保持新版本 —— 实测会留下
+ *   「新 shell.exe + 旧 core.exe」的半更新安装，两者版本不一致可能直接起不来。
+ *   壳与核心必须同版本，所以要么全部成功、要么全部还原。
  * 供 applyUpdate 与测试使用（可注入文件名，模拟 exe 布局）。
  */
 export function replaceStagedFiles(stagingDir: string, exeDir: string, names: string[]): void {
+  // 预检：暂存文件必须齐备且可读。缺一个就直接失败，避免替换到一半才发现缺文件。
+  for (const name of names) {
+    const src = path.join(stagingDir, name);
+    if (!fs.existsSync(src)) {
+      throw new Error(`暂存目录缺少 ${name}，已放弃更新（安装目录未被改动）`);
+    }
+  }
+
+  /** 本次已替换成功的文件，失败时按逆序整体回滚 */
+  const done: Array<{ target: string; old: string; renamed: boolean }> = [];
+
+  const rollbackAll = (): void => {
+    for (const d of [...done].reverse()) {
+      try {
+        if (d.renamed) {
+          // 有 *.old 备份：删掉刚拷入的新文件，把旧文件改回原位
+          fs.rmSync(d.target, { force: true });
+          fs.renameSync(d.old, d.target);
+        }
+        // renamed=false 表示原本没有目标文件（全新安装）或改名失败后直接覆盖：
+        // 前者删掉新文件即可回到「不存在」，后者没有备份可还原，只能保留现状。
+        else if (!fs.existsSync(d.old)) {
+          fs.rmSync(d.target, { force: true });
+        }
+      } catch {
+        /* 尽力回滚，单个文件失败不阻断其余文件的还原 */
+      }
+    }
+  };
+
   for (const name of names) {
     const target = path.join(exeDir, name);
     const old = `${target}.old`;
@@ -488,7 +521,9 @@ export function replaceStagedFiles(stagingDir: string, exeDir: string, names: st
     }
     try {
       fs.copyFileSync(path.join(stagingDir, name), target);
+      done.push({ target, old, renamed });
     } catch (e) {
+      // 当前文件回滚（若有备份），再把本次已替换的其余文件一并还原
       if (renamed) {
         try {
           fs.renameSync(old, target);
@@ -496,6 +531,7 @@ export function replaceStagedFiles(stagingDir: string, exeDir: string, names: st
           /* 尽力恢复原文件 */
         }
       }
+      rollbackAll();
       throw e;
     }
   }

@@ -232,21 +232,31 @@ export function createLuoguAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
   let tagDictPromise: Promise<void> | null = null;
   let tagDictFailedAt = 0;
 
-  async function ensureTagDict(cookie: string): Promise<void> {
-    if (tagDict.size > 0) return;
+  /**
+   * 确保 tag id → 名称字典可用。
+   *
+   * @returns 字典当前是否**可用**（含"本题没有 tag id"与"字典为空但确实取到了"两种情况）。
+   * 取不到时返回 false —— 调用方据此避免把"解析不出来"的空标签当成"这题没有标签"缓存。
+   */
+  async function ensureTagDict(cookie: string): Promise<boolean> {
+    if (tagDict.size > 0) return true;
     if (tagDictPromise) {
       await tagDictPromise;
-      return;
+      return tagDict.size > 0;
     }
     // 上次拉取失败后 5 分钟内不重试（避免每道题都触发一次字典请求）
-    if (Date.now() - tagDictFailedAt < 5 * 60 * 1000) return;
+    if (Date.now() - tagDictFailedAt < 5 * 60 * 1000) return false;
     tagDictPromise = (async () => {
       try {
         const res = await fetchWithChallenge(http, `${API}/_lfe/tags`, cookie);
-        if (res.ok) {
-          const d = (await res.json()) as { tags?: Array<{ id: number; name: string }> };
-          for (const t of d.tags ?? []) tagDict.set(t.id, t.name);
+        if (!res.ok) {
+          // HTTP 错误同样要记退避时刻：原实现只在 catch 里赋值，5xx 分支不进退避，
+          // 于是每道题都会重新打一次字典请求（风控风险），且每次都拿不到名字
+          tagDictFailedAt = Date.now();
+          return;
         }
+        const d = (await res.json()) as { tags?: Array<{ id: number; name: string }> };
+        for (const t of d.tags ?? []) tagDict.set(t.id, t.name);
       } catch {
         tagDictFailedAt = Date.now(); // 失败：退避重试
       } finally {
@@ -254,6 +264,7 @@ export function createLuoguAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
       }
     })();
     await tagDictPromise;
+    return tagDict.size > 0;
   }
 
   async function fetchProblemInfo(
@@ -291,8 +302,16 @@ export function createLuoguAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
       if (!p) {
         return fail();
       }
-      await ensureTagDict(cookie);
+      const dictReady = await ensureTagDict(cookie);
+      const hasTagIds = Array.isArray(p?.tags) && p.tags.length > 0;
       const tags = resolveTags(p?.tags, tagDict);
+      /**
+       * 字典没拿到、而这题**确实有** tag id 时：tags 会是空数组，但那是"解析不出来"，
+       * 不是"这题没有标签"。此时绝不能写进 problemCache —— 缓存命中会在整个进程生命周期内
+       * 短路后续查询（逐题退避 problemFetchFailedAt 管不到这种共享依赖失败），
+       * 空标签还会随同步落进 problems.tags。改为返回难度/标题但不缓存，下次同步重试。
+       */
+      const tagsResolved = !hasTagIds || dictReady || tags.length > 0;
       const info = {
         ...(typeof p?.difficulty === 'number' ? { difficulty: p.difficulty } : {}),
         // 洛谷新版接口标题字段为 name，旧结构为 title（回填路径 difficultyBackfill 同款兼容）
@@ -303,7 +322,12 @@ export function createLuoguAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
             : {}),
         tags,
       };
-      problemCache.set(pid, info);
+      if (tagsResolved) {
+        problemCache.set(pid, info);
+      } else {
+        // 标签缺失：退避期内不重试，但退避一过就会重新拉取（不会被永久缓存挡住）
+        problemFetchFailedAt.set(pid, Date.now());
+      }
       return info;
     } catch {
       return fail();

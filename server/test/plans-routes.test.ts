@@ -231,3 +231,66 @@ test('PATCH /api/plans/tasks/:id 改日期时同步迁移打卡记录的冗余 t
     assert.equal(cd.task_date, '2026-08-11');
   });
 });
+
+// ---------- POST /api/plans/generate 入参范围校验（B14 / B15 回归） ----------
+
+test('POST /generate 拒绝越界 days，且在校验阶段就返回（不进入 O(days) 循环）', async () => {
+  await withServer(async (_db, base) => {
+    /**
+     * days 的 1-90 校验原本只在 savePlan 里，而它执行在 buildPlanPackage/templatePlan
+     * 的 O(days) 循环**之后**：days=15000000 会让进程 heap out of memory（exit 134，
+     * try/catch 拦不住，服务直接下线）。这里断言大值被快速拒绝。
+     */
+    const t0 = Date.now();
+    const huge = await fetch(`${base}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days: 15000000, startDate: '2026-10-09' }),
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(huge.status, 400);
+    assert.match(((await huge.json()) as { error: string }).error, /days/);
+    // 若真跑了循环，1500 万轮不可能在 5 秒内返回
+    assert.ok(elapsed < 5000, `days 校验发生在昂贵循环之后（耗时 ${elapsed}ms）`);
+
+    for (const bad of [91, 0, -1, 'abc', 14.5]) {
+      const res = await fetch(`${base}/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days: bad, startDate: '2026-10-09' }),
+      });
+      assert.equal(res.status, 400, `days=${String(bad)} 应被拒绝`);
+    }
+
+    // 边界内的值照常工作
+    const ok = await fetch(`${base}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days: 90, startDate: '2026-10-09' }),
+    });
+    assert.equal(ok.status, 200);
+  });
+});
+
+test('POST /generate 拒绝非法 startDate（不再把 RangeError 原文回给用户）', async () => {
+  await withServer(async (_db, base) => {
+    for (const bad of ['garbage', '2026-13-45', '2026-02-30', '2026/10/09']) {
+      const res = await fetch(`${base}/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days: 7, startDate: bad }),
+      });
+      assert.equal(res.status, 400, `startDate=${bad} 应被拒绝`);
+      const msg = ((await res.json()) as { error: string }).error;
+      assert.match(msg, /startDate/, `错误文案应指向 startDate，实际: ${msg}`);
+      assert.ok(!/Invalid time value/.test(msg), `泄露了引擎原文: ${msg}`);
+    }
+    // 省略 startDate 仍走默认（今天）
+    const omitted = await fetch(`${base}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days: 7 }),
+    });
+    assert.equal(omitted.status, 200);
+  });
+});

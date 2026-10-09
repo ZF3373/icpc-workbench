@@ -10,7 +10,7 @@ import type { PlatformId } from '../../../shared/src/index.ts';
 import { PLATFORMS, platformMeta, canonicalTag } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { bucketForDifficulty, fetchRows, rate, safeTags } from './stats.ts';
-import { localToday } from '../dates.ts';
+import { localToday, localDayOf } from '../dates.ts';
 import { filterNoiseTags } from './tags.ts';
 import { computeWeakness, type WeaknessItem } from './weakness.ts';
 import { computeMastery } from './mastery.ts';
@@ -200,7 +200,10 @@ export function buildPracticeSummary(db: Db, userId: number): PracticeSummary {
     }
     if (!firstAt || r.submitted_at < firstAt) firstAt = r.submitted_at;
     if (!lastAt || r.submitted_at > lastAt) lastAt = r.submitted_at;
-    activeDays.add(r.submitted_at.slice(0, 10));
+    // 「活跃天数」必须与热力图（heatmap.ts:55）和日历同为**本地日**口径：
+    // 原先取 submitted_at.slice(0,10)（UTC 日），UTC+8 用户在本地 0-8 点提交会被算进前一天，
+    // 实测同一批数据热力图算出 2 个活跃日、这里只算 1 个，且该值会进 summary.md 与 AI 提示词。
+    activeDays.add(localDayOf(new Date(r.submitted_at)));
   }
 
   const byPlatformList: PlatformSummary[] = PLATFORMS.map((p) => {

@@ -300,7 +300,17 @@ async function dispatchEditorialByPlatform(
     if (!cookie) {
       return { error: '洛谷题解区需要登录：请先在「设置」配置洛谷 Cookie，或用 web_search 搜索该题题解。' };
     }
-    const solutionUrl = `https://www.luogu.com.cn/problem/solution/${path.split('/')[2]}`;
+    /**
+     * 题号取法必须容错：用户可能直接贴**题解页**链接（`/problem/solution/P1001`），
+     * 位置取值 `split('/')[2]` 会把字面量 "solution" 当成题号，拼出
+     * `.../problem/solution/solution`。改为按 /problem/ 之后的第一段取，
+     * 并跳过 "solution" 这一层（与下面 "题解" 的两种入口形态一致）。
+     */
+    const pid = /^\/problem\/(?:solution\/)?([\w-]+)/.exec(path)?.[1];
+    if (!pid) {
+      return { error: '无法从该链接解析出洛谷题号，请改用形如 https://www.luogu.com.cn/problem/P1001 的题目页链接。' };
+    }
+    const solutionUrl = `https://www.luogu.com.cn/problem/solution/${pid}`;
     // 必须走 C3VK 挑战处理（洛谷风控：302 → 自己 + 下发新挑战码）。普通 fetch 自动
     // 跟随重定向且没有 Cookie Jar，永远带不上新码，undici 耗尽重定向次数后抛
     // 「fetch failed」（cause: redirect count exceeded）——实测正是炸掉整轮对话的元凶。

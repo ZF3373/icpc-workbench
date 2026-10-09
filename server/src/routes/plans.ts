@@ -25,9 +25,26 @@ export function plansRoutes(
   // POST /api/plans/generate  body: { days?, startDate?, dailyTasks?, requirements? }
   r.post('/generate', asyncHandler(async (req, res) => {
     const { days, startDate, dailyTasks, requirements } = req.body ?? {};
+    /**
+     * 入参范围校验必须在 generatePlan **之前**：days 的 1-90 校验原本只在 savePlan 里，
+     * 而 savePlan 执行在 buildPlanPackage/templatePlan 的 O(days) 循环之后 —— 校验发生时
+     * 内存已经被吃光。实测 days=15000000 会让进程
+     * `FATAL ERROR: heap out of memory`（exit 134，try/catch 拦不住，服务直接下线）。
+     * 这里与 /import（:60）、/export/plan-package（export.ts:18）保持同一口径。
+     */
+    const daysNum = Number(days);
+    if (days !== undefined && days !== null && !(Number.isInteger(daysNum) && daysNum > 0 && daysNum <= 90)) {
+      return res.status(400).json({ error: 'days 需为 1-90 的整数' });
+    }
+    // startDate 同样要在进入 planService 前校验：否则 addDays 抛出的 RangeError
+    // 会以「Invalid time value」这种引擎原文回给用户（/import 走正则、savePlan 走
+    // isCalendarDate，本端点此前是唯一漏网的）
+    if (startDate !== undefined && (typeof startDate !== 'string' || !isCalendarDate(startDate))) {
+      return res.status(400).json({ error: 'startDate 日期非法（需为真实存在的 YYYY-MM-DD）' });
+    }
     try {
       const result = await generatePlan(db, getAiConfig(), {
-        days: Number(days) || 14,
+        days: Number.isInteger(daysNum) && daysNum > 0 && daysNum <= 90 ? daysNum : 14,
         startDate: typeof startDate === 'string' && startDate ? startDate : undefined,
         // 每天任务数（1-6）；缺省 = 由 AI 自行安排（提示词默认 1-3）
         dailyTasks:

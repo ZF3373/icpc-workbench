@@ -499,13 +499,21 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
           ...(models !== undefined ? { models } : {}),
         });
       }
+      /**
+       * 守卫必须复查**净化后**的 drafts：上面的循环会把非对象条目（`[null]`、`[5,"x"]`）
+       * continue 掉，只检查原始 b.providers.length 会让这类输入绕过空数组守卫、直达
+       * saveAiProviders 抛错 → 500，而且同一请求里的全局 AI 设置（下面的 saveAiConfig）
+       * 根本不会执行，用户的「启用/超时」等修改一并丢失。与 :464 同一口径回 400。
+       */
+      if (drafts.length === 0) {
+        return res.status(400).json({ error: '至少需要保留一个有效的提供商（每条需含 id/name/http(s) Base URL）' });
+      }
       saveAiProviders(
         db,
         drafts,
         // 缺省 = 保持已存活跃项（旧客户端/脚本不传该字段时不该被静默切回首项）
         typeof b.activeProviderId === 'string' ? b.activeProviderId.trim() : undefined,
-      );
-    }
+      );    }
     saveAiConfig(db, config, {
       enabled: typeof b.enabled === 'boolean' ? b.enabled : undefined,
       ...(typeof b.timeoutMs === 'number' && b.timeoutMs > 0 ? { timeoutMs: b.timeoutMs } : {}),
@@ -672,6 +680,23 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
         .run(to, DEFAULT_USER_ID, platform, from);
       db.prepare('UPDATE submissions SET account = ? WHERE user_id = ? AND platform = ? AND account = ?')
         .run(to, DEFAULT_USER_ID, platform, from);
+      /**
+       * 参赛记录两表也按 account 归属（主键含 account），必须一起迁移：
+       * 漏掉会让新 handle 在 participation_sync 里没有行 → 被判为「从未同步」→ 触发该账号
+       * 参赛记录的全量重拉，同时旧 handle 的行永久残留成幽灵数据。
+       *
+       * 先删目标 handle 的既有行再 UPDATE：改名不要求目标 handle 在绑定表里不存在（上面已查过），
+       * 但 participated_contests 可能残留过同名旧账号的行，直接 UPDATE 会撞主键
+       * (user_id, platform, account, contest_id) 让整个改名事务失败。
+       */
+      db.prepare('DELETE FROM participated_contests WHERE user_id = ? AND platform = ? AND account = ?')
+        .run(DEFAULT_USER_ID, platform, to);
+      db.prepare('DELETE FROM participation_sync WHERE user_id = ? AND platform = ? AND account = ?')
+        .run(DEFAULT_USER_ID, platform, to);
+      db.prepare('UPDATE participated_contests SET account = ? WHERE user_id = ? AND platform = ? AND account = ?')
+        .run(to, DEFAULT_USER_ID, platform, from);
+      db.prepare('UPDATE participation_sync SET account = ? WHERE user_id = ? AND platform = ? AND account = ?')
+        .run(to, DEFAULT_USER_ID, platform, from);
       db.exec('COMMIT');
     } catch (e) {
       db.exec('ROLLBACK');
@@ -742,6 +767,16 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       db.prepare('DELETE FROM platform_accounts WHERE user_id = ? AND platform = ? AND handle = ?')
         .run(DEFAULT_USER_ID, platform, trimmed);
       db.prepare('DELETE FROM submissions WHERE user_id = ? AND platform = ? AND account = ?')
+        .run(DEFAULT_USER_ID, platform, trimmed);
+      /**
+       * 参赛记录两表同样按 account 归属，删号必须一并清掉：否则已删除账号的参赛历史
+       * （participated_contests）与增量游标（participation_sync）会永久残留成孤儿行。
+       * 这些行不会显示在界面上（读取由绑定表 + submissions 驱动），属数据卫生问题，
+       * 但既然「删除账号」承诺清掉该账号数据，就不该留下无主的参赛记录。
+       */
+      db.prepare('DELETE FROM participated_contests WHERE user_id = ? AND platform = ? AND account = ?')
+        .run(DEFAULT_USER_ID, platform, trimmed);
+      db.prepare('DELETE FROM participation_sync WHERE user_id = ? AND platform = ? AND account = ?')
         .run(DEFAULT_USER_ID, platform, trimmed);
       db.exec('COMMIT');
     } catch (e) {

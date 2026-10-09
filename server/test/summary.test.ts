@@ -7,6 +7,7 @@ import {
   renderSummaryMarkdown,
 } from '../src/analysis/summary.ts';
 import { buildPlanPackage } from '../src/plans/planService.ts';
+import { computeHeatmap } from '../src/analysis/heatmap.ts';
 
 const DAY = 86_400_000;
 const iso = (offsetDays: number): string => new Date(Date.now() - offsetDays * DAY).toISOString();
@@ -96,6 +97,45 @@ test('buildPracticeSummary 汇总总量 / 平台 / 难度 / 标签 / 弱项', (t
   // 能力评估：3 道 AC 有难度，但 computeUserLevel minSample=10 → null
   assert.equal(s.level.medianDifficulty, null);
   assert.equal(s.level.solvedCount, 3);
+});
+
+test('activeDays 用本地日口径，与热力图一致（B7 回归）', (t) => {
+  /**
+   * 原先取 submitted_at.slice(0,10)（UTC 日），而 heatmap.ts 与 dates.ts 全篇刻意用
+   * **本地日**（文件头有专门说明：UTC 取日会让 UTC+8 用户在本地 0–8 点错位一天）。
+   * 同一批数据因此会出现「热力图 2 个活跃日、summary 只算 1 个」，且该值会进
+   * summary.md 与 AI 提示词。这里构造两条提交：同一 UTC 日、不同本地日。
+   * UTC 时区机器上两者恒等，无法区分口径 → 跳过（口径正确性由 dates 的单测保证）。
+   */
+  const fmt = new Intl.DateTimeFormat('en-CA');
+  const probe = ['2026-10-01T15:30:00.000Z', '2026-10-01T16:30:00.000Z'];
+  if (!probe.some((iso) => fmt.format(new Date(iso)) !== iso.slice(0, 10))) {
+    return t.skip('本机时区与 UTC 同日界，无法区分口径');
+  }
+  // 两条时刻落在同一 UTC 日、不同本地日
+  const a = probe[0]!;
+  const b = probe[1]!;
+  assert.equal(a.slice(0, 10), b.slice(0, 10), '前提：两条在同一 UTC 日');
+  assert.notEqual(fmt.format(new Date(a)), fmt.format(new Date(b)), '前提：两条在不同本地日');
+
+  const db = createDb(':memory:');
+  t.after(() => db.close());
+  const pid = Number(
+    db.prepare("INSERT INTO problems (platform, problem_key, title, tags) VALUES ('codeforces','1A','t','[]')").run().lastInsertRowid,
+  );
+  const ins = db.prepare(
+    'INSERT INTO submissions (user_id, platform, problem_id, verdict, submitted_at, external_id) VALUES (1, ?, ?, ?, ?, ?)',
+  );
+  ins.run('codeforces', pid, 'AC', a, 'e1');
+  ins.run('codeforces', pid, 'AC', b, 'e2');
+
+  const s = buildPracticeSummary(db, 1);
+  assert.equal(s.range.activeDays, 2, '应按本地日算出 2 个活跃日，而不是 UTC 日的 1 个');
+
+  // 与热力图同口径
+  const hm = computeHeatmap(db, 1, { days: 30, now: new Date('2026-10-05T00:00:00.000Z') });
+  const heatDays = hm.days.filter((d) => d.attempts > 0).length;
+  assert.equal(s.range.activeDays, heatDays, 'summary 与 heatmap 的活跃日数必须一致');
 });
 
 test('buildPracticeSummary 卡壳题 / 近期 AC / 复习库 / 课程进度 / 打卡', (t) => {

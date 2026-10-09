@@ -50,6 +50,35 @@ test('保留策略：同 reason 只留最近 N 份，总份数兜底', () => {
   assert.ok(listBackups(db, dir).length <= 10, 'manual 备份应只保留 10 份');
 });
 
+test('createBackup：退避文件名已被占用时换到下一个可用名，不抛错（B20 回归）', (t) => {
+  /**
+   * VACUUM INTO 要求目标不存在。原实现的退避名只算一次 `Date.now() % 1000` 且不复查，
+   * 撞上既有文件时会抛 "file is not a database"。
+   *
+   * 必须**冻结时钟**：否则两次调用可能落在不同的秒，退避分支根本不会被走到，
+   * 测试会「假通过」。冻结后基准名与全部 1000 个候选名都被占，逼出兜底路径。
+   */
+  t.mock.timers.enable({ now: new Date('2026-10-09T14:12:00Z'), apis: ['Date'] });
+  const first = createBackup(db, 'manual', dir);
+  const base = first.file;
+  const stamp = /^icpc-(\d{8}-\d{6})-/.exec(base)![1]!;
+  // 占满 base 的 -0 .. -999 全部候选名（同一秒内）
+  for (let i = 0; i < 1000; i += 1) {
+    fs.writeFileSync(path.join(dir, `icpc-${stamp}-manual-${i}.db`), 'occupied');
+  }
+  // 同一秒内再备份：基准名被占、1000 个候选名也全被占 → 必须走兜底且**立即返回**
+  const started = Date.now();
+  const second = createBackup(db, 'manual', dir);
+  const elapsed = Date.now() - started;
+  assert.notEqual(second.file, base, '不得复用已存在的文件名');
+  assert.ok(elapsed < 5000, `兜底路径不得空转（耗时 ${elapsed}ms）`);
+  // 兜底文件名也必须能被保留策略看见，否则会成为永不回收的孤儿
+  assert.ok(
+    listBackups(db, dir).some((b) => b.file === second.file),
+    `兜底文件名对 listBackups 不可见，永远不会被清理: ${second.file}`,
+  );
+});
+
 test('requestRestore + applyPendingRestore：标记、覆盖与 WAL 清理', () => {
   // 模拟生产布局：dbPath 在 dir 下，备份目录派生为 dir/backups，标记写在 dir 下
   const dbPath = path.join(dir, 'main.db');

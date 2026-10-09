@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import type { Db } from './db/index.ts';
 import { localToday } from './dates.ts';
 
@@ -38,8 +39,11 @@ const KEEP_TOTAL = 30;
  * 尾部 `-<毫秒>` 是同一秒内连续备份时的退避后缀（见 createBackup）。
  * 必须把它纳入匹配，否则这些文件对 listBackupFiles 不可见 →
  * 永远进不了保留策略的清理集合（用户连点几下「立即备份」就留下永不回收的垃圾）。
+ *
+ * 退避后缀收两种形态：纯数字（正常退避）与 8 位十六进制（1000 个候选名全被占满时的
+ * 兜底随机后缀）。两者都必须匹配，否则兜底产生的那份会变成永不回收的孤儿。
  */
-const FILE_RE = /^icpc-(\d{8}-\d{6})-([a-z-]+?)(?:-\d{1,3})?\.db$/;
+const FILE_RE = /^icpc-(\d{8}-\d{6})-([a-z-]+?)(?:-\d{1,3}|-[0-9a-f]{8})?\.db$/;
 
 interface BackupMeta {
   file: string;
@@ -112,10 +116,32 @@ function timestampFor(d = new Date()): string {
 export function createBackup(db: Db, reason: BackupReason, dir?: string): { file: string; size: number } {
   const backupDir = backupDirFor(db, dir);
   fs.mkdirSync(backupDir, { recursive: true });
-  // 同一秒内可能创建多个备份（如连续手动点击）：文件已存在时退避到带毫秒后缀
+  // 同一秒内可能创建多个备份（如连续手动点击）：文件已存在时退避到带毫秒后缀。
+  // 退避名**必须复查存在性**：VACUUM INTO 要求目标不存在，而 `Date.now() % 1000` 只有 1000
+  // 种取值、可能与既有文件撞名（实测撞上时抛 "file is not a database"）。
+  //
+  // 循环必须**有界**：候选名只有 1000 个，全被占满时无界 do/while 会永久空转
+  //（实测 20 万次迭代仍在转），把一次「立即备份」变成卡死。占满后退到随机后缀 ——
+  // 此时文件名不再可读，但「能备份成功」优先于「文件名好看」，且绝不空转。
   let file = `icpc-${timestampFor()}-${reason}.db`;
   if (fs.existsSync(path.join(backupDir, file))) {
-    file = `icpc-${timestampFor()}-${reason}-${Date.now() % 1000}.db`;
+    const CANDIDATES = 1000;
+    let seq = Date.now() % CANDIDATES;
+    let found = false;
+    for (let i = 0; i < CANDIDATES; i += 1) {
+      const candidate = `icpc-${timestampFor()}-${reason}-${seq}.db`;
+      if (!fs.existsSync(path.join(backupDir, candidate))) {
+        file = candidate;
+        found = true;
+        break;
+      }
+      seq = (seq + 1) % CANDIDATES;
+    }
+    if (!found) {
+      // 极端情况：同一秒内已有 1001 份备份。用随机后缀兜底（32 位十六进制，
+      // 碰撞概率可忽略；即便碰撞也由 VACUUM INTO 报错，不会静默写坏文件）。
+      file = `icpc-${timestampFor()}-${reason}-${crypto.randomBytes(4).toString('hex')}.db`;
+    }
   }
   const target = path.join(backupDir, file);
   // VACUUM INTO 要求目标不存在；路径中的单引号需要转义（SQL 字面量）

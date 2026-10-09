@@ -68,7 +68,20 @@ const VERDICT_MAP: Record<string, Verdict> = {
   COMPILATION_ERROR: 'CE',
 };
 
+/**
+ * CF 题号 → { contestId, index }。
+ *
+ * 纯数字题号要特殊处理：CF 实测存在 `92101`（= 比赛 921 + 题号 `01`）这类合法键
+ * （见 problemKey.ts:82 的实测记录），而贪婪的 `/^(\d+)(.+)$/` 会把比赛号错拆成 `9210`、
+ * 题号拆成 `1`，拼出 `contest/9210/problem/1` 这种打不开的链接。
+ * 与 contests/participated.ts:95 的 `contestIdOf` 保持同一口径：末 2 位是题号。
+ * 非纯数字键（`1A`、`1234B2`）走原来的贪婪拆分，那里不存在歧义。
+ */
 function splitKey(key: string): { contestId?: string; index: string } {
+  if (/^\d+$/.test(key)) {
+    const m = /^(\d+?)(\d{2})$/.exec(key);
+    return m ? { contestId: m[1], index: m[2] } : { index: key };
+  }
   const m = /^(\d+)(.+)$/.exec(key);
   return m ? { contestId: m[1], index: m[2] } : { index: key };
 }

@@ -636,6 +636,31 @@ test('POST /ai 传空 providers 数组 → 400（不再 500 + 同请求全局项
   });
 });
 
+test('POST /ai 的 providers 全是非对象条目时同样 400，不是 500（B16 回归）', async () => {
+  /**
+   * 空数组守卫原先检查的是**原始** `b.providers.length`，而净化循环会把非对象条目
+   * continue 掉、之后从不复查 drafts：`[null]` / `[5,"x"]` 于是绕过守卫直达
+   * saveAiProviders 抛错 → 500，且同一请求里的全局 AI 设置（saveAiConfig）根本不会执行，
+   * 用户的「启用/超时」等修改一并丢失。守卫必须复查净化后的结果。
+   */
+  await withServer(async (db, base) => {
+    saveAiConfig(db, DEFAULT_CONFIG, { timeoutMs: 60000 });
+    for (const providers of [[null], [5, 'x'], [null, undefined], [{}, { id: '' }]]) {
+      const res = await fetch(`${base}/ai`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providers, enabled: true, timeoutMs: 90000 }),
+      });
+      assert.equal(res.status, 400, `providers=${JSON.stringify(providers)} 应为 400，实际 ${res.status}`);
+      // 错误文案可能来自更早的逐条校验（如 `providers[].id 必填`），只要不是 500 即可
+      const body = (await res.json()) as { error: string };
+      assert.ok(body.error && !/服务器内部错误/.test(body.error), `不应回通用 500 文案: ${body.error}`);
+      // 关键：显式失败，不是 500 + 半截保存
+      assert.equal(aiConfigFromDb(db, DEFAULT_CONFIG).timeoutMs, 60000, '失败时全局项不得被写入');
+    }
+  });
+});
+
 test('缺省 activeProviderId 保持已存活跃项（旧客户端/脚本不传时不静默切回首项）', async () => {
   await withServer(async (_db, base) => {
     const postJson = async (body: unknown) =>

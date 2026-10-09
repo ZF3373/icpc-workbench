@@ -105,10 +105,16 @@ export function checkinsRoutes(db: Db): Router {
   // DELETE /api/checkins/:taskId → 取消打卡
   r.delete('/:taskId', (req, res) => {
     const taskId = Number(req.params.taskId);
+    // 非法 id 400（与 POST 的校验一致）：避免 Number('abc') = NaN 静默匹配不到任何行
+    if (!Number.isInteger(taskId)) return res.status(400).json({ error: 'taskId 非法' });
     db.prepare('DELETE FROM checkins WHERE task_id = ? AND user_id = ?').run(
       taskId,
       DEFAULT_USER_ID,
     );
+    // 取消打卡是**幂等**操作：目标状态（未打卡）已达成即视为成功，故不回 404。
+    // 任务本身不存在时才报 404 —— 让前端能区分「任务没了」与「本来就没打卡」。
+    const exists = db.prepare('SELECT 1 AS hit FROM plan_tasks WHERE id = ?').get(taskId);
+    if (!exists) return res.status(404).json({ error: '任务不存在' });
     res.json({ ok: true });
   });
 

@@ -27,10 +27,17 @@ export function intervalDaysForStage(stage: number): number {
   return REVIEW_INTERVALS[i];
 }
 
+/**
+ * 档位推进。**三个分支都必须夹紧下界**：原先只有 hard 分支带 `Math.max(0, …)`，
+ * ok/easy 只夹上界，于是库内出现负数 stage 时（脏数据/历史行/导入；schema 无 CHECK 约束）
+ * 会被原样写回 —— 实测 stage=-5 时 ok → -4、easy → -3，档位越推越负。
+ * 正常路径产生不了负数，这里是防御性夹紧。
+ */
 export function nextStage(stage: number, feedback: ReviewFeedback): number {
-  if (feedback === 'hard') return Math.max(0, Math.min(stage, MAX_STAGE) - HARD_STAGE_BACKSTEP);
-  if (feedback === 'easy') return Math.min(stage + 2, MAX_STAGE);
-  return Math.min(stage + 1, MAX_STAGE);
+  const s = Math.min(Math.max(0, Math.floor(stage)), MAX_STAGE);
+  if (feedback === 'hard') return Math.max(0, s - HARD_STAGE_BACKSTEP);
+  if (feedback === 'easy') return Math.min(s + 2, MAX_STAGE);
+  return Math.min(s + 1, MAX_STAGE);
 }
 
 /** 当地时区 YYYY-MM-DD（与 planService.today 口径一致：UTC 日期） */

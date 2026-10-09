@@ -1209,3 +1209,115 @@ describe('原有能力回归', () => {
     assert.equal(twice, once)
   })
 })
+
+/**
+ * 英文语境的回归（本次修复）。
+ *
+ * 上述全部用例都是**中文**语境，而 MATH_SEED 的 `标识符 + 方括号` 分支曾写成
+ * `\b[a-zA-Z_]\w*\s*[[{]…`（允许中间有空格），于是英文里「名词 + 方括号补充说明」
+ * 被当成数学种子；`/` 又属于数学字符，向后扩展会一路吞过 Markdown 链接的 `](http`。
+ * 中文用例恰好绕开了这条分支（CJK 不匹配 `\b[a-zA-Z_]`），所以一直没被发现。
+ */
+describe('英文语境的方括号/链接不被误当公式（回归）', () => {
+  it('Markdown 链接前的英文单词不再把链接卷进公式', () => {
+    for (const src of [
+      'see [text](http://example.com) for details',
+      'See [the docs](https://example.com/docs) for more.',
+      'For more details, see [here](https://example.com).',
+      '- See [docs](https://example.com)',
+      '1. Read [guide](https://example.com)',
+      'Read from [here](https://example.com) now',
+    ]) {
+      const out = preprocessMath(src)
+      assert.equal(out, src, `链接被公式管线改写了: ${out}`)
+      // 链接语法必须完整保留，否则 remark 解析不出 <a>
+      assert.ok(out.includes(']('), `链接语法丢失: ${out}`)
+      assert.ok(!out.includes('$'), `链接被包进公式: ${out}`)
+    }
+  })
+
+  it('中英混排（英文词紧跟链接）同样安全', () => {
+    for (const src of [
+      '题解见 editorial [链接](https://example.com) 里',
+      '可以看 link [题解](https://example.com)',
+      '参考 official [editorial](https://codeforces.com/blog/entry/1)',
+    ]) {
+      assert.equal(preprocessMath(src), src, `混排语境被改写`)
+    }
+  })
+
+  it('英文正文里的方括号补充说明不再被包成公式', () => {
+    for (const src of [
+      'see note [1] below',
+      'the value of x [see below]',
+      'see Fig [3] for details',
+      'array a [i] index',
+      'use arr [0] to access',
+      'in section [2.1] we show',
+      'Read the manual [PDF] first',
+    ]) {
+      assert.equal(preprocessMath(src), src, `普通方括号被包进公式: ${preprocessMath(src)}`)
+    }
+  })
+
+  it('不带空格的下标访问仍然是公式（本次收紧没有误伤）', () => {
+    assert.ok(preprocessMath('状态 dp[i][j] 表示前 i 个').includes('$dp[i][j]$'))
+    assert.ok(preprocessMath('权值正是 a[offset]').includes('$a[offset]$'))
+    assert.ok(preprocessMath('用 dp_max[i] 记录').includes('$dp_max[i]$'))
+  })
+})
+
+/**
+ * `==` 是**编程**关系运算符（数学里相等是单个 `=`），因此显式代码区里的 `==`
+ * 必须原样保留。此前 `looksLikeCode` 不认 `==`，导致 `` `a == b` `` 与裸围栏
+ * 被改判成公式、`==` 再被压成 `=`，等号语义丢失。
+ */
+describe('代码区里的 == 保持原样（回归）', () => {
+  it('行内代码里的 == 不被升级为公式', () => {
+    for (const src of ['`a == b`', '`x == null`', '`a === b`', '`a == b` 判断相等']) {
+      const out = preprocessMath(src)
+      assert.ok(out.includes('=='), `== 被吞掉: ${out}`)
+      assert.ok(!out.includes('$'), `行内代码被升级成公式: ${out}`)
+    }
+  })
+
+  it('裸围栏里的 == 保持代码块', () => {
+    for (const body of ['print(a == b)', 'x == y', 'dp[i] == dp[j]', 'sum == total']) {
+      const out = preprocessMath('```\n' + body + '\n```')
+      assert.ok(out.includes('```'), `围栏被转成公式: ${out}`)
+      assert.ok(out.includes('=='), `== 被改写: ${out}`)
+      assert.ok(!out.includes('$$'), `围栏被转成块级公式: ${out}`)
+    }
+  })
+
+  it('显式 $...$ 公式里的 == 仍按数学转成 =（有意保留）', () => {
+    assert.ok(preprocessMath('$x == y$').includes('x = y'))
+  })
+})
+
+/**
+ * 链接**目的地**里的 `_`、`^`、`[` 会命中裸数学种子（`[a-zA-Z]+_[a-zA-Z0-9]+` 等），
+ * 把 URL 片段包进 `$…$` 后链接再也解析不出来：
+ *   `[x](https://e.com/ab_cd)` → ``[x](https:`//e.com/ab_cd)``
+ * 因此 `](…)` 里的目的地被当作非文本区保护；链接**文本**仍走正常管线。
+ */
+describe('链接目的地不被当作数学（回归）', () => {
+  it('URL 里的 _ ^ [ ] 不触发裸数学包裹', () => {
+    for (const src of [
+      '链接 [文本](https://example.com/path_(with_parens))',
+      'see [x](https://e.com/ab_cd)',
+      '链接 [文本](https://example.com/path_x)',
+      'see [x](https://e.com/a^b)',
+      'see [x](https://e.com/a[i])',
+      '参考 [题解](https://www.luogu.com.cn/problem/solution/P1001)',
+    ]) {
+      assert.equal(preprocessMath(src), src, `链接目的地被改写: ${preprocessMath(src)}`)
+    }
+  })
+
+  it('链接文本里的数学照常渲染（只保护目的地）', () => {
+    const out = preprocessMath('[复杂度 $O(n)$ 的说明](https://e.com/a_b)')
+    assert.ok(out.includes('$O(n)$'), `链接文本里的公式被吞: ${out}`)
+    assert.ok(out.includes('a_b'), `链接目的地被改写: ${out}`)
+  })
+})

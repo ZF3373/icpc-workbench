@@ -24,8 +24,22 @@ function submission(over: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-test('normalizes CF submission (OK -> AC, rating/tags/link)', async () => {
-  const adapter = createCodeforcesAdapter(async () =>
+test('problemUrl: 纯数字题号按「末 2 位是题号」拆分（92101 回归）', () => {
+  /**
+   * CF 实测存在 `92101`（= 比赛 921 + 题号 `01`）这类纯数字合法键，
+   * 贪婪的 /^(\d+)(.+)$/ 会把比赛号错拆成 9210，拼出打不开的链接。
+   * 口径与 contests/participated.ts 的 contestIdOf 一致。
+   */
+  const adapter = createCodeforcesAdapter();
+  const url = (k: string): string => adapter.problemUrl({ problemKey: k } as never);
+  assert.equal(url('92101'), 'https://codeforces.com/contest/921/problem/01');
+  // 非纯数字键不受影响
+  assert.equal(url('1A'), 'https://codeforces.com/contest/1/problem/A');
+  assert.equal(url('921A'), 'https://codeforces.com/contest/921/problem/A');
+  assert.equal(url('1234B2'), 'https://codeforces.com/contest/1234/problem/B2');
+});
+
+test('normalizes CF submission (OK -> AC, rating/tags/link)', async () => {  const adapter = createCodeforcesAdapter(async () =>
     cfRes({ status: 'OK', result: [submission({})] }),
   );
   const rows = await adapter.fetchUserSubmissions('testuser');
