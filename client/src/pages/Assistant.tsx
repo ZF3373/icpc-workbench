@@ -2570,7 +2570,7 @@ export default function Assistant() {
                       </div>
                     </details>
                   )}
-                  <Markdown text={text} streaming={sending && i === messages.length - 1} />
+                  <Markdown text={text} breaks streaming={sending && i === messages.length - 1} />
                   {text.trim() && (
                     <Button
                       size="small"

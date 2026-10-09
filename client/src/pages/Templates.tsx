@@ -856,7 +856,7 @@ export default function Templates() {
                               {content.idea && (
                                 <div className="template-section">
                                   <div className="section-label">{t.custom ? '思路与备注' : '我的思路'}</div>
-                                  <Markdown text={content.idea} />
+                                  <Markdown text={content.idea} breaks />
                                 </div>
                               )}
 

@@ -755,7 +755,7 @@ export default function Lists() {
           <Spin style={{ display: 'block', margin: '32px auto' }} tip="AI 正在结合你的练习数据分析题单…" />
         ) : (
           <>
-            <Markdown text={suggest} />
+            <Markdown text={suggest} breaks />
             {detail?.aiSuggestionAt && (
               <p style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 12, textAlign: 'right' }}>
                 生成于 {new Date(detail.aiSuggestionAt + 'Z').toLocaleString('zh-CN')}

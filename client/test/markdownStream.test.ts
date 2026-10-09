@@ -64,6 +64,49 @@ describe('未闭合强调定界符', () => {
   })
 })
 
+// ---------- `==高亮==` ----------
+
+describe('未闭合的 ==高亮==', () => {
+  it('==重点 → 补 ==', () => {
+    assertAppends('结论是 ==关键', '==')
+  })
+  it('已闭合的 ==重点== 不动', () => {
+    assertUnchanged('结论是 ==关键== 说明')
+  })
+  it('一行里已有一对、末尾又开一个 → 补 ==', () => {
+    assertAppends('==a== 和 ==b', '==')
+  })
+  it('相等比较 a == b 不补（== 后面是空格，不构成开定界符）', () => {
+    assertUnchanged('当 a == b 时')
+  })
+  it('相等比较 x==y 不补（紧贴词字符）', () => {
+    assertUnchanged('判断 x==y 是否成立')
+  })
+  it('行内代码里的 == 不参与配对', () => {
+    assertUnchanged('写法是 `a == b` 的记号')
+  })
+  it('围栏代码块里的 == 不参与配对', () => {
+    assertUnchanged('```cpp\nif (a == b) return 1;\n```')
+  })
+  it('公式区里的 == 不参与配对', () => {
+    assertUnchanged('公式 $a == b$ 里')
+  })
+  it('未闭合的开定界符在更早的行上 → 不补（补了也跨行配不成对）', () => {
+    assertUnchanged('==开头\n后续正文')
+  })
+  it('高亮与加粗同时未闭合 → 收尾顺序是先加粗后高亮', () => {
+    // 必须先补 `**` 再补 `==`，否则得到 `==**重点==**`（高亮与加粗互相穿插）
+    assertAppends('==**重点', '**==')
+  })
+  it('补全后经管线能正常渲染成高亮（与 preprocessMath 串起来）', () => {
+    const out = repairStreamingMarkdown('结论是 ==关键')
+    assert.equal(out, '结论是 ==关键==')
+    // 管线把定界符换成哨兵对（哨兵不在可见文本里，由 rehype 组装成 mark）
+    const processed = preprocessMath(out)
+    assert.ok(!processed.includes('=='), `定界符应已转成哨兵: ${JSON.stringify(processed)}`)
+  })
+})
+
 // ---------- 行内代码 ----------
 
 describe('未闭合行内代码', () => {

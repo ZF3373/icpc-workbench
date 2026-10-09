@@ -13,6 +13,8 @@ import { normalizeLang } from './markdownCode.ts'
 import { repairStreamingMarkdown, findStableBlockSplit } from './markdownStream.ts'
 import { reportMathIssues } from './markdownDiag.ts'
 import { rehypeBrAllowlist } from './markdownBr.ts'
+import { rehypeMark } from './markdownMark.ts'
+import { remarkBreaks } from './markdownBreaks.ts'
 
 /**
  * Markdown 渲染（AI 回复 / 模板思路 / 笔记 / 题单描述）：
@@ -21,9 +23,13 @@ import { rehypeBrAllowlist } from './markdownBr.ts'
  * 三类内容分开渲染，视觉上必须一眼可辨：
  *   · 代码 —— 代码卡：语言标签 + 语法高亮 + 悬停复制 + 超长内容折叠（等宽字体、缩进底）
  *   · 公式 —— KaTeX：块级公式居中并带横向滚动，行内公式与正文基线对齐
- *   · 文字 —— 常规排版：标题层级、列表、引用、表格
+ *   · 文字 —— 常规排版：标题层级、列表、引用、表格、`==高亮==` 重点标记
  * 「代码 / 公式 / 文字」的身份判定在 preprocessMath + markdownCode 中完成，
  * 本组件只负责把它们渲染成对应的外观。
+ *
+ * `==高亮==`（重点标记）与段内换行（`breaks`）见 markdownMark.ts / markdownBreaks.ts：
+ * 前者在字符串层换成私有区哨兵、在 rehype 阶段组装成 mark 元素（绕开"HTML 一律转义"
+ * 的安全姿态）；后者只在 AI 生成的内容上开启，用户手写笔记保持 Markdown 原语义。
  *
  * 流式输出时（`streaming`）做两件事：
  *   1. 经 markdownStream 补上未闭合的定界符、截掉写了一半的链接 ——
@@ -201,6 +207,14 @@ interface MarkdownProps {
    * `push_back`），补符号会改变原意；而流式的每一帧本来就是半成品。
    */
   streaming?: boolean
+  /**
+   * 段内单个换行是否渲染成真换行（`remarkBreaks` 等价行为）。
+   *
+   * 默认关闭：用户手写的笔记里，段内换行是 Markdown 语义的软换行，改成硬换行会
+   * 改变既有笔记的排版。AI 生成的内容（助手回复 / 模板思路 / 题单建议）开启 ——
+   * 模型没写空行时也能分行显示，这是"内容挤成一坨"的渲染层兜底。
+   */
+  breaks?: boolean
 }
 
 /**
@@ -217,7 +231,7 @@ function safeUrlTransform(url: string, _key: string, _node: Element): string | n
   return undefined
 }
 
-function MarkdownBody({ text, streaming = false }: MarkdownProps) {
+function MarkdownBody({ text, streaming = false, breaks = false }: MarkdownProps) {
   // 流式：先补上未闭合的定界符，再走公式预处理管线
   // （补全必须在 preprocessMath **之前**：管线按 `$…$`/`` `…` `` 定界符切分区域，
   //   定界符不配对时整段内容的身份判定都会跟着错）
@@ -232,11 +246,23 @@ function MarkdownBody({ text, streaming = false }: MarkdownProps) {
   return (
     <div className="markdown-body">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[
+          remarkGfm,
+          // 段内换行 → 真换行。与 remarkMath 的**注册顺序无关**：remark-math 是
+          // micromark 语法扩展、在解析阶段就生效，`$$…$$` 在任何 transformer 运行前
+          // 已是 math 节点（叶子、无 children），本插件看不到也拆不动它。
+          // 真正保证公式与代码不被拆的是 markdownBreaks 里对叶子节点的显式跳过。
+          ...(breaks ? [remarkBreaks] : []),
+          remarkMath,
+        ]}
         rehypePlugins={[
           // `<br>` 白名单：GFM 表格单元格内换行的唯一写法，零注入面（见 markdownBr）；
           // 必须在任何 rehype 插件里跑在 react-markdown 的 raw→文本转义之前，放最前
           rehypeBrAllowlist,
+          // `==高亮==` 的哨兵 → mark 元素。必须排在 rehypeKatex **之后**：
+          // 公式在此时已经变成元素，`==$O(n)$==` 的哨兵分处公式前后的两个文本节点，
+          // 由本插件按兄弟序列配对、把公式整体包进 mark（见 markdownMark.ts）
+          rehypeMark,
           // KaTeX：
           // - `throwOnError: false` —— 公式写错时退回源码文本，不整段崩掉；
           // - `trust: false` —— 禁掉 `\href`/`\url`/`\includegraphics` 等可跳转/外链命令；
@@ -289,19 +315,19 @@ const MarkdownCore = memo(MarkdownBody)
  * 只有尾段（通常就是正在打字的那一段/那个代码块）每帧重来。
  * 文档太短时 findStableBlockSplit 返回 -1，走原来的整体渲染，行为完全不变。
  */
-function MarkdownStreaming({ text }: { text: string }) {
+function MarkdownStreaming({ text, breaks }: { text: string; breaks: boolean }) {
   const cut = findStableBlockSplit(text)
-  if (cut <= 0) return <MarkdownCore text={text} streaming />
+  if (cut <= 0) return <MarkdownCore text={text} streaming breaks={breaks} />
   return (
     <>
-      <MarkdownCore text={text.slice(0, cut)} />
-      <MarkdownCore text={text.slice(cut)} streaming />
+      <MarkdownCore text={text.slice(0, cut)} breaks={breaks} />
+      <MarkdownCore text={text.slice(cut)} streaming breaks={breaks} />
     </>
   )
 }
 
-function MarkdownInner({ text, streaming = false }: MarkdownProps) {
-  return streaming ? <MarkdownStreaming text={text} /> : <MarkdownCore text={text} />
+function MarkdownInner({ text, streaming = false, breaks = false }: MarkdownProps) {
+  return streaming ? <MarkdownStreaming text={text} breaks={breaks} /> : <MarkdownCore text={text} breaks={breaks} />
 }
 
 /**

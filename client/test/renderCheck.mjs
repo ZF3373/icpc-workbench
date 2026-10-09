@@ -75,6 +75,7 @@ const { default: Markdown } = await load('Markdown.js')
 const { repairStreamingMarkdown } = await load('markdownStream.js')
 const { preprocessMath } = await load('markdownMath.js')
 const { auditMathRender } = await load('markdownDiag.js')
+const { MARK_OPEN, MARK_CLOSE } = await load('markdownMark.js')
 
 /* ---------------------------- 断言工具 ---------------------------- */
 
@@ -95,6 +96,9 @@ function visibleText(html) {
 
 const render = (text, streaming) =>
   renderToStaticMarkup(React.createElement(Markdown, streaming === undefined ? { text } : { text, streaming }))
+
+/** 开启段内换行（AI 生成内容的默认形态）后渲染 */
+const renderBreaks = (text) => renderToStaticMarkup(React.createElement(Markdown, { text, breaks: true }))
 
 /** 数表头：`<th[ >]` —— 用 `<th[^>]*>` 会把 `<thead>` 也算进去 */
 const tableHeaderCount = (html) => (html.match(/<th[ >]/g) ?? []).length
@@ -742,7 +746,7 @@ check('index.css 括号配平，且章节/段落/代码卡间距已放宽', () =
   for (const decl of [
     'margin: 20px 0 8px;', // 标题上间距
     'margin-top: 26px;', // h1/h2 更大一层
-    'margin: 8px 0;', // 段落
+    'margin: 10px 0;', // 段落（本轮从 8px 放宽到 10px：治"挤成一坨"）
     'margin: 13px 0;', // 代码卡
     'margin: 15px 0;', // 块级公式
   ]) {
@@ -843,6 +847,244 @@ check('代码里的 <br> 保持字面（那是代码内容，不是换行）', (
   // 高亮会把代码切成 span，解码后比对内容：br 仍是字面字符，而不是元素
   assert.ok(!/<br\s*\/?>/.test(card), '代码块里出现了真 br 元素')
   assert.ok(visibleText(card).includes('<div><br></div>'), `代码块里的 <br> 没有保持字面: ${visibleText(card)}`)
+})
+
+/* ---------------------------- [10] ==高亮== 重点标记 ---------------------------- */
+
+console.log('\n[10] `==…==` 重点标记：着色渲染，且绝不动相等比较')
+
+/** 高亮标记的渲染结果：<mark class="md-mark">…</mark> */
+const MARK_RE = /<mark class="md-mark">([\s\S]*?)<\/mark>/g
+const markContents = (html) => [...html.matchAll(MARK_RE)].map((m) => m[1])
+
+check('基本高亮渲染成 mark.md-mark，文字正确', () => {
+  const html = render('结论是 ==关键点== 记住了。', false)
+  const marks = markContents(html)
+  assert.equal(marks.length, 1, `应渲染出 1 个高亮: ${html}`)
+  assert.ok(marks[0].includes('关键点'), `高亮内容不对: ${marks[0]}`)
+  // 定界符不能残留在可见文本里
+  assert.ok(!visibleText(html).includes('=='), `可见文本残留定界符: ${visibleText(html)}`)
+})
+
+check('一行里多组高亮各自成 mark', () => {
+  const html = render('==甲== 与 ==乙== 都要记。', false)
+  const marks = markContents(html)
+  assert.equal(marks.length, 2, `应有 2 个高亮: ${html}`)
+  assert.ok(marks[0].includes('甲') && marks[1].includes('乙'), `高亮内容不对: ${JSON.stringify(marks)}`)
+})
+
+check('高亮里的公式仍渲染成 KaTeX，且被包进 mark（跨元素配对）', () => {
+  const raw = '复杂度 ==$O(n\\log n)$== 可以接受。'
+  const html = render(raw, false)
+  const marks = markContents(html)
+  assert.equal(marks.length, 1, `应有 1 个高亮: ${html}`)
+  assert.ok(marks[0].includes('class="katex"'), `高亮里的公式没有渲染成 KaTeX: ${marks[0]}`)
+  assert.ok(!html.includes('katex-error'), '出现 katex-error')
+  assert.equal(auditMathRender(preprocessMath(raw)).length, 0)
+})
+
+check('高亮里的裸数学照常渲染（哨兵不是数学字符，不干扰包裹）', () => {
+  const raw = '转移是 ==dp_i = dp_{i-1} + 1== 的形式。'
+  const html = render(raw, false)
+  const marks = markContents(html)
+  assert.equal(marks.length, 1, `应有 1 个高亮: ${html}`)
+  assert.ok(marks[0].includes('class="katex"'), `高亮里的数学没有渲染成公式: ${marks[0]}`)
+  assert.ok(!html.includes('katex-error'), '出现 katex-error')
+})
+
+check('高亮与粗体嵌套：两个方向都不塌', () => {
+  for (const raw of ['==**重点**==', '**==重点==**']) {
+    const html = render(raw, false)
+    assert.equal(markContents(html).length, 1, `${raw} 应产出 1 个高亮: ${html}`)
+    assert.ok(html.includes('<strong>'), `${raw} 丢了粗体: ${html}`)
+  }
+})
+
+check('红线：相等比较绝不被当成高亮', () => {
+  for (const raw of ['a == b 是相等', 'if (a == b)', 'cnt == 0', 'x==y', 'dp[i]==dp[j]']) {
+    const html = render(raw, false)
+    assert.equal(markContents(html).length, 0, `${raw} 被误判成高亮: ${html}`)
+    assert.ok(visibleText(html).includes('=='), `${raw} 的 == 被吃掉了: ${visibleText(html)}`)
+  }
+})
+
+check('红线：代码区/公式区里的 == 不受高亮影响', () => {
+  // 含代码语句特征的 span 保持代码外观，内容一个字符都不能被改写
+  const code = render('写法是 `if (a == b) return 1;` 的记号', false)
+  assert.equal(markContents(code).length, 0, `行内代码被误判成高亮: ${code}`)
+  assert.ok(code.includes('<code>if (a == b) return 1;</code>'), `行内代码内容被改写: ${code}`)
+
+  // 只有相等关系的短 span 会被**既有**管线升级为行内公式（`$a = b$`，与本轮改动无关）——
+  // 关键是它绝不能变成高亮
+  const short = render('写法是 `a == b` 的记号', false)
+  assert.equal(markContents(short).length, 0, `短公式 span 被误判成高亮: ${short}`)
+
+  const fence = render('```cpp\nif (a == b) return 1;\n```', false)
+  assert.equal(markContents(fence).length, 0, `围栏代码被误判: ${fence}`)
+  assert.ok(visibleText(fence).includes('if (a == b) return 1;'), `围栏内容被改写: ${visibleText(fence)}`)
+
+  const math = render('公式 $a == b$ 里', false)
+  assert.equal(markContents(math).length, 0, `公式区被误判: ${math}`)
+})
+
+check('未配对的高亮降级为字面 ==，绝不产出半截 mark', () => {
+  for (const raw of ['未闭合 ==一半', '==x==y', '== 空格开头', '==重点 ==']) {
+    const html = render(raw, false)
+    assert.equal(markContents(html).length, 0, `${raw} 不应产出高亮: ${html}`)
+  }
+})
+
+check('哨兵字符绝不泄漏到渲染结果（私有区字符会显示成方框）', () => {
+  for (const raw of ['==重点==', '未闭合 ==一半', '==a== 和 ==b', '==**重点**==', '`==code==`']) {
+    const html = render(raw, false)
+    assert.ok(!html.includes(MARK_OPEN) && !html.includes(MARK_CLOSE), `${raw} 泄漏了哨兵: ${html}`)
+    assert.ok(!html.includes('\uE000') && !html.includes('\uE001'), `${raw} 泄漏了私有区字符`)
+  }
+})
+
+check('流式路径同样渲染高亮（含半成品补全）', () => {
+  const html = render('结论是 ==关键', true)
+  assert.equal(markContents(html).length, 1, `流式半成品没有补成高亮: ${html}`)
+  assert.ok(!visibleText(html).includes('=='), `流式可见文本残留定界符: ${visibleText(html)}`)
+})
+
+check('逐字流式：高亮定界符不会在屏幕上闪出字面 ==', () => {
+  const answer = '结论：==按位贪心可以证明==，注意 **边界**。'
+  const violations = []
+  const dirty = []
+  for (let n = 1; n <= answer.length; n++) {
+    const frame = answer.slice(0, n)
+    const text = visibleText(render(frame, true))
+    // 补全只能让可见残留变少、不能变多（与 [6] 的单调性同一口径）
+    const raw = badness(render(frame, false))
+    const fixed = badness(render(frame, true))
+    if (fixed > raw) violations.push({ n, raw, fixed, tail: frame.slice(-12) })
+    // 开定界符后面已经有内容时，收尾补全应已生效 → 不该再看到字面 ==。
+    // （刚打出 `==` 而后面还什么都没有的那一两帧是歧义的：它也可能是相等运算符，
+    //   与 `**` 的行为一致，此时不补、按字面显示，不算违规。）
+    const afterOpen = /==\S/.test(frame)
+    if (afterOpen && text.includes('==')) dirty.push({ n, tail: frame.slice(-12), text })
+  }
+  assert.equal(violations.length, 0, `补全让可见残留变多了: ${JSON.stringify(violations.slice(0, 3))}`)
+  assert.equal(dirty.length, 0, `开定界符后已有内容却仍闪字面 ==: ${JSON.stringify(dirty.slice(0, 3))}`)
+})
+
+/* ---------------------------- [11] 段内换行（breaks） ---------------------------- */
+
+console.log('\n[11] breaks：AI 生成内容的段内换行渲染成真换行')
+
+check('开启 breaks 后，段内单个换行变成 <br>', () => {
+  const html = renderBreaks('第一行\n第二行')
+  assert.ok((html.match(/<br\s*\/?>/g) ?? []).length >= 1, `段内换行没有变成 br: ${html}`)
+  assert.ok(visibleText(html).includes('第一行') && visibleText(html).includes('第二行'), visibleText(html))
+})
+
+check('默认（用户手写笔记）不开 breaks：段内换行仍是软换行', () => {
+  const html = render('第一行\n第二行')
+  assert.equal((html.match(/<br\s*\/?>/g) ?? []).length, 0, `默认不该产出 br: ${html}`)
+})
+
+check('breaks 不拆散块级公式（math 是叶子节点，breaks 拆不动它）', () => {
+  const raw = '推导：\n\n$$\ndp_i = dp_{i-1} + 1\n$$\n\n完成。'
+  const html = renderBreaks(raw)
+  assert.ok(html.includes('katex-display'), `块级公式没有渲染出来: ${html.slice(0, 300)}`)
+  assert.ok(!html.includes('katex-error'), '出现 katex-error（公式被 breaks 拆坏了）')
+  assert.equal(auditMathRender(preprocessMath(raw)).length, 0)
+})
+
+check('breaks 不拆散代码块内容', () => {
+  const raw = '代码如下：\n\n```cpp\nint main() {\n  return 0;\n}\n```'
+  const html = renderBreaks(raw)
+  const cardStart = html.indexOf('md-code-card')
+  const card = html.slice(cardStart, html.indexOf('</pre>', cardStart) + 6)
+  assert.ok(card.length > 20, `代码卡没抓到: ${html.slice(0, 200)}`)
+  // 语法高亮把代码切成了 span，比对解码后的可见文本（`int main()` 被 hljs 拆成多个 span）
+  const code = visibleText(card)
+  assert.ok(code.includes('int main()'), `代码卡内容丢了: ${code}`)
+  assert.ok(code.includes('return 0;'), `代码卡内容丢了: ${code}`)
+  // 换行与缩进都还在（breaks 不能把代码内容改成 br）
+  assert.ok(code.includes('\n  return 0;'), `代码卡里丢了换行或缩进: ${JSON.stringify(code)}`)
+  assert.ok(!/<br\s*\/?>/.test(card), '代码卡里被插入了 br（代码内容被改写）')
+})
+
+check('breaks 不拆散表格行', () => {
+  const raw = '| 解法 | 复杂度 |\n| --- | --- |\n| 暴力 | $O(n^2)$ |\n| 优化 | $O(n\\log n)$ |'
+  const html = renderBreaks(raw)
+  assert.ok(html.includes('<table>'), `表格结构被破坏: ${html.slice(0, 300)}`)
+  assert.equal(tableHeaderCount(html), 2, '表头数不对')
+})
+
+/* ---------------------------- [12] 排版分层（分块与着色） ---------------------------- */
+
+console.log('\n[12] 排版分层：标题色条 + 粗体着色 + 高亮着色')
+
+check('CSS 定义了三层重点着色（高亮 / 粗体），且用 Token 不用字面量', () => {
+  const css = readFileSync(join(clientRoot, 'src', 'index.css'), 'utf8')
+  // 高亮：文字色 + 同色系淡底（--mark-text 是**正文专用**的深一档，不能直接用 --amber：
+  // 亮色主题下 --amber 在淡琥珀底上只有 2.05:1，见 test/contrastCheck.mjs）
+  assert.ok(
+    /\.markdown-body mark[\s\S]{0,500}?background:\s*var\(--amber-soft\)/.test(css),
+    '高亮缺少 --amber-soft 底色',
+  )
+  assert.ok(
+    /\.markdown-body mark[\s\S]{0,500}?color:\s*var\(--mark-text\)/.test(css),
+    '高亮缺少 --mark-text 文字色',
+  )
+  // 粗体：正文专用的 --strong-text
+  assert.ok(
+    /\.markdown-body strong\s*\{[^}]*color:\s*var\(--strong-text\)/.test(css),
+    '粗体缺少 --strong-text 着色',
+  )
+  // 两套主题都要声明这两个 Token（否则亮色主题会 fallback 到暗色值）
+  const rootAt = css.indexOf(':root')
+  const root = css.slice(rootAt, css.indexOf('}', rootAt))
+  const lightAt = css.indexOf("[data-theme='light']")
+  const light = css.slice(lightAt, css.indexOf('}', lightAt))
+  for (const token of ['--mark-text', '--strong-text']) {
+    assert.ok(root.includes(`${token}:`), `:root（暗色）缺少 ${token}`)
+    assert.ok(light.includes(`${token}:`), `亮色主题缺少 ${token}`)
+  }
+  // 高亮里的粗体/公式/代码跟随高亮色（避免一个标记里三种颜色）
+  assert.ok(/\.md-mark strong[\s\S]{0,80}?color:\s*inherit/.test(css), '高亮里的粗体没有跟随高亮色')
+  assert.ok(/\.md-mark code[\s\S]{0,120}?color:\s*inherit/.test(css), '高亮里的代码没有跟随高亮色')
+})
+
+check('标题层级带左侧色条（h1/h2 实色、h3 半透明）', () => {
+  const css = readFileSync(join(clientRoot, 'src', 'index.css'), 'utf8')
+  assert.ok(
+    /\.markdown-body h1,\s*\.markdown-body h2,\s*\.markdown-body h3\s*\{[^}]*border-left:\s*3px solid var\(--brand\)/.test(css),
+    '标题缺少左侧色条',
+  )
+  assert.ok(
+    /\.markdown-body h3\s*\{[^}]*border-left-color:\s*var\(--brand-line\)/.test(css),
+    'h3 色条没有用半透明的 --brand-line 做层级区分',
+  )
+})
+
+check('渲染出的结构确实分层：标题 / 列表 / 高亮 / 粗体各就各位', () => {
+  const raw = [
+    '一句话结论：这题用 ==单调栈== 即可。',
+    '',
+    '### 1. 题意',
+    '',
+    '给定一个序列，求 **最大矩形面积**。',
+    '',
+    '- 要点一：**单调栈** 维护递增序列',
+    '- 要点二：遇到更矮的柱子就弹栈',
+  ].join('\n')
+  const html = renderBreaks(raw)
+  assert.ok(html.includes('<h3>1. 题意</h3>'), `小标题没有渲染成 h3: ${html.slice(0, 300)}`)
+  assert.ok(html.includes('<ul>') && html.includes('<li>'), '列表结构丢了')
+  assert.equal(markContents(html).length, 1, `高亮数量不对: ${html}`)
+  assert.ok(html.includes('<strong>最大矩形面积</strong>'), '粗体没有渲染')
+  assert.ok(!visibleText(html).includes('=='), `可见文本残留定界符: ${visibleText(html)}`)
+  assert.ok(!html.includes('katex-error'), '出现 katex-error')
+})
+
+check('红线：强调语法没有被着色改动（斜体/删除线不受影响）', () => {
+  const html = render('这是 *斜体* 与 ~~删除线~~ 的测试', false)
+  assert.ok(html.includes('<em>斜体</em>'), `斜体坏了: ${html}`)
+  assert.ok(html.includes('<del>删除线</del>'), `删除线坏了: ${html}`)
 })
 
 /* ---------------------------- 收尾 ---------------------------- */

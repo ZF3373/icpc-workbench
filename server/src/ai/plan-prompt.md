@@ -40,8 +40,7 @@
 - 计划从 {startDate} 开始，共 {days} 天，每天 {dailyTasks} 个任务（练习题为任务主体；回顾/模拟赛穿插其间）
 - 优先覆盖用户弱项标签（见弱项画像，gap 越大越弱）；题目清单已按弱项分组，**新题（未 AC）为主，标注「已AC-可作复习」的题仅在 review 任务中少量安排**
 - 题目难度以「建议训练区间」（suggestedRange）为准：以区间中位为主，穿插少量上限题做挑战；不要安排远低于区间的水题
-- **practice/topic 任务必须从题目清单选题，并原样复制清单中的 problemKey 与 url**（用户要靠 url 点击跳转做题）；只有 review/contest 类泛任务可以不带题目
-- 清单外选题时也必须给出可访问的题目链接（该平台的题目页 URL）
+- **practice/topic 任务必须从题目清单选题，并原样复制清单中的 problemKey 与 url**（用户要靠 url 点击跳转做题）；只有 review/contest 类泛任务可以不带题目；清单外选题时也必须给出可访问的题目链接（该平台题目页 URL）
 - 每 3-4 天安排一次 kind=review 的回顾任务
 - 每周安排一次 kind=contest 的模拟比赛任务，url 给虚拟赛入口（如 https://codeforces.com/problemset?order=BY_SOLVED_DESC）
 - 结合「练习数据汇总」编排：卡壳题（多次尝试未通过）优先安排重做或同知识点新题；复习库到期的题安排 review 任务；「课程盲区」中的知识点可安排 1-2 个 kind=topic 的学习任务（先补模板再刷题）；保持用户已有的连续打卡节奏

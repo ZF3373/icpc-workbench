@@ -86,6 +86,17 @@ SF 段位色（`--cf-*`，由 `difficultyColor()` 返回）：
 
 `--cf-new` `--cf-pupil` `--cf-specialist` `--cf-expert` `--cf-cm` `--cf-master` `--cf-gm`
 
+Markdown 重点着色（AI 回复的扫读锚点，见 `client/src/components/markdownMark.ts`）：
+
+| Token | 用途 | 为什么不能复用现有 Token |
+|---|---|---|
+| `--mark-text` | `==高亮==` 的文字色（底色用 `--amber-soft`） | `--amber` 是给图表/角标调的中等琥珀，放到 13px 正文的淡琥珀底上亮色主题只有 **2.05:1**，低于 WCAG AA |
+| `--strong-text` | `**粗体**` 的文字色 | `--brand-text` 亮色下是 `#5a7de0`，在正文底色上只有 **3.38:1**，同样不达标 |
+
+> 两个 Token 在 `:root`（暗色）与 `[data-theme='light']`（亮色）**成对声明**，
+> 每套主题都按各自底色校准到 ≥ 4.5:1。改动后用 `cd client && npm run check:contrast`
+> 核对（脚本直接读 `index.css` 的 Token 值按 WCAG 公式计算，不依赖浏览器）。
+
 ---
 
 ## 3. 有意保留的硬编码色
@@ -118,6 +129,12 @@ cd client && npx oxlint
 
 # 4) 生产构建
 cd client && npx vite build
+
+# 4.5) Markdown 排版专项（本轮新增）
+cd client && npm run check:contrast      # 重点着色在暗/亮两套主题下的 WCAG 对比度
+cd client && npm run check:render        # Markdown 渲染结构（含 ==高亮== / 段内换行）
+cd client && npm run preview:markdown    # 生成一段 AI 回复的暗/亮预览页（自包含 HTML）
+                                         # 产出在 client/test/.preview/，可直接用浏览器打开
 
 # 5) 目标逐项断言（把计划书条目变成对源码的断言，共 135 项）
 node .scratch/verify-objective.mjs    # Phase 1/2 + Phase 3-5 高价值项：83 项

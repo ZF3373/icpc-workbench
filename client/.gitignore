@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# 渲染核对脚本的编译产物与预览输出（见 test/renderCheck.mjs / test/markdownPreview.mjs）
+test/.render-out/
+test/.preview-out/
+test/.preview/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

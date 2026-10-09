@@ -12,6 +12,8 @@
  * 这样后续所有基于正则的公式逻辑都"看不见"代码，从根上避免
  * `ios::sync_with_stdio` / `g[prev].push_back` / `f_{i,j}` 被误当作公式渲染。
  */
+import { replaceMarkDelimiters, stripMarkSentinels, stripMarkSentinelsInMath } from './markdownMark.ts'
+import { codeOrMathSkip } from './markdownStream.ts'
 import {
   extractLineComments,
   isMarkdownishLang,
@@ -1124,17 +1126,27 @@ function enhanceMathLayoutInText(text: string): string {
  *  5. 裸数学包裹（内部完成代码区保护与还原）
  *  6. 公式内 Unicode 符号归一化
  *  7. 公式排版增强（大运算符补 \limits、花括号升级为自适应尺寸）
+ *  8. `==…==` → 哨兵（必须在数学处理**之前**：管线会把 `==` 当数学字符吃掉，
+ *     `==dp_i==` 会变成 `$=dp_i=$`；哨兵不是数学字符，管线看不见它，
+ *     而里面的数学照常渲染。详见 markdownMark.ts）
  */
 export function preprocessMath(text: string): string {
-  const cleaned = normalizeMathScriptChars(text.replace(/[\uFE0E\uFE0F]/g, '').replace(/\u00A0/g, ' '))
+  const cleaned = normalizeMathScriptChars(
+    stripMarkSentinels(text).replace(/[\uFE0E\uFE0F]/g, '').replace(/\u00A0/g, ' '),
+  )
     // LaTeX 间距命令里的分号/冒号会被裸数学的片段扩展当作"非数学字符"而截断公式
     // （`\max_{0 \le j < i,\; Y_j …}` 会在 `\;` 处裂开）。统一成等价的 `\,`。
     .replace(/\\[;:]/g, '\\,')
+  // `==…==` → 哨兵对。用 codeOrMathSkip 复用流式扫描器的字符级归属表：
+  // 代码区（`` `x == y` ``、围栏）与公式区（`$a == b$`）里的 `==` 是内容，不动。
+  const marked = replaceMarkDelimiters(cleaned, codeOrMathSkip(cleaned))
   // 表格行内公式的竖线先转写成 \vert：越早转写，后续所有步骤（定界符归一化、
   // 裸数学包裹、符号归一化）看到的都是不含竖线的公式，表格结构全程安全
-  const tableSafe = escapePipesInTableMath(cleaned)
+  const tableSafe = escapePipesInTableMath(marked)
   const normalized = normalizeMathSymbols(wrapBareMath(normalizeMathDelimiters(stripOuterCodeFence(tableSafe))))
-  return enhanceMathLayoutInText(normalized)
+  // 最后一道闸：改写步骤（围栏转公式等）可能把哨兵塞进 $$ 里，KaTeX 遇私有区字符
+  // 会解析失败，宁可丢掉一个高亮也不能让公式崩掉
+  return enhanceMathLayoutInText(stripMarkSentinelsInMath(normalized))
 }
 
 /** 供测试/调试使用：语言标记归一化 */

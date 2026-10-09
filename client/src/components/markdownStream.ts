@@ -23,6 +23,7 @@
  * 参考实现：vercel/streamdown 的 remend（同样的「一次扫描建表 + 按优先级修补」思路，
  * 但按本项目的公式管线重写，未引入任何新依赖）。
  */
+import { needsMarkClose } from './markdownMark.ts'
 
 /* ============================ 一次扫描：代码区 / 公式区 ============================ */
 
@@ -43,8 +44,21 @@ interface OpenMath {
   prefix: string | null
 }
 
+/**
+ * 判断某个下标是否落在**代码区或公式区**（供 `==` 高亮扫描复用本模块的状态机）。
+ *
+ * `==` 有双重身份：高亮定界符，以及代码/公式里的相等运算符。逐个猜身份很脆弱，
+ * 这里直接复用 scanStream 已经建好的字符级归属表 —— 代码区与公式区里的 `==`
+ * 一律当内容（`if (a == b)`、`` `x == y` ``、`$a == b$` 都不受影响），
+ * 只有正文区里的才可能是定界符。调用方传入的 text 必须与后续扫描的文本一致。
+ */
+export function codeOrMathSkip(text: string): (i: number) => boolean {
+  const scan = scanStream(text)
+  return (i: number) => scan.code[i] === 1 || scan.math[i] === 1
+}
+
 /** 扫描结果：字符级的代码/公式归属 + 尾部未闭合的定界符 */
-interface ScanResult {
+export interface ScanResult {
   /** 1 = 该字符位于围栏代码块或行内代码内 */
   code: Uint8Array
   /** 1 = 该字符位于公式区内 */
@@ -371,8 +385,8 @@ function unclosedDelimiters(text: string, scan: ScanResult): string {
  */
 export function repairStreamingMarkdown(text: string): string {
   // 快速返回：没有任何可能未闭合的定界符字符时不必扫描
-  // （`[` 也要算进来：写了一半的链接同样需要修）
-  if (!text || !/[*_~`$\\[]/.test(text)) return text
+  // （`[` 也要算进来：写了一半的链接同样需要修；`=` 覆盖 `==高亮==`）
+  if (!text || !/[*_~`$\\[=]/.test(text)) return text
 
   let out = text
   let scan = scanStream(out)
@@ -419,7 +433,14 @@ export function repairStreamingMarkdown(text: string): string {
 
   // 7. 未闭合的强调定界符（`**加粗` / `*斜体` / `~~删除线`）
   scan = scanStream(out)
-  return out + unclosedDelimiters(out, scan)
+  out += unclosedDelimiters(out, scan)
+
+  // 8. 未闭合的 `==高亮==`。必须排在强调之后：`==**重点` 要先补成 `==**重点**`
+  //    再补 `==`，否则收尾顺序反了会得到 `==**重点==**`（高亮与加粗互相穿插）。
+  //    只看最后一行（配对不跨行），代码区/公式区里的 `==` 是内容不参与。
+  if (needsMarkClose(out, codeOrMathSkip(out))) out += '=='
+
+  return out
 }
 
 /* ============================ 增量渲染：稳定块切点 ============================ */
