@@ -10,7 +10,7 @@ import { migratePlatformCookieToAccounts } from './adapters/accountCreds.ts';
 import { configureSyncScheduler } from './adapters/syncScheduler.ts';
 import { setRequestIntervalScale } from './net/hostThrottle.ts';
 import { asyncHandler } from './asyncHandler.ts';
-import { errorHandler, securityHeaders } from './middleware.ts';
+import { errorHandler, hostGuard, securityHeaders } from './middleware.ts';
 import { backupsRoutes } from './routes/backups.ts';
 import { checkinsRoutes } from './routes/checkins.ts';
 import { contestsRoutes } from './routes/contests.ts';
@@ -69,6 +69,9 @@ try {
 }
 
 const app = express();
+// 监听地址在装配中间件前就要定下来：Host 头校验只在绑定回环时启用（见 middleware.hostGuard）
+const host = process.env.HOST ?? '127.0.0.1';
+app.use(hostGuard(host));
 // 12 MiB：/api/ai/chat 允许每条消息带 8 个附件、单个 textContent 上限 1 MiB（见 routes/ai.ts），
 // 加上对话历史整封上行。原来 2mb 会让这种合法请求在进入路由前就被 body-parser 拒掉
 app.use(express.json({ limit: '12mb' }));
@@ -122,7 +125,6 @@ const port = Number(process.env.PORT ?? config.port);
 // 实测（node 直接跑本文件，PORT=4102）：端口可连接 1.57s / 首个 200 返回 1.67s，
 // 其中索引重建只占约 0.1s —— 启动开销主要在进程引导（import + 打开 DB + 适配器），
 // 不在重建。所以这里改的是"把失败窗口压到最小"，而不是消除那 1.5s 引导时间。
-const host = process.env.HOST ?? '127.0.0.1';
 const server: Server = app.listen(port, host, () => {
   const displayHost = host === '0.0.0.0' ? 'localhost' : host;
   console.log(`[server] listening on http://${displayHost}:${port}`);

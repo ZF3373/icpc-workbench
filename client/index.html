@@ -4,9 +4,8 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <!-- Inter 字体由 src/main.tsx 里的 @fontsource/inter 自托管，不再引用 fonts.googleapis.com：
+         外链会让每次页面加载都连接 Google（泄露本机 IP / UA / 来源页）并阻塞首屏渲染。 -->
     <title>ICPC Workbench · ICPC 备赛工作台</title>
   </head>
   <body>
