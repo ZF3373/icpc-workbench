@@ -48,17 +48,22 @@ struct LoginSpec {
     url: &'static str,
     title: &'static str,
     fields: &'static [(&'static str, &'static str)],
-    /// 凭据与浏览器 UA 绑定（QOJ）：推送时同步写 ua.<platform> 供适配器复刻
+    /// 凭据与浏览器 UA 绑定（QOJ）
     ua: bool,
+    /// WebView 同源代理平台（QOJ）：站点 Cloudflare 把 cf_clearance 绑定到签发客户端的
+    /// TLS 指纹，抓到的 Cookie 在 Node 侧重放必被拦（2026-10-11 实测）。这类平台不再
+    /// 「抓 Cookie 推回」，而是注入守护脚本让 WebView 自己同源抓取提交页（qojAgent）。
+    agent: bool,
 }
 
 const LOGIN_SPECS: &[LoginSpec] = &[
     LoginSpec {
         platform: "qoj",
         url: "https://qoj.ac/",
-        title: "QOJ 登录 · 完成人机验证与登录后自动保存（可随手关闭）",
+        title: "QOJ 登录 · 登录后同步自动经本窗口完成（可随手关闭）",
         fields: &[("__Host-UOJSESSID", "uojsessid"), ("UOJSESSID", "uojsessid"), ("cf_clearance", "clearance")],
         ua: true,
+        agent: true,
     },
     LoginSpec {
         platform: "luogu",
@@ -66,6 +71,7 @@ const LOGIN_SPECS: &[LoginSpec] = &[
         title: "洛谷登录 · 登录后 Cookie 自动保存（可随手关闭）",
         fields: &[("_uid", "uid"), ("__client_id", "clientId")],
         ua: false,
+        agent: false,
     },
     LoginSpec {
         platform: "daimayuan",
@@ -73,6 +79,7 @@ const LOGIN_SPECS: &[LoginSpec] = &[
         title: "代码源登录 · 登录后 Cookie 自动保存（可随手关闭）",
         fields: &[("sid", "sid")],
         ua: false,
+        agent: false,
     },
     LoginSpec {
         platform: "leetcode",
@@ -80,6 +87,7 @@ const LOGIN_SPECS: &[LoginSpec] = &[
         title: "LeetCode 登录 · 登录后 Cookie 自动保存（可随手关闭）",
         fields: &[("LEETCODE_SESSION", "session"), ("csrftoken", "csrftoken")],
         ua: false,
+        agent: false,
     },
     LoginSpec {
         platform: "jisuanke",
@@ -87,6 +95,7 @@ const LOGIN_SPECS: &[LoginSpec] = &[
         title: "计蒜客登录 · 登录后 Cookie 自动保存（可随手关闭）",
         fields: &[("s", "s"), ("JSKUSS", "jskuss")],
         ua: false,
+        agent: false,
     },
     LoginSpec {
         platform: "atcoder",
@@ -94,6 +103,7 @@ const LOGIN_SPECS: &[LoginSpec] = &[
         title: "AtCoder 登录 · 登录后 Cookie 自动保存（可随手关闭）",
         fields: &[("REVEL_SESSION", "revelSession")],
         ua: false,
+        agent: false,
     },
 ];
 
@@ -103,6 +113,37 @@ fn spec_of(platform: &str) -> Option<&'static LoginSpec> {
 
 /// 隐藏保活窗（QOJ 专用：其余平台凭据长效，无续签语义）
 const WORKER_LABEL: &str = "qoj-worker";
+
+/// QOJ 守护脚本：注入到 qoj.ac 页面上下文（与页面同源 → 同源 fetch 自动携带完美客户端
+/// 指纹与真实登录态，Cloudflare 无法区分）。自轮询领任务 → 同源抓取 → 回传。
+/// 幂等（window 标记）；导航换文档后由壳的下一次注入重建。__PORT__ 由注入时替换为核心端口。
+const AGENT_DAEMON_SCRIPT: &str = r#"(function () {
+  if (window.__icpcAgent) return;
+  window.__icpcAgent = true;
+  (async function () {
+    var PORT = "__PORT__";
+    for (;;) {
+      try {
+        var r = await fetch('http://127.0.0.1:' + PORT + '/api/qoj-agent/next');
+        var j = await r.json();
+        if (j && j.job) {
+          var res = await fetch(j.job.url, { credentials: 'include' });
+          var body = await res.text();
+          await fetch('http://127.0.0.1:' + PORT + '/api/qoj-agent/result', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: j.job.id, status: res.status, finalUrl: res.url, body: body })
+          });
+        } else {
+          await new Promise(function (r2) { setTimeout(r2, 4000); });
+        }
+      } catch (e) {
+        await new Promise(function (r2) { setTimeout(r2, 5000); });
+      }
+    }
+  })();
+})();
+"#;
 
 /// 主循环轮询间隔（pending 请求的响应延迟上界）
 const POLL_TICK: Duration = Duration::from_secs(3);
@@ -176,6 +217,50 @@ async fn handle_login(app: &AppHandle, port: u16, req: &PendingRequest) {
         post_failure(port, "login", Some(req.id), "无法打开登录窗口").await;
         return;
     }
+    // WebView 同源代理平台（QOJ）：登录态留在壳内浏览器，抓取由守护脚本完成——
+    // 这里只等登录会话出现，**不推送 Cookie**（重放已被站点 Cloudflare 指纹绑定拦死）
+    if spec.agent {
+        crate::logln(&format!("[shell-auth] {} 登录窗口已打开（同源代理模式），等待登录会话…", spec.platform));
+        let deadline = tokio::time::Instant::now() + LOGIN_WATCH;
+        let mut logged_in = false;
+        loop {
+            tokio::time::sleep(POLL_TICK).await;
+            if app.get_webview_window(&label).is_none() {
+                break; // 用户关窗
+            }
+            if let Some(c) = read_cookies(app, &label, spec) {
+                if c.iter().any(|(k, _)| k == "uojsessid") {
+                    logged_in = true;
+                    break;
+                }
+            }
+            // 幂等注入：登录过程会多次跳转换文档，守护脚本随文档重建
+            inject_agent(app, &label, port);
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+        }
+        if logged_in {
+            crate::logln("[shell-auth] qoj 登录态已就绪（同源代理模式）");
+            post_result(
+                port,
+                "login",
+                Some(req.id),
+                true,
+                "QOJ 登录态已就绪：同步将自动经内嵌窗口完成，本窗口可随手关闭",
+            )
+            .await;
+        } else {
+            post_failure(
+                port,
+                "login",
+                Some(req.id),
+                "未检测到 qoj.ac 登录：请在窗口里完成登录后再点一次「在应用内登录 QOJ」",
+            )
+            .await;
+        }
+        return;
+    }
     crate::logln(&format!("[shell-auth] {} 登录窗口已打开，等待凭据…", spec.platform));
     let deadline = tokio::time::Instant::now() + LOGIN_WATCH;
     let mut creds: Option<Creds> = None;
@@ -212,62 +297,59 @@ async fn handle_login(app: &AppHandle, port: u16, req: &PendingRequest) {
     }
 }
 
-/// QOJ「立即续签」：隐藏窗静默过盾一轮并把结果回报给发起按钮
+/// QOJ「立即续签」：刷新助手窗口（重导航续签 Cloudflare 凭据 + 重建守护脚本）
 async fn handle_qoj_pull(app: &AppHandle, port: u16, id: u64) {
-    let Some(spec) = spec_of("qoj") else { return };
-    let creds = qoj_pull_once(app, PULL_WAIT).await;
-    match creds {
-        Some(c) if creds_complete(spec, &c) => {
-            let (pushed, message) = push_cookies(port, spec, None, &c).await;
-            crate::logln(&format!("[shell-auth] qoj 手动续签推送{}（{message}）", if pushed { "成功" } else { "失败" }));
-            post_result(port, "pull", Some(id), pushed, &message).await;
+    match renew_qoj_agent(app, port).await {
+        Some(message) => {
+            crate::logln(&format!("[shell-auth] qoj 助手窗口已刷新（{message}）"));
+            post_result(port, "pull", Some(id), true, &message).await;
         }
-        other => {
-            let message = summarize_pull_failure(other.as_ref());
-            crate::logln(&format!("[shell-auth] qoj 手动续签未取齐凭据（{message}）"));
-            post_failure(port, "pull", Some(id), &message).await;
+        None => {
+            post_failure(port, "pull", Some(id), "助手窗口未就绪：请稍候重试，或在设置页点「在应用内登录 QOJ」").await;
         }
     }
 }
 
-/// QOJ 周期保活：仅当核心侧 QOJ 已配置时才动作；连续失败时弹窗请人工过盾
+/// QOJ 周期保活：刷新助手窗口（重导航续签 Cloudflare 凭据 + 重建守护脚本）；
+/// 连续失败多半是挑战需要人工交互，弹窗请人工过盾
 async fn keepalive_tick(app: &AppHandle, port: u16, fails: &mut u32) {
-    let Some(spec) = spec_of("qoj") else { return };
     if !qoj_configured(port).await {
         *fails = 0;
         return;
     }
-    crate::logln("[shell-auth] 保活：后台静默续签 qoj.ac 凭据");
-    let creds = qoj_pull_once(app, PULL_WAIT).await;
-    if let Some(c) = creds.filter(|c| creds_complete(spec, c)) {
-        let (pushed, message) = push_cookies(port, spec, None, &c).await;
-        *fails = 0;
-        crate::logln(&format!("[shell-auth] 保活推送{}（{message}）", if pushed { "成功" } else { "失败" }));
-        post_result(port, "keepalive", None, pushed, &message).await;
-        return;
+    crate::logln("[shell-auth] 保活：刷新 QOJ 助手窗口（续签 Cloudflare 凭据 + 重建守护脚本）");
+    match renew_qoj_agent(app, port).await {
+        Some(message) => {
+            *fails = 0;
+            crate::logln(&format!("[shell-auth] 保活完成（{message}）"));
+            post_result(port, "keepalive", None, true, &message).await;
+            return;
+        }
+        None => {
+            *fails += 1;
+        }
     }
-    *fails += 1;
     if *fails >= KEEPALIVE_FAIL_SHOW {
-        // 连续失败多半是挑战需要人工交互：弹出可见窗口，用户点一下即恢复，壳自动收 Cookie
+        // 连续失败多半是挑战需要人工交互：弹出可见窗口，用户点一下即恢复
         *fails = 0;
         crate::logln("[shell-auth] 保活连续失败，弹出登录窗口请人工完成验证");
         let _ = ensure_window(
             app,
-            &format!("login-{}", spec.platform),
-            spec.url,
-            "QOJ 验证 · 请完成人机验证（Cookie 会自动保存）",
+            "login-qoj",
+            "https://qoj.ac/",
+            "QOJ 验证 · 请完成人机验证（完成后同步自动恢复）",
             true,
         )
         .await;
         post_status(
             port,
             &json!({ "kind": "keepalive", "ok": false, "pushed": false,
-                     "message": "自动续签未成功：已打开 QOJ 窗口，请完成人机验证（凭据会自动保存）", "at": now_secs() }),
+                     "message": "自动续签未成功：已打开 QOJ 窗口，请完成人机验证（完成后同步自动恢复）", "at": now_secs() }),
         )
         .await;
     } else {
-        let message = summarize_pull_failure(None);
-        crate::logln(&format!("[shell-auth] 保活未取齐凭据（{message}）"));
+        let message = "助手窗口刷新失败（窗口可能被系统关闭），下轮自动重试";
+        crate::logln(&format!("[shell-auth] 保活未完成（{message}）"));
         post_status(
             port,
             &json!({ "kind": "keepalive", "ok": false, "pushed": false, "message": message, "at": now_secs() }),
@@ -276,37 +358,36 @@ async fn keepalive_tick(app: &AppHandle, port: u16, fails: &mut u32) {
     }
 }
 
-// ---------- WebView 操作 ----------
-
-/// 隐藏窗静默续签一轮（QOJ）：复用已存在的隐藏窗 → 重新导航（触发 Cloudflare 重评估）→
-/// 轮询 Cookie 直到取齐/超时/窗口消失。返回最后一次读到的凭据。
-async fn qoj_pull_once(app: &AppHandle, wait: Duration) -> Option<Creds> {
-    let Some(spec) = spec_of("qoj") else { return None };
-    if !ensure_window(app, WORKER_LABEL, spec.url, "QOJ 保活", false).await {
+/// 刷新 QOJ 助手窗口：复用/创建隐藏窗 → 重新导航（触发 Cloudflare 重评估续签凭据）→
+/// 轮询期反复幂等注入守护脚本（导航换文档会重建，注入自动补上）。成功返回展示消息。
+async fn renew_qoj_agent(app: &AppHandle, port: u16) -> Option<String> {
+    if !ensure_window(app, WORKER_LABEL, "https://qoj.ac/", "QOJ 助手", false).await {
         return None;
     }
-    if !navigate_window(app, WORKER_LABEL, spec.url) {
+    if !navigate_window(app, WORKER_LABEL, "https://qoj.ac/") {
         return None;
     }
-    let deadline = tokio::time::Instant::now() + wait;
-    let mut last: Option<Creds> = None;
+    let deadline = tokio::time::Instant::now() + PULL_WAIT;
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
         if app.get_webview_window(WORKER_LABEL).is_none() {
-            break;
+            return None;
         }
-        if let Some(c) = read_cookies(app, WORKER_LABEL, spec) {
-            let done = creds_complete(spec, &c);
-            last = Some(c);
-            if done {
-                break;
-            }
-        }
+        inject_agent(app, WORKER_LABEL, port);
         if tokio::time::Instant::now() >= deadline {
             break;
         }
     }
-    last
+    Some("QOJ 助手窗口已就绪（Cloudflare 验证已随导航续签，守护脚本已重建）".to_string())
+}
+
+/// 幂等注入 QOJ 守护脚本：脚本在 qoj.ac 页面上下文里自轮询 /api/qoj-agent/next 领任务，
+/// 同源 fetch 提交页（完美客户端指纹 + 真实登录态）后回传。重复注入由 window 标记挡掉。
+fn inject_agent(app: &AppHandle, label: &str, port: u16) {
+    if let Some(w) = app.get_webview_window(label) {
+        let script = AGENT_DAEMON_SCRIPT.replace("__PORT__", &port.to_string());
+        let _ = w.eval(&script);
+    }
 }
 
 /// 建/取窗口。已存在时：可见窗 show+聚焦（不重载，保留用户浏览上下文），隐藏窗原样复用。
@@ -389,14 +470,6 @@ fn format_missing(spec: &LoginSpec, creds: &Creds) -> String {
         .map(|(name, _)| *name)
         .collect();
     format!("已抓到部分 Cookie，还缺：{}。请在窗口里完成登录（含人机验证）后重试", missing.join("、"))
-}
-
-fn summarize_pull_failure(creds: Option<&Creds>) -> String {
-    match creds {
-        // QOJ 专用语境：最常见的是登录会话在而 Cloudflare 通行凭据没续上
-        Some(_) => "Cloudflare 验证未自动通过：请点「在应用内登录 QOJ」完成一次人机验证".into(),
-        None => "未取到任何 QOJ Cookie：请点「在应用内登录 QOJ」登录".into(),
-    }
 }
 
 // ---------- 凭据推送 ----------

@@ -1038,8 +1038,9 @@ export default function Settings() {
                             </Button>
                           )}
                           <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
-                            弹出应用内浏览器登录后，Cookie 自动保存到账号，无需 F12 手动复制。
-                            {p.id === 'qoj' ? '桌面版还会每 20 分钟自动续签（cf_clearance 约 30 分钟过期）。' : ''}
+                            {p.id === 'qoj'
+                              ? '桌面版登录一次即可：同步自动经内嵌窗口完成，每 20 分钟自动续签验证，无需复制任何 Cookie。'
+                              : '弹出应用内浏览器登录后，Cookie 自动保存到账号，无需 F12 手动复制。'}
                           </span>
                         </Space>
                       </div>
@@ -1052,10 +1053,11 @@ export default function Settings() {
                     )}
                     {p.id === 'qoj' && (
                       <p style={{ margin: '2px 0 0', color: 'var(--text-3)', fontSize: 12 }}>
-                        qoj.ac 登录后 F12 → Application → Cookies 复制 __Host-UOJSESSID（旧名 UOJSESSID）与
-                        cf_clearance（点账号框在卡片里粘贴，也可整段 Cookie 粘进任一框自动分派）；cf_clearance 约 30
-                        分钟过期，过期后重贴该项即可。浏览器 UA 在账号卡片里填写，全部账号共用。
-                        {shellOnline ? '桌面版推荐用上方按钮自动完成。' : ''}
+                        桌面版：点上方「在应用内登录 QOJ」登录一次即可，同步自动经内嵌浏览器窗口完成（站点 Cloudflare
+                        已把凭据绑定到签发浏览器的指纹，手动复制 Cookie 的方式已失效）。网页版：qoj.ac 登录后 F12 →
+                        Application → Cookies 复制 __Host-UOJSESSID（旧名 UOJSESSID）与 cf_clearance（点账号框在卡片里粘贴，
+                        也可整段 Cookie 粘进任一框自动分派）；cf_clearance 约 30 分钟过期，过期后重贴该项即可。
+                        浏览器 UA 在账号卡片里填写，全部账号共用。
                       </p>
                     )}
                   </>

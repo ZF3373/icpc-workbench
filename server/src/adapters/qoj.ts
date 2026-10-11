@@ -428,6 +428,16 @@ function requestHeaders(cookie: string, ua?: string): Record<string, string> {
   };
 }
 
+/**
+ * 提交页抓取通道。生产环境注入 WebView 同源代理（qojAgent.ts）：qoj.ac 的 Cloudflare
+ * 已把 cf_clearance 绑定到签发客户端的 TLS 指纹，Node 侧重放必被拦（2026-10-11 实测
+ * 三种 UA 全挂、新鲜 Cookie 也挂），所以提交页一律经壳内 WebView 同源抓取。
+ * 缺省（测试）走 legacy http 路径——解析/错误处理逻辑两条路径完全共用。
+ */
+export interface QojPageTransport {
+  fetchPage(url: string, timeoutMs: number): Promise<{ status: number; body: string; finalUrl?: string }>;
+}
+
 /** 同步/检测共用的「拿到一页 HTML」逻辑：统一处理 Cloudflare 挑战与登录页 */
 async function fetchSubmissionsPage(
   http: ReturnType<typeof asHttpClient>,
@@ -435,8 +445,33 @@ async function fetchSubmissionsPage(
   page: number,
   cookie: string,
   ua?: string,
+  pageTransport?: QojPageTransport,
 ): Promise<string> {
   const url = `${BASE}/submissions?submitter=${encodeURIComponent(handle)}&page=${page}`;
+
+  // —— WebView 同源代理路径（生产）：登录态与 Cloudflare 凭据都在壳内浏览器里 ——
+  if (pageTransport) {
+    const r = await pageTransport.fetchPage(url, 25000);
+    // 登录跳转：follow 重定向落在 /login，或渲染出登录页
+    if ((r.finalUrl && /\/login/.test(r.finalUrl)) || looksLikeLoginPage(r.body)) {
+      throw new ManualImportRequiredError(
+        'qoj',
+        'QOJ 登录态已失效：请在设置页点「在应用内登录 QOJ」，在弹出的窗口里重新登录后重试同步。',
+      );
+    }
+    if (isCloudflareChallenge(r.body, r.status, null)) {
+      throw new ManualImportRequiredError(
+        'qoj',
+        'QOJ 页面在助手窗口内被 Cloudflare 拦截：请在设置页点「在应用内登录 QOJ」，让窗口完成一次人机验证后重试。',
+      );
+    }
+    if (r.status !== 200) {
+      throw new Error(`QOJ 提交列表返回 HTTP ${r.status}（经助手窗口），请稍后重试`);
+    }
+    return r.body;
+  }
+
+  // —— legacy HTTP 路径（测试用）：Cookie 重放在真实 Cloudflare 下已不可用 ——
   const res = await http.fetch(url, { headers: requestHeaders(cookie, ua), redirect: 'manual' }, { timeoutMs: 25000 });
   const html = await res.text();
   if (isCloudflareChallenge(html, res.status, res.headers.get('cf-mitigated'))) {
@@ -467,7 +502,7 @@ async function fetchSubmissionsPage(
   return html;
 }
 
-export function createQojAdapter(fetchFn: HttpInit): PlatformAdapter {
+export function createQojAdapter(fetchFn: HttpInit, pageTransport?: QojPageTransport): PlatformAdapter {
   const http = asHttpClient(fetchFn);
   return {
     platform: 'qoj',
@@ -478,7 +513,8 @@ export function createQojAdapter(fetchFn: HttpInit): PlatformAdapter {
       opts?: FetchOptions,
     ): Promise<NormalizedSubmission[]> {
       const cookie = opts?.cookie?.trim();
-      if (!cookie) {
+      // WebView 同源代理模式下登录态在壳内浏览器里，无需已存 Cookie；legacy 路径才必需
+      if (!cookie && !pageTransport) {
         throw new ManualImportRequiredError(
           'qoj',
           'QOJ 提交记录需登录后访问：请在设置页填写两项——' +
@@ -500,7 +536,7 @@ export function createQojAdapter(fetchFn: HttpInit): PlatformAdapter {
         pageSize: PAGE_SIZE,
         perSyncMax: PER_SYNC_MAX_PAGES,
         fetchPage: async (page) => {
-          const html = await fetchSubmissionsPage(http, user, page, cookie, ua);
+          const html = await fetchSubmissionsPage(http, user, page, cookie ?? '', ua, pageTransport);
           if (page === 1) firstPageHtml = html;
           // 时区偏移逐页解析后即换算为 UTC（页面 Server Time 即站点当前时间）
           return withUtcTime(html, parseQojRows(html, user));
@@ -539,29 +575,32 @@ export function createQojAdapter(fetchFn: HttpInit): PlatformAdapter {
      * Cloudflare 挑战与登录页由 fetchSubmissionsPage 抛出并转成可读提示。
      */
     async checkAuth({ cookie, handle, ua }) {
-      if (!cookie?.trim()) {
-        return { ok: false, message: '尚未填写 Cookie：请粘贴 __Host-UOJSESSID（必要时附 cf_clearance 与浏览器 UA）' };
-      }
       if (!handle?.trim()) {
         return { ok: false, message: '请先填写 QOJ 用户名并保存，再检测凭据（检测需按账号访问提交记录页）' };
       }
+      // WebView 同源代理模式：登录态/Cloudflare 凭据都在壳内浏览器里，无需已存 Cookie
+      if (!pageTransport && !cookie?.trim()) {
+        return { ok: false, message: '尚未填写 Cookie：请粘贴 __Host-UOJSESSID（必要时附 cf_clearance 与浏览器 UA）' };
+      }
       try {
-        // 前置检查两项**都必需**（2026-09 逐项实测）：缺 cf_clearance 会被 Cloudflare 挑战，
+        // legacy 路径的前置检查（2026-09 逐项实测）：缺 cf_clearance 会被 Cloudflare 挑战，
         // 缺会话项会 302 跳登录页。会话项自 2026-10 起站点名为 `__Host-UOJSESSID`，旧名
         // `UOJSESSID` 仍被下面的子串判定接受（发送时统一改写成硬化名，见 requestHeaders）。
         // 其它展示类 cookie（uoj_locale / OptanonConsent 等）实测无影响。
-        const missing: string[] = [];
-        if (!/cf_clearance=/i.test(cookie)) missing.push('cf_clearance');
-        if (!/UOJSESSID=/i.test(cookie)) missing.push('__Host-UOJSESSID（旧名 UOJSESSID）');
-        if (missing.length > 0) {
-          return {
-            ok: false,
-            message:
-              `Cookie 里缺少 ${missing.join(' 与 ')}：请在浏览器 F12 → Network 选任意 qoj.ac 请求，` +
-              '把 Request Headers 里 Cookie 的**整段值**复制过来（它同时包含 cf_clearance 与会话 Cookie）',
-          };
+        if (!pageTransport) {
+          const missing: string[] = [];
+          if (!/cf_clearance=/i.test(cookie!)) missing.push('cf_clearance');
+          if (!/UOJSESSID=/i.test(cookie!)) missing.push('__Host-UOJSESSID（旧名 UOJSESSID）');
+          if (missing.length > 0) {
+            return {
+              ok: false,
+              message:
+                `Cookie 里缺少 ${missing.join(' 与 ')}：请在浏览器 F12 → Network 选任意 qoj.ac 请求，` +
+                '把 Request Headers 里 Cookie 的**整段值**复制过来（它同时包含 cf_clearance 与会话 Cookie）',
+            };
+          }
         }
-        const html = await fetchSubmissionsPage(http, handle.trim(), 1, cookie.trim(), ua);
+        const html = await fetchSubmissionsPage(http, handle.trim(), 1, (cookie ?? '').trim(), ua, pageTransport);
         const rows = parseQojRows(html, handle.trim());
         if (rows.length === 0 && looksLikeSubmissionsPage(html)) {
           // 空列表是合法状态：登录态有效但该账号暂无提交

@@ -6,6 +6,7 @@ import { createLeetcodeAdapter } from './leetcode.ts';
 import { createLuoguAdapter } from './luogu.ts';
 import { createNowcoderAdapter } from './nowcoder.ts';
 import { createQojAdapter } from './qoj.ts';
+import { fetchPageViaAgent } from './qojAgent.ts';
 import { register } from './registry.ts';
 import { createHttpClient, PROD_RETRY } from './http.ts';
 import { qojTransportFetch } from '../net/qojTransport.ts';
@@ -33,10 +34,14 @@ export function initAdapters(dataDir?: string): void {
   register(createDaimayuanAdapter(http));
   register(createLeetcodeAdapter(http));
   register(createJisuankeAdapter(http));
-  // QOJ 必须走 HTTP/1.1：Cloudflare 对 h2 请求恒定下发托管挑战（详见 http1.ts 与 qoj.ts 注释）。
-  // 传输层取自共享单例（net/qojTransport.ts）：难度回填读 QOJ 比赛页也走同一个节奏桶，
-  // 否则两条路径各建一个节流桶 → 对 qoj.ac 的实际频率翻倍。
-  register(createQojAdapter(createHttpClient(qojTransportFetch(), PROD_RETRY)));
+  // QOJ 提交页走 WebView 同源代理（qojAgent.ts）：2026-10 起站点 Cloudflare 把 cf_clearance
+  // 绑定到签发客户端的 TLS 指纹，Node 重放 Cookie 必被拦——唯一稳健通道是壳内 WebView 同源抓取。
+  // 难度回填读 QOJ 比赛页仍走 HTTP/1.1 直连（公开页 + 重试兜底），与提交页互不依赖。
+  register(
+    createQojAdapter(createHttpClient(qojTransportFetch(), PROD_RETRY), {
+      fetchPage: (url, timeoutMs) => fetchPageViaAgent(url, timeoutMs),
+    }),
+  );
 }
 export * from './registry.ts';
 export type { PlatformAdapter } from './types.ts';

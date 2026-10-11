@@ -40,6 +40,7 @@ import { problemsRoutes } from './routes/problems.ts';
 import { reviewsRoutes } from './routes/reviews.ts';
 import { settingsRoutes } from './routes/settings.ts';
 import { shellAuthRoutes } from './routes/shellAuth.ts';
+import { qojAgentRoutes } from './routes/qojAgent.ts';
 import { statsRoutes } from './routes/stats.ts';
 import { syncRoutes } from './routes/sync.ts';
 import { templatesRoutes } from './routes/templates.ts';
@@ -157,6 +158,8 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
   // 桌面壳凭据桥：登录窗口抓取 Cookie / QOJ 保活的中转。⚠ 服务器装配代码在 index.ts（dev）
   // 与本文件（SEA 打包）各有一份，新增路由必须两处同步——守卫见 test/dual-entry-api-parity.test.ts
   app.use('/api/settings/shell-auth', shellAuthRoutes(db));
+  // QOJ WebView 同源代理：壳注入到 qoj.ac 页面的守护脚本经此领任务/回传 HTML（与 index.ts 同口径）
+  app.use('/api/qoj-agent', qojAgentRoutes());
   app.use('/api/backups', backupsRoutes(db));
   app.use('/api/update', updateRoutes(config, () => createBackup(db, 'pre-upgrade')));
   // widget 静态目录必须先注入再创建 router（express.static 创建时捕获目录值）
