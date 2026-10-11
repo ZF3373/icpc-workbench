@@ -22,6 +22,7 @@ import { knowledgeRoutes } from './routes/knowledge.ts';
 import { listsRoutes } from './routes/lists.ts';
 import { plansRoutes } from './routes/plans.ts';
 import { problemsRoutes } from './routes/problems.ts';
+import { shellAuthRoutes } from './routes/shellAuth.ts';
 import { reviewsRoutes } from './routes/reviews.ts';
 import { settingsRoutes } from './routes/settings.ts';
 import { statsRoutes } from './routes/stats.ts';
@@ -92,6 +93,8 @@ app.use('/api/templates', templatesRoutes(db, { dataDir: config.dataDir }));
 app.use('/api/contests', contestsRoutes(db));
 app.use('/api/checkins', checkinsRoutes(db));
 app.use('/api/settings', settingsRoutes(db, config));
+// 桌面壳凭据桥：登录窗口抓取 Cookie / QOJ 保活的中转（挂载在 /api/settings 之前，路径更深不受 settingsRoutes 影响）
+app.use('/api/settings/shell-auth', shellAuthRoutes(db));
 app.use('/api/backups', backupsRoutes(db));
 app.use('/api/update', updateRoutes(config, () => createBackup(db, 'pre-upgrade')));
 app.use('/widget', widgetRoutes());

@@ -9,6 +9,7 @@
 //! - 壳与核心的运行日志都落盘（data/logs/core.log），「莫名重启」有迹可循
 
 mod discovery;
+mod shell_auth;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -430,6 +431,8 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 supervise(handle).await;
             });
+            // 桌面壳凭据自动化：内嵌 WebView 登录抓取各平台 Cookie + QOJ 凭据保活（详见 shell_auth.rs）
+            shell_auth::spawn(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {

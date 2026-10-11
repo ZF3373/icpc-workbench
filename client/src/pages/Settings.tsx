@@ -43,6 +43,7 @@ import InlineError from '../components/InlineError'
 import { saveUrlAsFile } from '../download'
 import PlatformTag from '../components/PlatformTag'
 import { del, get, post } from '../api'
+import { fetchShellAuthStatus, requestShellAuth, waitShellAuthResult, type ShellAuthStatus } from '../shellAuth'
 import { buildCookieItem, extractCookieValue } from '../cookies'
 import { pct } from '../ui'
 import { relativeTimeText } from '../syncStatus'
@@ -121,6 +122,13 @@ export default function Settings() {
   const [draftHandle, setDraftHandle] = useState('')
   /** 各账号生效凭据的检测结果（platform → handle → 结果） */
   const [acctCheck, setAcctCheck] = useState<Record<string, Record<string, { ok: boolean; message: string } | 'checking'>>>({})
+  /** 桌面壳凭据桥：壳在线 = Cookie 类平台显示「在应用内登录自动获取」（壳内嵌 WebView
+   *  登录后自动抓取推送，见 src/shellAuth.ts）；last = 最近一条状态（QOJ 保活时间线展示）。
+   *  busyKey = 正在进行的动作标签（`${action}:${platform}:${handle ?? ''}`），任一动作进行中
+   *  其余按钮禁用（壳一次只处理一个动作），匹配的按钮显示 loading */
+  const [shellOnline, setShellOnline] = useState(false)
+  const [shellLast, setShellLast] = useState<ShellAuthStatus | null>(null)
+  const [shellBusy, setShellBusy] = useState<string | null>(null)
   const [reminderEnabled, setReminderEnabled] = useState(false)
   const [reminderTime, setReminderTime] = useState<Dayjs>(dayjs('20:00', 'HH:mm'))
   const [contestReminder, setContestReminder] = useState<ContestReminderConfig>({ enabled: false, minutesBefore: 30 })
@@ -208,6 +216,79 @@ export default function Settings() {
   // 只在挂载时取一次；load 是每次渲染重建的闭包，放进依赖会因为 message 等不稳定引用反复触发
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(load, [])
+
+  // 桌面壳凭据桥：探测壳是否在线（决定 Cookie 平台给一键登录按钮还是手动粘贴引导），
+  // 并低频跟进 QOJ 后台保活结果（壳 20 分钟一续签、60s 一跳心跳，60s 轮询足够）。
+  useEffect(() => {
+    let alive = true
+    const pull = () => {
+      fetchShellAuthStatus()
+        .then((v) => {
+          if (!alive) return
+          setShellOnline(v.shell)
+          if (v.last && v.last.kind === 'keepalive') setShellLast(v.last)
+        })
+        .catch(() => {
+          /* 桥接口在旧版核心上不存在：保持降级（手动粘贴引导）即可 */
+        })
+    }
+    pull()
+    const t = setInterval(pull, 60_000)
+    return () => {
+      alive = false
+      clearInterval(t)
+    }
+  }, [])
+
+  /** 一键动作共用：请求壳执行 → 按 id 轮询结果 → 成功后重检该平台账号凭据。
+   *  shellBusy 任一动作进行中即挡新请求（壳一次只处理一个动作），匹配 key 的按钮转 loading */
+  const runShellAuth = async (action: 'login' | 'pull', platform: string, handle?: string) => {
+    const key = `${action}:${platform}:${handle ?? ''}`
+    if (shellBusy) return
+    setShellBusy(key)
+    try {
+      const id = await requestShellAuth(action, platform, handle)
+      message.info(
+        action === 'login'
+          ? `已打开${PLATFORMS.find((x) => x.id === platform)?.name ?? platform}登录窗口：请在窗口里完成登录，凭据会自动保存`
+          : '正在后台续签 QOJ 验证…',
+      )
+      const st = await waitShellAuthResult(id, action === 'login' ? 10 * 60_000 : 120_000)
+      if (!st) {
+        message.warning('桌面壳未回传结果（桌面应用可能已退出）。请确认桌面版正在运行，或改用手动粘贴 Cookie。')
+        return
+      }
+      if (st.ok) {
+        message.success(st.message || '凭据已更新')
+        // 清空该平台账号的已缓存检测结果，随 load() 重新自动检测连接状态点
+        setAcctCheck((s) => ({ ...s, [platform]: {} }))
+        load()
+      } else {
+        message.warning(st.message || '未取得凭据')
+      }
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setShellBusy(null)
+    }
+  }
+
+  /**
+   * 平台行「在应用内登录自动获取」：抓到的 Cookie 写到哪取决于账号结构——
+   * 单账号直接定向写它的槽位；多账号无法替用户决定写谁，引导去各账号卡片分别抓取；
+   * 尚未绑定账号则由壳写平台级暂存，绑定后再抓一次写入账号槽位（账号同步不认平台级）。
+   */
+  const startShellLogin = (platform: PlatformId, handle?: string) => {
+    if (!handle && (data?.accounts.filter((a) => a.platform === platform).length ?? 0) > 1) {
+      message.info('该平台绑定了多个账号：请打开各账号的凭据卡片，在卡片里点「登录并自动获取」按账号分别抓取。')
+      return
+    }
+    const only = handle ?? data?.accounts.find((a) => a.platform === platform)?.handle
+    void runShellAuth('login', platform, only)
+  }
+
+  /** QOJ 专属「立即续签验证」：隐藏窗静默过盾一轮（cf_clearance 约 30 分钟过期） */
+  const startQojPull = () => void runShellAuth('pull', 'qoj')
 
   // 进入设置页时自动检测每个「已配置凭据账号」的登录态，驱动平台连接状态点与账号框状态点。
   // 只对有凭据槽位且尚未检测过的账号触发，未配置凭据的账号不请求（点了账号框才检测）。
@@ -659,6 +740,17 @@ export default function Settings() {
                 <Button size="small" loading={aCheck === 'checking'} onClick={() => void checkAccountCreds(p.id, handle)}>
                   检测
                 </Button>
+                {shellOnline && (
+                  <Button
+                    size="small"
+                    title="弹出应用内浏览器登录该平台，Cookie 自动写入本账号（无需 F12 手动复制）"
+                    loading={shellBusy === `login:${p.id}:${handle}`}
+                    disabled={!!shellBusy && shellBusy !== `login:${p.id}:${handle}`}
+                    onClick={() => startShellLogin(p.id, handle)}
+                  >
+                    登录并自动获取
+                  </Button>
+                )}
                 {aCheck && aCheck !== 'checking' && (
                   <>
                     <Tag color={aCheck.ok ? 'success' : 'error'} style={{ marginRight: 0 }}>
@@ -923,11 +1015,47 @@ export default function Settings() {
                         ⚠ 多账号请为每个账号分别配置 Cookie：此平台的提交记录跟随 Cookie 登录身份拉取。
                       </p>
                     )}
+                    {cookieFieldsOf(p.id).length > 0 && shellOnline && (
+                      <div style={{ margin: '4px 0 0' }}>
+                        <Space wrap size={6}>
+                          <Button
+                            size="small"
+                            type="primary"
+                            loading={shellBusy === `login:${p.id}:`}
+                            disabled={!!shellBusy && shellBusy !== `login:${p.id}:`}
+                            onClick={() => startShellLogin(p.id)}
+                          >
+                            在应用内登录自动获取
+                          </Button>
+                          {p.id === 'qoj' && (
+                            <Button
+                              size="small"
+                              loading={shellBusy === 'pull:qoj:'}
+                              disabled={!!shellBusy && shellBusy !== 'pull:qoj:'}
+                              onClick={startQojPull}
+                            >
+                              立即续签验证
+                            </Button>
+                          )}
+                          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                            弹出应用内浏览器登录后，Cookie 自动保存到账号，无需 F12 手动复制。
+                            {p.id === 'qoj' ? '桌面版还会每 20 分钟自动续签（cf_clearance 约 30 分钟过期）。' : ''}
+                          </span>
+                        </Space>
+                      </div>
+                    )}
+                    {p.id === 'qoj' && shellOnline && shellLast && (
+                      <div style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-3)' }}>
+                        后台保活：{shellLast.ok ? '✓' : '⚠'} {shellLast.message || (shellLast.ok ? '已续签' : '续签失败')}（
+                        {dayjs(shellLast.at * 1000).format('HH:mm')}）
+                      </div>
+                    )}
                     {p.id === 'qoj' && (
                       <p style={{ margin: '2px 0 0', color: 'var(--text-3)', fontSize: 12 }}>
-                        qoj.ac 登录后 F12 → Application → Cookies 复制 __Host-UOJSESSID（旧名 UOJSESSID）与 cf_clearance（点账号框在卡片里粘贴，
-                        也可整段 Cookie 粘进任一框自动分派）；cf_clearance 约 30 分钟过期，过期后重贴该项即可。
-                        浏览器 UA 在账号卡片里填写，全部账号共用。
+                        qoj.ac 登录后 F12 → Application → Cookies 复制 __Host-UOJSESSID（旧名 UOJSESSID）与
+                        cf_clearance（点账号框在卡片里粘贴，也可整段 Cookie 粘进任一框自动分派）；cf_clearance 约 30
+                        分钟过期，过期后重贴该项即可。浏览器 UA 在账号卡片里填写，全部账号共用。
+                        {shellOnline ? '桌面版推荐用上方按钮自动完成。' : ''}
                       </p>
                     )}
                   </>
