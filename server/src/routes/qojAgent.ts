@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { popJob, resolveJob } from '../adapters/qojAgent.ts';
+import { popJob, resolveJob, agentAlive } from '../adapters/qojAgent.ts';
 
 /**
  * QOJ WebView 同源代理的任务交换端点（消费方 = 壳注入到 qoj.ac 页面的守护脚本）。
@@ -38,6 +38,13 @@ export function qojAgentRoutes(): Router {
   // 守护脚本领取任务（pop 语义）。空轮询即心跳：顺带刷新守护脚本活跃时间。
   r.get('/next', (_req, res) => {
     res.json({ job: popJob() });
+  });
+
+  // GET /api/qoj-agent/alive → { alive: boolean }
+  // 壳刷新助手窗口后轮询这个端点，守护脚本一上线（开始领任务/空轮询）就提前返回，
+  // 把「导航重建」造成的代理不可用窗口从 30 秒压到几秒
+  r.get('/alive', (_req, res) => {
+    res.json({ alive: agentAlive() });
   });
 
   // POST /api/qoj-agent/result  body: { id, status, body, finalUrl? }

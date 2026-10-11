@@ -241,6 +241,20 @@ async fn handle_login(app: &AppHandle, port: u16, req: &PendingRequest) {
             }
         }
         if logged_in {
+            // 回报成功前先等守护脚本上线：客户端收到成功后会立刻自动重检凭据，
+            // 若此刻代理还没就绪，那次检测会超时变红，用户就会以为「登录了还是失败」
+            let wait_start = tokio::time::Instant::now();
+            while tokio::time::Instant::now() < wait_start + Duration::from_secs(15) {
+                if get_json(port, "/api/qoj-agent/alive")
+                    .await
+                    .and_then(|v| v.get("alive").and_then(|a| a.as_bool()))
+                    .unwrap_or(false)
+                {
+                    break;
+                }
+                inject_agent(app, &label, port);
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
             crate::logln("[shell-auth] qoj 登录态已就绪（同源代理模式）");
             post_result(
                 port,
@@ -359,7 +373,8 @@ async fn keepalive_tick(app: &AppHandle, port: u16, fails: &mut u32) {
 }
 
 /// 刷新 QOJ 助手窗口：复用/创建隐藏窗 → 重新导航（触发 Cloudflare 重评估续签凭据）→
-/// 轮询期反复幂等注入守护脚本（导航换文档会重建，注入自动补上）。成功返回展示消息。
+/// 注入守护脚本并轮询核心的 /alive 端点，脚本一上线就提前返回（把代理不可用窗口压到几秒，
+/// 否则导航重建的 30 秒里用户触发的凭据检测会撞上超时变红）。成功返回展示消息。
 async fn renew_qoj_agent(app: &AppHandle, port: u16) -> Option<String> {
     if !ensure_window(app, WORKER_LABEL, "https://qoj.ac/", "QOJ 助手", false).await {
         return None;
@@ -374,6 +389,14 @@ async fn renew_qoj_agent(app: &AppHandle, port: u16) -> Option<String> {
             return None;
         }
         inject_agent(app, WORKER_LABEL, port);
+        // 守护脚本一旦开始轮询核心（alive=true）即视为就绪，提前收工
+        if get_json(port, "/api/qoj-agent/alive")
+            .await
+            .and_then(|v| v.get("alive").and_then(|a| a.as_bool()))
+            .unwrap_or(false)
+        {
+            break;
+        }
         if tokio::time::Instant::now() >= deadline {
             break;
         }

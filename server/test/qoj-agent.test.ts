@@ -111,6 +111,21 @@ test('qoj-agent 端点：CORS 放行 qoj.ac + PNA 预检 + 任务回路', async 
   }
 });
 
+test('qoj-agent 端点：/alive 反映守护脚本活跃度（壳刷新后提前收工的依据）', async () => {
+  const b = await startAgentEndpoint();
+  try {
+    resetAgentForTests();
+    const cold = await (await fetch(`${b.url}/alive`)).json() as { alive: boolean };
+    assert.equal(cold.alive, false);
+    popJob(); // 守护脚本开始轮询 → 活跃
+    const warm = await (await fetch(`${b.url}/alive`)).json() as { alive: boolean };
+    assert.equal(warm.alive, true);
+    resetAgentForTests();
+  } finally {
+    await b.close();
+  }
+});
+
 test('qoj-agent 端点：/result 校验字段；未知 id 返回 ok:false', async () => {
   const b = await startAgentEndpoint();
   try {
