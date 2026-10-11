@@ -27,7 +27,7 @@ import { migratePlatformCookieToAccounts } from './adapters/accountCreds.ts';
 import { setRequestIntervalScale } from './net/hostThrottle.ts';
 import { backupsRoutes } from './routes/backups.ts';
 import { initAdapters } from './adapters/index.ts';
-import { errorHandler, securityHeaders } from './middleware.ts';
+import { errorHandler, hostGuard, securityHeaders } from './middleware.ts';
 import { checkinsRoutes } from './routes/checkins.ts';
 import { contestsRoutes } from './routes/contests.ts';
 import { exportRoutes } from './routes/export.ts';
@@ -61,7 +61,9 @@ import { setBundledTypstBinary } from './templates/typst.ts';
 const CLIENT_DIST_PREFIX = 'client-dist/';
 const WIDGET_FILES = ['widget.html'];
 
-export function startServer(): { app: Express; port: number; config: AppConfig } {
+export function startServer(
+  boundHost: string = process.env.HOST ?? '127.0.0.1',
+): { app: Express; port: number; config: AppConfig } {
   const config = loadConfigForRuntime();
   if (isSea()) {
     setBundledTypstBinary(
@@ -132,6 +134,18 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
   }
 
   const app = express();
+  // Host 头校验（防 DNS rebinding）：与 index.ts 同口径，且必须早于所有路由——本应用全站
+  // 零鉴权，安全边界全靠「默认只绑回环」；浏览器里的恶意页面可用 DNS rebinding 绕过它，
+  // 以「同源」身份读走全部配置、调用全部写接口（例如把已存提供商的 baseURL 改到攻击者
+  // 主机，此后用户自己的 AI 对话就会把真 Key 送出去）。
+  //
+  // ⚠ 本文件是 build-exe.mjs 的唯一 entryPoints，即**桌面版 icpc-core.exe 的真实入口**，
+  // 其非 SEA 分支同时是 Docker 镜像的运行入口。此前只装了 index.ts（tsx 开发），打包版
+  // 与 Docker 部署完全没有这道防线；守卫见 test/dual-entry-api-parity.test.ts。
+  //
+  // 判定与 index.ts 一致：仅绑定回环时启用；显式绑 0.0.0.0（Docker 的 HOST）时不校验——
+  // 那是操作者主动选择的暴露，Host 会是任意域名，校验只会误伤。
+  app.use(hostGuard(boundHost));
   // 12 MiB：与 index.ts 对齐——/api/ai/chat 允许每条消息带 8 个附件、单个 textContent 上限
   // 1 MiB，加整封对话历史上行；2mb 会让这类合法请求在进入路由前就被 body-parser 拒掉。
   // （sea.ts 的非 SEA 分支也是 Docker 镜像的运行入口，Docker 部署走同一条限制）
@@ -285,7 +299,8 @@ if (isSea()) {
     void fatal(`程序出错：${e.message}`);
   });
   try {
-    const { app, config } = startServer();
+    // SEA 分支只绑回环（listenOn 硬编码），显式传入以免校验口径与实际绑定地址脱节
+    const { app, config } = startServer('127.0.0.1');
     const desiredPort = Number(process.env.PORT ?? config.port);
     bootSea(app, config, desiredPort).catch((e: unknown) => {
       void fatal(errMessage(e));
@@ -294,10 +309,11 @@ if (isSea()) {
     void fatal(errMessage(e));
   }
 } else {
-  const { app, port } = startServer();
   // 默认只绑回环，维持「本地单用户应用不默认暴露局域网」的安全边界；
   // HOST 供容器部署显式覆盖（Docker 里必须绑 0.0.0.0，端口映射才对外可达）
   const host = process.env.HOST ?? '127.0.0.1';
+  // 校验口径必须与实际绑定地址一致（绑 0.0.0.0 时不校验，见 hostGuard）
+  const { app, port } = startServer(host);
   app.listen(port, host, () => {
     const displayHost = host === '0.0.0.0' ? 'localhost' : host;
     console.log(`[server] listening on http://${displayHost}:${port}`);
