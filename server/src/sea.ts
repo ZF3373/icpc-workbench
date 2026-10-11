@@ -39,6 +39,7 @@ import { plansRoutes } from './routes/plans.ts';
 import { problemsRoutes } from './routes/problems.ts';
 import { reviewsRoutes } from './routes/reviews.ts';
 import { settingsRoutes } from './routes/settings.ts';
+import { shellAuthRoutes } from './routes/shellAuth.ts';
 import { statsRoutes } from './routes/stats.ts';
 import { syncRoutes } from './routes/sync.ts';
 import { templatesRoutes } from './routes/templates.ts';
@@ -153,6 +154,9 @@ export function startServer(): { app: Express; port: number; config: AppConfig }
   app.use('/api/contests', contestsRoutes(db));
   app.use('/api/checkins', checkinsRoutes(db));
   app.use('/api/settings', settingsRoutes(db, config));
+  // 桌面壳凭据桥：登录窗口抓取 Cookie / QOJ 保活的中转。⚠ 服务器装配代码在 index.ts（dev）
+  // 与本文件（SEA 打包）各有一份，新增路由必须两处同步——守卫见 test/dual-entry-api-parity.test.ts
+  app.use('/api/settings/shell-auth', shellAuthRoutes(db));
   app.use('/api/backups', backupsRoutes(db));
   app.use('/api/update', updateRoutes(config, () => createBackup(db, 'pre-upgrade')));
   // widget 静态目录必须先注入再创建 router（express.static 创建时捕获目录值）
