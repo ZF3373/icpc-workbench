@@ -68,8 +68,8 @@ export async function fetchPageViaAgent(
         reject(new Error('QOJ 助手窗口抓取超时：请确认窗口保持打开且已登录 qoj.ac，稍后重试同步。'));
       }
     }, timeoutMs);
-    // 不让超时定时器拖住进程自然退出
-    timer.unref?.();
+    // ⚠ 刻意不 unref：挂起任务的超时定时器必须撑住事件循环——
+    // 否则测试等场景下循环被清空，pending Promise 会随进程一起被取消（CI 实测）
     pending.set(id, { resolve, reject, timer });
   });
   queue.push({ id, url });
