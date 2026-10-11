@@ -516,9 +516,26 @@ export default function Settings() {
       const r = await post<{ ok: boolean; message: string }>('/api/settings/cookies/check', { platform, handle })
       setAcctCheck((s) => ({ ...s, [platform]: { ...(s[platform] ?? {}), [handle]: r } }))
     } catch (e) {
+      const msg = (e as Error).message
+      // 网络级失败（核心自动重启的十几秒 / 瞬时断连）自动重试一次：
+      // 直接记失败会把「更新后服务短暂重启」钉成红色「凭据无效」，用户以为登录白做了
+      if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+        await new Promise((r) => setTimeout(r, 4000))
+        try {
+          const r = await post<{ ok: boolean; message: string }>('/api/settings/cookies/check', { platform, handle })
+          setAcctCheck((s) => ({ ...s, [platform]: { ...(s[platform] ?? {}), [handle]: r } }))
+          return
+        } catch (e2) {
+          setAcctCheck((s) => ({
+            ...s,
+            [platform]: { ...(s[platform] ?? {}), [handle]: { ok: false, message: (e2 as Error).message } },
+          }))
+          return
+        }
+      }
       setAcctCheck((s) => ({
         ...s,
-        [platform]: { ...(s[platform] ?? {}), [handle]: { ok: false, message: (e as Error).message } },
+        [platform]: { ...(s[platform] ?? {}), [handle]: { ok: false, message: msg } },
       }))
     }
   }

@@ -151,8 +151,9 @@ const POLL_TICK: Duration = Duration::from_secs(3);
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(60);
 /// QOJ 保活间隔：cf_clearance 30 分钟过期，20 分钟一续保证永远比有效期新
 const KEEPALIVE_EVERY: Duration = Duration::from_secs(20 * 60);
-/// 首次保活延迟：等核心就绪、等 supervise 填好端口（错过首拍也无妨，仅慢一拍）
-const FIRST_KEEPALIVE_DELAY: Duration = Duration::from_secs(90);
+/// 首次保活延迟：核心 2-5 秒就绪，15 秒即拉起 QOJ 助手窗口——首屏自动凭据检测
+/// 依赖代理在线（fetchPageViaAgent 会等它最多 20 秒），起得太晚首屏检测就会撞空窗
+const FIRST_KEEPALIVE_DELAY: Duration = Duration::from_secs(15);
 /// 静默续签的等待窗口：非交互挑战通常几秒内完成，30s 已足够宽松
 const PULL_WAIT: Duration = Duration::from_secs(30);
 /// 登录窗观察窗口：等用户完成（可能的）人机验证 + 登录
