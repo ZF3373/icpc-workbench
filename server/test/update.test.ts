@@ -10,7 +10,7 @@ import {
   nightlyCommitSha,
   resolveUpdate,
 } from '../src/routes/update.ts';
-import { parseChecksums, verifyChecksums, buildRanges, candidateUrls, mirrorPrefixes, replaceStagedFiles } from '../src/updater.ts';
+import { parseChecksums, verifyChecksums, buildRanges, candidateUrls, mirrorPrefixes, replaceStagedFiles, applyUpdate, setCoreExitSchedulerForTests, setUpdatePhaseForTests, updateState } from '../src/updater.ts';
 
 test('compareVersions 基本比较', () => {
   assert.equal(compareVersions('v0.2.1', 'v0.2.2'), -1);
@@ -284,5 +284,38 @@ test('replaceStagedFiles：全部成功时两个文件都是新版本', () => {
   assert.equal(fs.readFileSync(path.join(exeDir, 'core.exe'), 'utf8'), 'NEW-CORE');
   // 旧版本留有 .old 备份（便于人工回退）
   assert.equal(fs.readFileSync(path.join(exeDir, 'shell.exe.old'), 'utf8'), 'OLD-SHELL');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('applyUpdate：替换成功后调度核心自退，消息与 .old 备份齐全', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'icpc-apply-'));
+  const exeDir = path.join(dir, 'install');
+  const staging = path.join(dir, 'staging');
+  fs.mkdirSync(exeDir);
+  fs.mkdirSync(staging);
+  fs.writeFileSync(path.join(exeDir, 'icpc-workbench.exe'), 'OLD-SHELL');
+  fs.writeFileSync(path.join(exeDir, 'icpc-core.exe'), 'OLD-CORE');
+  fs.writeFileSync(path.join(staging, 'icpc-workbench.exe'), 'NEW-SHELL');
+  fs.writeFileSync(path.join(staging, 'icpc-core.exe'), 'NEW-CORE');
+
+  const exitCalls: number[] = [];
+  setCoreExitSchedulerForTests((ms) => exitCalls.push(ms));
+  setUpdatePhaseForTests('staged');
+
+  const applied = applyUpdate(staging, exeDir);
+  assert.equal(applied.ok, true);
+  // 生效方式改为「核心自动重启、外壳下次手动重启更新」，不再是让用户手动关开
+  assert.match(applied.message ?? '', /自动重启/);
+  assert.match(applied.message ?? '', /外壳/);
+  assert.deepEqual(exitCalls, [3000]);
+  assert.equal(fs.readFileSync(path.join(exeDir, 'icpc-core.exe'), 'utf8'), 'NEW-CORE');
+  assert.equal(fs.readFileSync(path.join(exeDir, 'icpc-core.exe.old'), 'utf8'), 'OLD-CORE');
+  assert.equal(updateState().phase, 'idle');
+
+  // 二次调用：phase 已回 idle，不再调度自退
+  const again = applyUpdate(staging);
+  assert.equal(again.ok, false);
+  assert.deepEqual(exitCalls, [3000]);
+  setUpdatePhaseForTests('idle');
   fs.rmSync(dir, { recursive: true, force: true });
 });

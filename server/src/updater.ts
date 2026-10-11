@@ -46,6 +46,11 @@ export function updateState(): UpdateProgressState {
   return { ...state };
 }
 
+/** 测试注入用：直接置 phase（正常流转只能经 startDownload → 后台校验抵达 staged） */
+export function setUpdatePhaseForTests(phase: UpdateProgressState['phase']): void {
+  state.phase = phase;
+}
+
 export const SHELL_NAME = 'icpc-workbench.exe';
 export const CORE_NAME = 'icpc-core.exe';
 export const CHECKSUMS_NAME = 'checksums.sha256';
@@ -537,12 +542,30 @@ export function replaceStagedFiles(stagingDir: string, exeDir: string, names: st
   }
 }
 
-/** 原地替换已暂存的新 exe。成功后需要用户重启软件生效。 */
-export function applyUpdate(stagingDir: string): { ok: boolean; message?: string } {
+/**
+ * 核心自退调度器（自愈式生效）。默认 3 秒后 process.exit(0)：壳的看护循环探活失败后
+ * 会用**磁盘上的新 exe** 原地拉起核心（静默恢复路径，实测十几秒内无感恢复，页面不用动），
+ * 用户不再需要「关闭窗口再打开」。测试注入 no-op，避免测试进程被 exit 杀掉。
+ */
+let scheduleCoreExit: (ms: number) => void = (ms) => {
+  setTimeout(() => {
+    console.log('[updater] 更新已应用，核心自动退出，等待看护循环拉起新版本');
+    process.exit(0);
+  }, ms).unref();
+};
+
+/** 测试注入用：替换核心自退调度器 */
+export function setCoreExitSchedulerForTests(hook: (ms: number) => void): void {
+  scheduleCoreExit = hook;
+}
+
+/** 原地替换已暂存的新 exe。成功后核心自动重启生效；外壳 exe 在下次手动重启时更新。
+ *  exeDirOverride 供测试注入安装目录（生产恒为运行中核心的 exe 旁）。 */
+export function applyUpdate(stagingDir: string, exeDirOverride?: string): { ok: boolean; message?: string } {
   if (state.phase !== 'staged') {
     return { ok: false, message: '没有已下载待应用的更新' };
   }
-  const exeDir = path.dirname(process.execPath);
+  const exeDir = exeDirOverride ?? path.dirname(process.execPath);
   try {
     replaceStagedFiles(stagingDir, exeDir, [SHELL_NAME, CORE_NAME]);
   } catch (e) {
@@ -552,7 +575,13 @@ export function applyUpdate(stagingDir: string): { ok: boolean; message?: string
   state.phase = 'idle';
   state.received = 0;
   state.total = 0;
-  return { ok: true, message: '更新完成：请关闭软件窗口，稍候重新打开即生效' };
+  // 延迟 3 秒：给 HTTP 响应留出送达前端的时间。窗口期内用户手动关掉软件也无副作用
+  //（定时器随进程一起消失，看护循环本就不会再拉起已退出的进程）。
+  scheduleCoreExit(3000);
+  return {
+    ok: true,
+    message: '更新完成：核心正在自动重启生效（页面十几秒内自动恢复），外壳将在下次手动重启软件时更新',
+  };
 }
 
 /** 清理上次更新遗留的 *.exe.old（进程已退出后才能删干净；失败静默）。 */

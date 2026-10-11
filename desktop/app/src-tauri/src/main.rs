@@ -407,7 +407,12 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 二次启动 → 还原并聚焦已有窗口。窗口可能处于最小化/隐藏态：只 set_focus 的
+            // 话用户看到的仍是「双击图标没反应」（实测：更新后关窗留下的无窗口进程 +
+            // 单实例拦截，表现为软件打不开）。
             if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
                 let _ = w.set_focus();
             }
         }))
@@ -435,11 +440,20 @@ fn main() {
             shell_auth::spawn(app.handle().clone());
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(|window, event| match event {
             // 关窗 = 退出软件：回收核心子进程（与网页版「关闭窗口即退出」语义一致）
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
+            tauri::WindowEvent::CloseRequested { .. } => {
                 kill_core(window.app_handle());
             }
+            // 主窗口已销毁而进程仍存活（实测：更新后关窗可能留下无窗口的僵尸进程）：
+            // 强制退出。否则进程占着单实例锁，之后每次手动启动都被拦截——表现为「软件打不开」
+            tauri::WindowEvent::Destroyed => {
+                if window.label() == "main" {
+                    kill_core(window.app_handle());
+                    window.app_handle().exit(0);
+                }
+            }
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
