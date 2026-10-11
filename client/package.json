@@ -24,6 +24,7 @@
     "@codemirror/lang-markdown": "^6.5.2",
     "@codemirror/language": "^6.12.4",
     "@codemirror/view": "^6.43.9",
+    "@fontsource/inter": "^5.3.0",
     "@lezer/highlight": "^1.2.3",
     "@uiw/react-codemirror": "^4.25.11",
     "antd": "^5.27.0",

@@ -758,3 +758,152 @@ test('POST /ai/models 下发网关返回的真实参数档位（OpenRouter 风�
   });
   await new Promise<void>((resolve) => srv.close(() => resolve()));
 });
+
+// ---------- 跨源 Key 复用防护 ----------
+// 本机服务零鉴权，默认只靠「绑回环」划边界；恶意网页可借 DNS rebinding 以同源身份打到
+// /ai/test。若该接口把「body 给的 baseURL」与「已保存的真 Key」自由组合，它就成了
+// 「把 Key 送到任意主机」的开关（修复前已在本机实测复现：真 Key 被原样送达攻击者主机）。
+// 以下用例锁死这个组合。两处 mock 上游端口不同 → 天然是「不同源」。
+
+/** 清空 AI_API_KEY 环境变量跑一段逻辑（环境变量优先级高于 DB，会污染断言） */
+async function withoutEnvKey(fn: () => Promise<void>): Promise<void> {
+  const saved = process.env.AI_API_KEY;
+  delete process.env.AI_API_KEY;
+  try {
+    await fn();
+  } finally {
+    if (saved !== undefined) process.env.AI_API_KEY = saved;
+  }
+}
+
+test('POST /ai/test 不把已保存的 Key 复用到不同源地址，且一个字节都不发出去', async () => {
+  const evil = await startUpstream({ withModels: true });
+  await withServer(async (db, base) => {
+    await withoutEnvKey(async () => {
+      saveAiConfig(db, DEFAULT_CONFIG, {
+        baseURL: 'https://api.deepseek.com/v1',
+        apiKey: 'saved-key',
+      });
+      // 攻击者形态：只把 baseURL 指向自己的主机，不带 apiKey
+      const res = await fetch(`${base}/ai/test`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ baseURL: evil.base }),
+      });
+      const body = (await res.json()) as { ok: boolean; message: string };
+      assert.equal(body.ok, false);
+      assert.match(body.message, /不同源/);
+      assert.equal(evil.requests.length, 0, '不应向不同源地址发出任何请求');
+    });
+  });
+  await evil.close();
+});
+
+test('POST /ai/test 换源时只用请求体显式带来的 Key，绝不混入已保存的 Key', async () => {
+  const evil = await startUpstream({ withModels: true, requireKey: 'user-typed-key' });
+  await withServer(async (db, base) => {
+    await withoutEnvKey(async () => {
+      saveAiConfig(db, DEFAULT_CONFIG, {
+        baseURL: 'https://api.deepseek.com/v1',
+        apiKey: 'saved-key',
+      });
+      const res = await fetch(`${base}/ai/test`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ baseURL: evil.base, apiKey: 'user-typed-key' }),
+      });
+      const body = (await res.json()) as { ok: boolean };
+      assert.equal(body.ok, true);
+      assert.equal(evil.requests[0]?.auth, 'Bearer user-typed-key');
+      assert.notEqual(evil.requests[0]?.auth, 'Bearer saved-key');
+    });
+  });
+  await evil.close();
+});
+
+test('POST /ai/test 同源换路径时仍复用已保存的 Key（正常「先测后存」流程不受影响）', async () => {
+  const own = await startUpstream({ withModels: true, requireKey: 'saved-key' });
+  const origin = new URL(own.base).origin;
+  await withServer(async (db, base) => {
+    await withoutEnvKey(async () => {
+      saveAiConfig(db, DEFAULT_CONFIG, { baseURL: `${origin}/v1`, apiKey: 'saved-key' });
+      // 同源、不同路径：属于同一服务商，允许复用
+      const res = await fetch(`${base}/ai/test`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ baseURL: `${origin}/v2` }),
+      });
+      const body = (await res.json()) as { ok: boolean };
+      assert.equal(body.ok, true);
+      assert.equal(own.requests[0]?.auth, 'Bearer saved-key');
+      assert.match(own.requests[0]?.path ?? '', /\/v2\/models$/);
+    });
+  });
+  await own.close();
+});
+
+test('POST /ai/models 同样拒绝跨源复用已保存的 Key', async () => {
+  const evil = await startUpstream({ withModels: true });
+  await withServer(async (db, base) => {
+    await withoutEnvKey(async () => {
+      saveAiConfig(db, DEFAULT_CONFIG, {
+        baseURL: 'https://api.deepseek.com/v1',
+        apiKey: 'saved-key',
+      });
+      const res = await fetch(`${base}/ai/models`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ baseURL: evil.base }),
+      });
+      assert.equal(res.status, 403);
+      assert.match(((await res.json()) as { error: string }).error, /不同源/);
+      assert.equal(evil.requests.length, 0);
+    });
+  });
+  await evil.close();
+});
+
+// 多提供商形态（v0.5.5 起）：providerId 指向已存提供商即可取用它的密钥，
+// 而 body 里的 baseURL 会覆盖请求目标 —— 攻击者只要读一次提供商列表就能拿到合法 id，
+// 该组合必须同样被拦住。
+test('POST /ai/test 多提供商形态：providerId 的密钥不得跟着被覆盖的 baseURL 走', async () => {
+  const own = await startUpstream({ withModels: true, requireKey: 'provider-key' });
+  const evil = await startUpstream({ withModels: true });
+  await withServer(async (_db, base) => {
+    await withoutEnvKey(async () => {
+      const save = await fetch(`${base}/ai`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          providers: [
+            { id: 'p1', name: 'DeepSeek', baseURL: own.base, model: 'deepseek-chat', apiKey: 'provider-key' },
+          ],
+          activeProviderId: 'p1',
+        }),
+      });
+      assert.equal(save.status, 200);
+
+      // 攻击者：选 p1 取得其密钥，同时把 baseURL 换成自己的主机
+      const attack = await fetch(`${base}/ai/test`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerId: 'p1', baseURL: evil.base }),
+      });
+      const attackBody = (await attack.json()) as { ok: boolean; message: string };
+      assert.equal(attackBody.ok, false);
+      assert.match(attackBody.message, /不同源/);
+      assert.equal(evil.requests.length, 0, '提供商的密钥不得发往被覆盖的目标主机');
+
+      // 对照组：不带 baseURL 覆盖时，providerId 正常取用自身密钥（功能没被砍掉）
+      const ok = await fetch(`${base}/ai/test`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerId: 'p1' }),
+      });
+      assert.equal(((await ok.json()) as { ok: boolean }).ok, true);
+      assert.equal(own.requests[0]?.auth, 'Bearer provider-key');
+    });
+  });
+  await own.close();
+  await evil.close();
+});

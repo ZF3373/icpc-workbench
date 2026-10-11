@@ -575,7 +575,14 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
   // 以该提供商为基底，见 effectiveAiConfig）。首选免费快速的 GET /models；
   // 部分兼容网关不实现该端点 → 退化用 1 token 的 chat/completions 真实验证。
   r.post('/ai/test', asyncHandler(async (req, res) => {
-    const cfg = effectiveAiConfig(db, config, req.body ?? {});
+    const { cfg, blockedSavedKeyReuse } = effectiveAiConfig(db, config, req.body ?? {});
+    if (blockedSavedKeyReuse) {
+      return res.json({
+        ok: false,
+        message:
+          '安全限制：测试地址与已保存的地址不同源，不会复用已保存的 API Key。请填入该地址对应的 Key，或先保存配置再测试。',
+      });
+    }
     if (!/^https?:\/\//.test(cfg.baseURL)) {
       return res.json({ ok: false, message: `Base URL 需为 http(s) 地址，当前：${cfg.baseURL || '（空）'}` });
     }
@@ -612,7 +619,12 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
   // POST /api/settings/ai/models  body: { providerId?, baseURL?, apiKey? }
   // 一键获取可用模型列表（OpenAI GET /models，兼容 data[].id / models[].name 等变体）
   r.post('/ai/models', asyncHandler(async (req, res) => {
-    const cfg = effectiveAiConfig(db, config, req.body ?? {});
+    const { cfg, blockedSavedKeyReuse } = effectiveAiConfig(db, config, req.body ?? {});
+    if (blockedSavedKeyReuse) {
+      return res.status(403).json({
+        error: '安全限制：目标地址与已保存的地址不同源，不会复用已保存的 API Key。请一并传入该地址对应的 apiKey。',
+      });
+    }
     if (!/^https?:\/\//.test(cfg.baseURL)) {
       return res.status(400).json({ error: `Base URL 需为 http(s) 地址，当前：${cfg.baseURL || '（空）'}` });
     }
@@ -926,17 +938,35 @@ function aiSettingsView(db: Db, config: AppConfig): { ai: Record<string, unknown
 
 // ---------- AI 连接测试 / 模型列表 ----------
 
+/** baseURL 的「源」（协议 + 主机 + 端口）；非法 URL 返回 null（一律按「不同源」处理，从严）。 */
+function baseUrlOrigin(url: string): string | null {
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 组装待测配置：body 值优先（先测后存），缺省回退已保存配置。
  * `providerId` 指向已保存的某个提供商时以该提供商为基底（测试未保存的编辑仍走
  * baseURL/apiKey 覆盖路径）；两者可叠加——提供商提供已存密钥，body 覆盖未保存的
- * Base URL/模型编辑。apiKey 与实际请求一致，含环境变量覆盖。
+ * Base URL/模型编辑。
+ *
+ * ⚠ 安全约束：**已保存的 apiKey 只在「测试目标与其来源配置同源」时复用。**
+ * 本接口同时接受请求体里的 baseURL 与 providerId；若还无条件回退已保存的 Key，它
+ * 就成了「把 Key 送到任意主机」的开关——本机服务零鉴权，恶意网页可借 DNS rebinding
+ * 以同源身份打到 /ai/test，用一个不含 apiKey 的请求体换走真实 Key（修复前已实测复现；
+ * 多提供商形态下攻击者只要读一次提供商列表就能拿到 providerId，同样成立）。
+ * 换源测试请把该地址对应的 Key 一并填入，或先保存配置再测。
+ * 返回值里的 blockedSavedKeyReuse 供路由给出可操作提示。
  */
 function effectiveAiConfig(
   db: Db,
   config: AppConfig,
   b: { providerId?: unknown; baseURL?: unknown; apiKey?: unknown; model?: unknown },
-): AiConfig {
+): { cfg: AiConfig; blockedSavedKeyReuse: boolean } {
   const saved = aiConfigFromDb(db, config);
   let baseURL = saved.baseURL;
   let apiKey = saved.apiKey;
@@ -952,11 +982,19 @@ function effectiveAiConfig(
   }
   const pick = (v: unknown, fallback: string): string =>
     typeof v === 'string' && v.trim() !== '' ? v.trim() : fallback;
+  const effectiveBaseURL = pick(b.baseURL, baseURL);
+  // 安全：已保存的密钥只在「测试目标与其来源配置同源」时复用；换源只能用请求体显式带来的 Key
+  const origin = baseUrlOrigin(effectiveBaseURL);
+  const sameOrigin = origin !== null && origin === baseUrlOrigin(baseURL);
+  const providedKey = pick(b.apiKey, '');
   return {
-    enabled: saved.enabled,
-    baseURL: pick(b.baseURL, baseURL),
-    apiKey: pick(b.apiKey, apiKey),
-    model: pick(b.model, model),
+    cfg: {
+      enabled: saved.enabled,
+      baseURL: effectiveBaseURL,
+      apiKey: providedKey !== '' ? providedKey : sameOrigin ? apiKey : '',
+      model: pick(b.model, model),
+    },
+    blockedSavedKeyReuse: providedKey === '' && !sameOrigin && apiKey !== '',
   };
 }
 
