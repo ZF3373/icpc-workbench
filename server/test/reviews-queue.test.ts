@@ -3,7 +3,7 @@
  *
  * 旧实现把每个新条目的 next_due_on 一律写成今天：从题单/写题历史一键加几十道题时，
  * 第二天就是几十条到期，复习日被砸穿后用户往往直接弃用队列。
- * 现在按题目 id 做 0–3 天错峰（确定性、可测），并把负载分布透出给界面。
+ * 现在按题目 id 做 3–6 天错峰（3 天保底 + 0–3 天均摊，确定性、可测），并把负载分布透出给界面。
  */
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,7 +53,7 @@ function dayPlus(n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-test('批量加入按题目 id 错峰到今日起 0–3 天，不再同日全到期', async () => {
+test('批量加入按题目 id 错峰到加入后 3–6 天，不再同日全到期', async () => {
   const ids = [addProblem('A'), addProblem('B'), addProblem('C'), addProblem('D'), addProblem('E')];
   for (const key of ['A', 'B', 'C', 'D', 'E']) await api('POST', '/api/reviews', { platform: 'codeforces', problemKey: key });
 
@@ -61,10 +61,10 @@ test('批量加入按题目 id 错峰到今日起 0–3 天，不再同日全到
     .prepare('SELECT problem_id, next_due_on FROM review_items ORDER BY id')
     .all() as Array<{ problem_id: number; next_due_on: string }>;
   assert.equal(rows.length, 5);
-  // 确定性规则：problem_id % 4 → 连续加入的题均摊到 4 天里
+  // 确定性规则：3 天保底 + problem_id % 4 → 连续加入的题均摊到 4 天里
   assert.deepEqual(
     rows.map((r) => r.next_due_on),
-    ids.map((id) => dayPlus(id % 4)),
+    ids.map((id) => dayPlus(3 + (id % 4))),
   );
   // 关键指标：同一天最多只堆 ⌈5/4⌉ = 2 条
   const perDay = new Map<string, number>();
@@ -108,22 +108,22 @@ test('due-count 透出负载分布：逾期 / 今日 / 未来 7 天', async () =
   const counts = body as { count: number; overdue: number; dueToday: number; next7: number; total: number };
   assert.equal(counts.total, 5);
   assert.equal(counts.overdue, 1);
-  // 剩下 4 条的错峰是 +0/+1/+2/+3：今日 1 条、未来 7 天内 3 条
-  assert.equal(counts.dueToday, 1);
-  assert.equal(counts.next7, 3);
+  // 剩下 4 条的错峰是 +3/+4/+5/+6：今日 0 条、未来 7 天内 4 条
+  assert.equal(counts.dueToday, 0);
+  assert.equal(counts.next7, 4);
   assert.equal(counts.count, counts.overdue + counts.dueToday, 'count 仍是「今天该做的量」（今日训练/挂件口径不变）');
-  assert.equal(counts.count, 2);
+  assert.equal(counts.count, 1);
 });
 
 test('hard 反馈走折返档：练到 60 天的题失手一次不该回到明天', async () => {
   const id = addProblem('A');
   await api('POST', '/api/reviews', { platform: 'codeforces', problemKey: 'A' });
   const itemId = (db.prepare('SELECT id FROM review_items WHERE problem_id = ?').get(id) as { id: number }).id;
-  db.prepare('UPDATE review_items SET stage = 5 WHERE id = ?').run(itemId);
+  db.prepare('UPDATE review_items SET stage = 4 WHERE id = ?').run(itemId);
 
   const { body } = await api('POST', `/api/reviews/${itemId}/feedback`, { feedback: 'hard' });
   const next = body as { stage: number; nextDueOn: string };
-  assert.equal(next.stage, 3, '60 天档失手 → 退到 14 天档，而不是明天');
+  assert.equal(next.stage, 2, '60 天档失手 → 退到 14 天档，而不是明天');
   assert.equal(next.nextDueOn, dayPlus(14));
 });
 

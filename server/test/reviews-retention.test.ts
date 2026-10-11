@@ -138,9 +138,9 @@ test('反馈落一行 review_events：档位变化 / 原定到期日 / 生效系
   assert.equal(ev.stage_before, 2);
   assert.equal(ev.stage_after, 3);
   assert.equal(ev.due_on, localToday(), '记下复习时原本的到期日，才能算逾期强度');
-  assert.equal(Number(ev.interval_days), 14);
+  assert.equal(Number(ev.interval_days), 30);
   assert.equal(ev.factor, 1);
-  assert.equal(res.nextDueOn, dateAfterDays(localToday(), 14), '无信号时排期 = 基线档位间隔');
+  assert.equal(res.nextDueOn, dateAfterDays(localToday(), 30), '无信号时排期 = 基线档位间隔');
 });
 
 test('逾期复习会记在日志里（due_on 早于复习当天）', async () => {
@@ -158,13 +158,13 @@ test('逾期复习会记在日志里（due_on 早于复习当天）', async () =
 test('历史失手次数让本次排期短于阶梯基线', async () => {
   const pid = addProblem();
   const itemId = addItem(pid, 1, localToday());
-  // 基线：stage1 + ok → stage2 = 7 天
+  // 基线：stage1 + ok → stage2 = 14 天
   logEvent(itemId, pid, 'hard', 0, '2026-09-05T10:00:00.000Z');
   logEvent(itemId, pid, 'hard', 0, '2026-09-06T10:00:00.000Z');
   const { body } = await api('POST', `/api/reviews/${itemId}/feedback`, { feedback: 'ok' });
   const res = body as { nextDueOn: string; factor: number; intervalDays: number };
   assert.ok(res.factor < 1, '两次失手要收紧');
-  assert.ok(res.intervalDays < 7, `实际间隔应短于基线 7 天，实得 ${res.intervalDays}`);
+  assert.ok(res.intervalDays < 14, `实际间隔应短于基线 14 天，实得 ${res.intervalDays}`);
 });
 
 test('连续稳定 + 知识点熟练把间隔拉长', async () => {
@@ -175,7 +175,7 @@ test('连续稳定 + 知识点熟练把间隔拉长', async () => {
   const { body } = await api('POST', `/api/reviews/${itemId}/feedback`, { feedback: 'ok' });
   const res = body as { factor: number; intervalDays: number };
   assert.ok(res.factor > 1, `应放宽，实得 ${res.factor}`);
-  assert.ok(res.intervalDays > 14, `基线 14 天应被拉长，实得 ${res.intervalDays}`);
+  assert.ok(res.intervalDays > 30, `基线 30 天应被拉长，实得 ${res.intervalDays}`);
 });
 
 test('知识点薄弱把间隔收紧（同一档位不同题不再同一条排期）', async () => {
@@ -185,7 +185,7 @@ test('知识点薄弱把间隔收紧（同一档位不同题不再同一条排�
   const { body } = await api('POST', `/api/reviews/${itemId}/feedback`, { feedback: 'ok' });
   const res = body as { factor: number; intervalDays: number };
   assert.ok(res.factor < 1, `知识点没掌握要收紧，实得 ${res.factor}`);
-  assert.ok(res.intervalDays < 14);
+  assert.ok(res.intervalDays < 30);
 });
 
 test('该题记过「看题解才做出」就收紧', async () => {

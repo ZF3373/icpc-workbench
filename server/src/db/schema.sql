@@ -260,7 +260,7 @@ CREATE TABLE IF NOT EXISTS review_items (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id          INTEGER NOT NULL REFERENCES users(id),
   problem_id       INTEGER NOT NULL REFERENCES problems(id),
-  stage            INTEGER NOT NULL DEFAULT 0,     -- 间隔阶梯档位 0..7（1/3/7/14/30/60/120/240 天）
+  stage            INTEGER NOT NULL DEFAULT 0,     -- 间隔阶梯档位 0..7（3/7/14/30/60/120/240/480 天）
   note             TEXT,
   added_at         TEXT NOT NULL DEFAULT (datetime('now')),
   last_reviewed_at TEXT,
@@ -340,7 +340,8 @@ CREATE TABLE IF NOT EXISTS problem_lists (
   source_url TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   ai_suggestion  TEXT,
-  ai_suggestion_at TEXT
+  ai_suggestion_at TEXT,
+  ai_suggestion_order TEXT                         -- AI 建议的练习顺序：problem_list_items.id 的 JSON 数组（null = 未生成/不可用）
 );
 
 CREATE TABLE IF NOT EXISTS problem_list_items (

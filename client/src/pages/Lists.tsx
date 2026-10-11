@@ -10,6 +10,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Segmented,
   Select,
   Space,
   Spin,
@@ -24,6 +25,7 @@ import {
   ExperimentOutlined,
   HolderOutlined,
   PlusOutlined,
+  SortAscendingOutlined,
   TagsOutlined,
   UndoOutlined,
 } from '@ant-design/icons'
@@ -37,6 +39,7 @@ import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
 import { del, get, patch, post } from '../api'
 import { difficultyColor } from '../ui'
+import { mergeSuggestedOrder } from '../listOrder'
 
 /**
  * 题单整理（issue #4）：导入平台题单（粘贴文本自动识别题号/链接），
@@ -73,6 +76,8 @@ interface ListDetail {
   created_at: string
   aiSuggestion: string | null
   aiSuggestionAt: string | null
+  /** AI 建议的练习顺序（条目 id 数组）；null = 未生成或本次建议没带可执行顺序 */
+  aiSuggestionOrder: number[] | null
   items: ListItem[]
 }
 
@@ -87,7 +92,10 @@ export default function Lists() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [busy, setBusy] = useState<string | null>(null) // 正在进行的操作（classify/ai-classify/ai-suggest）
   const [suggest, setSuggest] = useState<string | null>(null) // AI 建议内容
+  const [suggestOrder, setSuggestOrder] = useState<number[] | null>(null) // AI 建议的练习顺序（条目 id，来自缓存或本次生成）
   const [suggestOpen, setSuggestOpen] = useState(false)
+  /** 详情抽屉视图：按分类分组（默认）/ 按练习顺序平铺——交错顺序只有平铺视图能如实展示 */
+  const [view, setView] = useState<'group' | 'order'>('group')
   const [addItemOpen, setAddItemOpen] = useState(false) // 向已有题单追加题目
   const [importForm] = Form.useForm()
   const [addItemForm] = Form.useForm()
@@ -116,6 +124,7 @@ export default function Lists() {
       setDetail(d)
       // 从 DB 缓存恢复 AI 建议（有缓存则直接显示，无需重新调 AI）
       setSuggest(d.aiSuggestion)
+      setSuggestOrder(d.aiSuggestionOrder)
     } catch (e) {
       message.error((e as Error).message)
       setDetailOpen(false)
@@ -205,11 +214,12 @@ export default function Lists() {
     setSuggestOpen(true)
     setSuggest(null)
     try {
-      const r = await post<{ reply: string; cached?: boolean; cachedAt?: string }>(
+      const r = await post<{ reply: string; order?: number[] | null; cached?: boolean; cachedAt?: string }>(
         `/api/lists/${detail.id}/ai-suggest`,
         force ? { force: true } : {},
       )
       setSuggest(r.reply)
+      setSuggestOrder(r.order ?? null)
     } catch (e) {
       if (!force) setSuggestOpen(false)
       message.error((e as Error).message)
@@ -365,6 +375,26 @@ export default function Lists() {
     [detail, commitReorder],
   )
 
+  /**
+   * 「按建议重排」：把 AI 建议的练习顺序落为题单做题顺序。
+   * 复用拖拽排序的落库与撤销（commitReorder）；建议没排到的题接在末尾。
+   * 成功后切到「按练习顺序」视图——同类题交错的顺序只有在平铺视图里才看得见。
+   */
+  const applySuggestedOrder = async () => {
+    if (!detail || !suggestOrder) return
+    const nextItems = mergeSuggestedOrder(suggestOrder, detail.items)
+    setSuggestOpen(false)
+    setView('order')
+    const sameOrder =
+      nextItems.map((i) => i.id).join('\u0000') === detail.items.map((i) => i.id).join('\u0000')
+    if (sameOrder) {
+      message.info('当前顺序已与建议一致')
+      return
+    }
+    await commitReorder(nextItems, detail.items, detail.id)
+    reloadDetail()
+  }
+
   // 拖拽中松手：按最近 hover 的落点执行重排（松手在列表外则丢弃）
   useEffect(() => {
     if (dragItemId === null) return
@@ -414,6 +444,100 @@ export default function Lists() {
       else byCategory.set(it.category, [it])
     }
     for (const [category, items] of byCategory) groups.push({ category, items })
+  }
+
+  /** 单行渲染：分组视图与顺序视图共用（拖拽/上下移/改分类在两个视图下行为一致） */
+  const renderRow = (it: ListItem) => {
+    const link = it.url
+    // 无题名（或历史数据里解析残留的 "https://" 假题名）时直接显示题号，
+    // 此时旁边不再重复展示小字题号
+    const rawTitle = it.title?.trim()
+    const hasTitle = !!rawTitle && !/^https?:\/\//i.test(rawTitle)
+    const name = hasTitle ? rawTitle : it.problem_key
+    const isDragging = dragItemId === it.id
+    const isDropTarget = dragOver?.id === it.id && dragItemId !== null && dragItemId !== it.id
+    const isJustDropped = justDroppedId === it.id
+    const rowClass = [
+      'list-item-row',
+      isDragging ? 'is-dragging' : '',
+      isDropTarget ? 'is-drop-target' : '',
+      isJustDropped ? 'is-just-dropped' : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+    return (
+      <div
+        key={it.id}
+        className={rowClass}
+        // 行内不再写临时高亮：拖拽态交给上面的 class（.is-dragging 也是 opacity，
+        // 所以拖起时让出内联 opacity，否则已 AC 行的 0.55 会盖掉 .is-dragging）
+        style={isDragging ? undefined : { opacity: it.solved ? 0.55 : 1 }}
+        onMouseEnter={(e) => rowDragEnter(e, it.id)}
+        onMouseMove={(e) => rowDragEnter(e, it.id)}
+      >
+        <Space size={8} wrap style={{ flex: 1 }}>
+          <span className="list-item-reorder" title="拖拽排序">
+            <span className="drag-handle" onMouseDown={(e) => startDrag(e, it.id)}>
+              <HolderOutlined />
+            </span>
+            <Tooltip title="上移">
+              <Button
+                type="text"
+                size="small"
+                className="reorder-btn"
+                icon={<ArrowUpOutlined />}
+                disabled={detail?.items.findIndex((i) => i.id === it.id) === 0}
+                onClick={() => void moveItemBy(it.id, -1)}
+                aria-label="上移该题"
+              />
+            </Tooltip>
+            <Tooltip title="下移">
+              <Button
+                type="text"
+                size="small"
+                className="reorder-btn"
+                icon={<ArrowDownOutlined />}
+                disabled={detail?.items.findIndex((i) => i.id === it.id) === (detail?.items.length ?? 0) - 1}
+                onClick={() => void moveItemBy(it.id, 1)}
+                aria-label="下移该题"
+              />
+            </Tooltip>
+          </span>
+          <PlatformTag id={it.platform as PlatformId} />
+          {link ? (
+            <a href={link} target="_blank" rel="noreferrer">
+              <b>{name}</b>
+            </a>
+          ) : (
+            <b>{name}</b>
+          )}
+          {hasTitle && rawTitle !== it.problem_key && (
+            <span className="mono" style={{ fontSize: 12, color: 'var(--text-3)' }}>
+              {it.problem_key}
+            </span>
+          )}
+          {it.difficulty !== null && (
+            <span className="mono" style={{ fontSize: 12, color: difficultyColor(it.difficulty) }}>
+              {it.difficulty}
+            </span>
+          )}
+          {it.solved && <Tag color="success">已AC</Tag>}
+        </Space>
+        <Space size={4}>
+          <Select
+            size="small"
+            style={{ minWidth: 110 }}
+            value={it.category}
+            showSearch
+            onChange={(v) => void changeCategory(it.id, v)}
+            options={[...new Set([...groups.map((x) => x.category), '其他'])].map((c) => ({ value: c, label: c }))}
+          />
+          <Popconfirm title="移除该题" okText="移除" cancelText="取消" onConfirm={() => void removeItem(it.id)}>
+            <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
+      </div>
+    )
   }
 
   return (
@@ -556,111 +680,44 @@ export default function Lists() {
         {detailLoading && <Spin style={{ display: 'block', margin: '40px auto' }} />}
         {!detailLoading && detail && (
           <>
-            <p style={{ color: 'var(--text-3)', fontSize: 12, marginBottom: 12 }}>
-              共 {detail.items.length} 题 · 已完成 {detail.items.filter((i) => i.solved).length} 题；同分类合并成组（按首次出现排序），组内保持导入原顺序；
-              「按题库分类」依据已同步题库的标签，覆盖不到的用「AI 分类」或手动调整。拖动行首手柄可调整做题顺序，「添加题目」可向题单追加新题。
-            </p>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 8,
+                marginBottom: 12,
+              }}
+            >
+              <p style={{ color: 'var(--text-3)', fontSize: 12, margin: 0, flex: '1 1 320px' }}>
+                共 {detail.items.length} 题 · 已完成 {detail.items.filter((i) => i.solved).length} 题；
+                「按分类分组」把同类题合并成组（按首次出现排序），「按练习顺序」按做题顺序平铺——同类题不强制相邻；
+                「按题库分类」依据已同步题库的标签，覆盖不到的用「AI 分类」或手动调整。拖动行首手柄可调整做题顺序，
+                「AI 建议」生成后可一键「按建议重排」，「添加题目」可向题单追加新题。
+              </p>
+              <Segmented
+                size="small"
+                value={view}
+                onChange={(v) => setView(v as 'group' | 'order')}
+                options={[
+                  { label: '按分类分组', value: 'group' },
+                  { label: '按练习顺序', value: 'order' },
+                ]}
+              />
+            </div>
             <div style={{ userSelect: dragItemId !== null ? 'none' : undefined }}>
-            {groups.map((g) => (
-              <div key={g.category} style={{ marginBottom: 16 }}>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>
-                  <Tag color="geekblue">{g.category}</Tag>
-                  <span style={{ color: 'var(--text-3)', fontSize: 12 }}>{g.items.length} 题</span>
-                </div>
-                {g.items.map((it) => {
-                  const link = it.url
-                  // 无题名（或历史数据里解析残留的 "https://" 假题名）时直接显示题号，
-                  // 此时旁边不再重复展示小字题号
-                  const rawTitle = it.title?.trim()
-                  const hasTitle = !!rawTitle && !/^https?:\/\//i.test(rawTitle)
-                  const name = hasTitle ? rawTitle : it.problem_key
-                  const isDragging = dragItemId === it.id
-                  const isDropTarget = dragOver?.id === it.id && dragItemId !== null && dragItemId !== it.id
-                  const isJustDropped = justDroppedId === it.id
-                  const rowClass = [
-                    'list-item-row',
-                    isDragging ? 'is-dragging' : '',
-                    isDropTarget ? 'is-drop-target' : '',
-                    isJustDropped ? 'is-just-dropped' : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' ')
-                  return (
-                    <div
-                      key={it.id}
-                      className={rowClass}
-                      // 行内不再写临时高亮：拖拽态交给上面的 class（.is-dragging 也是 opacity，
-                      // 所以拖起时让出内联 opacity，否则已 AC 行的 0.55 会盖掉 .is-dragging）
-                      style={isDragging ? undefined : { opacity: it.solved ? 0.55 : 1 }}
-                      onMouseEnter={(e) => rowDragEnter(e, it.id)}
-                      onMouseMove={(e) => rowDragEnter(e, it.id)}
-                    >
-                      <Space size={8} wrap style={{ flex: 1 }}>
-                        <span className="list-item-reorder" title="拖拽排序">
-                          <span className="drag-handle" onMouseDown={(e) => startDrag(e, it.id)}>
-                            <HolderOutlined />
-                          </span>
-                          <Tooltip title="上移">
-                            <Button
-                              type="text"
-                              size="small"
-                              className="reorder-btn"
-                              icon={<ArrowUpOutlined />}
-                              disabled={detail?.items.findIndex((i) => i.id === it.id) === 0}
-                              onClick={() => void moveItemBy(it.id, -1)}
-                              aria-label="上移该题"
-                            />
-                          </Tooltip>
-                          <Tooltip title="下移">
-                            <Button
-                              type="text"
-                              size="small"
-                              className="reorder-btn"
-                              icon={<ArrowDownOutlined />}
-                              disabled={detail?.items.findIndex((i) => i.id === it.id) === (detail?.items.length ?? 0) - 1}
-                              onClick={() => void moveItemBy(it.id, 1)}
-                              aria-label="下移该题"
-                            />
-                          </Tooltip>
-                        </span>
-                        <PlatformTag id={it.platform as PlatformId} />
-                        {link ? (
-                          <a href={link} target="_blank" rel="noreferrer">
-                            <b>{name}</b>
-                          </a>
-                        ) : (
-                          <b>{name}</b>
-                        )}
-                        {hasTitle && rawTitle !== it.problem_key && (
-                          <span className="mono" style={{ fontSize: 12, color: 'var(--text-3)' }}>
-                            {it.problem_key}
-                          </span>
-                        )}
-                        {it.difficulty !== null && (
-                          <span className="mono" style={{ fontSize: 12, color: difficultyColor(it.difficulty) }}>
-                            {it.difficulty}
-                          </span>
-                        )}
-                        {it.solved && <Tag color="success">已AC</Tag>}
-                      </Space>
-                      <Space size={4}>
-                        <Select
-                          size="small"
-                          style={{ minWidth: 110 }}
-                          value={it.category}
-                          showSearch
-                          onChange={(v) => void changeCategory(it.id, v)}
-                          options={[...new Set([...groups.map((x) => x.category), '其他'])].map((c) => ({ value: c, label: c }))}
-                        />
-                        <Popconfirm title="移除该题" okText="移除" cancelText="取消" onConfirm={() => void removeItem(it.id)}>
-                          <Button size="small" type="text" danger icon={<DeleteOutlined />} />
-                        </Popconfirm>
-                      </Space>
+            {view === 'group'
+              ? groups.map((g) => (
+                  <div key={g.category} style={{ marginBottom: 16 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                      <Tag color="geekblue">{g.category}</Tag>
+                      <span style={{ color: 'var(--text-3)', fontSize: 12 }}>{g.items.length} 题</span>
                     </div>
-                  )
-                })}
-              </div>
-            ))}
+                    {g.items.map((it) => renderRow(it))}
+                  </div>
+                ))
+              : detail.items.map((it) => renderRow(it))}
             </div>
           </>
         )}
@@ -740,13 +797,22 @@ export default function Lists() {
         onCancel={() => setSuggestOpen(false)}
         footer={
           suggest ? (
-            <Button
-              size="small"
-              loading={busy === 'ai-suggest'}
-              onClick={() => void runSuggest(true)}
-            >
-              重新生成
-            </Button>
+            <Space>
+              {suggestOrder && (
+                <Button
+                  size="small"
+                  type="primary"
+                  icon={<SortAscendingOutlined />}
+                  loading={busy === 'ai-suggest'}
+                  onClick={() => void applySuggestedOrder()}
+                >
+                  按建议重排
+                </Button>
+              )}
+              <Button size="small" loading={busy === 'ai-suggest'} onClick={() => void runSuggest(true)}>
+                重新生成
+              </Button>
+            </Space>
           ) : null
         }
         width={640}
@@ -756,6 +822,14 @@ export default function Lists() {
         ) : (
           <>
             <Markdown text={suggest} breaks />
+            {!suggestOrder && (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginTop: 12 }}
+                message="本次建议未包含可执行的练习顺序；点「重新生成」通常可拿到，生成后可一键「按建议重排」。"
+              />
+            )}
             {detail?.aiSuggestionAt && (
               <p style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 12, textAlign: 'right' }}>
                 生成于 {new Date(detail.aiSuggestionAt + 'Z').toLocaleString('zh-CN')}

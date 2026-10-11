@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
-import { dateAfterDays, jitterDaysFor, scheduleNext } from '../reviews/schedule.ts';
+import { dateAfterDays, firstReviewDelayDays, scheduleNext } from '../reviews/schedule.ts';
 import { collectRetentionSignals, retentionFactor } from '../reviews/retention.ts';
 import {
   listReviewItems,
@@ -33,8 +33,9 @@ export function reviewsRoutes(db: Db): Router {
     if (existing) {
       return res.json({ ok: true, alreadyInQueue: true, nextDueOn: existing.next_due_on });
     }
-    // 新条目按题目 id 错峰 0–3 天到期：批量加入时不再同日堆满（见 schedule.ts）
-    const nextDueOn = dateAfterDays(todayStr(), jitterDaysFor(problem.id));
+    // 新条目按题目 id 错峰排到加入后 3–6 天首刷：刚 AC 的题不必次日重做，
+    // 批量加入时也不会同日堆满（见 schedule.ts）
+    const nextDueOn = dateAfterDays(todayStr(), firstReviewDelayDays(problem.id));
     db.prepare('INSERT INTO review_items (user_id, problem_id, next_due_on) VALUES (?, ?, ?)').run(
       DEFAULT_USER_ID,
       problem.id,

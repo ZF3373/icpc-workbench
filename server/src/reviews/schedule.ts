@@ -2,20 +2,22 @@ import type { ReviewFeedback } from '../../../shared/src/index.ts';
 
 /**
  * 间隔复习调度（借鉴 cf-compass 复习库的阶梯思路，档位与折返规则本地化）：
- * 阶梯间隔 [1, 3, 7, 14, 30, 60, 120, 240] 天，按复习反馈调档——
+ * 阶梯间隔 [3, 7, 14, 30, 60, 120, 240, 480] 天，按复习反馈调档——
  * - hard：退回两档（不是归零）
  * - ok：前进一档
  * - easy：跳进两档（封顶）
  *
- * 阶梯为什么要爬到 240 天：封顶在 60 天时，一道早已练熟的题每 60 天必回来一次，
- * 队列的稳态日均复习量恒等于「条数 ÷ 60」且只增不减——复习库越用越重，最后被弃用。
- * 连续答对的项必须能把间隔拉长到数月，整体负载才会收敛（留存率下降时会靠 hard 折返）。
+ * 阶梯为什么要爬到 480 天：封顶太短时，一道早已练熟的题总会按封顶间隔反复回来，
+ * 队列的稳态日均复习量恒等于「条数 ÷ 封顶间隔」且只增不减——复习库越用越重，最后被弃用。
+ * 连续答对的项必须能把间隔拉长到数月乃至半年以上，整体负载才会收敛（留存率下降时靠 hard 折返）。
+ * 起步从 1 天放宽到 3 天（2026-10）：ICPC 备赛场景下刚 AC 的题次日就重做太密，
+ * 用户反馈「练习频率太高」；最底档点 hard 的重来周期也随之变为 3 天（×0.5 系数为 2 天）。
  *
- * hard 为什么只退两档：一次失手（也可能是手滑）就把 60 天档打回「明天再来」，
+ * hard 为什么只退两档：一次失手（也可能是手滑）就把高档位打回「明天再来」，
  * 惩罚强度与「到底哪里不会」无关，实际后果是用户为了不重来而不敢如实点 hard，
  * 反馈数据随之失真。折返两档保留大部分已获得的间隔，同时仍明显收紧。
  */
-export const REVIEW_INTERVALS = [1, 3, 7, 14, 30, 60, 120, 240] as const;
+export const REVIEW_INTERVALS = [3, 7, 14, 30, 60, 120, 240, 480] as const;
 
 export const MAX_STAGE = REVIEW_INTERVALS.length - 1;
 
@@ -65,13 +67,21 @@ export function scheduleNext(
 }
 
 /**
- * 新条目首次到期的错峰天数：按题目 id 取模摊到 0–3 天。
- * 批量加入（题单一键、写题历史勾选）时新条目全写「今天」会让次日堆几十条到期，
- * 复习日被砸穿后队列基本就废了；连续加入的题目 id 天然连号，取模即均摊，
- * 且确定可测（不用随机数，避免同一条目重复加入时算出不同日期）。
+ * 新条目首次到期的错峰天数：3 天起步（刚 AC 的题不必次日重做）+ 按题目 id 取模摊到 0–3 天，
+ * 即加入后 3–6 天内首刷。批量加入（题单一键、写题历史勾选）时新条目若全写同一天，
+ * 会让次日堆几十条到期，复习日被砸穿后队列基本就废了；连续加入的题目 id 天然连号，
+ * 取模即均摊，且确定可测（不用随机数，避免同一条目重复加入时算出不同日期）。
  */
 export const ADD_JITTER_DAYS = 4;
 
+/** 首刷保底间隔：新加入的条目至少等这么多天再见第一面 */
+export const FIRST_REVIEW_MIN_DAYS = 3;
+
 export function jitterDaysFor(problemId: number): number {
   return Math.abs(Math.trunc(problemId)) % ADD_JITTER_DAYS;
+}
+
+/** 新条目首刷排期：FIRST_REVIEW_MIN_DAYS + 错峰（加入后 3–6 天） */
+export function firstReviewDelayDays(problemId: number): number {
+  return FIRST_REVIEW_MIN_DAYS + jitterDaysFor(problemId);
 }

@@ -87,7 +87,7 @@ test('GET /api/today：复习条目带齐界面需要的字段（题号/链接/�
   assert.equal(item.url, 'https://codeforces.com/contest/A');
   assert.equal(item.difficulty, 1600);
   assert.equal(item.stage, 3);
-  assert.equal(item.intervalDays, 14, '第 4 档 = 14 天');
+  assert.equal(item.intervalDays, 30, '第 4 档 = 30 天');
   assert.equal(item.reviewCount, 0);
   assert.equal(item.lapseCount, 0);
 });

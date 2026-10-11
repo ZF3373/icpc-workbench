@@ -129,7 +129,7 @@ export default function Reviews() {
           {filter === 'due' ? (
             <EmptyState
               title="暂无到期的复习"
-              description="复习项会按 1/3/7/14/30/60 天的间隔排期，今天没有到期的说明都还在间隔期内。也可以直接看整个队列。"
+              description="复习项会按 3/7/14/30/60/120/240/480 天的间隔排期，今天没有到期的说明都还在间隔期内。也可以直接看整个队列。"
               actions={[
                 { label: '去题目管理加题', type: 'primary', onClick: () => nav('/problems') },
                 { label: '查看全部队列', type: 'default', onClick: () => setFilter('all') },
@@ -242,7 +242,7 @@ export default function Reviews() {
             )
           })}
           <p className="muted-note" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <ReadOutlined /> 反馈节奏：困难 → 明天重来；掌握 → 进入下一档间隔（1/3/7/14/30/60 天）；轻松 → 跳进两档。
+            <ReadOutlined /> 反馈节奏：困难 → 退回两档；掌握 → 进入下一档间隔（3/7/14/30/60/120/240/480 天）；轻松 → 跳进两档。
           </p>
         </div>
       )}

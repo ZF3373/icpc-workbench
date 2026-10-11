@@ -114,7 +114,11 @@ interface TestServer {
   providerChats: string[]
 }
 
-async function withServer(fn: (s: TestServer) => Promise<void>): Promise<void> {
+async function withServer(
+  fn: (s: TestServer) => Promise<void>,
+  /** 注入自定义 AI 回复（测顺序块解析的异常路径）；缺省用内置回复（分类 JSON / 带顺序块的建议） */
+  providerReply?: (prompt: string) => string,
+): Promise<void> {
   const db = createDb(':memory:');
   const providerChats: string[] = [];
   const app = express();
@@ -128,11 +132,14 @@ async function withServer(fn: (s: TestServer) => Promise<void>): Promise<void> {
           providerChats.push(messages.map((m) => m.content).join('\n'));
           // ai-classify：把所有题归入「二分查找」（TAXONOMY 用的是 taxonomy 规范名）；ai-suggest：返回建议文本
           const prompt = messages[messages.length - 1]!.content as string;
+          if (providerReply) return providerReply(prompt);
           if (prompt.includes('分类目录')) {
             const n = (prompt.match(/^\d+\. \[/gm) ?? []).length; // ai-classify 条目行形如 "0. [luogu/P1001]"
             return JSON.stringify(Array.from({ length: n }, (_, i) => ({ i, category: '二分查找' })));
           }
-          return '建议优先做前两道题。';
+          // ai-suggest：建议正文 + 末尾顺序块（题目列表行号 1-based，倒序排列以便断言重排生效）
+          const n = (prompt.match(/^\d+\. \[/gm) ?? []).length;
+          return `建议优先做前两道题。\n\n\`\`\`json\n${JSON.stringify(Array.from({ length: n }, (_, i) => n - i))}\n\`\`\``;
         },
       }),
     }),
@@ -335,6 +342,101 @@ test('lists: ai-classify updates categories via mock provider; ai-suggest return
     assert.match(providerChats[1]!, /混合题单/);
     assert.match(providerChats[1]!, /练习数据汇总/);
   });
+});
+
+test('lists: ai-suggest 附带练习顺序（json 块剥离、id 换算、缓存解析、reorder 落库）', async () => {
+  await withServer(async ({ base, db }) => {
+    seedProblems(db);
+    await fetch(`${base}/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: '排序题单', raw: 'P1001\nCF1234A' }),
+    });
+    const listId = (db.prepare('SELECT id FROM problem_lists').get() as { id: number }).id;
+    const ids = (
+      db.prepare('SELECT id FROM problem_list_items ORDER BY position').all() as Array<{ id: number }>
+    ).map((r) => r.id);
+
+    const sug = (await (await fetch(`${base}/${listId}/ai-suggest`, { method: 'POST' })).json()) as {
+      reply: string;
+      order: number[] | null;
+      cached: boolean;
+    };
+    // 建议正文剥掉了顺序块（界面渲染不该看到裸 json）
+    assert.match(sug.reply, /建议优先做前两道题/);
+    assert.ok(!sug.reply.includes('```'), `正文不应残留代码围栏：${sug.reply}`);
+    // mock 按倒序给全部题目 → order 应换算成条目 id 的倒序
+    assert.deepEqual(sug.order, [...ids].reverse());
+
+    // 前端「按建议重排」走既有 reorder 端点落库
+    const ro = await fetch(`${base}/${listId}/reorder`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orderedIds: sug.order }),
+    });
+    assert.equal(ro.status, 200);
+    const keys = (
+      db.prepare('SELECT problem_key FROM problem_list_items ORDER BY position').all() as Array<{ problem_key: string }>
+    ).map((r) => r.problem_key);
+    assert.deepEqual(keys, ['1234A', 'P1001'], '练习顺序应被整体反转（CF1234A 导入时已规范化为 1234A）');
+
+    // 再次调用走缓存：order 从缓存列解析回来
+    const sug2 = (await (await fetch(`${base}/${listId}/ai-suggest`, { method: 'POST' })).json()) as {
+      reply: string;
+      order: number[] | null;
+      cached: boolean;
+    };
+    assert.equal(sug2.cached, true);
+    assert.deepEqual(sug2.order, [...ids].reverse());
+
+    // 详情接口带出 aiSuggestionOrder（界面据此后台恢复「按建议重排」按钮）
+    const detail = (await (await fetch(`${base}/${listId}`)).json()) as { aiSuggestionOrder: number[] | null };
+    assert.deepEqual(detail.aiSuggestionOrder, [...ids].reverse());
+  });
+});
+
+test('lists: ai-suggest 顺序块的异常输入被安全处理（越界/重复/非数组/无块）', async () => {
+  let call = 0;
+  await withServer(
+    async ({ base, db }) => {
+      seedProblems(db);
+      await fetch(`${base}/`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title: '异常顺序', raw: 'P1001\nCF1234A' }),
+      });
+      const listId = (db.prepare('SELECT id FROM problem_lists').get() as { id: number }).id;
+      const firstId = (
+        db.prepare('SELECT id FROM problem_list_items ORDER BY position').get() as { id: number }
+      ).id;
+
+      // 越界(99)、非整数("x")、重复(1,1)：只保留合法的 1 → [firstId]；正文同样剥掉围栏
+      const res1 = (await (
+        await fetch(`${base}/${listId}/ai-suggest`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ force: true }),
+        })
+      ).json()) as { reply: string; order: number[] | null };
+      assert.deepEqual(res1.order, [firstId]);
+      assert.ok(!res1.reply.includes('```'));
+
+      // 无代码块：order 为 null，建议文字原样返回（老版本行为）
+      const res2 = (await (
+        await fetch(`${base}/${listId}/ai-suggest`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ force: true }),
+        })
+      ).json()) as { reply: string; order: number[] | null };
+      assert.match(res2.reply, /只给建议不给顺序/);
+      assert.equal(res2.order, null);
+    },
+    () => {
+      call += 1;
+      return call === 1 ? '建议正文。\n\n```json\n[99, "x", 1, 1]\n```' : '只给建议不给顺序。';
+    },
+  );
 });
 
 test('lists: append items to existing list, dedupe by identity, 404/400 paths', async () => {

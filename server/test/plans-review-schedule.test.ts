@@ -152,7 +152,7 @@ test('templatePlan：复习任务带上档位/间隔说明与失手次数', () =
   const p = templatePlan(db, PROFILE as never, start, 7);
   const r1 = p.tasks.find((t) => t.problemKey === 'R1')!;
   assert.match(r1.note ?? '', /第 4 档/, '档位 = stage+1');
-  assert.match(r1.note ?? '', /间隔 14 天/, '第 4 档对应 14 天');
+  assert.match(r1.note ?? '', /间隔 30 天/, '第 4 档对应 30 天');
 });
 
 test('templatePlan：复习库为空时行为不变（不生成复习题任务，节奏性回顾仍在）', () => {

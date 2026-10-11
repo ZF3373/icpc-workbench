@@ -182,6 +182,52 @@ function extractAiJson(raw: string): unknown {
   }
 }
 
+/**
+ * 从 AI 建议回复末尾解析 ```json 顺序块，并把它从正文中剥掉（正文只留给界面渲染）。
+ * 约定：AI 在回复最后附 ```json\n[题号, ...]\n```（1-based 行号，对应题目列表行）。
+ * 解析失败 / 序号非法时返回 orderIds=null——建议文字照常展示，只是没有「按建议重排」可用；
+ * 序号去重保序，越界序号丢弃，**不要求覆盖全部题目**（应用端会把没排到的题按原相对顺序接尾）。
+ */
+function extractSuggestedOrder(
+  raw: string,
+  itemCount: number,
+): { reply: string; orderIds: number[] | null } {
+  // 只认最后一个代码块（正文里可能有示例代码围栏）；AI 按约定把顺序块放在回复末尾
+  const blocks = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)];
+  const last = blocks[blocks.length - 1];
+  if (!last) return { reply: raw.trim(), orderIds: null };
+  let parsed: unknown;
+  try {
+    parsed = extractAiJson(last[1]!);
+  } catch {
+    return { reply: raw.replace(last[0], '').trim(), orderIds: null };
+  }
+  if (!Array.isArray(parsed)) return { reply: raw.replace(last[0], '').trim(), orderIds: null };
+  // 1-based 行号 → 条目 id 由调用方换算；这里只做校验、去重与归一
+  const seen = new Set<number>();
+  const indexes: number[] = [];
+  for (const v of parsed) {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 1 || n > itemCount || seen.has(n)) continue;
+    seen.add(n);
+    indexes.push(n);
+  }
+  const stripped = raw.replace(last[0], '').trim();
+  return { reply: stripped, orderIds: indexes.length > 0 ? indexes : null };
+}
+
+/** ai_suggestion_order 列（条目 id 的 JSON 数组）→ number[] | null；旧缓存/脏数据回 null */
+function parseOrderColumn(text: string | null | undefined): number[] | null {
+  if (!text) return null;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (Array.isArray(parsed) && parsed.every((v) => Number.isInteger(v) && v > 0)) return parsed;
+  } catch {
+    // 解析失败按无顺序处理：界面只少一个「按建议重排」按钮
+  }
+  return null;
+}
+
 export function listsRoutes(
   db: Db,
   getAiConfig: () => AiConfig,
@@ -339,7 +385,7 @@ export function listsRoutes(
   r.get('/:id', (req, res) => {
     const id = Number(req.params.id);
     const list = db
-      .prepare('SELECT id, title, source_url, created_at, ai_suggestion, ai_suggestion_at FROM problem_lists WHERE id = ? AND user_id = ?')
+      .prepare('SELECT id, title, source_url, created_at, ai_suggestion, ai_suggestion_at, ai_suggestion_order FROM problem_lists WHERE id = ? AND user_id = ?')
       .get(id, DEFAULT_USER_ID) as Record<string, unknown> | undefined;
     if (!list) return res.status(404).json({ error: '题单不存在' });
     const items = db
@@ -360,6 +406,8 @@ export function listsRoutes(
       ...list,
       aiSuggestion: list.ai_suggestion ?? null,
       aiSuggestionAt: list.ai_suggestion_at ?? null,
+      // 顺序缓存解析失败/缺失时回 null：界面只少一个「按建议重排」按钮，不影响其余功能
+      aiSuggestionOrder: parseOrderColumn(list.ai_suggestion_order as string | null),
       items: items.map(({ tags, ...it }) => ({
         ...it,
         solved: Number(it.solved) === 1,
@@ -529,17 +577,24 @@ export function listsRoutes(
 
   // POST /api/lists/:id/ai-suggest → AI 读取题单内容给练习建议（结果缓存到 DB，避免重复调用）
   // body: { force?: boolean } — force=true 时强制重新生成，忽略缓存
+  // 返回除建议正文外还带 order（按建议练习顺序的条目 id 数组）：前端「按建议重排」据此
+  // 走既有 /reorder 落库。顺序允许交错知识点——练习顺序为重，同类题不强制相邻。
   r.post('/:id/ai-suggest', asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const force = req.body?.force === true;
     const list = db
-      .prepare('SELECT id, title, source_url, ai_suggestion, ai_suggestion_at FROM problem_lists WHERE id = ? AND user_id = ?')
-      .get(id, DEFAULT_USER_ID) as { id: number; title: string; source_url: string | null; ai_suggestion: string | null; ai_suggestion_at: string | null } | undefined;
+      .prepare('SELECT id, title, source_url, ai_suggestion, ai_suggestion_at, ai_suggestion_order FROM problem_lists WHERE id = ? AND user_id = ?')
+      .get(id, DEFAULT_USER_ID) as { id: number; title: string; source_url: string | null; ai_suggestion: string | null; ai_suggestion_at: string | null; ai_suggestion_order: string | null } | undefined;
     if (!list) return res.status(404).json({ error: '题单不存在' });
 
-    // 有缓存且未强制刷新：直接返回
+    // 有缓存且未强制刷新：直接返回（顺序列是老版本缓存时可能缺失，解析失败视为无顺序）
     if (!force && list.ai_suggestion) {
-      return res.json({ reply: list.ai_suggestion, cached: true, cachedAt: list.ai_suggestion_at });
+      return res.json({
+        reply: list.ai_suggestion,
+        order: parseOrderColumn(list.ai_suggestion_order),
+        cached: true,
+        cachedAt: list.ai_suggestion_at,
+      });
     }
 
     const provider = opts.createProvider?.() ?? new AiProvider(getAiConfig());
@@ -548,7 +603,7 @@ export function listsRoutes(
     }
     const items = db
       .prepare(
-        `SELECT i.platform, i.problem_key, i.title, i.category, p.difficulty,
+        `SELECT i.id, i.platform, i.problem_key, i.title, i.category, p.difficulty,
                 EXISTS (SELECT 1 FROM submissions s
                          JOIN problems p2 ON p2.id = s.problem_id
                         WHERE s.user_id = ? AND s.verdict = 'AC'
@@ -557,17 +612,19 @@ export function listsRoutes(
            LEFT JOIN problems p ON p.platform = i.platform AND p.problem_key = i.problem_key
           WHERE i.list_id = ? ORDER BY i.position`,
       )
-      .all(DEFAULT_USER_ID, id) as Array<{ platform: string; problem_key: string; title: string | null; category: string; difficulty: number | null; solved: number }>;
+      .all(DEFAULT_USER_ID, id) as Array<{ id: number; platform: string; problem_key: string; title: string | null; category: string; difficulty: number | null; solved: number }>;
+    if (items.length === 0) return res.status(400).json({ error: '题单为空' });
     const lines = items
-      .map((it) => `- [${it.category}] ${it.platform}/${it.problem_key}《${it.title ?? ''}》${it.difficulty ? `难度${it.difficulty}` : ''}${it.solved ? '（已AC）' : ''}`)
+      .map((it, i) => `${i + 1}. [${it.category}] ${it.platform}/${it.problem_key}《${it.title ?? ''}》${it.difficulty ? `难度${it.difficulty}` : ''}${it.solved ? '（已AC）' : ''}`)
       .join('\n');
     const weakness = computeWeakness(db, DEFAULT_USER_ID, { minAttempts: 5, topN: 8 });
     const summaryPrompt = renderSummaryForPrompt(buildPracticeSummary(db, DEFAULT_USER_ID));
     const ability = effectiveAbility(db, DEFAULT_USER_ID);
     const prompt = renderTemplate(
       '你是 ICPC 备赛教练。用户导入了一份题单「{title}」{source}，请结合用户数据给出练习建议：\n\n' +
-        '## 用户练习数据汇总\n{summary}\n\n## 用户弱项画像（JSON）\n{weakness}\n\n## 当前估算能力值\n{level}\n\n## 题单内容\n{items}\n\n' +
-        '要求（简体中文 markdown）：1) 优先做哪些题、为什么（结合弱项与难度）；2) 哪些题可以先跳过/后置及原因；3) 按建议顺序给出练习路线（分组列出）；4) 指出题单未覆盖的弱项知识点。控制在 400 字内，直接给结论。',
+        '## 用户练习数据汇总\n{summary}\n\n## 用户弱项画像（JSON）\n{weakness}\n\n## 当前估算能力值\n{level}\n\n## 题单内容（每行行号即题目序号）\n{items}\n\n' +
+        '要求（简体中文 markdown）：1) 优先做哪些题、为什么（结合弱项与难度）；2) 哪些题可以先跳过/后置及原因；3) 给出覆盖全部题目的**练习顺序**——按先后列出题目序号，允许交错不同知识点，不必把同类题排在一起；4) 指出题单未覆盖的弱项知识点。控制在 400 字内，直接给结论。\n\n' +
+        '最后必须另起一行输出一个 json 代码块（只含顺序数组，不要解释）：```json\n[序号数组]\n```，数组按建议练习顺序列出全部题目的序号（1 到 ' + items.length + '），每个序号恰好出现一次。',
       {
         title: list.title,
         source: list.source_url ? `（来源：${list.source_url}）` : '',
@@ -578,11 +635,14 @@ export function listsRoutes(
       },
     );
     try {
-      const reply = await provider.chat([{ role: 'user', content: prompt }]);
+      const raw = await provider.chat([{ role: 'user', content: prompt }]);
+      const { reply, orderIds } = extractSuggestedOrder(raw, items.length);
+      // 顺序换算成条目 id 再缓存：生成建议后用户仍可能拖动/增删题目，id 不随 position 漂移
+      const orderIdSet = orderIds ? orderIds.map((n) => items[n - 1]!.id) : null;
       // 缓存到 DB
-      db.prepare('UPDATE problem_lists SET ai_suggestion = ?, ai_suggestion_at = datetime(\'now\') WHERE id = ?')
-        .run(reply, id);
-      res.json({ reply, cached: false });
+      db.prepare("UPDATE problem_lists SET ai_suggestion = ?, ai_suggestion_order = ?, ai_suggestion_at = datetime('now') WHERE id = ?")
+        .run(reply, orderIdSet ? JSON.stringify(orderIdSet) : null, id);
+      res.json({ reply, order: orderIdSet, cached: false });
     } catch (e) {
       res.status(502).json({ error: `AI 调用失败：${describeError(e)}` });
     }

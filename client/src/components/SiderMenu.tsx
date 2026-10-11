@@ -230,8 +230,8 @@ export default function SiderMenu({ selected, collapsed, onNavigate }: SiderMenu
       aria-orientation="vertical"
       style={{ userSelect: dragKey !== null ? 'none' : undefined }}
     >
-      {/* 固定项：数据概览 */}
-      {renderNavItem(MENU_FIXED_TOP, null, 0, 1)}
+      {/* 固定项：数据概览、日历打卡（打卡是每日练习的收尾动作，固定在概览正下方） */}
+      {MENU_FIXED_TOP.map((key) => renderNavItem(key, null, 0, 1))}
 
       {MENU_GROUPS.map((group) => {
         const items = order[group.key] ?? group.items

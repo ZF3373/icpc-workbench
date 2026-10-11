@@ -59,7 +59,7 @@ export interface MenuGroup {
  * 三组任务流（UI 优化方案 §4.1，含后续调整）：
  * - 训练：今天做什么、怎么学、怎么练 —— 今日训练 / AI 助手 / 模板库 / 训练计划
  * - 题库：找题、整理、练与复习 —— 题目管理 / 题单整理 / 复习库 / 掌握度地图
- * - 赛事：报名参赛、打卡 —— 赛事中心 / 日历打卡
+ * - 赛事：报名参赛 —— 赛事中心
  *
  * 与文档表格的两处有意偏差（文档漏了路由，照抄会丢入口）：
  * 1. `/lists`（题单整理）文档未列出，归入「题库」（它就是整理题目的地方）；
@@ -67,15 +67,18 @@ export interface MenuGroup {
  *    放题库让「找题 → 练 → 复习 → 看弱项」在同一组闭环；原先单独成组的「数据」
  *    组随之取消，`/`（数据概览）仍是固定置顶项，不进任何分组。
  *    注意：老用户存储里的 `stats` 组键会被 getMenuOrder 忽略，组内顺序无需迁移。
+ * 3. `/calendar`（日历打卡）原在「赛事」组尾部；打卡是每日练习的固定收尾动作，
+ *    排在菜单尾部让「练完就打卡」要多翻一屏。2026-10 按反馈移出分组，作为
+ *    固定项放在数据概览正下方（见 MENU_FIXED_TOP）。
  */
 export const MENU_GROUPS: MenuGroup[] = [
   { key: 'training', label: '训练', items: ['/today', '/ai', '/templates', '/plans'] },
   { key: 'bank', label: '题库', items: ['/problems', '/lists', '/reviews', '/mastery'] },
-  { key: 'contest', label: '赛事', items: ['/contests', '/calendar'] },
+  { key: 'contest', label: '赛事', items: ['/contests'] },
 ]
 
-/** 固定项（不在分组内、不可拖拽） */
-export const MENU_FIXED_TOP = '/'
+/** 固定项（不在分组内、不可拖拽）：数据概览置顶，日历打卡紧随其下（每日练习入口） */
+export const MENU_FIXED_TOP: string[] = ['/', '/calendar']
 export const MENU_FIXED_BOTTOM: string[] = ['/settings', '/about']
 
 // ---------- 顺序持久化 ----------

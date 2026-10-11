@@ -792,7 +792,7 @@ export default function Problems() {
         problemKey: r.problem_key,
       })
       if (quiet) return
-      // 新条目按题目 id 错峰 0–3 天到期（批量加入时不再同日堆满），所以要把日期念出来
+      // 新条目按题目 id 错峰排到加入后 3–6 天首刷（批量加入时不同日堆满），所以要把日期念出来
       message.success(
         `「${r.problem_key}」${res.alreadyInQueue ? '已在复习队列' : '已加入复习队列'}，下次到期 ${res.nextDueOn}`,
       )
