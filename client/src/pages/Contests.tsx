@@ -243,6 +243,10 @@ export default function Contests() {
     if (tab === 'participated') return
     const id = window.setInterval(() => {
       setTick((t) => t + 1)
+      // finished 是终态：已结束比赛不会再跨阶段挪页签，重拉永不改变归类；而判据 end<=now
+      // 对已结束比赛恒真，纳入重拉会导致停留该页签每 30s 空打一次 /api/contests 并让头部
+      // loading 反复闪。tick 仍保留以刷新卡片上「结束于 X 前」的相对时间文本。
+      if (tab === 'finished') return
       const list = dataRef.current?.contests ?? []
       const now = Date.now()
       const crossed = list.some((c) => {

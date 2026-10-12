@@ -132,6 +132,18 @@ function handleStillBound(database: Db, platform: PlatformId, handle: string): b
 }
 
 async function runRound(platform: PlatformId): Promise<void> {
+  // 计划轮次一律由 `void runRound(platform)` 触发（见下方 schedule 回调）：任何逃逸的异常都会
+  // 变成 unhandledRejection，Node 15+ 默认据此崩掉整个进程。runRoundInner 里 handleStillBound
+  // 的 DB 访问在 try 之外——shutdown 时 db.close() 之后若仍有定时器触发（index.ts 的 shutdown
+  // 不停 scheduler），这里就会抛错。统一在外层兜住并记日志，绝不让计划任务拖垮进程。
+  try {
+    await runRoundInner(platform);
+  } catch (e) {
+    console.error(`[sync-scheduler] ${platform} 续拉轮次异常（已吞掉，避免进程崩溃）: ${(e as Error).message}`);
+  }
+}
+
+async function runRoundInner(platform: PlatformId): Promise<void> {
   const job = jobs.get(platform);
   if (!job) return;
   // 每轮执行前复查账号绑定：改绑后旧 handle 的续拉作废

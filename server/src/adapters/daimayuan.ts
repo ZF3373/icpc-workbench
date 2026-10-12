@@ -167,6 +167,10 @@ export function createDaimayuanAdapter(fetchFn: HttpInit = fetch): PlatformAdapt
         normalize: (row) => {
           const verdict = STATUS_TO_VERDICT[row.status] ?? null;
           if (verdict === null) return null; // 评测中/Hack/取消等不落库
+          // _id 是 MongoDB ObjectId（前 8 位 hex = 提交时间戳）：缺失/畸形时 objectIdToTimestamp
+          // 的 slice/parseInt 会抛 TypeError，或 new Date(NaN).toISOString() 抛 RangeError，
+          // 崩掉整次同步。坏行按「跳过」处理（与评测中同语义），保住其余行。
+          if (!/^[0-9a-fA-F]{8}/.test(row._id)) return null;
           const pid = String(row.pid);
           return {
             problem: {

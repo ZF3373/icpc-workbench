@@ -292,9 +292,28 @@ function resolveWidgetDir(): string {
   return dir;
 }
 
+/**
+ * SEA 每次启动把内嵌前端 / widget 解到 mkdtempSync 建的临时目录（进程内有缓存，每次启动各建一个），
+ * 退出时清理，避免反复启动 / 升级在 %TEMP% 持续累积。安全起见只删本程序建的 icpc-web- / icpc-widget-
+ * 前缀目录，绝不碰其它路径；'exit' 事件只跑同步代码，rmSync 正好同步。
+ */
+function cleanupSeaTempDirs(): void {
+  for (const dir of [clientDistDir, widgetDirCache]) {
+    if (!dir) continue;
+    const base = path.basename(dir);
+    if (!base.startsWith('icpc-web-') && !base.startsWith('icpc-widget-')) continue;
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* 清理失败无关紧要：OS 临时目录最终会回收 */
+    }
+  }
+}
+
 // ---- 直接执行（tsx dev 或 SEA bundle 顶层）时启动监听 ----
 // SEA 面向双击运行的普通用户：自动开浏览器、端口冲突自动让位、报错不闪退。
 if (isSea()) {
+  process.on('exit', cleanupSeaTempDirs);
   process.on('uncaughtException', (e) => {
     void fatal(`程序出错：${e.message}`);
   });

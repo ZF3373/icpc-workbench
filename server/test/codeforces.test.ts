@@ -145,6 +145,29 @@ test('known ids: entire known page stops paging and skips known submissions', as
   assert.equal(calls, 1);       // 不再请求第二页
 });
 
+test('known ids: 改判/改题号的已知行重发刷新，未变的跳过（SKIPPED 永久冻结回归）', async () => {
+  // 回归：CF 曾对已知提交无条件跳过、且不消费 knownVerdicts/knownProblemKeys，导致评测中
+  // （TESTING）被同步到的提交永久冻结在 SKIPPED（VERDICT_MAP 只收 6 个终态）。改判/改题号行
+  // 必须重发，交写入层 refreshVerdict / mergeProblemRow 刷新既有行——与 atcoder/jisuanke/luogu 一致。
+  const adapter = createCodeforcesAdapter(async () =>
+    cfRes({
+      status: 'OK',
+      result: [
+        submission({ id: 10, verdict: 'OK' }),          // 库存 SKIPPED（当时评测中）→ 改判，重发
+        submission({ id: 9, verdict: 'WRONG_ANSWER' }), // 库存已是 WA → 未变，跳过
+        submission({ id: 8, verdict: 'OK' }),           // 库存题号 1919D、现 1919C → 改题号，重发
+      ],
+    }),
+  );
+  const rows = await adapter.fetchUserSubmissions('u', {
+    knownExternalIds: new Set(['8', '9', '10']),
+    knownVerdicts: new Map([['10', 'SKIPPED'], ['9', 'WA'], ['8', 'AC']]),
+    knownProblemKeys: new Map([['8', '1919D']]),
+  });
+  assert.deepEqual(rows.map((r) => r.externalId).sort(), ['10', '8']); // 只重发改判的 10、改题号的 8
+  assert.equal(rows.find((r) => r.externalId === '10')?.verdict, 'AC');
+});
+
 test('known ids: mixed page keeps new ones and continues until a fully-known page', async () => {
   // 每页需凑满 PAGE_SIZE(1000) 条：用已知 id 填充尾部
   const filler = (base: number, n: number) =>

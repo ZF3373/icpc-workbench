@@ -106,6 +106,8 @@ export function createCodeforcesAdapter(
 
     async fetchUserSubmissions(handle, opts) {
       const known = opts?.knownExternalIds;
+      const knownVerdicts = opts?.knownVerdicts;
+      const knownProblemKeys = opts?.knownProblemKeys;
       const maxSubmissions = opts?.maxSubmissions;
       // 新增上限推算的页数预算（×2 裕量），上限 PER_SYNC_MAX_PAGES；首刷/增量无上限时取上限
       const budget =
@@ -149,9 +151,25 @@ export function createCodeforcesAdapter(
         const page = data.result ?? [];
         let unknownInPage = 0;
         for (const s of page) {
-          if (known?.has(String(s.id))) continue;
-          unknownInPage += 1;
-          out.push(normalize(s));
+          const id = String(s.id);
+          const norm = normalize(s);
+          if (known?.has(id)) {
+            // 已入库：仅平台侧改判（评测中 TESTING → 终态、平台重判）或改题号时重发，交由写入层
+            // refreshVerdict / mergeProblemRow 刷新既有行——否则评测中被同步到的提交会被
+            // INSERT OR IGNORE 永久冻结在 SKIPPED（CF 的 VERDICT_MAP 只收 6 个终态，TESTING/
+            // PARTIAL/CHALLENGED 等一律落 SKIPPED）。与 atcoder/jisuanke/luogu 同一自愈机制，
+            // 见 types.ts 的 knownVerdicts 契约。重发行不计入 unknownInPage：整页已知（含少量
+            // 改判）时增量早停仍然成立，改判行数量极少、照常计入新增上限预算。
+            const storedVerdict = knownVerdicts?.get(id);
+            const storedKey = knownProblemKeys?.get(id);
+            const changed =
+              (storedVerdict !== undefined && storedVerdict !== norm.verdict) ||
+              (storedKey !== undefined && storedKey !== norm.problem.problemKey);
+            if (!changed) continue;
+          } else {
+            unknownInPage += 1;
+          }
+          out.push(norm);
           if (maxSubmissions && out.length >= maxSubmissions) {
             rowCapped = true;
             break;

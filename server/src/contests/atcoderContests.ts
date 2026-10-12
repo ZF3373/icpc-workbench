@@ -66,11 +66,14 @@ export function parseUpcomingHtml(html: string): ContestInfo[] {
     const timeMatch = row.match(/fixtime-full'>([^<]+)<\/time>/);
     const linkMatch = row.match(/href="\/contests\/([A-Za-z0-9_]+)">([^<]+)<\/a>/);
     if (!timeMatch || !linkMatch) continue;
-    // "2026-08-30 21:00:00+0900" → 合法 ISO8601（空格换 T）
-    const startIso = new Date(timeMatch[1].replace(' ', 'T')).toISOString();
+    // "2026-08-30 21:00:00+0900" → 合法 ISO8601（空格换 T）。逐行防御 Invalid Date：站点时间
+    // 格式若变化，new Date(...).toISOString() 会抛 RangeError 拖垮整个 upcoming 源（被上层
+    // allSettled 静默吞掉、只丢数据不报错），故坏行直接跳过、保住其余行。
+    const startDate = new Date(timeMatch[1].replace(' ', 'T'));
+    if (Number.isNaN(startDate.getTime())) continue;
     const durationMatch = row.match(/>(\d{1,4}):(\d{2})</);
     const durationMinutes = durationMatch ? Number(durationMatch[1]) * 60 + Number(durationMatch[2]) : 100;
-    out.push(toAtcoderContest(linkMatch[1], linkMatch[2].trim(), Math.floor(new Date(startIso).getTime() / 1000), durationMinutes * 60));
+    out.push(toAtcoderContest(linkMatch[1], linkMatch[2].trim(), Math.floor(startDate.getTime() / 1000), durationMinutes * 60));
   }
   return out;
 }

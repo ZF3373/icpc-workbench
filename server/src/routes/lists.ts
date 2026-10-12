@@ -12,6 +12,7 @@ import { nameOfCode } from '../knowledge/taxonomy.ts';
 import { getConfidenceThreshold, READABLE_SOURCES_SQL } from '../knowledge/store.ts';
 import { computeWeakness } from '../analysis/weakness.ts';
 import { buildPracticeSummary, renderSummaryForPrompt } from '../analysis/summary.ts';
+import { safeTags } from '../analysis/stats.ts';
 import { effectiveAbility } from '../today/ability.ts';
 import { renderTemplate } from '../plans/planService.ts';
 
@@ -411,7 +412,9 @@ export function listsRoutes(
       items: items.map(({ tags, ...it }) => ({
         ...it,
         solved: Number(it.solved) === 1,
-        tags: tags ? (JSON.parse(tags) as string[]) : [],
+        // 用统一的 safeTags（脏 JSON 返回 []）而非裸 JSON.parse：否则 problems.tags 存在
+        // 畸形 JSON 时整个题单详情 500（本文件其它读路径与 history/problems/today 均走 safeTags）
+        tags: tags ? safeTags(tags) : [],
       })),
     });
   });

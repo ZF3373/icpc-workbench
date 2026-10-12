@@ -131,6 +131,21 @@ test('daimayuan: fetch maps verdicts, skips judging, builds urls and ISO time', 
   assert.equal(subs[2].verdict, 'TLE');
 });
 
+test('daimayuan: 畸形 _id 的行跳过而非崩掉整次同步（ObjectId 前缀非 hex）', async () => {
+  // 回归：objectIdToTimestamp 对缺失/非 hex 的 _id 会 slice 抛 TypeError 或 new Date(NaN)
+  // 抛 RangeError，崩掉整次同步。坏行应按「跳过」处理（与评测中同语义），保住其余合法行。
+  const fetchFn = router({
+    'uidOrName=h&page=1': jsonPage([
+      rdoc({ rid: 'zzzzzzzz-nothex', pid: 7, status: ST.ACCEPTED, ts: 0 }), // 坏 _id → 跳过
+      rdoc({ rid: oid(1788768000, 'a1'), pid: 7, status: ST.ACCEPTED, ts: 1788768000 }), // 合法 → 保留
+    ], PDICT),
+  });
+  const adapter = createDaimayuanAdapter(fetchFn);
+  const subs = await adapter.fetchUserSubmissions('h', { cookie: COOKIE, pageDelayMs: 0 });
+  assert.equal(subs.length, 1);
+  assert.equal(subs[0].externalId, oid(1788768000, 'a1'));
+});
+
 test('daimayuan: full-page known ids stops pagination (增量提前终止)', async () => {
   let page2Fetched = false;
   const fetchFn = router({

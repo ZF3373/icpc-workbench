@@ -78,6 +78,26 @@ test('parseUpcomingHtml extracts rows from official contests page', () => {
   assert.equal(rows[1].durationMinutes, 100);
 });
 
+test('parseUpcomingHtml: 时间格式异常的行跳过而非拖垮整个 upcoming 源', () => {
+  // 回归：站点时间格式若变化，new Date(...).toISOString() 会抛 RangeError 让整个 AtCoder
+  // upcoming 源失败（被上层 allSettled 静默吞掉、只丢数据不报错）。坏行应跳过、保住其余行。
+  const html = `<div id="contest-table-upcoming"><table><tbody>
+    <tr>
+      <td class="text-center"><time class='fixtime fixtime-full'>NOT-A-DATE</time></td>
+      <td><a href="/contests/broken">Broken Row</a></td>
+      <td class="text-center">01:00</td>
+    </tr>
+    <tr>
+      <td class="text-center"><time class='fixtime fixtime-full'>2026-08-30 21:00:00+0900</time></td>
+      <td><a href="/contests/arc228">AtCoder Regular Contest 228</a></td>
+      <td class="text-center">02:30</td>
+    </tr>
+  </tbody></table></div>`;
+  const rows = parseUpcomingHtml(html);
+  assert.equal(rows.length, 1); // 坏日期行被跳过，合法行保留
+  assert.equal(rows[0].id, 'at-arc228');
+});
+
 test('classifyLuoguContest branches', () => {
   assert.equal(classifyLuoguContest('【LGR】洛谷 9 月月赛 & LittleStars'), '月赛');
   assert.equal(classifyLuoguContest('洛谷入门赛'), '入门赛');
