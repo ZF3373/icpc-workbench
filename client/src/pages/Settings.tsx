@@ -760,7 +760,7 @@ export default function Settings() {
                 {shellOnline && (
                   <Button
                     size="small"
-                    title="弹出应用内浏览器登录该平台，Cookie 自动写入本账号（无需 F12 手动复制）"
+                    title="弹出应用内浏览器登录该平台，Cookie 自动写入本账号（无需 F12 手动复制）。此浏览器用独立的 Cookie 目录，与系统的 Chrome/Edge 相互隔离：不会读取或覆盖你原浏览器的登录，在这里登录也不会挤掉浏览器里的会话。"
                     loading={shellBusy === `login:${p.id}:${handle}`}
                     disabled={!!shellBusy && shellBusy !== `login:${p.id}:${handle}`}
                     onClick={() => startShellLogin(p.id, handle)}
@@ -1056,8 +1056,8 @@ export default function Settings() {
                           )}
                           <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
                             {p.id === 'qoj'
-                              ? '桌面版登录一次即可：同步自动经内嵌窗口完成，每 20 分钟自动续签验证，无需复制任何 Cookie。'
-                              : '弹出应用内浏览器登录后，Cookie 自动保存到账号，无需 F12 手动复制。'}
+                              ? '桌面版登录一次即可：同步自动经内嵌窗口完成，每 20 分钟自动续签验证，无需复制任何 Cookie。内嵌窗口用独立 Cookie 目录，与系统浏览器隔离、不会挤掉你原浏览器的登录。'
+                              : '弹出应用内浏览器登录后，Cookie 自动保存到账号，无需 F12 手动复制。该窗口用独立 Cookie 目录，与系统的 Chrome/Edge 隔离，不会读取或影响你原浏览器的登录状态。'}
                           </span>
                         </Space>
                       </div>
