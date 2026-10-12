@@ -51,6 +51,8 @@ import {
 import type { ParticipatedContest, PlanListItem } from '../types'
 import type { AbilityLevelDetail, AiProviderView, ModelCaps } from '../../../shared/src/index.ts'
 import Markdown from '../components/Markdown'
+import { getAppZoom } from '../appZoom'
+import ZoomControl from '../components/ZoomControl'
 import PageHeader from '../components/PageHeader'
 import SessionMiniPanel from '../components/SessionMiniPanel'
 import {
@@ -799,8 +801,10 @@ export default function Assistant() {
         return
       }
       // 水平居中于选区并夹在视口内；选区贴着顶时浮钮改挂到选区下方
-      const x = Math.min(Math.max(hit.rect.left + hit.rect.width / 2, 100), window.innerWidth - 100)
-      const y = hit.rect.top > 64 ? hit.rect.top - 44 : hit.rect.bottom + 10
+      const zoom = getAppZoom()
+      const x = Math.min(Math.max((hit.rect.left + hit.rect.width / 2) / zoom, 100), window.innerWidth / zoom - 100)
+      const top = hit.rect.top / zoom
+      const y = top > 64 ? top - 44 : hit.rect.bottom / zoom + 10
       setQuoteFloat({ x, y, text: hit.text })
     }
     const onMouseUp = (e: MouseEvent) => {
@@ -2013,10 +2017,11 @@ export default function Assistant() {
   const abilityRatingLine = ratingEvidenceLine(ability?.detail)
 
   return (
-    <div>
+    <div data-ai-page>
       <PageHeader
         title="AI 助手"
         description="与 AI 教练自由对话：解答算法问题、调试代码、解读刷题数据；关联计划 / 题单 / 比赛后 AI 可直接动手。"
+        extra={<ZoomControl kind="reply" />}
       />
       {needConfig && (
         <Alert
@@ -2500,7 +2505,7 @@ export default function Assistant() {
                         )}
                       </div>
                     )}
-                    {m.content && <Markdown text={m.content} />}
+                    {m.content && <div className="assistant-message-text"><Markdown text={m.content} /></div>}
                     {/* 按钮行对纯附件消息（content 为空）同样渲染：否则粘贴图片直接发送后
                         找不到「再次编辑」入口；「复制」无文本可复制，仅在有内容时出现 */}
                     <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
@@ -2565,12 +2570,14 @@ export default function Assistant() {
                       <summary style={{ cursor: 'pointer', userSelect: 'none', fontWeight: 500 }}>
                         💭 思考过程
                       </summary>
-                      <div style={{ marginTop: 6, whiteSpace: 'pre-wrap', opacity: 0.85 }}>
+                      <div className="assistant-message-text assistant-message-reasoning" style={{ marginTop: 6, whiteSpace: 'pre-wrap', opacity: 0.85 }}>
                         {m.reasoning}
                       </div>
                     </details>
                   )}
-                  <Markdown text={text} breaks streaming={sending && i === messages.length - 1} />
+                  <div className="assistant-message-text">
+                    <Markdown text={text} breaks streaming={sending && i === messages.length - 1} />
+                  </div>
                   {text.trim() && (
                     <Button
                       size="small"

@@ -24,6 +24,7 @@ import SiderMenu from './components/SiderMenu'
 import CommandPalette from './components/CommandPalette'
 import { MENU } from './menuConfig'
 import { pushRecentPage } from './recentPages'
+import ZoomControl from './components/ZoomControl'
 
 const { Sider, Content } = Layout
 
@@ -61,7 +62,7 @@ export default function App() {
   }, [])
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ minHeight: 'var(--app-viewport-height)' }}>
       <Reminder />
       <ContestReminder />
       {/* 全局同步悬浮卡：切到任何页面都能看到「还在同步」，避免用户误以为卡住而退出 */}
@@ -91,6 +92,7 @@ export default function App() {
           </span>
         </div>
         <SiderMenu selected={selected} collapsed={collapsed} onNavigate={nav} />
+        <div className="sider-zoom"><ZoomControl kind="global" compact={collapsed} /></div>
         <div className="sider-footer">
           <button
             type="button"
