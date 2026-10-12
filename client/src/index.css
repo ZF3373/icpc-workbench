@@ -4,6 +4,9 @@
    ============================================================ */
 
 :root {
+  --app-zoom: 1;
+  --app-viewport-height: calc(100vh / var(--app-zoom));
+  --app-viewport-width: calc(100vw / var(--app-zoom));
   color-scheme: dark;
   --bg: #111318;
   --bg-elevated: #15181e;
@@ -193,6 +196,7 @@
 }
 
 html {
+  zoom: var(--app-zoom);
   scroll-behavior: smooth;
 }
 
@@ -292,7 +296,8 @@ body {
   background: var(--sider-bg) !important;
   position: sticky !important;
   top: 0;
-  height: 100vh;
+  height: var(--app-viewport-height);
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -1020,7 +1025,7 @@ body {
 }
 
 .taxonomy-list {
-  max-height: 60vh;
+  max-height: calc(var(--app-viewport-height) * 0.6);
   overflow: auto;
   padding-right: 2px;
   scrollbar-width: thin;
@@ -1675,6 +1680,44 @@ button.dist-row:hover {
   line-height: 1.7;
   word-break: break-word;
 }
+
+/* AI 对话双方正文同步缩放，按钮、侧栏和页面说明保持原大小。 */
+.assistant-message-reasoning { font-size: calc(13px * var(--ai-reply-text-zoom, 1)); }
+.plan-chat-msg .assistant-message-text .markdown-body { font-size: calc(13px * var(--ai-reply-text-zoom, 1)); }
+.assistant-message-text .markdown-body h1 { font-size: calc(17px * var(--ai-reply-text-zoom, 1)); }
+.assistant-message-text .markdown-body h2 { font-size: calc(15.5px * var(--ai-reply-text-zoom, 1)); }
+.assistant-message-text .markdown-body h3 { font-size: calc(14px * var(--ai-reply-text-zoom, 1)); }
+.assistant-message-text .markdown-body h4 { font-size: calc(13px * var(--ai-reply-text-zoom, 1)); }
+.assistant-message-text .markdown-body code,
+.assistant-message-text .markdown-body table { font-size: calc(12px * var(--ai-reply-text-zoom, 1)); }
+.assistant-message-text .markdown-body pre code,
+.assistant-message-text .md-code-pre code { font-size: calc(12.5px * var(--ai-reply-text-zoom, 1)); }
+
+.sider-zoom { padding: 8px 12px; }
+.ant-layout-sider-collapsed .sider-zoom { text-align: center; padding-inline: 8px; }
+.zoom-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.zoom-trigger:hover,
+.zoom-trigger[aria-expanded='true'] { color: var(--brand); border-color: var(--brand-line); background: var(--brand-soft); }
+.zoom-trigger:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.zoom-panel { min-width: 220px; }
+.zoom-panel-label { margin-bottom: 10px; font-size: 13px; font-weight: 600; }
+.zoom-panel-actions { display: flex; align-items: center; gap: 8px; }
+.zoom-panel-actions output { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
+.zoom-panel-hint { margin-top: 10px; color: var(--text-3); font-size: 11px; }
 
 .markdown-body > :first-child {
   margin-top: 0;
@@ -3192,7 +3235,7 @@ button.dist-row:hover {
 .plan-chat-layout {
   display: flex;
   gap: 14px;
-  height: calc(100vh - 160px);
+  height: calc(var(--app-viewport-height) - 160px);
   min-height: 420px;
 }
 
@@ -3551,7 +3594,7 @@ button.dist-row:hover {
 }
 
 .chat-model-panel .ant-dropdown-menu {
-  max-height: min(46vh, 430px);
+  max-height: min(calc(var(--app-viewport-height) * 0.46), 430px);
   overflow-y: auto;
   background: transparent;
   box-shadow: none;
@@ -3605,7 +3648,7 @@ button.dist-row:hover {
 .assistant-layout {
   display: flex;
   gap: 14px;
-  height: calc(100vh - 190px);
+  height: calc(var(--app-viewport-height) - 190px);
   min-height: 420px;
 }
 
@@ -3779,7 +3822,7 @@ button.dist-row:hover {
 
 .mini-session-panel {
   width: 264px;
-  max-height: 60vh;
+  max-height: calc(var(--app-viewport-height) * 0.6);
   display: flex;
   flex-direction: column;
   padding: 8px;
@@ -4460,7 +4503,7 @@ button.dist-row:hover {
 }
 
 .cmdk-list {
-  max-height: min(56vh, 420px);
+  max-height: min(calc(var(--app-viewport-height) * 0.56), 420px);
   overflow-y: auto;
   padding: 6px 0 10px;
 }
@@ -4530,7 +4573,7 @@ button.dist-row:hover {
 /* 命令面板在窄屏下不要顶到边缘 */
 @media (max-width: 640px) {
   .cmdk-list {
-    max-height: 60vh;
+    max-height: calc(var(--app-viewport-height) * 0.6);
   }
 }
 
@@ -4752,11 +4795,11 @@ button.dist-row:hover {
 /* ---------- 全站 Modal / Drawer 响应式 ---------- */
 /* 原实现各调用点写死 520–880px，窄窗口（平板竖屏、分屏、手机）下会超出 viewport 被裁 */
 .ant-modal {
-  max-width: calc(100vw - 32px);
+  max-width: calc(var(--app-viewport-width) - 32px);
 }
 
 .ant-drawer-content-wrapper {
-  max-width: 100vw;
+  max-width: var(--app-viewport-width);
 }
 
 /* ---------- 通用响应式补齐：768px / 640px ---------- */
@@ -4813,7 +4856,7 @@ button.dist-row:hover {
 
 @media (max-width: 640px) {
   .ant-modal {
-    max-width: calc(100vw - 16px);
+    max-width: calc(var(--app-viewport-width) - 16px);
     margin: 8px auto;
   }
 
