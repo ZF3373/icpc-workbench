@@ -14,6 +14,8 @@ import { buildPracticeSummary, renderSummaryForPrompt, type PracticeSummary } fr
 import { filterNoiseTags } from '../analysis/tags.ts';
 import { getAdapter } from '../adapters/registry.ts';
 import { listUpcomingReviewItems } from '../reviews/query.ts';
+import { problemStatuses } from '../problems/trainingCatalog.ts';
+import { parseProblemListText } from '../problems/parseProblemList.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -697,9 +699,10 @@ export function renderPlanContext(db: Db, planId: number, userId: number = DEFAU
   if (!plan) throw new Error('计划不存在');
   const tasks = db
     .prepare(
-      `SELECT t.task_date, t.title, t.kind, t.url, t.note,
+      `SELECT t.task_date, t.title, t.kind, t.url, t.note, p.platform, p.problem_key,
               (SELECT 1 FROM checkins c WHERE c.task_id = t.id) AS checked
          FROM plan_tasks t
+         LEFT JOIN problems p ON p.id = t.problem_id
         WHERE t.plan_id = ?
         ORDER BY t.task_date, t.id`,
     )
@@ -710,7 +713,16 @@ export function renderPlanContext(db: Db, planId: number, userId: number = DEFAU
     url: string | null;
     note: string | null;
     checked: number;
+    platform: string | null;
+    problem_key: string | null;
   }>;
+  const identities = tasks.map(t => {
+    if (t.platform && t.problem_key) return { platform: t.platform, problemKey: t.problem_key };
+    // 旧任务可能只保存了 URL，没有 problem_id，仍要核验完整历史 AC 状态。
+    const parsed = t.url ? parseProblemListText(t.url)[0] : undefined;
+    return { platform: parsed?.platform ?? '', problemKey: parsed?.problemKey ?? '' };
+  });
+  const statuses = problemStatuses(db, userId, identities);
   const checkedCount = tasks.filter((t) => t.checked).length;
   const days = Math.round((Date.parse(`${plan.end_date}T00:00:00Z`) - Date.parse(`${plan.start_date}T00:00:00Z`)) / 86_400_000) + 1;
   return [
@@ -719,11 +731,11 @@ export function renderPlanContext(db: Db, planId: number, userId: number = DEFAU
     `- 周期：${plan.start_date} ~ ${plan.end_date}（${days} 天）`,
     `- 进度：${checkedCount}/${tasks.length} 个任务已打卡`,
     '',
-    '| 日期 | 任务 | 类型 | 已打卡 | 链接 | 说明 |',
-    '| --- | --- | --- | --- | --- | --- |',
+    '| 日期 | 任务 | 类型 | 已打卡 | 题号 | AC 状态 | 链接 | 说明 |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
     ...tasks.map(
-      (t) =>
-        `| ${t.task_date} | ${t.title} | ${t.kind} | ${t.checked ? '✓' : ''} | ${t.url ?? ''} | ${t.note ?? ''} |`,
+      (t, i) =>
+        `| ${t.task_date} | ${t.title} | ${t.kind} | ${t.checked ? '✓' : ''} | ${identities[i].platform}/${identities[i].problemKey} | ${identities[i].problemKey ? statuses[i] : '未关联题库题目'} | ${t.url ?? ''} | ${t.note ?? ''} |`,
     ),
   ].join('\n');
 }

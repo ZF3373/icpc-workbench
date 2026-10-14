@@ -1,5 +1,6 @@
 import type { AiConfig } from '../../config.ts';
 import type { ToolDefinition } from '../provider.ts';
+import type { Db } from '../../db/index.ts';
 
 /**
  * 工具注册表：参考 opencode 的 BaseTool 接口设计，将工具定义与执行逻辑集中管理。
@@ -25,6 +26,9 @@ export interface PlatformCookies {
  * 工具按需读取 ctx.cookies 等，不关心则忽略。
  */
 export interface ToolContext {
+  /** 请求所属题库与用户；本地选题工具只读取该用户的提交记录。 */
+  db?: Db;
+  userId?: number;
   /** AI 配置（baseURL/apiKey/model/searchApiKey 等） */
   cfg: AiConfig;
   /** 用户已保存的平台 Cookie（来自 settings 表），fetch_url 等工具用于认证抓取 */

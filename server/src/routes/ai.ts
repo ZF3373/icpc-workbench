@@ -18,6 +18,8 @@ import { extractPdfText, truncatePdfText, isPdfContentType, isPdfFilename } from
 import { convertDocument, isDocumentFile } from '../ai/docConverter.ts';
 import { getToolDefinitions, executeToolCall, type ToolResult, type ToolContext, type PlatformCookies } from '../ai/tools/registry.ts';
 import { buildTemplateLibrarySummary } from '../ai/templateContext.ts';
+import { renderProblemCandidates } from '../ai/problem-catalog.ts';
+import { problemStatuses } from '../problems/trainingCatalog.ts';
 import { listTemplateCategoryOptions } from '../templates/categories.ts';
 import { computeWeakness } from '../analysis/weakness.ts';
 import { buildPracticeSummary, renderSummaryForPrompt } from '../analysis/summary.ts';
@@ -652,6 +654,7 @@ export function aiRoutes(
       abilityEvidence: renderAbilityEvidence(db, DEFAULT_USER_ID, summary),
       planSection,
       listSection,
+      problemCandidates: renderProblemCandidates(db, DEFAULT_USER_ID, ability.effective, weakness.items.filter(w => w.gap > 0).map(w => w.tag)),
       contestSection,
       upcomingContests,
       // 模板库写入（template-add 块）可选的分类清单：内置课程大纲 + 用户自建标签。
@@ -734,7 +737,7 @@ export function aiRoutes(
           };
         }
       }
-      const toolCtx: ToolContext = { cfg: aiCfg, cookies: toolCookies };
+      const toolCtx: ToolContext = { cfg: aiCfg, cookies: toolCookies, db, userId: DEFAULT_USER_ID };
 
       const fullMsgs: ChatMessage[] = [
         { role: 'system', content: systemPrefix + system },
@@ -846,8 +849,8 @@ export function aiRoutes(
                 maxTokens,
                 // 与第一轮同源的中断信号：点「停止」时在途的上游请求立即取消
                 signal: abortController.signal,
-                // 前 4 轮不传 tools：让 AI 基于搜索结果给出最终答案（DSML 泄漏仍可再发起工具）
-                // 最后一轮连 DSML 解析也关闭，杜绝误触发，强制产出最终回答
+                // 保留工具定义以支持正常的后续检索/翻页；最后一轮关闭工具并强制收尾。
+                tools: forcedFinal ? undefined : tools,
                 parseDsmlTools: !forcedFinal,
                 onFinish: (r, tc) => { finishReason = r; nextToolCalls = tc; },
                 onReasoning: (chunk) => {
@@ -938,6 +941,7 @@ function renderListContext(db: Db, listId: number, userId: number): string {
     category: string;
   }>;
   const byCategory = new Map<string, number>();
+  const statuses = problemStatuses(db, userId, items.map(it => ({ platform: it.platform, problemKey: it.problem_key })));
   for (const it of items) byCategory.set(it.category, (byCategory.get(it.category) ?? 0) + 1);
   const categoryLine = [...byCategory.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -948,11 +952,11 @@ function renderListContext(db: Db, listId: number, userId: number): string {
     `- 来源：${list.source_url ?? '（手动整理）'}`,
     `- 共 ${items.length} 题${categoryLine ? `，分类：${categoryLine}` : ''}`,
     '',
-    '| 平台 | 题号 | 标题 | 分类 | 链接 |',
-    '| --- | --- | --- | --- | --- |',
+    '| 平台 | 题号 | 标题 | 分类 | AC 状态 | 链接 |',
+    '| --- | --- | --- | --- | --- | --- |',
     ...items.map(
-      (it) =>
-        `| ${it.platform} | ${it.problem_key} | ${it.title ?? ''} | ${it.category} | ${it.url ?? ''} |`,
+      (it, i) =>
+        `| ${it.platform} | ${it.problem_key} | ${it.title ?? ''} | ${it.category} | ${statuses[i]} | ${it.url ?? ''} |`,
     ),
   ].join('\n');
 }
