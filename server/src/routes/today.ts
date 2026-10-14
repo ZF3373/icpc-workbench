@@ -15,6 +15,7 @@ import {
 } from '../today/select.ts';
 import { computeAbilityDetail, getAbilityOverride } from '../today/ability.ts';
 import { listDueReviewItems } from '../reviews/query.ts';
+import { listTodayTasks } from '../plans/todayTasks.ts';
 import type { TodayBandKey, TodayProblem } from '../../../shared/src/index.ts';
 
 /** 每档默认题量：巩固 2 / 同段 3 / 挑战 1（cf-compass 同段承担主训练量） */
@@ -54,6 +55,7 @@ export function todayRoutes(db: Db): Router {
   // 本接口有写入副作用：返回的题记入 today_recommendations，次日选题据此冷却。
   r.get('/', (req, res) => {
     const todayStr = localToday();
+    const planTasks = listTodayTasks(db, DEFAULT_USER_ID, todayStr);
 
     // 1) 能力值：加权解题证据模型（难度基数 × 独立完成度降权 × 通过率校准 → 缓慢校准）；
     //    AI 助手调整过的能力值（settings.ability.override）优先于计算值
@@ -89,7 +91,8 @@ export function todayRoutes(db: Db): Router {
           in_review: number;
         }
       >;
-    const pool: CandidateProblem[] = candidates.map(
+    const plannedKeys = new Set(planTasks.filter((t) => t.platform && t.problem_key).map((t) => `${t.platform}:${t.problem_key}`));
+    const pool: CandidateProblem[] = candidates.filter((c) => !plannedKeys.has(`${c.platform}:${c.problem_key}`)).map(
       ({ review_item_id, recommended_on, in_review, tags, ...c }) => ({
         ...c,
         tags: safeTags(tags),
@@ -174,13 +177,7 @@ export function todayRoutes(db: Db): Router {
     //    条目本身要带出来（不只是计数）：三档题单刻意排除了复习队列中的题，
     //    若只回数字，用户知道「有 3 道该复习」却不知道是哪几道，还得自己跑去复习库翻。
     const dueReviewItems = listDueReviewItems(db, DEFAULT_USER_ID, todayStr);
-    const planProgressRow = db
-      .prepare(
-        `SELECT COUNT(*) AS total,
-                COALESCE(SUM((SELECT 1 FROM checkins c WHERE c.task_id = t.id)), 0) AS checked
-           FROM plan_tasks t WHERE t.task_date = ?`,
-      )
-      .get(todayStr) as { total: number; checked: number };
+    const planProgressRow = { total: planTasks.length, checked: planTasks.filter((t) => t.checked).length };
 
     res.json({
       date: todayStr,
@@ -192,6 +189,7 @@ export function todayRoutes(db: Db): Router {
       bands,
       dueReviews: dueReviewItems.length,
       dueReviewItems,
+      planTasks,
       planProgress: planProgressRow.total > 0 ? { total: planProgressRow.total, checked: planProgressRow.checked } : null,
     });
   });

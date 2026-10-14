@@ -18,6 +18,28 @@ import { listenForTest } from './test-listen.ts';
 import type { TodayPlan } from '../../shared/src/index.ts';
 
 let db: Db;
+
+test('GET /api/today includes today plan tasks with checkin state', async () => {
+  const today = (await getPlan()).date;
+  const planId = db.prepare("INSERT INTO plans (user_id, title, start_date, end_date, source) VALUES (1, 'p', ?, ?, 'template')").run(today, today).lastInsertRowid;
+  const problemId = addProblem('TASK');
+  const taskId = db.prepare("INSERT INTO plan_tasks (plan_id, task_date, title, kind, problem_id) VALUES (?, ?, '做题任务', 'practice', ?)").run(planId, today, problemId).lastInsertRowid;
+  db.prepare('INSERT INTO checkins (user_id, task_id, task_date) VALUES (1, ?, ?)').run(taskId, today);
+  const plan = await getPlan();
+  assert.equal(plan.planTasks.length, 1);
+  assert.equal(plan.planTasks[0]!.title, '做题任务');
+  assert.equal(plan.planTasks[0]!.checked, 1);
+  assert.equal(plan.planProgress?.checked, 1);
+});
+
+test('today recommendations exclude problems already in today plan', async () => {
+  const today = (await getPlan()).date;
+  const problem = addProblem('PLANNED', 1300);
+  db.prepare("INSERT INTO plans (user_id, title, start_date, end_date) VALUES (1, 'p', ?, ?)").run(today, today);
+  db.prepare("INSERT INTO plan_tasks (plan_id, task_date, title, kind, problem_id) VALUES (1, ?, 'planned', 'practice', ?)").run(today, problem);
+  const result = await getPlan();
+  assert.ok(result.bands.every((b) => b.problems.every((p) => p.id !== problem)));
+});
 let server: Server;
 let base: string;
 

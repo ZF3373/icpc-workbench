@@ -235,8 +235,8 @@ export function savePlan(
 export async function generatePlan(
   db: Db,
   aiConfig: AiConfig,
-  opts: { days?: number; startDate?: string; dailyTasks?: number; requirements?: string; provider?: AiProvider } = {},
-): Promise<{ planId: number; source: 'ai' | 'template'; title: string }> {
+  opts: { days?: number; startDate?: string; dailyTasks?: number; requirements?: string; provider?: Pick<AiProvider, 'chat' | 'enabled'> } = {},
+): Promise<{ planId: number; source: 'ai' | 'template'; title: string; fallbackReason?: string }> {
   const userId = DEFAULT_USER_ID;
   const days = opts.days ?? 14;
   const startDate = opts.startDate ?? today();
@@ -248,6 +248,7 @@ export async function generatePlan(
   });
   const provider = opts.provider ?? new AiProvider(aiConfig);
 
+  let fallbackReason = '未配置或未启用 AI，已使用模板计划。';
   if (provider.enabled) {
     try {
       const raw = await provider.chat([
@@ -258,12 +259,22 @@ export async function generatePlan(
       const planId = savePlan(db, userId, parsed, 'ai', raw);
       return { planId, source: 'ai', title: parsed.title };
     } catch (e) {
-      console.warn(`[plans] AI 生成失败，降级为模板计划: ${(e as Error).message}`);
+      const message = e instanceof Error ? e.message : '';
+      fallbackReason = /401|403|api.?key|unauthorized/i.test(message)
+        ? 'AI 凭据无效或权限不足，请检查 AI 配置。'
+        : /429|rate.?limit/i.test(message)
+          ? 'AI 服务请求过于频繁，请稍后重试。'
+          : /timeout|timed.?out|abort/i.test(message)
+            ? 'AI 服务响应超时，请稍后重试。'
+            : /network|fetch|connect|HTTP 5\d\d/i.test(message)
+              ? '无法连接 AI 服务或服务暂不可用，请检查网络后重试。'
+              : 'AI 未返回有效计划，请重试或更换模型。';
+      console.warn(`[plans] AI 生成失败，降级为模板计划: ${fallbackReason}`);
     }
   }
   const tpl = templatePlan(db, pkg.profile, startDate, days, opts.dailyTasks);
   const planId = savePlan(db, userId, tpl, 'template');
-  return { planId, source: 'template', title: tpl.title };
+  return { planId, source: 'template', title: tpl.title, fallbackReason };
 }
 
 /** 构建供 AI 使用的数据包（含渲染后的提示词）。 */

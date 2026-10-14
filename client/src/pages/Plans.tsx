@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   App as AntdApp,
+  Alert,
   Button,
   Card,
+  Checkbox,
   DatePicker,
   Drawer,
   Form,
@@ -46,6 +48,13 @@ const KIND_OPTIONS = [
   { value: 'contest', label: '模拟赛' },
 ]
 
+type PlanGenerationRequest = {
+  days: number
+  startDate: string
+  dailyTasks?: number
+  requirements?: string
+}
+
 export default function Plans() {
   // React 19 下 antd 静态 message 静默失效，必须用 App 上下文实例
   const { message } = AntdApp.useApp()
@@ -58,6 +67,13 @@ export default function Plans() {
   const [genOpen, setGenOpen] = useState(false)
   const [detail, setDetail] = useState<PlanDetail | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
+  const [shiftOpen, setShiftOpen] = useState(false)
+  const [shiftBusy, setShiftBusy] = useState(false)
+  const [shiftDays, setShiftDays] = useState(1)
+  const [skipWeekends, setSkipWeekends] = useState(false)
+  const [dailyLimit, setDailyLimit] = useState<number | null>(null)
+  const [generationNotice, setGenerationNotice] = useState<GenerateResult | null>(null)
+  const [generationRequest, setGenerationRequest] = useState<PlanGenerationRequest | null>(null)
   const [editing, setEditing] = useState<PlanTask | null>(null)
   const [editForm] = Form.useForm()
   const [genForm] = Form.useForm()
@@ -169,6 +185,24 @@ export default function Plans() {
     }
   }
 
+  const shiftRemaining = async () => {
+    if (!detail || shiftBusy) return
+    setShiftBusy(true)
+    try {
+      const result = await post<{ shifted: number; endDate: string }>(`/api/plans/${detail.id}/shift`, {
+        days: shiftDays, skipWeekends, dailyLimit: dailyLimit ?? undefined,
+      })
+      message.success(result.shifted ? `已调整 ${result.shifted} 项任务，计划结束日期 ${result.endDate}` : '任务已符合设置，无需调整')
+      setShiftOpen(false)
+      await openDetail(detail.id)
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setShiftBusy(false)
+    }
+  }
+
   const cols: ColumnsType<PlanListItem> = [
     {
       title: '计划',
@@ -230,6 +264,14 @@ export default function Plans() {
           </Space>
         }
       />
+      {generationNotice?.fallbackReason && <Alert style={{ marginBottom: 16 }} type="warning" showIcon closable
+        message={`已生成模板计划「${generationNotice.title}」`}
+        description={<div>{generationNotice.fallbackReason}<p>模板计划使用默认规则，文字训练要求不会自动执行。</p></div>}
+        action={<Button size="small" onClick={() => {
+          if (generationRequest) genForm.setFieldsValue({ ...generationRequest, startDate: dayjs(generationRequest.startDate) })
+          setGenOpen(true)
+        }}>按原参数重新生成</Button>}
+        onClose={() => setGenerationNotice(null)} />}
       {/* 分支顺序与 Today.tsx 一致：loading（且屏上还没有任何行）→ 骨架 ｜ 有行 → 表格
           ｜ loadError → 可重试错误态 ｜ 空 → 空态。
           用 `loading && plans.length === 0` 而不是「只认首次加载」的 loadedOnce：
@@ -277,6 +319,8 @@ export default function Plans() {
                 size="small"
               />
             </div>
+
+            <Button style={{ marginBottom: 16 }} onClick={() => setShiftOpen(true)} disabled={!detail.tasks.some((t) => !t.checked && (t.kind === 'practice' || t.kind === 'topic'))}>调整剩余训练任务</Button>
 
             {groups.map((g) => (
               <div key={g.date} className="plan-day-group">
@@ -349,6 +393,21 @@ export default function Plans() {
         )}
       </Drawer>
 
+      <Modal title="调整剩余训练任务" open={shiftOpen && detailOpen} onCancel={() => { if (!shiftBusy) setShiftOpen(false) }}
+        onOk={() => void shiftRemaining()} okText="确认调整" cancelText="取消" confirmLoading={shiftBusy}>
+        <p>调整未打卡的练习和专题任务，保留已完成任务、比赛和复习的原日期。</p>
+        <Form layout="vertical">
+          <Form.Item label="顺延天数" extra="填 0 可只调整周末或每日负荷。">
+            <InputNumber min={0} max={30} precision={0} value={shiftDays} onChange={(v) => setShiftDays(v ?? 0)} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item><Checkbox checked={skipWeekends} onChange={(e) => setSkipWeekends(e.target.checked)}>避开周六和周日</Checkbox></Form.Item>
+          <Form.Item label="每日任务上限" extra="留空不限制。固定任务占用当天名额，超出的练习自动往后安排。">
+            <InputNumber min={1} max={6} precision={0} value={dailyLimit} onChange={setDailyLimit} placeholder="1–6" style={{ width: '100%' }} />
+          </Form.Item>
+        </Form>
+        <p style={{ color: 'var(--text-3)' }}>同名任务冲突时自动顺延到可用日期，计划周期随之延长。</p>
+      </Modal>
+
       <Modal
         title="编辑任务"
         open={editing !== null}
@@ -381,9 +440,11 @@ export default function Plans() {
         open={genOpen}
         form={genForm}
         onClose={() => setGenOpen(false)}
-        onDone={() => {
+        onDone={(result, request) => {
           setGenOpen(false)
-          genForm.resetFields()
+          setGenerationNotice(result)
+          setGenerationRequest(request)
+          if (result.source === 'ai') genForm.resetFields()
           load()
         }}
       />
@@ -391,7 +452,7 @@ export default function Plans() {
   )
 }
 
-function GenerateModal({ open, form, onClose, onDone }: { open: boolean; form: ReturnType<typeof Form.useForm>[0]; onClose: () => void; onDone: () => void }) {
+function GenerateModal({ open, form, onClose, onDone }: { open: boolean; form: ReturnType<typeof Form.useForm>[0]; onClose: () => void; onDone: (result: GenerateResult, request: PlanGenerationRequest) => void }) {
   const { message } = AntdApp.useApp()
   const [busy, setBusy] = useState(false)
   const submit = async () => {
@@ -399,18 +460,19 @@ function GenerateModal({ open, form, onClose, onDone }: { open: boolean; form: R
       .validateFields()
       .catch(() => null)) as unknown as { days: number; startDate: { format(f: string): string }; dailyTasks?: number; requirements?: string } | null
     if (!v) return
+    const request: PlanGenerationRequest = {
+      days: v.days,
+      startDate: v.startDate.format('YYYY-MM-DD'),
+      // 每天任务数留空 = AI 自行安排（1-3）
+      dailyTasks: v.dailyTasks ?? undefined,
+      // 用户手写的训练要求（可选）
+      requirements: v.requirements?.trim() || undefined,
+    }
     setBusy(true)
     try {
-      const r = await post<GenerateResult>('/api/plans/generate', {
-        days: v.days,
-        startDate: v.startDate.format('YYYY-MM-DD'),
-        // 每天任务数留空 = AI 自行安排（1-3）
-        dailyTasks: v.dailyTasks ?? undefined,
-        // 用户手写的训练要求（可选）
-        requirements: v.requirements?.trim() || undefined,
-      })
+      const r = await post<GenerateResult>('/api/plans/generate', request)
       message.success(`已生成「${r.title}」（${r.source === 'ai' ? 'AI' : '模板'}）`)
-      onDone()
+      onDone(r, request)
     } catch (e) {
       message.error((e as Error).message)
     } finally {

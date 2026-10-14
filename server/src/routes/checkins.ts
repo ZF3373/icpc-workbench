@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { localToday } from '../dates.ts';
+import { listTodayTasks } from '../plans/todayTasks.ts';
 
 export interface StreakInfo {
   current: number;
@@ -87,6 +88,29 @@ export function checkinsRoutes(db: Db): Router {
   });
 
   // POST /api/checkins  body: { taskId } → 打卡
+  // 预览不写入；确认时重新核对当日 AC、任务类型和归属。旧 AC 不代替本次训练。
+  r.post('/auto-today', (req, res) => {
+    const ids = req.body?.taskIds;
+    if (ids !== undefined && (!Array.isArray(ids) || ids.length > 1000 || ids.some((id) => !Number.isInteger(id) || id <= 0))) {
+      return res.status(400).json({ error: 'taskIds 需为任务 ID 数组（最多 1000 项）' });
+    }
+    const tasks = listTodayTasks(db, DEFAULT_USER_ID, localToday())
+      .filter((t) => t.kind === 'practice' && !t.checked && t.solvedToday);
+    if (ids === undefined) return res.json({ taskIds: tasks.map((t) => t.id), tasks });
+    const selected = new Set<number>(ids);
+    const write = db.prepare('INSERT OR IGNORE INTO checkins (user_id, task_id, task_date) VALUES (?, ?, ?)');
+    let checked = 0;
+    db.exec('BEGIN');
+    try {
+      for (const t of tasks) if (selected.has(t.id)) checked += Number(write.run(DEFAULT_USER_ID, t.id, t.task_date).changes);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+    res.json({ checked });
+  });
+
   r.post('/', (req, res) => {
     const taskId = Number(req.body?.taskId);
     if (!Number.isInteger(taskId)) {

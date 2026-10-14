@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Button, Card, Col, Empty, Progress, Row, Space, Tag, Tooltip, App as AntdApp } from 'antd'
+import { Alert, Button, Card, Col, Empty, Progress, Row, Select, Space, Tag, Tooltip, App as AntdApp } from 'antd'
 import {
   BulbOutlined,
   CheckCircleOutlined,
@@ -16,11 +16,13 @@ import PageSkeleton from '../components/PageSkeleton'
 import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
 import DueReviewList from '../components/DueReviewList'
+import TodayTasks from '../components/TodayTasks'
+import { syncTargets, type TrainingAccount } from '../trainingAccounts'
 import { difficultyColor, tagColor } from '../ui'
 import { sortDueItems } from '../reviewDue'
 import { del, get, post } from '../api'
 import type { StreakInfo, TodayPlan, TodayBandKey, TodayProblem } from '../types'
-import type { AbilityLevelDetail, PlatformId } from '../../../shared/src/index.ts'
+import type { AbilityLevelDetail, PlatformId, TodayPlanTask } from '../../../shared/src/index.ts'
 
 /** 每档题量（与后端默认一致；「换一批」在同一档内轮换） */
 const BAND_TONE: Record<TodayBandKey, string> = {
@@ -82,7 +84,7 @@ function levelDetailTip(detail?: AbilityLevelDetail): string | undefined {
 }
 
 export default function Today() {
-  const { message } = AntdApp.useApp()
+  const { message, modal } = AntdApp.useApp()
   const navigate = useNavigate()
   const [plan, setPlan] = useState<TodayPlan | null>(null)
   const [loading, setLoading] = useState(true)
@@ -91,8 +93,13 @@ export default function Today() {
   const [streak, setStreak] = useState<StreakInfo | null>(null)
   /** 正在同步的平台集合（按 platform 维度去重，同一平台同时只同步一次） */
   const [syncingPlatforms, setSyncingPlatforms] = useState<Set<string>>(new Set())
-  /** 已绑定的平台账号 handle 映射（同步时需要） */
-  const [accountHandles, setAccountHandles] = useState<Record<string, string>>({})
+  /** 保留全部绑定账号，避免同平台后一个账号覆盖前一个。 */
+  const [accounts, setAccounts] = useState<TrainingAccount[]>([])
+  const [accountSelection, setAccountSelection] = useState('*')
+  const [syncResults, setSyncResults] = useState<string[]>([])
+  const [busyTaskIds, setBusyTaskIds] = useState<Set<number>>(new Set())
+  const syncBusy = useRef(false)
+  const checkingTasks = useRef(new Set<number>())
 
   // 只认最新一次请求：连点「换一批」会有多个 rotate 请求在途，旧响应晚到会把新一批盖掉
   const reqSeq = useRef(0)
@@ -135,14 +142,57 @@ export default function Today() {
       .then(setStreak)
       .catch(() => undefined)
     // 加载已绑定的平台账号（同步按钮需要 handle）
-    get<{ accounts: Array<{ platform: string; handle: string }> }>('/api/settings')
+    get<{ accounts: TrainingAccount[] }>('/api/settings')
       .then((d) => {
-        const map: Record<string, string> = {}
-        for (const a of d.accounts) map[a.platform] = a.handle
-        setAccountHandles(map)
+        setAccounts(d.accounts)
       })
-      .catch(() => undefined)
-  }, [])
+      .catch(() => message.warning('账号列表加载失败，请刷新今日训练后重试'))
+  }, [message])
+
+  const refreshProgress = () => {
+    load(rotate, true)
+    get<StreakInfo>('/api/checkins/streak').then(setStreak).catch(() => undefined)
+  }
+
+  const toggleTask = async (task: TodayPlanTask) => {
+    if (checkingTasks.current.has(task.id)) return
+    checkingTasks.current.add(task.id)
+    setBusyTaskIds(new Set(checkingTasks.current))
+    try {
+      if (task.checked) await del(`/api/checkins/${task.id}`)
+      else await post('/api/checkins', { taskId: task.id })
+      refreshProgress()
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      checkingTasks.current.delete(task.id)
+      setBusyTaskIds(new Set(checkingTasks.current))
+    }
+  }
+
+  const confirmAcTasks = async () => {
+    try {
+      const preview = await post<{ taskIds: number[]; tasks: TodayPlanTask[] }>('/api/checkins/auto-today', {})
+      if (preview.taskIds.length === 0) return
+      modal.confirm({
+        title: `发现 ${preview.taskIds.length} 项今日已 AC 的练习任务`,
+        content: <div><p>确认完成后将为以下任务打卡：</p>{preview.tasks.map((t) => <p key={t.id}>{t.plan_title} · {t.title}</p>)}</div>,
+        okText: '确认并打卡', cancelText: '稍后处理',
+        onOk: async () => {
+          try {
+            const result = await post<{ checked: number }>('/api/checkins/auto-today', { taskIds: preview.taskIds })
+            message.success(`已为 ${result.checked} 项任务打卡`)
+            refreshProgress()
+          } catch (e) {
+            message.error((e as Error).message)
+            throw e
+          }
+        },
+      })
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
 
   /** 是否已在复习队列（以服务端 reviewItemId 为准，增删后立即静默重拉） */
   const isQueued = (p: TodayProblem) => p.reviewItemId != null
@@ -169,36 +219,33 @@ export default function Today() {
   }
 
   /** 同步单个平台的提交记录（做完题后立即拉取最新 AC 状态） */
-  const syncPlatform = async (platform: PlatformId) => {
-    const handle = accountHandles[platform]
-    if (!handle) {
-      message.warning(`未绑定 ${platform} 账号，请到「设置 → 平台账号」绑定后再同步`)
+  const syncPlatform = async (platform?: PlatformId) => {
+    if (syncBusy.current) return
+    const targets = syncTargets(accounts, accountSelection, platform)
+    if (targets.length === 0) {
+      message.warning('没有可同步的账号，请选择全部账号或到「设置 → 平台账号」绑定并启用账号')
       return
     }
-    setSyncingPlatforms((s) => new Set(s).add(platform))
+    syncBusy.current = true
+    setSyncingPlatforms(new Set(targets.map((a) => a.platform)))
+    const results: string[] = []
+    setSyncResults([])
     try {
-      const r = await post<{ imported: number; skipped: number; errors: string[] }>(
-        `/api/sync/${platform}`,
-        { handle },
-      )
-      if (r.errors.length > 0) {
-        message.warning(`${platform}：${r.errors[0]}`, 6)
+      for (const account of targets) {
+        try {
+          const r = await post<{ imported: number; errors: string[] }>(`/api/sync/${account.platform}`, { handle: account.handle })
+          results.push(`${account.platform} / ${account.handle}：${r.errors.length ? r.errors.join('；') : `新增 ${r.imported} 条提交`}`)
+        } catch (e) {
+          results.push(`${account.platform} / ${account.handle}：${(e as Error).message}`)
+        }
+        setSyncResults([...results])
       }
-      if (r.imported > 0) {
-        message.success(`${platform} 同步完成：新增 ${r.imported} 条提交`)
-        // 同步到新数据后刷新今日推荐（推荐基于最新 AC 记录）
-        load(rotate)
-      } else {
-        message.info(`${platform} 同步完成：暂无新提交`)
-      }
-    } catch (e) {
-      message.error((e as Error).message)
+      // 改判也可能没有新增行；无论 imported 数量都刷新任务与推荐。
+      refreshProgress()
+      await confirmAcTasks()
     } finally {
-      setSyncingPlatforms((s) => {
-        const next = new Set(s)
-        next.delete(platform)
-        return next
-      })
+      syncBusy.current = false
+      setSyncingPlatforms(new Set())
     }
   }
 
@@ -216,11 +263,19 @@ export default function Today() {
         title="今日训练"
         description="按你的能力水平自动分三档推荐 —— 不用纠结今天做什么"
         extra={
+          <Space wrap>
+          <Select value={accountSelection} onChange={setAccountSelection} disabled={syncingPlatforms.size > 0}
+            style={{ minWidth: 190, maxWidth: '100%' }} aria-label="训练同步账号"
+            options={[{ value: '*', label: '全部已启用账号' }, ...syncTargets(accounts).map((a) => ({ value: `${a.platform}:${a.handle}`, label: `${a.platform} / ${a.handle}` }))]} />
+          <Button icon={<SyncOutlined />} onClick={() => void syncPlatform()} loading={syncingPlatforms.size > 0}>同步所选账号</Button>
           <Button icon={<RedoOutlined />} onClick={refreshBand} loading={loading}>
             全部换一批
           </Button>
+          </Space>
         }
       />
+      {syncResults.length > 0 && <Alert style={{ marginBottom: 16 }} type="info" message={syncingPlatforms.size > 0 ? '同步进度' : '本次同步结果'}
+        description={<div>{syncResults.map((text, i) => <div key={i}>{text}</div>)}</div>} closable onClose={() => setSyncResults([])} />}
 
       {loading && !plan ? (
         <PageSkeleton stats blocks={3} />
@@ -300,6 +355,8 @@ export default function Today() {
               </div>
             </div>
           </div>
+
+          <TodayTasks tasks={plan.planTasks ?? []} busyIds={busyTaskIds} onToggle={(task) => void toggleTask(task)} onConfirmAc={() => void confirmAcTasks()} />
 
           {plan.dueReviewItems.length > 0 && (
             <Card
@@ -399,7 +456,7 @@ export default function Today() {
                                 size="small"
                                 type="text"
                                 icon={<SyncOutlined spin={syncingPlatforms.has(p.platform)} />}
-                                disabled={syncingPlatforms.has(p.platform)}
+                                disabled={syncingPlatforms.size > 0}
                                 onClick={() => syncPlatform(p.platform as PlatformId)}
                               >
                                 同步

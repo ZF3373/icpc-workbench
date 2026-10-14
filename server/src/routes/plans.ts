@@ -4,6 +4,7 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { AiProvider } from '../ai/provider.ts';
+import { reschedulePlan } from '../plans/reschedule.ts';
 import {
   applyPlanModification,
   generatePlan,
@@ -56,6 +57,7 @@ export function plansRoutes(
           typeof requirements === 'string' && requirements.trim() !== ''
             ? requirements.trim().slice(0, 500)
             : undefined,
+        provider: opts.createProvider?.(),
       });
       res.json(result);
     } catch (e) {
@@ -248,6 +250,21 @@ export function plansRoutes(
       res.json({ ok: true, ...result });
     } catch (e) {
       res.status(400).json({ error: `应用修改失败：${(e as Error).message}` });
+    }
+  });
+
+  r.post('/:id/shift', (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'id 非法' });
+    const body = req.body ?? {};
+    try {
+      const result = reschedulePlan(db, DEFAULT_USER_ID, id, {
+        days: body.days, skipWeekends: body.skipWeekends, dailyLimit: body.dailyLimit,
+      });
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      const message = (e as Error).message;
+      res.status(message === '计划不存在' ? 404 : 400).json({ error: message });
     }
   });
 

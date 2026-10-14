@@ -90,6 +90,7 @@ export interface GenerateResult {
   planId: number
   source: 'ai' | 'template'
   title: string
+  fallbackReason?: string
 }
 
 export interface PlanPackage {

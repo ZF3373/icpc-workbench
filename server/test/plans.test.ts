@@ -30,6 +30,15 @@ afterEach(() => {
 
 const AI_DISABLED = { enabled: false, baseURL: 'https://x/v1', apiKey: '', model: 'm' };
 
+test('AI failure returns an explainable fallback reason', async () => {
+  const provider = new AiProvider({ ...AI_DISABLED, enabled: true, apiKey: 'secret' });
+  provider.chat = async () => { throw new Error('network failure with secret'); };
+  const result = await generatePlan(db, AI_DISABLED, { days: 2, provider });
+  assert.equal(result.source, 'template');
+  assert.match(result.fallbackReason ?? '', /连接|网络/);
+  assert.ok(!result.fallbackReason?.includes('secret'));
+});
+
 function sub(platform: 'codeforces', key: string, verdict: 'AC' | 'WA', tags: string[], difficulty: number, submittedAt: string, url?: string): NormalizedSubmission {
   return {
     problem: { platform, problemKey: key, title: `T ${key}`, difficulty, tags, ...(url ? { url } : {}) },

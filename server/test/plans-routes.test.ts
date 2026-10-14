@@ -65,6 +65,20 @@ async function seedTask(db: Db): Promise<number> {
   return (db.prepare('SELECT id FROM plan_tasks').get() as { id: number }).id;
 }
 
+test('batch shift preserves completed tasks and extends plan', async () => {
+  await withServer(async (db, base) => {
+    const doneId = await seedTask(db);
+    db.prepare("INSERT INTO checkins (user_id, task_id, task_date) VALUES (1, ?, '2026-08-10')").run(doneId);
+    db.prepare("INSERT INTO plan_tasks (plan_id, task_date, title, kind) VALUES (1, '2026-08-11', 'todo', 'practice')").run();
+    const res = await fetch(`${base}/1/shift`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 1 }) });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json() as { shifted: number }).shifted, 1);
+    assert.equal(db.prepare('SELECT task_date FROM plan_tasks WHERE id = ?').get(doneId)!.task_date, '2026-08-10');
+    assert.equal(db.prepare("SELECT task_date FROM plan_tasks WHERE title = 'todo'").get()!.task_date, '2026-08-12');
+    assert.equal(db.prepare('SELECT end_date FROM plans WHERE id = 1').get()!.end_date, '2026-08-13');
+  });
+});
+
 test('PATCH /api/plans/tasks/:taskId updates provided fields only', async () => {
   await withServer(async (db, base) => {
     const taskId = await seedTask(db);

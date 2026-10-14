@@ -399,6 +399,23 @@ export interface AbilityLevelDetail {
   samples: number;
 }
 
+export interface TodayPlanTask {
+  id: number;
+  task_date: string;
+  title: string;
+  kind: 'practice' | 'review' | 'topic' | 'contest';
+  url: string | null;
+  note: string | null;
+  platform: PlatformId | null;
+  problem_key: string | null;
+  problem_title: string | null;
+  problem_url: string | null;
+  checked: number | null;
+  plan_id: number;
+  plan_title: string;
+  solvedToday: boolean;
+}
+
 export interface TodayPlan {
   date: string;
   /**
@@ -423,6 +440,8 @@ export interface TodayPlan {
   dueReviewItems: ReviewItem[];
   /** 今日计划任务完成度（无计划时为 null） */
   planProgress: { total: number; checked: number } | null;
+  /** 当天所有计划的任务，保留计划归属及当日 AC 证据。 */
+  planTasks: TodayPlanTask[];
 }
 
 // ---------- 赛事中心（多 OJ 公开赛事列表） ----------
