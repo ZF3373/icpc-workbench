@@ -494,7 +494,7 @@ export function recommendProblemsByWeakTag(
   }>;
 
   const weakTags = profile.items.map((i) => i.tag);
-  const gapByTag = new Map(profile.items.map((i) => [i.tag, i.gap]));
+  const gapByTag = new Map(profile.items.map((i) => [i.tag, i.evidenceGap ?? i.gap]));
   const [lo, hi] = level?.suggestedRange ?? [null, null];
   const inRange = (d: number | null): boolean => {
     if (lo === null || hi === null) return true; // 样本不足：不过滤难度

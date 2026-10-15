@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import dayjs from 'dayjs'
-import { Button, Card, Modal, Popconfirm, Space, Tag, Tooltip, App as AntdApp } from 'antd'
-import { DeleteOutlined, EditOutlined, ReadOutlined } from '@ant-design/icons'
+import { Button, Card, Input, Modal, Popconfirm, Select, Space, Tag, Tooltip, App as AntdApp } from 'antd'
+import { DeleteOutlined, EditOutlined, HistoryOutlined, ReadOutlined, SearchOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import PageSkeleton from '../components/PageSkeleton'
@@ -10,10 +10,13 @@ import InlineError from '../components/InlineError'
 import PlatformTag from '../components/PlatformTag'
 import NoteEditor from '../components/NoteEditor'
 import NotePreview from '../components/NotePreview'
+import ReviewHistoryDrawer from '../components/ReviewHistoryDrawer'
 import { difficultyColor } from '../ui'
-import { del, get, patch, post } from '../api'
-import { FEEDBACK_META, dueText } from '../reviewDue'
-import type { ReviewFeedback, ReviewItem } from '../types'
+import { del, get, patch } from '../api'
+import { useReviewFeedback } from '../useReviewFeedback'
+import { FEEDBACK_META, dueText, filterReviewItems } from '../reviewDue'
+import type { ReviewItem } from '../types'
+import { PLATFORMS, type PlatformId } from '../../../shared/src/index.ts'
 
 export default function Reviews() {
   const { message } = AntdApp.useApp()
@@ -22,16 +25,22 @@ export default function Reviews() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [filter, setFilter] = useState<'due' | 'all'>('due')
+  const [query, setQuery] = useState('')
+  const [platform, setPlatform] = useState<PlatformId | 'all'>('all')
+  const [historyItem, setHistoryItem] = useState<ReviewItem | null>(null)
+  const requestId = useRef(0)
   const [editing, setEditing] = useState<ReviewItem | null>(null)
   const [noteDraft, setNoteDraft] = useState('')
   // 展开的笔记条目 id：状态提升到页面持有，因为「展开/收起」按钮要放在右侧操作列（编辑按钮下方）
   const [openNoteIds, setOpenNoteIds] = useState<ReadonlySet<number>>(new Set())
 
   const load = useCallback((f: 'due' | 'all') => {
+    const id = ++requestId.current
     setLoading(true)
     setLoadError(null)
     get<ReviewItem[]>(`/api/reviews${f === 'due' ? '?due=1' : ''}`)
       .then((r) => {
+        if (id !== requestId.current) return
         setItems(r)
         setLoadError(null)
         // 每次重取列表后回到默认收起（列表重挂载，展开状态不跨刷新保留）
@@ -41,11 +50,12 @@ export default function Reviews() {
       // 「复习队列还是空的 —— 到题目管理加题」，把一次超时误导成用户自己的问题。
       // 这里落到 loadError，由 InlineError 出错误态 + 重试（重试沿用当前筛选）。
       .catch((e: Error) => {
+        if (id !== requestId.current) return
         setLoadError(e.message)
         message.error(e.message)
       })
-      .finally(() => setLoading(false))
-  }, [])
+      .finally(() => { if (id === requestId.current) setLoading(false) })
+  }, [message])
 
   const toggleNoteOpen = (id: number) =>
     setOpenNoteIds((s) => {
@@ -57,17 +67,10 @@ export default function Reviews() {
 
   useEffect(() => {
     load(filter)
+    return () => { requestId.current += 1 }
   }, [filter, load])
 
-  const feedback = async (item: ReviewItem, f: ReviewFeedback) => {
-    try {
-      const r = await post<{ stage: number; nextDueOn: string }>(`/api/reviews/${item.id}/feedback`, { feedback: f })
-      message.success(`下次复习：${r.nextDueOn}`)
-      load(filter)
-    } catch (e) {
-      message.error((e as Error).message)
-    }
-  }
+  const { feedback, pending } = useReviewFeedback(() => load(filter))
 
   const remove = async (item: ReviewItem) => {
     try {
@@ -92,6 +95,9 @@ export default function Reviews() {
   }
 
   const dueCount = items.filter((i) => i.nextDueOn <= dayjs().format('YYYY-MM-DD')).length
+  const filteredItems = filterReviewItems(items, query, platform === 'all' ? undefined : platform)
+  const hasFilters = query.trim() !== '' || platform !== 'all'
+  const clearFilters = () => { setQuery(''); setPlatform('all') }
 
   return (
     <div>
@@ -110,6 +116,18 @@ export default function Reviews() {
         }
       />
 
+      {(items.length > 0 || hasFilters) && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <Input value={query} onChange={event => setQuery(event.target.value)} allowClear prefix={<SearchOutlined />}
+            placeholder="搜索题号、题名、知识点或笔记" aria-label="搜索复习队列"
+            style={{ flex: '1 1 260px', maxWidth: 420 }} />
+          <Select<PlatformId | 'all'> value={platform} onChange={setPlatform} aria-label="筛选复习平台" style={{ width: 160 }}
+            options={[{ value: 'all', label: '全部平台' }, ...PLATFORMS.map(p => ({ value: p.id, label: p.name }))]} />
+          {hasFilters && <Button type="link" onClick={clearFilters}>清除筛选</Button>}
+          <span className="muted-note" role="status">显示 {filteredItems.length} / {items.length} 道</span>
+        </div>
+      )}
+
       {/* 首屏骨架：复习库是「一列复习卡」的列表页（没有统计带），用表格行占位贴近真实首屏。
           只在「还没有任何一行可显示」时占位：本页每次反馈 / 移除 / 存笔记都会重拉列表，
           若 loading 就整页退回骨架，点一下按钮全页闪一次。与 Problems / Contests 同款判断。 */}
@@ -123,6 +141,12 @@ export default function Reviews() {
           onRetry={() => load(filter)}
           retrying={loading}
         />
+      ) : hasFilters && filteredItems.length === 0 ? (
+        <Card><EmptyState title="没有匹配的复习题" description="筛选仅作用于当前队列，可清除条件，或切换到全部队列查看。"
+          actions={[
+            { label: '清除筛选', type: 'primary', onClick: clearFilters },
+            ...(filter === 'due' ? [{ label: '查看全部队列', type: 'default' as const, onClick: () => setFilter('all') }] : []),
+          ]} /></Card>
       ) : items.length === 0 ? (
         <Card>
           {/* description 只解释「为什么是空的」，出路给成真按钮：去题目管理加题 / 切到另一个筛选 */}
@@ -150,7 +174,7 @@ export default function Reviews() {
         /* 卡片列表显式单列：列向 flex（任何断点下都不会被挤成多列或撑出横向滚动），
            gap 给出相邻复习卡之间的间距 —— 此前是默认块级堆叠、卡片紧贴无间距 */
         <div className="review-list" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {items.map((item) => {
+          {filteredItems.map((item) => {
             const due = dueText(item)
             return (
               <Card
@@ -207,12 +231,15 @@ export default function Reviews() {
                           size="small"
                           type={f.key === 'ok' ? 'primary' : 'default'}
                           danger={f.danger}
+                          loading={pending === item.id}
+                          disabled={pending !== null && pending !== item.id}
                           onClick={() => feedback(item, f.key)}
                         >
                           {f.label}
                         </Button>
                       </Tooltip>
                     ))}
+                    <Button size="small" icon={<HistoryOutlined />} onClick={() => setHistoryItem(item)}>记录</Button>
                     <Button
                       size="small"
                       type="text"
@@ -246,6 +273,8 @@ export default function Reviews() {
           </p>
         </div>
       )}
+
+      <ReviewHistoryDrawer key={historyItem?.id ?? 'closed'} item={historyItem} onClose={() => setHistoryItem(null)} />
 
       <Modal
         title={`复习笔记 · ${editing?.problemKey ?? ''}`}

@@ -3,7 +3,7 @@
  * 刷题记录（按标签聚合 solved / AC 率 / 近期活跃度）
  * × 弱项画像基准（相对自身平均 AC 率的 gap）
  * × 模板课程（每个知识点关联的课程模板与学习状态）。
- * 掌握度档位完全由练习数据推导：未开始（仅出现在课程大纲中）/ 接触 / 入门 / 掌握 / 熟练。
+ * 档位按去重题目的有效掌握证据推导（卡点降权、成功复习恢复）：未开始 / 接触 / 入门 / 掌握 / 熟练。
  */
 import type {
   MasteryLevel,
@@ -12,13 +12,15 @@ import type {
   MasteryTemplateLink,
   PlatformId,
 } from '../../../shared/src/index.ts';
-import { canonicalTag, expandTag } from '../../../shared/src/index.ts';
+import { canonicalTag, codeOfTag, expandTag } from '../../../shared/src/index.ts';
 import { CURRICULUM } from '../templates/curriculum.ts';
 import type { Db } from '../db/index.ts';
 import { accountClause, fetchRows, rate, round2, safeTags } from './stats.ts';
 import { filterNoiseTags } from './tags.ts';
 import { allPoints } from '../knowledge/taxonomy.ts';
 import { getConfidenceThreshold, READABLE_SOURCES_SQL } from '../knowledge/store.ts';
+import { loadPracticeEvidence } from './practiceEvidence.ts';
+import { problemIdentity } from '../problems/identity.ts';
 
 const RECENT_WINDOW_DAYS = 56;
 
@@ -97,6 +99,7 @@ export function computeMastery(db: Db, userId: number, opts: MasteryOptions = {}
   const recentCutoff = new Date(Date.now() - RECENT_WINDOW_DAYS * 86_400_000).toISOString();
   const scope = { platform: opts.platform, account: opts.account };
   const clause = accountClause(scope);
+  const evidenceFor = loadPracticeEvidence(db, userId);
 
   // 总体 AC 率是掌握度 gap 的基准，必须与知识点统计同一作用域，否则「相对自身平均」
   // 仍是全部账号的稀释平均
@@ -110,17 +113,22 @@ export function computeMastery(db: Db, userId: number, opts: MasteryOptions = {}
     ac: number;
     solved: Set<string>;
     recentSolved: Set<string>;
+    attempted: Set<string>;
+    evidenceSolved: Set<string>;
   }
   const bumpAcc = (map: Map<string, Acc>, key: string, isAc: boolean, platform: string, problemKey: string, submittedAt: string): void => {
     let acc = map.get(key);
     if (!acc) {
-      acc = { attempts: 0, ac: 0, solved: new Set(), recentSolved: new Set() };
+      acc = { attempts: 0, ac: 0, solved: new Set(), recentSolved: new Set(), attempted: new Set(), evidenceSolved: new Set() };
       map.set(key, acc);
     }
     acc.attempts += 1;
+    const identity = problemIdentity({ platform, problemKey });
+    acc.attempted.add(identity);
     if (isAc) {
       acc.ac += 1;
       acc.solved.add(`${platform}:${problemKey}`);
+      acc.evidenceSolved.add(identity);
       if (submittedAt >= recentCutoff) acc.recentSolved.add(`${platform}:${problemKey}`);
     }
   };
@@ -156,7 +164,7 @@ export function computeMastery(db: Db, userId: number, opts: MasteryOptions = {}
   for (const r of fallbackRows) {
     const isAc = r.verdict === 'AC';
     // CF 等平台的英文标签归并到课程中文知识点（binary search → 二分），避免同一知识点拆成两个点
-    for (const tag of filterNoiseTags(safeTags(r.tags)).map((t) => canonicalTag(t))) {
+    for (const tag of new Set(filterNoiseTags(safeTags(r.tags)).map((t) => canonicalTag(t)))) {
       const code = nameToCode.get(tag);
       if (code) bumpAcc(byCode, code, isAc, r.platform, r.problem_key, r.submitted_at);
       else bumpAcc(byTag, tag, isAc, r.platform, r.problem_key, r.submitted_at);
@@ -175,6 +183,8 @@ export function computeMastery(db: Db, userId: number, opts: MasteryOptions = {}
     const attempts = acc?.attempts ?? 0;
     const ac = acc?.ac ?? 0;
     const acRate = attempts > 0 ? rate(attempts, ac) : 0;
+    const evidence = evidenceFor(acc?.attempted ?? new Set(), acc?.evidenceSolved ?? new Set(), code ?? codeOfTag(tag));
+    const gap = round2(avgAcRate - acRate);
     points.push({
       tag,
       ...(code !== undefined ? { code } : {}),
@@ -182,10 +192,13 @@ export function computeMastery(db: Db, userId: number, opts: MasteryOptions = {}
       attempts,
       acRate,
       avgAcRate,
-      gap: round2(avgAcRate - acRate),
-      level: levelFor(solved, acRate),
+      gap,
+      // 有过通过即至少「接触」，折算题量不能把已学过的知识点显示为「未开始」。
+      level: levelFor(solved > 0 ? Math.max(1, evidence.creditedSolved) : 0, acRate),
       recentSolved: acc?.recentSolved.size ?? 0,
       templates,
+      evidence,
+      evidenceGap: round2(gap + evidence.supportGap),
     });
   };
 

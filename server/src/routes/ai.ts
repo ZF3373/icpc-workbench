@@ -654,7 +654,7 @@ export function aiRoutes(
       abilityEvidence: renderAbilityEvidence(db, DEFAULT_USER_ID, summary),
       planSection,
       listSection,
-      problemCandidates: renderProblemCandidates(db, DEFAULT_USER_ID, ability.effective, weakness.items.filter(w => w.gap > 0).map(w => w.tag)),
+      problemCandidates: renderProblemCandidates(db, DEFAULT_USER_ID, ability.effective, weakness.items.filter(w => (w.evidenceGap ?? w.gap) > 0).map(w => w.tag)),
       contestSection,
       upcomingContests,
       // 模板库写入（template-add 块）可选的分类清单：内置课程大纲 + 用户自建标签。

@@ -376,7 +376,7 @@ export default function Today() {
                   否则用户只知道「有 N 道该复习」却看不到是哪几道 */}
               <DueReviewList
                 items={sortDueItems(plan.dueReviewItems)}
-                onChanged={() => load(rotate, true)}
+                onChanged={refreshProgress}
               />
             </Card>
           )}
@@ -429,7 +429,7 @@ export default function Today() {
                                 同一标签既是「弱项」又是普通标签就会撞 key（控制台报
                                 duplicate key，且重复/丢项的渲染行为不受支持）。 */}
                             {p.weakTags.map((t) => (
-                              <Tooltip title={`弱项标签：相对你的平均 AC 率偏低`} key={`weak:${t}`}>
+                              <Tooltip title="结合 AC 率、卡点与最近复习反馈，建议优先补强" key={`weak:${t}`}>
                                 <Tag className="weak-tag" color={tagColor(t)}>
                                   弱 · {t}
                                 </Tag>

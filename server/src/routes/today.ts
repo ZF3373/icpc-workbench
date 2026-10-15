@@ -16,6 +16,7 @@ import {
 import { computeAbilityDetail, getAbilityOverride } from '../today/ability.ts';
 import { listDueReviewItems } from '../reviews/query.ts';
 import { listTodayTasks } from '../plans/todayTasks.ts';
+import { problemIdentity, problemIdentitySql } from '../problems/identity.ts';
 import type { TodayBandKey, TodayProblem } from '../../../shared/src/index.ts';
 
 /** 每档默认题量：巩固 2 / 同段 3 / 挑战 1（cf-compass 同段承担主训练量） */
@@ -68,20 +69,30 @@ export function todayRoutes(db: Db): Router {
     //    并带出「上次推荐日期」与「是否已在复习队列」，供选题时的冷却判断使用
     const candidates = db
       .prepare(
-        `SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
+        `WITH solved AS (
+           SELECT ${problemIdentitySql('sp')} AS identity
+           FROM submissions s JOIN problems sp ON sp.id = s.problem_id
+           WHERE s.user_id = ? AND s.verdict = 'AC' GROUP BY identity
+         ), queued AS (
+           SELECT ${problemIdentitySql('rp')} AS identity, MIN(ri.id) AS review_item_id
+           FROM review_items ri JOIN problems rp ON rp.id = ri.problem_id
+           WHERE ri.user_id = ? GROUP BY identity
+         ), recommended AS (
+           SELECT ${problemIdentitySql('tp')} AS identity, MAX(tr.recommended_on) AS recommended_on
+           FROM today_recommendations tr JOIN problems tp ON tp.id = tr.problem_id
+           WHERE tr.user_id = ? GROUP BY identity
+         )
+         SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
                 ${knowledgeTagsSql(db)},
-                (SELECT ri.id FROM review_items ri
-                  WHERE ri.problem_id = p.id AND ri.user_id = ${DEFAULT_USER_ID}) AS review_item_id,
-                (SELECT tr.recommended_on FROM today_recommendations tr
-                  WHERE tr.user_id = ? AND tr.problem_id = p.id) AS recommended_on,
-                EXISTS (SELECT 1 FROM review_items ri
-                  WHERE ri.user_id = ? AND ri.problem_id = p.id) AS in_review
+                queued.review_item_id, recommended.recommended_on,
+                queued.review_item_id IS NOT NULL AS in_review
            FROM problems p
+           LEFT JOIN solved ON solved.identity = ${problemIdentitySql('p')}
+           LEFT JOIN queued ON queued.identity = ${problemIdentitySql('p')}
+           LEFT JOIN recommended ON recommended.identity = ${problemIdentitySql('p')}
           WHERE p.difficulty IS NOT NULL
-            AND NOT EXISTS (
-              SELECT 1 FROM submissions s
-               WHERE s.problem_id = p.id AND s.user_id = ? AND s.verdict = 'AC'
-            )`,
+            AND solved.identity IS NULL
+          ORDER BY p.id`,
       )
       .all(DEFAULT_USER_ID, DEFAULT_USER_ID, DEFAULT_USER_ID) as unknown as Array<
         Omit<CandidateProblem, 'tags' | 'recommendedOn' | 'inReview'> & {
@@ -91,8 +102,16 @@ export function todayRoutes(db: Db): Router {
           in_review: number;
         }
       >;
-    const plannedKeys = new Set(planTasks.filter((t) => t.platform && t.problem_key).map((t) => `${t.platform}:${t.problem_key}`));
-    const pool: CandidateProblem[] = candidates.filter((c) => !plannedKeys.has(`${c.platform}:${c.problem_key}`)).map(
+    const plannedKeys = new Set(planTasks.filter((t) => t.platform && t.problem_key).map((t) => problemIdentity({ platform: t.platform!, problemKey: t.problem_key! })));
+    // 同题只保留一个入口，优先原生平台；镜像也共用冷却、复习与计划排除。
+    const unique = new Map<string, typeof candidates[number]>();
+    for (const c of candidates) {
+      const identity = problemIdentity({ platform: c.platform, problemKey: c.problem_key });
+      if (plannedKeys.has(identity)) continue;
+      const previous = unique.get(identity);
+      if (!previous || (c.platform === identity.split(':')[0] && previous.platform !== c.platform)) unique.set(identity, c);
+    }
+    const pool: CandidateProblem[] = [...unique.values()].map(
       ({ review_item_id, recommended_on, in_review, tags, ...c }) => ({
         ...c,
         tags: safeTags(tags),
@@ -104,7 +123,7 @@ export function todayRoutes(db: Db): Router {
 
     // 3) 弱项标签（gap > 0 才算弱）
     const weakness = computeWeakness(db, DEFAULT_USER_ID, { minAttempts: 5, topN: 15 });
-    const weakTags = weakness.items.filter((i) => i.gap > 0).map((i) => i.tag);
+    const weakTags = weakness.items.filter((i) => (i.evidenceGap ?? i.gap) > 0).map((i) => i.tag);
 
     // 4) 逐档选题（跨档去重 + rotate 整批平移 + 从严到松取第一个够数的冷却档）
     const ranges = bandRanges(level);

@@ -402,7 +402,7 @@ export default function CalendarPage() {
                     <DueReviewList
                       compact
                       items={sortDueItems(reviewItems)}
-                      onChanged={() => loadDay(selected)}
+                      onChanged={() => { loadDay(selected); loadMonth(month); loadStreak() }}
                     />
                   </Card>
                 )}

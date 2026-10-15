@@ -696,6 +696,7 @@ export default function Dashboard() {
 
   /** 今日聚焦用的最近弱项：只吃本页已拉到的 weak，不再发请求 */
   const focusWeak = weak && weak.items.length > 0 ? weak.items[0] : null
+  const focusGap = focusWeak ? (focusWeak.evidenceGap ?? focusWeak.gap) : 0
 
   const diffData = stats.byDifficulty
     .slice()
@@ -709,7 +710,7 @@ export default function Dashboard() {
     }))
 
   const weakData = weak
-    ? weak.items.slice(0, 10).map((i) => ({ tag: i.tag, gap: i.gap, acRate: i.acRate, attempts: i.attempts }))
+    ? weak.items.slice(0, 10).map((i) => ({ tag: i.tag, gap: i.evidenceGap ?? i.gap, acRate: i.acRate, attempts: i.attempts, sampleSize: i.evidence?.sampleSize ?? i.attempts }))
     : []
 
   const trendData = (trend ?? []).map((p) => ({
@@ -806,7 +807,7 @@ export default function Dashboard() {
     ),
     weakness: (
       <ModuleCard
-        title="弱项标签（相对自身平均的 AC 率偏差，越大越弱）"
+        title="弱项标签（综合 AC 率、卡点与复习证据）"
         collapsed={collapsedSet.has('weakness')}
         onHeadMouseDown={(e) => handleModuleMouseDown(e, 'weakness')}
       >
@@ -824,19 +825,19 @@ export default function Dashboard() {
                 tickLine={false}
                 tickFormatter={(tag: string, index: number) => {
                   const d = weakData[index];
-                  return d && d.attempts < 20 ? `${tag} ⚠️` : tag;
+                  return d && d.sampleSize < 5 ? `${tag} ⚠️` : tag;
                 }}
               />
               <Tooltip
                 {...tooltipStyle}
                 formatter={(v, name) =>
                   name === 'gap'
-                    ? [`${Number(v) > 0 ? '+' : ''}${Number(v)}`, 'AC 率偏差']
+                    ? [`${Number(v) > 0 ? '+' : ''}${Number(v)}`, '补强缺口（百分点）']
                     : [String(v), String(name)]
                 }
                 labelFormatter={(label: React.ReactNode) => {
                   const d = weakData.find((x) => x.tag === label)
-                  return d ? `${String(label)}（样本 ${d.attempts}）` : label
+                  return d ? `${String(label)}（去重样本 ${d.sampleSize} 题，AC 率 ${d.acRate}%${d.sampleSize < 5 ? '，样本不足' : ''}）` : label
                 }}
                 cursor={chartCursor}
               />
@@ -937,10 +938,10 @@ export default function Dashboard() {
             {focusWeak ? (
               <>
                 <strong style={{ color: 'var(--text)' }}>{focusWeak.tag}</strong>
-                <span style={{ color: gapColor(focusWeak.gap), fontWeight: 600 }}>
+                <span style={{ color: gapColor(focusGap), fontWeight: 600 }}>
                   {' '}
-                  AC 率偏差 {focusWeak.gap > 0 ? '+' : ''}
-                  {Math.round(focusWeak.gap * 10) / 10}
+                  补强缺口 {focusGap > 0 ? '+' : ''}
+                  {Math.round(focusGap * 10) / 10}
                 </span>
               </>
             ) : loadError ? (

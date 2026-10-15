@@ -2,33 +2,14 @@ import { expandTag, type PlatformId } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { safeTags } from '../analysis/stats.ts';
 import { problemKeypointsCte, knowledgeTagsJoinSql, knowledgeTagsExpr } from '../knowledge/store.ts';
+import { problemIdentity as identityOf, problemIdentitySql as identitySql } from './identity.ts';
 
 export interface ProblemIdentity { platform: string; problemKey: string }
 
-// 洛谷 CF / AtCoder 镜像与原生题共用 AC 身份；大小写和 AtCoder 展示题号也归一。
-function identitySql(alias: string): string {
-  const platform = `${alias}.platform`;
-  const key = `lower(trim(${alias}.problem_key))`;
-  return `CASE
-    WHEN ${platform} = 'luogu' AND ${key} GLOB 'cf[0-9]*' THEN 'codeforces:' || substr(${key}, 3)
-    WHEN ${platform} = 'luogu' AND substr(${key}, 1, 3) = 'at_' THEN 'atcoder:' || replace(substr(${key}, 4), '_', '')
-    WHEN ${platform} = 'atcoder' THEN 'atcoder:' || replace(${key}, '_', '')
-    ELSE ${platform} || ':' || ${key} END`;
-}
-
-function identityOf(p: ProblemIdentity): string {
-  let platform = p.platform;
-  let key = p.problemKey.trim().toLowerCase();
-  if (platform === 'luogu' && /^cf\d/.test(key)) { platform = 'codeforces'; key = key.slice(2); }
-  if (platform === 'luogu' && key.startsWith('at_')) { platform = 'atcoder'; key = key.slice(3); }
-  if (platform === 'atcoder') key = key.replaceAll('_', '');
-  return `${platform}:${key}`;
-}
-
 function catalogCte(db: Db): string {
   return `WITH solved AS (
-    SELECT DISTINCT ${identitySql('sp')} AS identity FROM submissions s
-    JOIN problems sp ON sp.id = s.problem_id WHERE s.user_id = ? AND s.verdict = 'AC'
+    SELECT ${identitySql('sp')} AS identity FROM submissions s
+    JOIN problems sp ON sp.id = s.problem_id WHERE s.user_id = ? AND s.verdict = 'AC' GROUP BY identity
   ), ${problemKeypointsCte(db)}, catalog AS (
     SELECT p.platform, p.problem_key, p.title, p.difficulty, p.url,
       ${knowledgeTagsExpr()} AS tags, ${identitySql('p')} AS identity,

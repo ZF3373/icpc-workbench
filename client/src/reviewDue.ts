@@ -6,6 +6,7 @@
  */
 import dayjs from 'dayjs'
 import type { ReviewItem } from './types'
+import type { PlatformId } from '../../shared/src/index.ts'
 
 export interface DueText {
   /** 展示文案 */
@@ -44,6 +45,26 @@ export function sortDueItems(items: ReviewItem[], today = dayjs().format('YYYY-M
 /** 统计「现在就该做」的数量（今日到期 + 逾期），与复习库页 dueCount 同口径 */
 export function countDue(items: ReviewItem[], today = dayjs().format('YYYY-MM-DD')): number {
   return items.filter((i) => i.nextDueOn <= today).length
+}
+
+/** 在当前到期/全部队列内检索，保留原来的到期顺序。多个关键词须同时命中。 */
+export function filterReviewItems(items: ReviewItem[], query: string, platform?: PlatformId): ReviewItem[] {
+  const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
+  return items.filter(item => {
+    if (platform && item.platform !== platform) return false
+    const text = [item.problemKey, item.title, ...item.tags, item.note ?? ''].join(' ').toLocaleLowerCase()
+    return terms.every(term => text.includes(term))
+  })
+}
+
+/** 比较本地日历日；UTC 日序差避免夏令时造成一天只有 23/25 小时的误差。 */
+export function reviewTimingText(reviewedAt: string, dueOn: string): string {
+  const timestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(reviewedAt)
+    ? reviewedAt.replace(' ', 'T') + 'Z' : reviewedAt
+  const reviewedOn = dayjs(timestamp).format('YYYY-MM-DD')
+  const days = Math.round((Date.parse(`${reviewedOn}T00:00:00Z`) - Date.parse(`${dueOn}T00:00:00Z`)) / 86_400_000)
+  if (!Number.isFinite(days)) return '日期未知'
+  return days > 0 ? `逾期 ${days} 天` : days < 0 ? `提前 ${-days} 天` : '按期复习'
 }
 
 /** 反馈按钮的元信息：与复习库页共用同一套文案与档位后果说明 */

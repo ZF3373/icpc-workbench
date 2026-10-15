@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { Button, Space, Tag, Tooltip, App as AntdApp } from 'antd'
-import { ReadOutlined } from '@ant-design/icons'
+import { Button, Space, Tag, Tooltip } from 'antd'
+import { HistoryOutlined, ReadOutlined } from '@ant-design/icons'
 import PlatformTag from './PlatformTag'
+import ReviewHistoryDrawer from './ReviewHistoryDrawer'
 import { difficultyColor } from '../ui'
-import { post } from '../api'
+import { useReviewFeedback } from '../useReviewFeedback'
 import { dueText, FEEDBACK_META } from '../reviewDue'
-import type { ReviewFeedback, ReviewItem } from '../types'
+import type { ReviewItem } from '../types'
 
 /**
  * 到期复习条目列表（今日训练 / 日历板块共用）。
@@ -25,21 +26,8 @@ export default function DueReviewList({
   /** 紧凑模式（日历侧栏用）：隐藏题名以外的次要信息 */
   compact?: boolean
 }) {
-  const { message } = AntdApp.useApp()
-  const [pending, setPending] = useState<number | null>(null)
-
-  const feedback = async (item: ReviewItem, f: ReviewFeedback) => {
-    setPending(item.id)
-    try {
-      const r = await post<{ nextDueOn: string }>(`/api/reviews/${item.id}/feedback`, { feedback: f })
-      message.success(`「${item.problemKey}」下次复习：${r.nextDueOn}`)
-      onChanged()
-    } catch (e) {
-      message.error((e as Error).message)
-    } finally {
-      setPending(null)
-    }
-  }
+  const { feedback, pending } = useReviewFeedback(onChanged)
+  const [historyItem, setHistoryItem] = useState<ReviewItem | null>(null)
 
   if (items.length === 0) return null
 
@@ -91,12 +79,14 @@ export default function DueReviewList({
                     type={f.key === 'ok' ? 'primary' : 'default'}
                     danger={f.danger}
                     loading={pending === item.id}
+                    disabled={pending !== null && pending !== item.id}
                     onClick={() => void feedback(item, f.key)}
                   >
                     {f.label}
                   </Button>
                 </Tooltip>
               ))}
+              <Button size="small" icon={<HistoryOutlined />} onClick={() => setHistoryItem(item)}>记录</Button>
             </Space>
           </div>
         )
@@ -104,6 +94,7 @@ export default function DueReviewList({
       <p className="muted-note" style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
         <ReadOutlined /> 反馈即推进复习排期：困难 → 退回两档；掌握 → 前进一档；轻松 → 跳进两档。
       </p>
+      <ReviewHistoryDrawer key={historyItem?.id ?? 'closed'} item={historyItem} onClose={() => setHistoryItem(null)} />
     </div>
   )
 }

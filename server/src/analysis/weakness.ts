@@ -18,6 +18,8 @@ import {
 } from './stats.ts';
 import { filterNoiseTags } from './tags.ts';
 import { conceptStatsFor, INFORMATIVENESS_FLOOR } from '../knowledge/conceptStats.ts';
+import { loadPracticeEvidence } from './practiceEvidence.ts';
+import { problemIdentity } from '../problems/identity.ts';
 
 export type { DifficultyWeakness, WeaknessItem, WeaknessProfile };
 
@@ -34,6 +36,7 @@ export interface WeaknessOptions {
 /**
  * 弱项画像：相对用户自身总体 AC 率的偏差打分。
  * - 各 tag：gap = 总体AC率 - 该tagAC率（正 = 弱），过滤样本不足的 tag
+ * - evidenceGap 叠加卡点和最近复习失手的证据缺口，用于排序与推荐，原始 gap 不变
  * - 各难度桶：同样偏差计算
  */
 export function computeWeakness(
@@ -50,15 +53,23 @@ export function computeWeakness(
 
   const tagMap = new Map<string, MutableStat>();
   const solvedByTag = new Map<string, Set<string>>();
+  const attemptedByTag = new Map<string, Set<string>>();
+  const evidenceSolvedByTag = new Map<string, Set<string>>();
+  const evidenceFor = loadPracticeEvidence(db, userId);
   for (const r of rows) {
     const isAc = r.verdict === 'AC';
+    const identity = problemIdentity({ platform: r.platform, problemKey: r.problem_key });
     // 只统计算法能力维度标签：来源/赛事/年份等噪声标签不参与弱项画像；
     // 英文别名归并到中文规范名（dp → 动态规划），避免同一知识点拆成两个弱项条目
-    for (const tag of filterNoiseTags(safeTags(r.tags)).map((t) => canonicalTag(t))) {
+    for (const tag of new Set(filterNoiseTags(safeTags(r.tags)).map((t) => canonicalTag(t)))) {
       bump(tagMap, tag, isAc);
+      if (!attemptedByTag.has(tag)) attemptedByTag.set(tag, new Set());
+      attemptedByTag.get(tag)!.add(identity);
       if (isAc) {
         if (!solvedByTag.has(tag)) solvedByTag.set(tag, new Set());
         solvedByTag.get(tag)!.add(`${r.platform}:${r.problem_key}`);
+        if (!evidenceSolvedByTag.has(tag)) evidenceSolvedByTag.set(tag, new Set());
+        evidenceSolvedByTag.get(tag)!.add(identity);
       }
     }
   }
@@ -74,6 +85,8 @@ export function computeWeakness(
       // 取不到 code 时权重按 1 处理（不惩罚未纳入 taxonomy 的标签）
       const code = codeOfTag(tag);
       const weight = code === undefined ? 1 : weightFor(code);
+      const evidence = evidenceFor(attemptedByTag.get(tag)!, evidenceSolvedByTag.get(tag) ?? new Set(), code);
+      const evidenceGap = round2(gap + evidence.supportGap);
       return {
         tag,
         attempts: s.attempts,
@@ -81,8 +94,10 @@ export function computeWeakness(
         acRate,
         avgAcRate,
         gap,
-        rank: round2(gap * weight),
+        rank: round2(evidenceGap * weight),
         solved: solvedByTag.get(tag)?.size ?? 0,
+        evidence,
+        evidenceGap,
       };
     })
     .filter((i) => i.attempts >= minAttempts)

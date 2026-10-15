@@ -1,5 +1,6 @@
 import type { TodayPlanTask } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
+import { problemIdentitySql } from '../problems/identity.ts';
 
 /** 日期按本地日界限转成 UTC 时刻，与 submitted_at 的存储一致。 */
 export function listTodayTasks(db: Db, userId: number, date: string): TodayPlanTask[] {
@@ -11,7 +12,8 @@ export function listTodayTasks(db: Db, userId: number, date: string): TodayPlanT
            t.plan_id, plan.title AS plan_title,
            p.platform, p.problem_key, p.title AS problem_title, p.url AS problem_url,
            (SELECT 1 FROM checkins c WHERE c.task_id = t.id AND c.user_id = ?) AS checked,
-           EXISTS (SELECT 1 FROM submissions s WHERE s.user_id = ? AND s.problem_id = t.problem_id
+           EXISTS (SELECT 1 FROM submissions s JOIN problems sp ON sp.id = s.problem_id
+             WHERE s.user_id = ? AND ${problemIdentitySql('sp')} = ${problemIdentitySql('p')}
              AND s.verdict = 'AC' AND s.submitted_at >= ? AND s.submitted_at < ?) AS solvedToday
       FROM plan_tasks t JOIN plans plan ON plan.id = t.plan_id
       LEFT JOIN problems p ON p.id = t.problem_id

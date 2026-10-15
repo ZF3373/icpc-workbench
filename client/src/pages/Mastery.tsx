@@ -66,7 +66,7 @@ const LEVEL_META: Record<number, { color: string; hint: string }> = {
 
 const LEVEL_ORDER = [4, 3, 2, 1, 0]
 
-/** 升入下一档所需的通过题数（与后端 levelFor 阈值一致；4 = 满级） */
+/** 升入下一档所需的有效掌握题量（与后端 levelFor 阈值一致；4 = 满级） */
 const NEXT_LEVEL_SOLVED: Record<number, number | null> = { 0: 1, 1: 5, 2: 10, 3: 20, 4: null }
 
 /** localStorage：上次访问时各知识点的档位快照（用于检测「新达成」） */
@@ -217,7 +217,7 @@ export default function Mastery() {
   const byLevel = useMemo(() => {
     const map = new Map<number, MasteryPoint[]>()
     for (const p of points) {
-      if (onlyWeak && !(p.gap >= 2 && p.attempts >= 5)) continue
+      if (onlyWeak && !((p.evidenceGap ?? p.gap) >= 2 && p.attempts >= 5)) continue
       const list = map.get(p.level) ?? []
       list.push(p)
       map.set(p.level, list)
@@ -341,8 +341,9 @@ export default function Mastery() {
                   <Row gutter={[8, 8]}>
                     {list.map((p) => {
                       const nextSolved = NEXT_LEVEL_SOLVED[p.level]
+                      const credited = p.evidence?.creditedSolved ?? p.solved
                       const nextLabel = MASTERY_LEVEL_LABELS[Math.min(4, p.level + 1) as 0 | 1 | 2 | 3 | 4]
-                      const progress = nextSolved === null ? 100 : Math.min(100, (p.solved / nextSolved) * 100)
+                      const progress = nextSolved === null ? 100 : Math.min(100, (credited / nextSolved) * 100)
                       return (
                         <Col key={p.tag} xs={12} md={8} xl={6}>
                           <button
@@ -363,12 +364,13 @@ export default function Mastery() {
                             <span className="mastery-tag-meta">
                               {p.solved} 题 · {p.attempts > 0 ? pct(p.acRate) : '—'}
                               {p.templates.length > 0 && ` · 课 ×${p.templates.length}`}
+                              {p.evidence && p.evidence.sampleSize > 0 && p.evidence.sampleSize < 5 && ' · 样本不足'}
                             </span>
                             <span
                               title={
                                 nextSolved === null
                                   ? '已达最高档「熟练」'
-                                  : `距离「${nextLabel}」还差 ${Math.max(0, nextSolved - p.solved)} 题（${p.solved}/${nextSolved}）`
+                                  : `「${nextLabel}」有效题量 ${credited}/${nextSolved}；卡点和最近复习影响折算，熟练还需 AC 率 ≥70%`
                               }
                             >
                               <Progress
@@ -421,7 +423,7 @@ export default function Mastery() {
                       {active.solved} 题通过 · AC 率 {pct(active.acRate)}
                       {active.level === 4
                         ? ' —— 已是你的稳定得分项，定期保持手感即可'
-                        : ` —— 距「熟练」还差 ${Math.max(0, 20 - active.solved)} 题，继续冲`}
+                        : ` —— 距「熟练」还差 ${Math.round(Math.max(0, 20 - (active.evidence?.creditedSolved ?? active.solved)) * 100) / 100} 有效题量，且 AC 率需 ≥70%`}
                     </Typography.Text>
                   </Space>
                 </Space>
@@ -443,6 +445,18 @@ export default function Mastery() {
                   近 8 周 <b>{active.recentSolved}</b> 题
                 </span>
               </Space>
+              {active.evidence && (
+                <div style={{ marginTop: 8 }}>
+                  <Typography.Text type="secondary">
+                    有效掌握题量 {active.evidence.creditedSolved} / {active.evidence.solved} 题
+                    {active.evidence.assistedSolved > 0 && ` · 有卡点 ${active.evidence.assistedSolved} 题`}
+                    {active.evidence.fragileSolved > 0 && ` · 最近复习失手 ${active.evidence.fragileSolved} 题`}
+                    {active.evidence.stuckProblems > 0 && ` · 未通过卡点 ${active.evidence.stuckProblems} 题`}
+                    {active.evidence.sampleSize > 0 && active.evidence.sampleSize < 5 && ' · 去重样本不足 5 题，结论仅供参考'}
+                  </Typography.Text>
+                  <div className="muted-note">卡点会降低掌握证据；之后成功复习可恢复。题量按原题与镜像去重，真实通过数和 AC 率保留。</div>
+                </div>
+              )}
               {active.attempts >= 5 && (
                 <div style={{ marginTop: 8 }}>
                   {active.gap >= 2 ? (
@@ -453,6 +467,11 @@ export default function Mastery() {
                     <Typography.Text type="secondary">不低于自身平均 AC 率（{pct(active.avgAcRate)}）</Typography.Text>
                   )}
                 </div>
+              )}
+              {(active.evidenceGap ?? active.gap) > active.gap && (
+                <Typography.Paragraph type="warning" style={{ marginTop: 8, marginBottom: 0 }}>
+                  卡点或最近复习失手提示仍需补强，已纳入训练推荐。
+                </Typography.Paragraph>
               )}
             </Card>
 

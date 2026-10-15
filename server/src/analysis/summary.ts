@@ -467,9 +467,9 @@ export function renderSummaryMarkdown(s: PracticeSummary): string {
     L.push(``);
   }
   if (s.weakTags.length > 0) {
-    L.push(`### 弱项（低于自身平均 AC 率，gap 越大越弱）`);
+    L.push(`### 弱项（综合 AC 率偏差、卡点与最近复习证据）`);
     for (const w of s.weakTags) {
-      L.push(`- ${w.tag}：提交 ${w.attempts} 次、通过 ${w.solved} 题，AC 率 ${fmtPct(w.acRate)}（自身平均 ${fmtPct(w.avgAcRate)}，gap ${w.gap}）`);
+      L.push(`- ${w.tag}：提交 ${w.attempts} 次、通过 ${w.solved} 题，AC 率 ${fmtPct(w.acRate)}（自身平均 ${fmtPct(w.avgAcRate)}，原始 gap ${w.gap}，补强缺口 ${w.evidenceGap ?? w.gap}）${w.evidence ? `；有效掌握题量 ${w.evidence.creditedSolved}/${w.evidence.solved}，去重样本 ${w.evidence.sampleSize} 题${w.evidence.sampleSize < 5 ? '（样本不足，仅供参考）' : ''}` : ''}`);
     }
     L.push(``);
   }

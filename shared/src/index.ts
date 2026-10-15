@@ -258,6 +258,18 @@ export const MANUAL_CSV_HEADER = [
 
 // ---------- 弱项画像（分析引擎输出，跨端契约） ----------
 
+/** 去重题目的掌握证据；有效题量会按卡点和最近一次复习结果折算。 */
+export interface PracticeEvidence {
+  sampleSize: number;
+  solved: number;
+  creditedSolved: number;
+  assistedSolved: number;
+  fragileSolved: number;
+  stuckProblems: number;
+  /** 全部去重样本中因卡点/失手缺失的证据比例，百分数；可包括未 AC 题。 */
+  supportGap: number;
+}
+
 export interface WeaknessItem {
   tag: string;
   attempts: number;
@@ -273,12 +285,15 @@ export interface WeaknessItem {
   /** avg - self，正值表示弱于总体平均；单位为**百分点**（31.3 = 高 31.3 个百分点） */
   gap: number;
   /**
-   * 排序得分 = gap × 概念信息量权重（见 knowledge/conceptStats.ts）。
+   * 排序得分 = evidenceGap × 概念信息量权重（缺省回退 gap）。
    * 低信息量的膨胀标签（如低难度题的「数学」覆盖 24.8%）被降权后排到后面；
    * gap 本身保持不变，仍是原始可观测的 AC 率差值。
    */
   rank: number;
   solved: number;
+  evidence?: PracticeEvidence;
+  /** 原始 gap 加上依赖帮助/复习失手导致的证据缺口；原始 AC 率与 gap 不变。 */
+  evidenceGap?: number;
 }
 
 export interface DifficultyWeakness {
@@ -301,6 +316,42 @@ export interface WeaknessProfile {
 // ---------- 复习库（间隔复习，借鉴 cf-compass） ----------
 
 export type ReviewFeedback = 'hard' | 'ok' | 'easy';
+
+export interface ReviewPlanTask {
+  id: number;
+  title: string;
+  planTitle: string;
+}
+
+export interface ReviewFeedbackResult {
+  stage: number;
+  nextDueOn: string;
+  eventId: number;
+  planTasks: ReviewPlanTask[];
+}
+
+/** 一次复习的历史快照，间隔与系数均为当时实际生效值。 */
+export interface ReviewHistoryEvent {
+  id: number;
+  platform: PlatformId;
+  problemKey: string;
+  reviewedAt: string;
+  feedback: ReviewFeedback;
+  stageBefore: number;
+  stageAfter: number;
+  dueOn: string;
+  intervalDays: number;
+  factor: number;
+}
+
+export interface ReviewHistory {
+  /** 当前用户的原题及镜像记录合并统计 */
+  total: number;
+  lapseCount: number;
+  page: number;
+  pageSize: number;
+  items: ReviewHistoryEvent[];
+}
 
 /** 复习队列条目（服务端联表 problems 输出） */
 export interface ReviewItem {
@@ -666,6 +717,8 @@ export interface MasteryPoint {
   /** 近 8 周通过题数（近期活跃度） */
   recentSolved: number;
   templates: MasteryTemplateLink[];
+  evidence?: PracticeEvidence;
+  evidenceGap?: number;
 }
 
 export interface MasteryReport {

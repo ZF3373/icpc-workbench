@@ -10,6 +10,9 @@ import {
   reviewLoad,
 } from '../reviews/query.ts';
 import { localToday } from '../dates.ts';
+import { problemIdentity } from '../problems/identity.ts';
+import { reviewPlanTasks } from '../reviews/planTasks.ts';
+import { reviewHistory } from '../reviews/history.ts';
 
 export function reviewsRoutes(db: Db): Router {
   const r = Router();
@@ -81,6 +84,24 @@ export function reviewsRoutes(db: Db): Router {
     });
   });
 
+  // GET /api/reviews/:id/history → 当前用户同题（含镜像）的分页复习记录
+  r.get('/:id/history', (req, res) => {
+    const id = Number(req.params.id);
+    const validPage = (value: unknown, max: number) => value === undefined ||
+      (typeof value === 'string' && /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) <= max);
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: 'id 非法' });
+    if (!validPage(req.query.page, 1_000_000) || !validPage(req.query.pageSize, 100)) {
+      return res.status(400).json({ error: 'page 需为 1–1000000 的整数，pageSize 需为 1–100 的整数' });
+    }
+    const item = db.prepare(`SELECT p.platform, p.problem_key FROM review_items ri
+      JOIN problems p ON p.id = ri.problem_id WHERE ri.id = ? AND ri.user_id = ?`)
+      .get(id, DEFAULT_USER_ID) as { platform: string; problem_key: string } | undefined;
+    if (!item) return res.status(404).json({ error: '复习条目不存在' });
+    res.json(reviewHistory(db, DEFAULT_USER_ID,
+      problemIdentity({ platform: item.platform, problemKey: item.problem_key }),
+      Number(req.query.page ?? 1), Number(req.query.pageSize ?? 20)));
+  });
+
   // POST /api/reviews/:id/feedback  body: { feedback: 'hard'|'ok'|'easy' } → 复习反馈并排期
   r.post('/:id/feedback', (req, res) => {
     const id = Number(req.params.id);
@@ -108,28 +129,74 @@ export function reviewsRoutes(db: Db): Router {
       problemKey: item.problem_key,
     });
     const factor = retentionFactor(signals);
-    const next = scheduleNext(item.stage, feedback, todayStr(), factor);
-    db.prepare(
-      'UPDATE review_items SET stage = ?, next_due_on = ?, last_reviewed_at = ? WHERE id = ?',
-    ).run(next.stage, next.nextDueOn, reviewedAt, id);
-    // 留痕：档位会被下一次覆盖，「忘过几次 / 当时逾期几天 / 实际排了几天」只能靠日志回答
-    db.prepare(
-      `INSERT INTO review_events
-         (user_id, review_item_id, problem_id, reviewed_at, feedback, stage_before, stage_after, due_on, interval_days, factor)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      DEFAULT_USER_ID,
-      item.id,
-      item.problem_id,
-      reviewedAt,
-      feedback,
-      item.stage,
-      next.stage,
-      item.next_due_on,
-      next.intervalDays,
-      factor,
-    );
-    res.json({ ok: true, ...next, factor });
+    const date = todayStr();
+    const next = scheduleNext(item.stage, feedback, date, factor);
+    let eventId: number;
+    db.exec('BEGIN');
+    try {
+      db.prepare(
+        'UPDATE review_items SET stage = ?, next_due_on = ?, last_reviewed_at = ? WHERE id = ?',
+      ).run(next.stage, next.nextDueOn, reviewedAt, id);
+      // 留痕：档位会被下一次覆盖，「忘过几次 / 当时逾期几天 / 实际排了几天」只能靠日志回答。
+      const event = db.prepare(
+        `INSERT INTO review_events
+           (user_id, review_item_id, problem_id, reviewed_at, feedback, stage_before, stage_after, due_on, interval_days, factor)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        DEFAULT_USER_ID,
+        item.id,
+        item.problem_id,
+        reviewedAt,
+        feedback,
+        item.stage,
+        next.stage,
+        item.next_due_on,
+        next.intervalDays,
+        factor,
+      );
+      eventId = Number(event.lastInsertRowid);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+    const planTasks = reviewPlanTasks(db, DEFAULT_USER_ID, problemIdentity({ platform: item.platform, problemKey: item.problem_key }), date);
+    res.json({ ok: true, ...next, factor, eventId, planTasks });
+  });
+
+  // 反馈已保存后单独确认任务；取消弹窗不会撤销复习，也不会擅自增加打卡。
+  r.post('/:id/complete-tasks', (req, res) => {
+    const id = Number(req.params.id);
+    const { eventId, taskIds } = req.body ?? {};
+    if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(eventId) || eventId <= 0 ||
+        !Array.isArray(taskIds) || taskIds.length === 0 || taskIds.length > 1000 ||
+        taskIds.some((taskId: unknown) => !Number.isSafeInteger(taskId) || Number(taskId) <= 0)) {
+      return res.status(400).json({ error: '需要有效的复习记录和任务 ID 数组（1–1000 项）' });
+    }
+    const event = db.prepare(`SELECT re.reviewed_at, p.platform, p.problem_key
+      FROM review_events re JOIN problems p ON p.id = re.problem_id
+      WHERE re.id = ? AND re.review_item_id = ? AND re.user_id = ?`)
+      .get(eventId, id, DEFAULT_USER_ID) as { reviewed_at: string; platform: string; problem_key: string } | undefined;
+    if (!event) return res.status(404).json({ error: '复习记录不存在' });
+    const date = todayStr();
+    const from = new Date(`${date}T00:00:00`);
+    const to = new Date(from); to.setDate(to.getDate() + 1);
+    const at = Date.parse(event.reviewed_at);
+    if (!Number.isFinite(at) || at < from.getTime() || at >= to.getTime()) {
+      return res.status(409).json({ error: '仅能用今天的复习记录确认今天的任务，请刷新后重试' });
+    }
+    const allowed = new Set(reviewPlanTasks(db, DEFAULT_USER_ID, problemIdentity({ platform: event.platform, problemKey: event.problem_key }), date, true).map(t => t.id));
+    if (taskIds.some((taskId: number) => !allowed.has(taskId))) {
+      return res.status(400).json({ error: '所选任务不是今天该题的复习任务，请刷新后重试' });
+    }
+    const write = db.prepare('INSERT OR IGNORE INTO checkins(user_id,task_id,task_date) VALUES(?,?,?)');
+    let checked = 0;
+    db.exec('BEGIN');
+    try {
+      for (const taskId of new Set<number>(taskIds)) checked += Number(write.run(DEFAULT_USER_ID, taskId, date).changes);
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    res.json({ checked });
   });
 
   // PATCH /api/reviews/:id  body: { note } → 笔记
