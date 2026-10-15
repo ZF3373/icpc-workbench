@@ -19,7 +19,7 @@ import {
 export function plansRoutes(
   db: Db,
   getAiConfig: () => AiConfig,
-  opts: { createProvider?: () => Pick<AiProvider, 'chat' | 'enabled'> } = {},
+  opts: { createProvider?: () => Pick<AiProvider, 'chat' | 'enabled'>; fetchStatementFn?: typeof fetch } = {},
 ): Router {
   const r = Router();
 
@@ -43,6 +43,10 @@ export function plansRoutes(
     if (startDate !== undefined && (typeof startDate !== 'string' || !isCalendarDate(startDate))) {
       return res.status(400).json({ error: 'startDate 日期非法（需为真实存在的 YYYY-MM-DD）' });
     }
+    const controller = new AbortController();
+    const onGone = () => { if (!res.writableEnded) controller.abort(); };
+    req.on('aborted', onGone);
+    res.on('close', onGone);
     try {
       const result = await generatePlan(db, getAiConfig(), {
         days: Number.isInteger(daysNum) && daysNum > 0 && daysNum <= 90 ? daysNum : 14,
@@ -58,10 +62,16 @@ export function plansRoutes(
             ? requirements.trim().slice(0, 500)
             : undefined,
         provider: opts.createProvider?.(),
+        fetchStatementFn: opts.fetchStatementFn,
+        signal: controller.signal,
       });
       res.json(result);
     } catch (e) {
+      if (controller.signal.aborted) return;
       res.status(400).json({ error: (e as Error).message });
+    } finally {
+      req.off('aborted', onGone);
+      res.off('close', onGone);
     }
   }));
 

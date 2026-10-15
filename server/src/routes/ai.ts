@@ -14,6 +14,7 @@ import '../ai/search.ts';
 import '../ai/fetch-url.ts';
 // 导入 fetch-editorial.ts 触发 fetch_editorial 工具注册（副作用导入）
 import '../ai/fetch-editorial.ts';
+import '../ai/read-problem.ts';
 import { extractPdfText, truncatePdfText, isPdfContentType, isPdfFilename } from '../ai/pdf.ts';
 import { convertDocument, isDocumentFile } from '../ai/docConverter.ts';
 import { getToolDefinitions, executeToolCall, type ToolResult, type ToolContext, type PlatformCookies } from '../ai/tools/registry.ts';
@@ -29,7 +30,8 @@ import { CURRICULUM } from '../templates/curriculum.ts';
 import { fetchAllContests, selectContests } from '../contests/index.ts';
 import { calendarCache } from '../contests/calendarCache.ts';
 import { renderContestContext, resolveContestGroup } from '../contests/participated.ts';
-import { prefetchProblemStatementsBackground } from '../contests/problemStatements.ts';
+import { collectStatementTargets } from '../contests/problemStatements.ts';
+import { linkedStatementRefs, prepareStatementEvidence, savedStatementCookies, type ProblemRef } from '../problems/statements.ts';
 import {
   kickBackgroundRefresh,
   loadParticipationSources,
@@ -128,6 +130,7 @@ export function aiRoutes(
   getAiConfig: () => AiConfig,
   opts: {
     createProvider?: () => Pick<AiProvider, 'chat' | 'chatStream' | 'enabled'>;
+    fetchStatementFn?: typeof fetch;
     /**
      * 赛事日历数据源（可选注入）。
      *
@@ -513,6 +516,7 @@ export function aiRoutes(
       ? `（当前已应用 AI 调整 ${ability.override.level}，理由：${ability.override.reason ?? '未记录'}；再次评估请以此为基线，证据无实质变化则维持）`
       : '（无 AI 调整记录，生效值即计算值）';
 
+    const statementRefs: ProblemRef[] = linkedStatementRefs(db, DEFAULT_USER_ID, { planId: Number.isInteger(planId) ? Number(planId) : undefined, listId: Number.isInteger(listId) ? Number(listId) : undefined });
     let planSection = '（未关联训练计划：plan-modify 能力不可用；用户提到改计划时请引导其先在本页右上角下拉关联训练计划）';
     if (Number.isInteger(planId)) {
       try {
@@ -623,28 +627,13 @@ export function aiRoutes(
           }
         }
       }
-      if (review) {
-        // 后台预取题面（非阻塞）：覆盖该场所有能拿到 URL 的题（未通过 → 未提交 → **已 AC**），
-        // 落库后下次复盘即有题面注入。曾只抓「未通过+未提交」，导致 AI 对已 AC 的题编造题意。
-        // 不在 chat 同步路径里阻塞——注入是纯读库（renderContestContext 读 problem_statements）。
-        // 首次打开时题面可能尚未落库：上下文会显式列出「未取到题面」的题号，提示词禁止对其推断题意。
-        // 题面预取要用的平台 Cookie：全部平台通用（blocked/gated 平台只有带 Cookie 才尝试，
-        // 例如 CF 的 cf_clearance、牛客登录态）。洛谷也要（C3VK 之外仍可用登录态）。
-        const reviewCookies: Record<string, { cookie?: string }> = {};
-        for (const row of db
-          .prepare("SELECT key, value FROM settings WHERE key LIKE 'cookie.%'")
-          .all() as Array<{ key: string; value: string }>) {
-          const platform = row.key.slice('cookie.'.length);
-          if (row.value?.trim()) reviewCookies[platform] = { cookie: row.value };
-        }
-        prefetchProblemStatementsBackground(db, review, undefined, reviewCookies);
-      }
+      if (review) statementRefs.unshift(...collectStatementTargets(review).map(t => ({ platform: review!.contest.platform, problemKey: t.problemKey })));
       contestSection = review
-        ? `## 关联的比赛（赛后复盘）\n${renderContestContext(review, { db })}`
+        ? `## 关联的比赛（赛后复盘）\n${renderContestContext(review)}`
         : '（关联的比赛不存在或暂无提交记录，可能数据已被清理或账号已换绑）';
     }
 
-    const system = renderTemplate(ASSISTANT_PROMPT_TEMPLATE(), {
+    let system = renderTemplate(ASSISTANT_PROMPT_TEMPLATE(), {
       summary: summaryPrompt,
       currentDate: today(),
       weakness: JSON.stringify(weakness.items),
@@ -672,24 +661,6 @@ export function aiRoutes(
     res.setHeader('X-Accel-Buffering', 'no'); // 防止 Nginx 等代理缓冲 SSE
     res.flushHeaders();
 
-    // 按模型上下文窗口裁剪对话历史：budget = contextWindow - maxTokens - systemTokens
-    // 超出时从最早消息开始丢弃，避免 API 因上下文超限报错
-    const aiCfg = getAiConfig();
-    const maxTokens = aiCfg.maxTokens ?? 393216;
-    const contextWindow = aiCfg.contextWindow ?? 1024000;
-    // 长会话带动轮次上限：超过 MAX_TURNS 的旧轮次先丢（与 token 裁剪同向：都从最早开始丢），
-    // 再按 token 预算裁剪。两次裁剪都是「丢前缀」，故 trimmedCount 可以直接相加，
-    // 摘要用的 normalized.slice(0, trimmedCount) 恰好覆盖被丢掉的整段（旧实现：>60 条直接 400）。
-    const turnTrimmed = Math.max(0, normalized.length - MAX_TURNS);
-    const cappedMsgs = turnTrimmed > 0 ? normalized.slice(turnTrimmed) : normalized;
-    const { messages: trimmedMsgs, trimmed: tokenTrimmed } = trimContext(
-      estimateTokens(system),
-      cappedMsgs,
-      contextWindow,
-      maxTokens,
-    );
-    const trimmedCount = turnTrimmed + tokenTrimmed;
-
     // 客户端中断传播：前端 AbortController.abort() → 取消上游 AI 请求与后续工具轮次，
     // 避免用户点「停止」后仍继续烧配额（参考 opencode 的 Cancel + ctx.Done()）。
     // 实测（Node 24 + node:http，POST 体已被 express.json 读完）：
@@ -704,7 +675,34 @@ export function aiRoutes(
     req.on('aborted', onClientGone);
     res.on('close', onClientGone);
 
+    const aiCfg = getAiConfig();
+    const maxTokens = aiCfg.maxTokens ?? 393216;
     try {
+      if (statementRefs.length) {
+        res.write(`data: ${JSON.stringify({ tool: { name: 'read_problem', detail: '准备关联题目的题面证据' } })}\n\n`);
+        const statements = await prepareStatementEvidence(db, statementRefs, {
+          fetchFn: opts.fetchStatementFn, cookies: savedStatementCookies(db), signal: abortController.signal,
+        });
+        system += `\n\n${statements}`;
+      }
+      abortController.signal.throwIfAborted();
+
+      // 按模型上下文窗口裁剪对话历史：budget = contextWindow - maxTokens - systemTokens
+      // 超出时从最早消息开始丢弃，避免 API 因上下文超限报错
+      const contextWindow = aiCfg.contextWindow ?? 1024000;
+      // 长会话带动轮次上限：超过 MAX_TURNS 的旧轮次先丢（与 token 裁剪同向：都从最早开始丢），
+      // 再按 token 预算裁剪。两次裁剪都是「丢前缀」，故 trimmedCount 可以直接相加，
+      // 摘要用的 normalized.slice(0, trimmedCount) 恰好覆盖被丢掉的整段（旧实现：>60 条直接 400）。
+      const turnTrimmed = Math.max(0, normalized.length - MAX_TURNS);
+      const cappedMsgs = turnTrimmed > 0 ? normalized.slice(turnTrimmed) : normalized;
+      const { messages: trimmedMsgs, trimmed: tokenTrimmed } = trimContext(
+        estimateTokens(system),
+        cappedMsgs,
+        contextWindow,
+        maxTokens,
+      );
+      const trimmedCount = turnTrimmed + tokenTrimmed;
+
       // 上下文摘要：被裁消息较多时生成摘要注入对话，保留关键信息（能力/弱项/目标/结论）
       // 少量裁剪（< SUMMARIZE_THRESHOLD）直接丢弃 + contextTrimmed 通知，不值得摘要开销
       let systemPrefix = '';
@@ -737,7 +735,7 @@ export function aiRoutes(
           };
         }
       }
-      const toolCtx: ToolContext = { cfg: aiCfg, cookies: toolCookies, db, userId: DEFAULT_USER_ID };
+      const toolCtx: ToolContext = { cfg: aiCfg, cookies: toolCookies, db, userId: DEFAULT_USER_ID, fetchFn: opts.fetchStatementFn, signal: abortController.signal };
 
       const fullMsgs: ChatMessage[] = [
         { role: 'system', content: systemPrefix + system },
@@ -792,7 +790,7 @@ export function aiRoutes(
             // 因此这里把工具名与关键参数也发出去，前端据此显示「正在检索…」这类进度。
             const query = typeof args.query === 'string' ? args.query : '';
             const detail =
-              typeof args.url === 'string' ? args.url : typeof args.problem === 'string' ? args.problem : '';
+              typeof args.url === 'string' ? args.url : typeof args.problemKey === 'string' ? `${args.platform ?? ''}/${args.problemKey}` : typeof args.problem === 'string' ? args.problem : '';
             if (!res.writableEnded) {
               res.write(`data: ${JSON.stringify({ tool: { name: tc.function.name, detail } })}\n\n`);
               // 兼容既有前端事件（web_search 的检索词）
@@ -914,6 +912,9 @@ export function aiRoutes(
         res.write(`data: ${JSON.stringify({ error: `AI 调用失败：${describeError(e)}` })}\n\n`);
         res.end();
       }
+    } finally {
+      req.off('aborted', onClientGone);
+      res.off('close', onClientGone);
     }
   }));
 

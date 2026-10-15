@@ -8,6 +8,7 @@ import type { Db } from '../db/index.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
 import { calendarIndex, contestUrl } from './participated.ts';
 import { fetchLuoguPage } from './problemStatements.ts';
+import { storeContestProblemSet } from './problemSetCache.ts';
 
 /**
  * 「参加过的比赛」权威数据源：从平台侧拉取用户的参赛记录，落库持久化 +
@@ -48,7 +49,7 @@ export interface AuthoritativeContest {
   /**
    * 该场比赛的题目集（nowcoder: problem-list；CF: contest.standings，复盘时按需补拉）。
    * 归因排歧（窗口内的非本场题目是日常练习）+「赛时未提交的题」渲染共用。
-   * null/undefined = 尚未拉取（归因退化为整窗）；空数组按未拉取处理。
+   * null/undefined = 尚未拉取；牛客缺题单时不归因提交，空数组表示没有成员。
    */
   problems?: ContestProblemRef[] | null;
   /**
@@ -61,6 +62,8 @@ export interface AuthoritativeContest {
 /** 题目集单题。id 与本地 problems.problem_key 同构（nowcoder 为题目数字 id，CF 为 {contestId}{index}） */
 export interface ContestProblemRef {
   id: string;
+  /** 当前比赛的官方 tasks 页确认的归属（AtCoder 共用题的 id 前缀可能是另一场）。 */
+  contestId?: string;
   /** 比赛内题号（A/B/C…） */
   index?: string;
   /** 题名 */
@@ -107,9 +110,6 @@ const FAILURE_RETRY_MS = 5 * 60_000;
 function refreshIntervalMs(lastError: string | null | undefined): number {
   return lastError ? FAILURE_RETRY_MS : REFRESH_INTERVAL_MS;
 }
-/** 无官方起止时间的场次：结束时间回推一个近似窗口（仅用于时间线归因与展示） */
-const FALLBACK_WINDOW_MS = 2 * 3_600_000;
-
 const NC_API = 'https://ac.nowcoder.com';
 
 function okStatus(res: Response): boolean {
@@ -130,10 +130,6 @@ async function fetchJson(
   return res.json();
 }
 
-function windowFromEnd(endMs: number): { startTimeMs: number; endTimeMs: number } {
-  return { startTimeMs: endMs - FALLBACK_WINDOW_MS, endTimeMs: endMs };
-}
-
 /** 日历匹配到的官方起止时间（CF / AtCoder 的 user.rating 与 history 都不带开始时间） */
 function windowFromCalendar(
   cal: Map<string, ContestInfo>,
@@ -143,7 +139,7 @@ function windowFromCalendar(
   const entry = cal.get(`${platform}:${contestId}`);
   if (!entry?.startTimeIso) return null;
   const start = Date.parse(entry.startTimeIso);
-  if (!Number.isFinite(start)) return null;
+  if (!Number.isFinite(start) || !Number.isFinite(entry.durationMinutes) || entry.durationMinutes <= 0) return null;
   return { startTimeMs: start, endTimeMs: start + entry.durationMinutes * 60_000 };
 }
 
@@ -179,10 +175,8 @@ export async function fetchCodeforcesParticipation(
   if (body.status !== 'OK' || !Array.isArray(body.result)) throw new Error('响应结构异常');
   return body.result.map((r) => {
     const contestId = String(r.contestId);
-    const updateTimeMs = Number(r.ratingUpdateTimeSeconds) * 1000;
-    const win =
-      windowFromCalendar(cal, 'codeforces', contestId) ??
-      (Number.isFinite(updateTimeMs) ? windowFromEnd(updateTimeMs) : null);
+    // ratingUpdateTimeSeconds 是结算时间，可能比结束晚数小时甚至数天。
+    const win = windowFromCalendar(cal, 'codeforces', contestId);
     const newRating = typeof r.newRating === 'number' ? r.newRating : null;
     const oldRating = typeof r.oldRating === 'number' ? r.oldRating : null;
     return {
@@ -234,9 +228,7 @@ export async function fetchAtcoderParticipation(
     // 「AtCoder Regular Contest-- 219」），而日历条目（官方 contests 页解析）恒为规范名；
     // 未命中日历（太久远的场次）才回退 ContestName / slug
     const calendarEntry = cal.get(`atcoder:${slug}`);
-    const win =
-      windowFromCalendar(cal, 'atcoder', slug) ??
-      (Number.isFinite(endMs) ? windowFromEnd(endMs) : null);
+    const win = windowFromCalendar(cal, 'atcoder', slug);
     const isRated = r.IsRated === true;
     const newRating = typeof r.NewRating === 'number' ? r.NewRating : null;
     const oldRating = typeof r.OldRating === 'number' ? r.OldRating : null;
@@ -246,7 +238,7 @@ export async function fetchAtcoderParticipation(
       name: calendarEntry?.name ?? (typeof r.ContestName === 'string' ? r.ContestName : slug),
       url: `https://atcoder.jp/contests/${slug}`,
       startTimeMs: win?.startTimeMs ?? null,
-      endTimeMs: win?.endTimeMs ?? null,
+      endTimeMs: win?.endTimeMs ?? (Number.isFinite(endMs) ? endMs : null),
       rank: typeof r.Place === 'number' ? r.Place : null,
       rating: isRated ? newRating : null,
       ratingChange:
@@ -376,7 +368,7 @@ const BROWSER_UA =
  * 拿到题目集后「赛时未提交的题」才有题号/题名，**这些题的题面也才进得了预取范围**
  * （否则 AI 既看不到未开的题，也不可能拿到它们的题面）。
  *
- * 页面上每道题有两个锚点（题号格 + 题名格），题名格文本更长 → 取**最长**文本作题名。
+ * 读取任务表的题号格与题名格；历史共用题的 ID 前缀可能来自另一场，按当前行的归属与题号保存。
  * 本页同时是**题名的权威来源**：适配器用的 kenkoooo 社区 problems.json 会串号
  * （实测 abc454_b 的题名被写成「C. Mapping」，题名文字对但字母前缀错），
  * 见 repairAtcoderTitles。
@@ -396,23 +388,35 @@ async function fetchAtcoderProblemSet(
     const titleById = new Map<string, string>();
     const indexById = new Map<string, string>();
     const order: string[] = [];
-    const re = /<a[^>]*href="\/contests\/[^"/]+\/tasks\/([a-z0-9_]+)(?:\?[^"]*)?"[^>]*>([\s\S]*?)<\/a>/gi;
-    for (const m of html.matchAll(re)) {
-      const id = m[1]!;
-      if (!id.startsWith(`${slug}_`)) continue; // 页面可能挂别的场次链接
+    const links = /<a\b[^>]*href="\/contests\/([^"/]+)\/tasks\/([a-z0-9_]+)(?:\?[^"]*)?"[^>]*>([\s\S]*?)<\/a>/gi;
+    const text = (value: string) => value.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    const add = (id: string, index: string, title?: string) => {
+      if (!indexById.has(id)) { indexById.set(id, index); order.push(id); }
+      if (title) titleById.set(id, title);
+    };
+    // 共用题以当前 tasks 页的行与题号为准，如 ABC042 的 C/D 是 arc058_a/b。
+    for (const row of html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+      const cells = [...row[1]!.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(m => m[1]!);
+      const first = cells[0] ? [...cells[0].matchAll(links)].find(m => m[1] === slug) : undefined;
+      if (!first) continue;
+      const index = text(first[3]!);
+      if (!/^[a-z0-9]{1,4}$/i.test(index)) continue;
+      const title = cells[1] ? [...cells[1].matchAll(links)].find(m => m[1] === slug && m[2] === first[2]) : undefined;
+      add(first[2]!, index, title ? text(title[3]!) : undefined);
+    }
+    // 兼容简化页面；仅在没有任务表格行时按本场题目后缀回退。
+    if (order.length === 0) for (const m of html.matchAll(links)) {
+      const id = m[2]!;
+      if (m[1] !== slug || !id.startsWith(`${slug}_`)) continue;
       const suffix = id.slice(slug.length + 1);
       if (!/^[a-z0-9]+$/.test(suffix)) continue;
-      if (!indexById.has(id)) {
-        indexById.set(id, suffix.toUpperCase());
-        order.push(id);
-      }
-      const text = m[2]!.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
-      if (!text) continue;
+      const title = text(m[3]!);
       const prev = titleById.get(id);
-      if (!prev || text.length > prev.length) titleById.set(id, text); // 题名格比题号格长
+      add(id, suffix.toUpperCase(), !prev || title.length > prev.length ? title : prev);
     }
     const refs = order.map((id) => ({
       id,
+      contestId: slug,
       index: indexById.get(id),
       title: titleById.get(id)?.replace(/^[A-Za-z0-9]{1,2}\s*[-–]\s*/, '').trim() || undefined,
     }));
@@ -434,6 +438,8 @@ function repairAtcoderTitles(db: Db, refs: ContestProblemRef[]): void {
   );
   for (const ref of refs) {
     if (!ref.title || !ref.index) continue;
+    // 共用题在本场的题号不能覆盖题库中原始场次的题号。
+    if (ref.contestId && !ref.id.startsWith(`${ref.contestId}_`)) continue;
     const fixed = `${ref.index}. ${ref.title}`;
     update.run(fixed, 'atcoder', ref.id, fixed);
   }
@@ -466,7 +472,7 @@ async function fetchNowcoderProblems(
     }
     return refs.length > 0 ? refs : null;
   } catch {
-    return null; // 题目集拉取失败 → 归因退化为整窗（不阻断）
+    return null; // 题目集拉取失败：保留参赛记录，不猜测提交归属。
   }
 }
 
@@ -604,7 +610,7 @@ function readStoredContests(db: Db, platform: PlatformId, account?: string): Aut
   const rows = db
     .prepare(
       `SELECT contest_id, name, url, start_ms, end_ms, contest_rank, rating, rating_change,
-              problem_count, accepted_count, problem_ids, problem_set_state, account
+              problem_count, accepted_count, problem_ids, problem_set_state, account, official_window
        FROM participated_contests WHERE user_id = ? AND platform = ?${account !== undefined ? ' AND account = ?' : ''}`,
     )
     .all(...(account !== undefined ? [DEFAULT_USER_ID, platform, account] : [DEFAULT_USER_ID, platform])) as Array<{
@@ -621,6 +627,7 @@ function readStoredContests(db: Db, platform: PlatformId, account?: string): Aut
     problem_ids: string | null;
     problem_set_state: string | null;
     account: string;
+    official_window: number;
   }>;
   return rows
     .map((r) => {
@@ -638,8 +645,9 @@ function readStoredContests(db: Db, platform: PlatformId, account?: string): Aut
         contestId: r.contest_id,
         name: r.name ?? `${platform} 比赛 ${r.contest_id}`,
         url: r.url ?? contestUrl(platform, r.contest_id),
-        startTimeMs: r.start_ms,
-        endTimeMs: r.end_ms,
+        // 旧 CF/AtCoder 开始时间可能由结算时间倒推；保留原始存储，只在读时拒绝用作赛程。
+        startTimeMs: (platform === 'codeforces' || platform === 'atcoder') && !r.official_window ? null : r.start_ms,
+        endTimeMs: platform === 'codeforces' && !r.official_window ? null : r.end_ms,
         rank: r.contest_rank,
         rating: r.rating,
         ratingChange: r.rating_change,
@@ -679,11 +687,19 @@ function upsertContests(
   const stmt = db.prepare(
     `INSERT INTO participated_contests
        (user_id, platform, account, contest_id, name, url, start_ms, end_ms,
-        contest_rank, rating, rating_change, problem_count, accepted_count, problem_ids, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        contest_rank, rating, rating_change, problem_count, accepted_count, problem_ids, fetched_at, official_window)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (user_id, platform, account, contest_id) DO UPDATE SET
-       name = excluded.name, url = excluded.url, start_ms = excluded.start_ms,
-       end_ms = excluded.end_ms, contest_rank = excluded.contest_rank,
+       name = excluded.name, url = excluded.url,
+       start_ms = CASE WHEN excluded.official_window = 1 THEN excluded.start_ms
+                       WHEN participated_contests.official_window = 1 THEN participated_contests.start_ms
+                       ELSE excluded.start_ms END,
+       end_ms = CASE WHEN excluded.official_window = 1 THEN excluded.end_ms
+                     WHEN participated_contests.official_window = 1 THEN participated_contests.end_ms
+                     ELSE excluded.end_ms END,
+       official_window = CASE WHEN excluded.official_window = 1 THEN 1
+                              ELSE participated_contests.official_window END,
+       contest_rank = excluded.contest_rank,
        rating = excluded.rating, rating_change = excluded.rating_change,
        problem_count = excluded.problem_count, accepted_count = excluded.accepted_count,
        problem_ids = COALESCE(excluded.problem_ids, participated_contests.problem_ids),
@@ -707,6 +723,7 @@ function upsertContests(
       item.acceptedCount,
       item.problems ? JSON.stringify(item.problems) : null,
       now,
+      Number(Number.isFinite(item.startTimeMs) && Number.isFinite(item.endTimeMs) && item.startTimeMs !== null && item.endTimeMs !== null && item.endTimeMs > item.startTimeMs),
     );
     if (item.startTimeMs !== null && (oldestMs === null || item.startTimeMs < oldestMs)) {
       oldestMs = item.startTimeMs;
@@ -1160,10 +1177,9 @@ export function kickBackgroundRefresh(
 
 // ---------- 复盘时的题目集补拉（CF contest.standings / 牛客 problem-list） ----------
 
-/** 复盘注入需要「未提交的题」，但同步阶段只对有窗口提交的牛客场次拉过题目集；
- * CF 从不拉（每场一次 standings 太贵）。这里在**复盘时**按需补拉单场，
- * 成功即写回 participated_contests.problem_ids 持久缓存，之后零请求。 */
-const problemSetBackoff = new Map<string, number>();
+/** 赛事中心后台补齐与复盘按需抓取共用单场题单拉取器。
+ * CF 优先复用全集缓存，缺场次才查 standings；成功同时缓存题单与已有参赛记录。 */
+const problemSetBackoffs = new WeakMap<Db, Map<string, number>>();
 const PROBLEM_SET_BACKOFF_MS = 5 * 60_000;
 
 /** 题目集拉取的三态结果：区分「已拉取确认无题」与「未拉取/失败」 */
@@ -1184,6 +1200,8 @@ export async function fetchContestProblemSet(
   fetchFn: typeof fetch = throttledFetch,
 ): Promise<ProblemSetResult> {
   const cacheKey = `${platform}:${contestId}`;
+  let problemSetBackoff = problemSetBackoffs.get(db);
+  if (!problemSetBackoff) { problemSetBackoff = new Map(); problemSetBackoffs.set(db, problemSetBackoff); }
   if (Date.now() - (problemSetBackoff.get(cacheKey) ?? 0) < PROBLEM_SET_BACKOFF_MS) {
     return { status: 'unavailable' };
   }
@@ -1258,6 +1276,7 @@ export async function fetchContestProblemSet(
 
   // 成功拉取（含确认无题）即持久缓存 state；失败不写 state（保持 unknown，下次仍会重试）
   if (refs !== null) {
+    storeContestProblemSet(db, platform, contestId, refs);
     const state = refs.length > 0 ? 'ok' : 'empty';
     db.prepare(
       `UPDATE participated_contests SET problem_ids = ?, problem_set_state = ?

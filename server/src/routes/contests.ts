@@ -2,9 +2,10 @@ import { Router } from 'express';
 import type { PlatformId } from '../../../shared/src/index.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
 import { asyncHandler } from '../asyncHandler.ts';
-import { fetchAllContests, selectContests } from '../contests/index.ts';
+import { fetchAllContests, browseContests } from '../contests/index.ts';
 import { calendarCache } from '../contests/calendarCache.ts';
 import { deriveParticipatedContests } from '../contests/participated.ts';
+import { refreshContestProblemSets } from '../contests/problemSetRefresh.ts';
 import {
   kickBackgroundRefresh,
   loadParticipationSources,
@@ -27,12 +28,15 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       return res.status(400).json({ error: `platform 非法: ${platform}` });
     }
     try {
-      const { contests, failures } = await fetchAllContests(fetchFn);
+      const { contests, failures } = await fetchAllContests(fetchFn, req.query.refresh === '1');
       res.json({
-        contests: selectContests(contests, {
+        ...browseContests(contests, {
           type,
           ...(platform !== undefined ? { platform: platform as PlatformId } : {}),
           limit: Number(req.query.limit) || 40,
+          offset: Number(req.query.offset) || 0,
+          query: typeof req.query.q === 'string' ? req.query.q.slice(0, 200) : undefined,
+          category: typeof req.query.category === 'string' ? req.query.category : undefined,
         }),
         failures,
       });
@@ -57,10 +61,11 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       // 先等日历后台重拉落幕再同步：同一时刻并发打洛谷会把 joinedContests 挤兑超时
       await calendarCache.settled();
       const sources = await loadParticipationSources(db, calendar, { fetchFn });
+      const contests = deriveParticipatedContests(db, { calendar, sources: sources.byPlatform });
       res.json({
-        contests: deriveParticipatedContests(db, { calendar, sources: sources.byPlatform }),
+        contests,
         sourceFailures: sources.failures,
-        refreshing: [],
+        refreshing: refreshContestProblemSets(db, contests, fetchFn).platforms,
       });
       return;
     }
@@ -73,10 +78,12 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       kickBackgroundRefresh(db, calendar, fetchFn, calendarCache.settled());
       refreshing = snapshot.stalePlatforms;
     }
+    const contests = deriveParticipatedContests(db, { calendar, sources: snapshot.byPlatform });
+    const problemSets = refreshContestProblemSets(db, contests, fetchFn);
     res.json({
-      contests: deriveParticipatedContests(db, { calendar, sources: snapshot.byPlatform }),
+      contests,
       sourceFailures: snapshot.failures,
-      refreshing,
+      refreshing: [...new Set([...refreshing, ...problemSets.platforms])],
     });
   }));
 
@@ -89,10 +96,11 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     const calendar = await calendarCache.load(db);
     await calendarCache.settled();
     const sources = await loadParticipationSources(db, calendar, { force: true, fetchFn });
+    const contests = deriveParticipatedContests(db, { calendar, sources: sources.byPlatform });
     res.json({
-      contests: deriveParticipatedContests(db, { calendar, sources: sources.byPlatform }),
+      contests,
       sourceFailures: sources.failures,
-      refreshing: [],
+      refreshing: refreshContestProblemSets(db, contests, fetchFn).platforms,
     });
   }));
 

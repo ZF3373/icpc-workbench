@@ -83,6 +83,7 @@ test('助手注入未 AC 候选与关联对象状态，后续工具轮仍可分�
   const app = express();
   app.use(express.json());
   app.use('/api/ai', aiRoutes(db, () => cfg, {
+    fetchStatementFn: async () => new Response(`<script>window.__INITIAL_STATE__ = ${JSON.stringify({ problem: { description: '这是实际读取的题面：给定序列，求操作次数。'.repeat(15), inputFormat: '输入 n 个整数', outputFormat: '输出最少操作数', hint: '序列长度不超过 200000' } })};</script>`),
     fetchContests: async () => ({ contests: [], failures: {} }),
     createProvider: () => ({ enabled: true, chat: async () => 'ok', chatStream: async function* (messages, options) {
       calls.push({ messages: [...messages], options: options ?? {} });
@@ -99,6 +100,8 @@ test('助手注入未 AC 候选与关联对象状态，后续工具轮仍可分�
     assert.equal(res.status, 200);
     assert.match(await res.text(), /已检索到足够的新题/);
     const system = calls[0]!.messages[0]!.content as string;
+    assert.match(system, /这是实际读取的题面/);
+    assert.match(system, /序列长度不超过 200000/);
     assert.match(system, /未 AC 候选题/);
     assert.match(system, /3000A/);
     assert.match(system.split('## 关联的训练计划')[1]!.split('## 关联的题单')[0]!, /1000A.*已 AC/);

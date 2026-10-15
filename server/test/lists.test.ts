@@ -126,6 +126,7 @@ async function withServer(
   app.use(
     '/api/lists',
     listsRoutes(db, () => ({ enabled: true, baseURL: 'https://x/v1', apiKey: 'k', model: 'm' }), {
+      fetchStatementFn: async () => new Response(`<script>window.__INITIAL_STATE__ = ${JSON.stringify({ problem: { description: '题单专用正文：给定序列，求满足条件的区间数量。'.repeat(15), inputFormat: '输入 n 个数', outputFormat: '输出区间数', hint: 'n <= 300000' } })};</script>`),
       createProvider: () => ({
         enabled: true,
         chat: async (messages) => {
@@ -335,12 +336,14 @@ test('lists: ai-classify updates categories via mock provider; ai-suggest return
     assert.deepEqual(cats, [{ category: '二分查找' }]);
     assert.equal(providerChats.length, 1);
     assert.match(providerChats[0]!, /分类目录/);
+    assert.match(providerChats[0]!, /题单专用正文/);
 
     const sug = await (await fetch(`${base}/${listId}/ai-suggest`, { method: 'POST' })).json();
     assert.match((sug as { reply: string }).reply, /优先做前两道题/);
     // 建议上下文应包含题单内容与用户数据
     assert.match(providerChats[1]!, /混合题单/);
     assert.match(providerChats[1]!, /练习数据汇总/);
+    assert.match(providerChats[1]!, /n <= 300000/);
   });
 });
 

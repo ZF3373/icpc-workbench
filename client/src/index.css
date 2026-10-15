@@ -2533,6 +2533,61 @@ button.dist-row:hover {
   height: 100%;
 }
 
+.contest-tabs {
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+
+.contest-tabs .ant-segmented { min-width: 300px; }
+
+.contest-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.contest-toolbar .ant-select { flex: 0 1 176px; min-width: 144px; }
+.contest-toolbar .contest-search { flex: 1 1 250px; min-width: 180px; }
+
+.contest-results-bar {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 14px 0;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.contest-results-bar strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.contest-alert { margin-bottom: 16px; }
+.contest-pagination { display: flex; justify-content: center; margin-top: 24px; }
+
+.contest-progress-note {
+  color: var(--text-3);
+  font-size: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.contest-progress-note.is-complete { color: var(--green); }
+.contest-progress-note.is-pending { color: var(--amber); }
+.contest-review-action.ant-btn { align-self: flex-start; padding: 0; }
+
+@media (max-width: 640px) {
+  .contest-tabs .ant-segmented { min-width: 0; }
+  .contest-tabs .ant-segmented-item-label { padding-inline: 6px; }
+  .contest-toolbar { padding: 10px; gap: 8px; }
+  .contest-toolbar .ant-select { flex: 1 1 130px; min-width: 0; }
+  .contest-toolbar .contest-search { flex-basis: 100%; min-width: 0; }
+  .contest-meta { flex-wrap: wrap; }
+}
+
 .contest-card .ant-card-body > :last-child {
   margin-top: auto;
 }
@@ -4855,6 +4910,8 @@ button.dist-row:hover {
 }
 
 @media (max-width: 640px) {
+  .app-content { padding: 16px 0 !important; }
+
   .ant-modal {
     max-width: calc(var(--app-viewport-width) - 16px);
     margin: 8px auto;

@@ -8,6 +8,8 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { localToday } from '../dates.ts';
 import { AiProvider } from '../ai/provider.ts';
+import { chatWithProblemReading } from '../ai/problem-reading-chat.ts';
+import { prepareStatementEvidence, renderStatementEvidence, savedStatementCookies } from '../problems/statements.ts';
 import { computeTrend } from '../analysis/trend.ts';
 import { computeWeakness, type WeaknessProfile } from '../analysis/weakness.ts';
 import { buildPracticeSummary, renderSummaryForPrompt, type PracticeSummary } from '../analysis/summary.ts';
@@ -237,7 +239,7 @@ export function savePlan(
 export async function generatePlan(
   db: Db,
   aiConfig: AiConfig,
-  opts: { days?: number; startDate?: string; dailyTasks?: number; requirements?: string; provider?: Pick<AiProvider, 'chat' | 'enabled'> } = {},
+  opts: { days?: number; startDate?: string; dailyTasks?: number; requirements?: string; provider?: Pick<AiProvider, 'chat' | 'enabled'>; fetchStatementFn?: typeof fetch; signal?: AbortSignal } = {},
 ): Promise<{ planId: number; source: 'ai' | 'template'; title: string; fallbackReason?: string }> {
   const userId = DEFAULT_USER_ID;
   const days = opts.days ?? 14;
@@ -253,14 +255,18 @@ export async function generatePlan(
   let fallbackReason = '未配置或未启用 AI，已使用模板计划。';
   if (provider.enabled) {
     try {
-      const raw = await provider.chat([
+      const cookies = savedStatementCookies(db);
+      await prepareStatementEvidence(db, pkg.problems, { fetchFn: opts.fetchStatementFn, cookies, signal: opts.signal });
+      const freshPrompt = buildPlanPackage(db, userId, { days, startDate, dailyTasks: opts.dailyTasks, requirements: opts.requirements }).prompt;
+      const raw = await chatWithProblemReading(provider, [
         { role: 'system', content: '你是 ICPC 备赛教练，只输出严格 JSON，不加任何解释。' },
-        { role: 'user', content: pkg.prompt },
-      ]);
+        { role: 'user', content: freshPrompt },
+      ], { db, userId, cfg: aiConfig, cookies, fetchFn: opts.fetchStatementFn, signal: opts.signal });
       const parsed = parsePlanJson(raw, startDate, days);
       const planId = savePlan(db, userId, parsed, 'ai', raw);
       return { planId, source: 'ai', title: parsed.title };
     } catch (e) {
+      opts.signal?.throwIfAborted();
       const message = e instanceof Error ? e.message : '';
       fallbackReason = /401|403|api.?key|unauthorized/i.test(message)
         ? 'AI 凭据无效或权限不足，请检查 AI 配置。'
@@ -314,6 +320,7 @@ export function buildPlanPackage(
     trend: JSON.stringify(trend),
     summary: summaryPrompt,
     problems: renderProblemGroups(problems),
+    statements: renderStatementEvidence(db, problems.flatMap(g => g.problems)),
     // 用户手写的训练要求：未填写时给出"无"占位，避免模板占位符残留
     requirements: requirements ?? '（无额外要求）',
   });

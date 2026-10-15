@@ -63,8 +63,8 @@ export function toJisuankeContest(c: JisuankeContestItem): ContestInfo | null {
 let cache: { at: number; contests: ContestInfo[] } | null = null;
 const CACHE_MS = 60 * 60 * 1000;
 
-export async function fetchJisuankeContests(fetchFn: typeof fetch = fetch): Promise<ContestInfo[]> {
-  if (cache && Date.now() - cache.at < CACHE_MS) return cache.contests;
+export async function fetchJisuankeContests(fetchFn: typeof fetch = fetch, force = false): Promise<ContestInfo[]> {
+  if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache.contests;
   const pages: JisuankeContestItem[][] = [];
   for (let page = 1; page <= PAGES; page += 1) {
     const res = await fetchFn(`${BASE}/api/contests?page=${page}`, {

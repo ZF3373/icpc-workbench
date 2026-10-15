@@ -72,8 +72,8 @@ export function toNowcoderContest(c: NcContestItem): ContestInfo {
 let cache: { at: number; contests: ContestInfo[] } | null = null;
 const CACHE_MS = 60 * 60 * 1000;
 
-export async function fetchNowcoderContests(fetchFn: typeof fetch = fetch): Promise<ContestInfo[]> {
-  if (cache && Date.now() - cache.at < CACHE_MS) return cache.contests;
+export async function fetchNowcoderContests(fetchFn: typeof fetch = fetch, force = false): Promise<ContestInfo[]> {
+  if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache.contests;
   const res = await fetchFn('https://ac.nowcoder.com/acm/contest/vip-index', {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',

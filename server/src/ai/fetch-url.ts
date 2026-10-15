@@ -340,7 +340,7 @@ export function extractTitle(html: string): string {
  * HTML 转可读文本：移除脚本/样式等噪声块，保留 pre/code 内容（OJ 样例 I/O 关键），
  * 解码常见实体，折叠空白，截断超长内容。纯函数，便于测试。
  */
-export function htmlToText(html: string): string {
+export function htmlToText(html: string, opts: { truncate?: boolean } = {}): string {
   let s = html;
   // 1. 整块移除噪声标签（含内容）
   s = s.replace(/<script\b[\s\S]*?<\/script>/gi, '');
@@ -363,12 +363,16 @@ export function htmlToText(html: string): string {
   s = s.replace(/\n{3,}/g, '\n\n');
   s = s.trim();
   // 6. 截断超长正文
-  return truncate(s);
+  return opts.truncate === false ? s : truncate(s);
 }
 
 /** 解码常见 HTML 实体 */
 function decodeEntities(s: string): string {
   return s
+    .replace(/&#(x[0-9a-f]+|\d+);/gi, (entity, code: string) => {
+      const n = code[0]?.toLowerCase() === 'x' ? Number.parseInt(code.slice(1), 16) : Number(code);
+      return n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : entity;
+    })
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')

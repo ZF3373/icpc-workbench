@@ -89,6 +89,9 @@ function migrate(db: Db): void {
   }
   // 赛后复盘·参赛记录的题目集列（JSON 数组）：归因排歧——窗口内的非本场题目（日常练习）不归因
   const participatedCols = columnsOf('participated_contests');
+  if (participatedCols.size > 0 && !participatedCols.has('official_window')) {
+    db.exec('ALTER TABLE participated_contests ADD COLUMN official_window INTEGER NOT NULL DEFAULT 0');
+  }
   if (participatedCols.size > 0 && !participatedCols.has('problem_ids')) {
     db.exec('ALTER TABLE participated_contests ADD COLUMN problem_ids TEXT');
   }

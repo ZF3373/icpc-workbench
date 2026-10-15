@@ -45,8 +45,8 @@ function toInfo(c: CfApiContest): ContestInfo {
 let cache: { at: number; contests: ContestInfo[] } | null = null;
 const CACHE_MS = 60 * 60 * 1000;
 
-export async function fetchCfContests(fetchFn: typeof fetch = fetch): Promise<ContestInfo[]> {
-  if (cache && Date.now() - cache.at < CACHE_MS) return cache.contests;
+export async function fetchCfContests(fetchFn: typeof fetch = fetch, force = false): Promise<ContestInfo[]> {
+  if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache.contests;
   const res = await fetchFn('https://codeforces.com/api/contest.list', {
     signal: AbortSignal.timeout(15_000),
   });

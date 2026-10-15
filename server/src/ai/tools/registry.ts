@@ -38,6 +38,7 @@ export interface ToolContext {
    * 保证 AI 工具抓取与同步管道共享同一份平台节奏，不会绕过风控限速。
    */
   fetchFn?: typeof fetch;
+  signal?: AbortSignal;
 }
 
 /** 工具接口：定义 + 执行函数 */

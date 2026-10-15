@@ -63,7 +63,7 @@ interface TestServer {
 
 async function withServer(
   fn: (s: TestServer) => Promise<void>,
-  provider?: { enabled: boolean; reply: string | ((prompt: string) => string) },
+  provider?: { enabled: boolean; reply: string | ((prompt: string) => string); statementHtml?: string },
 ): Promise<void> {
   const db = createDb(':memory:');
   const providerChats: Array<{ system: string; messages: Array<{ role: string; content: string }> }> = [];
@@ -75,6 +75,7 @@ async function withServer(
   app.use(
     '/api/ai',
     aiRoutes(db, () => cfg, {
+      fetchStatementFn: async () => new Response(provider?.statementHtml ?? '', { status: provider?.statementHtml ? 200 : 404 }),
       fetchContests: async () => {
         contestCalls.push(Date.now());
         return { contests: [], failures: {} };
@@ -585,12 +586,13 @@ test('assistant: chat injects contest review context via contestKey, invalid key
       const system = providerChats[0]!.system;
       assert.match(system, /关联的比赛（赛后复盘）/);
       assert.match(system, /codeforces:1877|1877A/);
-      assert.match(system, /全场 2 题中 AC 1 题、未提交 1 题/, '题目集与未提交题按 CF 缓存口径注入');
+      assert.match(system, /全场 2 题中 AC 1 题、本地无提交 1 题/, '题目集与本地提交明细口径注入');
       assert.match(system, /赛后复盘（仅当上下文包含/, '提示词需带复盘职责说明');
-      // 题面一节必须显式声明「未取到题面」的题号（本 bug：已 AC 的题没题面 → AI 编造题意）
-      assert.match(system, /### 题面/);
-      assert.match(system, /未取到题面/);
-      assert.match(system, /禁止凭题名概括题意/);
+      // 首次复盘先准备正文，包括已 AC 与未提交题，无需等下一轮对话。
+      assert.match(system, /## 题面证据/);
+      assert.match(system, /首次复盘读取的真实题目/);
+      assert.match(system, /"problemKey":"1877A","status":"available"/);
+      assert.match(system, /"problemKey":"1877C","status":"available"/);
 
       // 推导不到的比赛 → 回退为提示文案，不阻断对话
       const missing = await fetch(`${aiBase}/chat`, {
@@ -616,6 +618,6 @@ test('assistant: chat injects contest review context via contestKey, invalid key
       });
       assert.equal(bad.status, 400);
     },
-    { enabled: true, reply: 'ok' },
+    { enabled: true, reply: 'ok', statementHtml: `<script>window.__INITIAL_STATE__ = ${JSON.stringify({ problem: { description: '首次复盘读取的真实题目：给定整数序列求操作次数。'.repeat(10), inputFormat: '输入 n 个整数', outputFormat: '输出操作数' } })};</script>` },
   );
 });

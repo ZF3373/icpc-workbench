@@ -5,6 +5,7 @@ import { DEFAULT_USER_ID } from '../constants.ts';
 import type { AuthoritativeContest, ContestProblemRef, ParticipationSources } from './participationSources.ts';
 import { renderStatementSection } from './problemStatements.ts';
 import { isCfGymContestId } from './problemSetShape.ts';
+import { readContestProblemSet } from './problemSetCache.ts';
 
 /**
  * 赛后复盘：从提交记录推导「参加过的比赛」（只读，不改 schema）。
@@ -13,22 +14,25 @@ import { isCfGymContestId } from './problemSetShape.ts';
  * problemKey / url 的结构反解，各平台可用的信号不同：
  * - Codeforces：problemKey = {contestId}{index}，user.status 下发的 context
  *   （contest/virtual）是「当场参加」的精确信号；gym（contestId ≥ 100000）
- *   平台不下发 context，只有 ≥2 题、跨度 ≤ 6 小时的一次集中作答才算训练赛
+ *   平台不下发 context，只有 ≥3 题、跨度 ≤ 6 小时的一次集中作答才算训练赛
  *   （平时散做 gym 题不算）。赛后的补题提交（practice）会合并进同一场，
  *   注入时按 context 区分赛时/补题。
  * - AtCoder：比赛 slug 在题目 url（atcoder.jp/contests/{slug}/…）里，与
  *   赛事日历（kenkoooo 全量历史）按比赛时间窗匹配判定参赛并取赛名——进行中
  *   的比赛题目仅注册者可见可交，窗口内提交即参赛；日历匹配不到时退化为
  *   启发式（≥3 题、提交跨度 ≤ 6 小时的集中作答）。
- * - 计蒜客 / QOJ：比赛题 problemKey 形如 {contestId}-{problemId}（同步本就
- *   按「参加过的比赛」逐场拉取），命中即参赛。
+ * - 计蒜客：比赛题 problemKey 形如 {contestId}-{problemId}，同步本就按
+ *   「参加过的比赛」逐场拉取，命中即参赛。
+ * - QOJ：同样的比赛题键只表示题目归属，赛后补题也会带比赛号；仅凭题键
+ *   或集中提交不能证明参赛。需要平台参赛记录，或官方赛程窗口内的提交；
+ *   当前 QOJ 同步源不提供参赛记录，缺少官方赛程时不自动推断。
  * - 洛谷：比赛题在题库转正前题号为 T 前缀（练习题为 P 等），只有窗口内
  *   ≥2 道不同 T 号题有提交才算参赛——纯时间窗匹配会把「比赛进行时的
  *   日常练习」误判成参赛。
- * 牛客 / 代码源 / LeetCode 的同步数据不含比赛提交，不参与推导。
+ * 牛客以平台参赛记录入列，提交须与官方题单成员匹配；代码源 / LeetCode 暂不推导。
  */
 
-/** 支持推导「参加过的比赛」的平台（牛客本地不同步比赛提交，仅凭平台参赛记录入列） */
+/** 支持推导「参加过的比赛」的平台（牛客凭平台参赛记录入列） */
 export const PARTICIPATED_PLATFORMS: ReadonlySet<PlatformId> = new Set<PlatformId>([
   'codeforces',
   'atcoder',
@@ -43,8 +47,8 @@ export type ParticipationSignal =
   | 'contest' // CF 现场参赛（participantType CONTESTED/OUT_OF_COMPETITION）
   | 'virtual' // CF 虚拟赛
   | 'gym' // CF gym 训练赛（一次集中作答）
-  | 'key-pattern' // 计蒜客 / QOJ 比赛题键 {contestId}-{pid}
-  | 'calendar-window' // 与赛事日历时间窗匹配（AtCoder / 洛谷回退）
+  | 'key-pattern' // 计蒜客参赛同步来源的比赛题键 {contestId}-{pid}
+  | 'calendar-window' // 与赛事日历时间窗匹配（AtCoder / QOJ / 洛谷回退）
   | 'heuristic' // AtCoder 无日历依据时的集中提交启发式
   | 'joined-list'; // 平台侧参赛记录（user.rating / history / joinedContests 等）
 
@@ -75,9 +79,6 @@ export interface ContestReviewData {
   /** 题目集里本地无任何提交的题（赛时未开题、赛后也未补的）；题目集未知时为空 */
   unsubmittedProblems: ContestProblemRef[];
 }
-
-/** 参加过的比赛列表上限（下拉不需要更久远的场次） */
-const MAX_LIST = 200;
 
 function platformName(platform: PlatformId): string {
   return PLATFORMS.find((p) => p.id === platform)?.name ?? platform;
@@ -144,7 +145,7 @@ export function contestUrl(platform: PlatformId, contestId: string): string {
 export function calendarIndex(calendar: ContestInfo[] | undefined): Map<string, ContestInfo> {
   const map = new Map<string, ContestInfo>();
   for (const c of calendar ?? []) {
-    map.set(`${c.platform}:${c.id.replace(/^[a-z]+-/, '')}`, c);
+    map.set(`${c.platform}:${c.id.replace(/^[a-z]+[:-]/, '')}`, c);
   }
   return map;
 }
@@ -157,6 +158,10 @@ interface ContestGroup {
   calendar?: ContestInfo;
   /** 平台侧参赛记录（user.rating / joinedContests 等）：名称/时间/成绩的最高优先级来源 */
   authoritative?: AuthoritativeContest;
+  /** 同一场比赛的全部平台记录；用于合并 AC 下界，但成绩仍取 authoritative */
+  authoritativeRecords?: AuthoritativeContest[];
+  /** 官方题单缓存；不要求存在平台成绩（虚拟赛等同样可用）。 */
+  problemSet?: ContestProblemRef[];
   /**
    * 该场涉及的所有账号（多账号）：本地提交归属的账号 ∪ 平台参赛记录归属的账号。
    * 只有一条记录时留空（列表不给单账号用户添噪声）。
@@ -164,7 +169,7 @@ interface ContestGroup {
   accounts?: string[];
 }
 
-/** 同一场次的多账号参赛记录里挑一条承载成绩：本地该场提交最多的账号优先 */
+/** 成绩优先归属正式参赛提交较多的账号；只有缺赛时依据时才按总提交数回退。 */
 function pickSrcForContest(
   rows: ContestSubmissionRow[],
   srcs: AuthoritativeContest[],
@@ -172,11 +177,17 @@ function pickSrcForContest(
   if (srcs.length === 1) return srcs[0];
   let best = srcs[0];
   let bestCount = -1;
+  let bestContestCount = -1;
   for (const src of srcs) {
-    const n = rows.filter((r) => r.account === src.account).length;
-    if (n > bestCount) {
+    const own = rows.filter((r) => r.account === src.account);
+    const n = own.length;
+    const contestCount = own.filter(r => r.platform === 'codeforces'
+      ? r.context === 'contest'
+      : src.startTimeMs !== null && src.endTimeMs !== null && inOfficialWindow(r.submittedAt, src.startTimeMs, src.endTimeMs)).length;
+    if (contestCount > bestContestCount || (contestCount === bestContestCount && n > bestCount)) {
       best = src;
       bestCount = n;
+      bestContestCount = contestCount;
     }
   }
   return best;
@@ -239,10 +250,6 @@ function fetchContestableRows(db: Db, targetPlatform?: PlatformId): ContestSubmi
   return rows.map((r) => ({ ...r, tags: parseTags(r.tags) }));
 }
 
-/** 比赛时间窗：官方开始前 5 分钟内即算（钟表误差）。结束后不再放宽——
- * AtCoder 等平台结束后人人可补题，「刚结束就提交」不能证明参加过 */
-const WINDOW_BEFORE_MS = 5 * 60_000;
-
 /** 一次集中作答的判定口径：gym / AtCoder 启发式共用（≥N 题在 6 小时内）。
  * 注意：6h 跨度对 2h ABC 与 5h ICPC 同口径，对短赛偏松；AtCoder 以日历匹配为主路径
  * （风险可控），gym 场景通常 ≥3h。如需更精确可按日历 durationMinutes 联动：
@@ -261,14 +268,13 @@ function inCalendarWindow(calendar: ContestInfo, submittedAt: string): boolean {
   const start = Date.parse(calendar.startTimeIso);
   if (!Number.isFinite(start)) return false;
   const end = start + calendar.durationMinutes * 60_000;
-  const t = Date.parse(submittedAt);
-  return Number.isFinite(t) && t >= start - WINDOW_BEFORE_MS && t <= end;
+  return inOfficialWindow(submittedAt, start, end);
 }
 
-/** 官方时间窗（参赛记录/赛事日历的起止）内的提交：开始前 5 分钟容差与参赛判定同口径 */
+/** 上游提交时间与官方赛程同口径，按 [开始, 结束) 判断，不凭本机时钟扩大时间窗。 */
 function inOfficialWindow(submittedAt: string, startMs: number, endMs: number): boolean {
   const t = Date.parse(submittedAt);
-  return Number.isFinite(t) && t >= startMs - WINDOW_BEFORE_MS && t <= endMs;
+  return Number.isFinite(t) && Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs && t >= startMs && t < endMs;
 }
 
 /** 一次集中作答：≥minProblems 道不同题、首末提交跨度 ≤ 6 小时 */
@@ -298,9 +304,12 @@ function groupByStructuralKey(
     if (platform === 'codeforces') {
       if (row.context === 'contest') g.signals.add('contest');
       else if (row.context === 'virtual') g.signals.add('virtual');
-    } else if (platform === 'jisuanke' || platform === 'qoj') {
+    } else if (platform === 'jisuanke') {
       g.signals.add('key-pattern');
-    } else if (platform === 'atcoder' && g.calendar && inCalendarWindow(g.calendar, row.submittedAt)) {
+    } else if (
+      (platform === 'atcoder' || platform === 'qoj') &&
+      g.calendar && inCalendarWindow(g.calendar, row.submittedAt)
+    ) {
       g.signals.add('calendar-window');
     }
   }
@@ -340,8 +349,7 @@ function groupLuoguByCalendarWindow(
     const end = start + calendar.durationMinutes * 60_000;
     const inWindow = rows.filter((r) => {
       if (!isLuoguContestProblem(r.problemKey)) return false;
-      const t = Date.parse(r.submittedAt);
-      return Number.isFinite(t) && t >= start && t <= end;
+      return inOfficialWindow(r.submittedAt, start, end);
     });
     if (new Set(inWindow.map((r) => r.problemKey)).size < 2) continue;
     const contestId = calendar.id.replace(/^[a-z]+-/, '');
@@ -366,19 +374,23 @@ function contestGroups(
 /** 参赛信号 → 可复盘比赛；无有效信号返回 null（如 CF 普通比赛的纯补题/练习组） */
 function qualifyGroup(platform: PlatformId, g: ContestGroup): ParticipatedContest | null {
   const src = g.authoritative;
+  const allSrcs = g.authoritativeRecords ?? (src ? [src] : []);
   let evidence: ParticipationSignal | null = null;
   if (platform === 'codeforces') {
     if (g.signals.has('contest')) evidence = 'contest';
+    else if (src) evidence = 'joined-list';
     else if (g.signals.has('virtual')) evidence = 'virtual';
     else if (g.signals.has('gym')) evidence = 'gym';
-    else if (src) evidence = 'joined-list';
-  } else if (platform === 'jisuanke' || platform === 'qoj') {
+  } else if (platform === 'jisuanke') {
     if (g.signals.has('key-pattern')) evidence = 'key-pattern';
     else if (src) evidence = 'joined-list';
+  } else if (platform === 'qoj') {
+    if (src) evidence = 'joined-list';
+    else if (g.signals.has('calendar-window')) evidence = 'calendar-window';
   } else if (platform === 'atcoder') {
-    if (g.signals.has('calendar-window')) evidence = 'calendar-window';
+    if (src) evidence = 'joined-list';
+    else if (g.signals.has('calendar-window')) evidence = 'calendar-window';
     else if (g.signals.has('heuristic')) evidence = 'heuristic';
-    else if (src) evidence = 'joined-list';
   } else if (platform === 'luogu') {
     if (src) evidence = 'joined-list';
     else if (g.signals.has('calendar-window')) evidence = 'calendar-window';
@@ -405,6 +417,8 @@ function qualifyGroup(platform: PlatformId, g: ContestGroup): ParticipatedContes
     lastIso;
   const problemKeys = new Set(g.rows.map((r) => r.problemKey));
   const acProblems = new Set(g.rows.filter((r) => r.verdict === 'AC').map((r) => r.problemKey));
+  // 当前进度合并账号，赛时成绩必须与排名/Rating 对齐到同一个账号。
+  const scoreRows = src?.account ? g.rows.filter(r => r.account === src.account) : g.rows;
   // 赛时 AC 与当前 AC（含补题）分开口径：补题追踪要看「赛时拿了几题 vs 现在拿了几题」。
   // 三级来源（先者为准）：
   //   ① 平台参赛记录的 acceptedCount（牛客）：平台侧记录的赛时成绩，缺逐条提交也能给；
@@ -419,28 +433,38 @@ function qualifyGroup(platform: PlatformId, g: ContestGroup): ParticipatedContes
     (calendar?.startTimeIso
       ? Date.parse(calendar.startTimeIso) + calendar.durationMinutes * 60_000
       : null);
+  const cfContext = src || scoreRows.some(r => r.context === 'contest') ? 'contest' : 'virtual';
+  const hasCfContext = platform === 'codeforces' && scoreRows.some(r => r.context === 'contest' || r.context === 'virtual');
+  const scoreAcRows = scoreRows.filter(r => {
+    if (r.verdict !== 'AC') return false;
+    if (hasCfContext) return r.context === cfContext;
+    if (platform === 'codeforces' && r.context === 'practice') return false;
+    return officialStartMs !== null && officialEndMs !== null && inOfficialWindow(r.submittedAt, officialStartMs, officialEndMs);
+  });
+  const localScoreAc = new Set(scoreAcRows.map(r => r.problemKey)).size;
+  const missingAcIdentities = allSrcs.some(s => {
+    if (s.acceptedCount == null) return false;
+    const own = s.account ? g.rows.filter(r => r.account === s.account) : g.rows;
+    const from = s.startTimeMs ?? (calendar?.startTimeIso ? Date.parse(calendar.startTimeIso) : null);
+    const to = s.endTimeMs ?? (calendar?.startTimeIso ? Date.parse(calendar.startTimeIso) + calendar.durationMinutes * 60_000 : null);
+    const known = new Set(own.filter(r => r.verdict === 'AC' && (platform === 'codeforces'
+      ? r.context === 'contest'
+      : from !== null && to !== null && inOfficialWindow(r.submittedAt, from, to))).map(r => r.problemKey));
+    return s.acceptedCount > known.size;
+  });
   let inContestAc: number | null = null;
   if (src?.acceptedCount != null) {
     inContestAc = src.acceptedCount;
-  } else if (
-    platform === 'codeforces' &&
-    g.rows.some((r) => r.context === 'contest' || r.context === 'virtual')
-  ) {
-    inContestAc = new Set(
-      g.rows
-        .filter((r) => r.verdict === 'AC' && (r.context === 'contest' || r.context === 'virtual'))
-        .map((r) => r.problemKey),
-    ).size;
-  } else if (officialStartMs !== null && officialEndMs !== null) {
-    inContestAc = new Set(
-      g.rows
-        .filter((r) => r.verdict === 'AC' && inOfficialWindow(r.submittedAt, officialStartMs, officialEndMs))
-        .map((r) => r.problemKey),
-    ).size;
+  } else if (hasCfContext) {
+    // 只有虚拟赛明细不能证明正式赛为零 AC，反之亦然。
+    inContestAc = scoreRows.some(r => r.context === cfContext) ? localScoreAc : null;
+  } else if (officialStartMs !== null && officialEndMs !== null && Number.isFinite(officialStartMs) && Number.isFinite(officialEndMs) && officialEndMs > officialStartMs) {
+    inContestAc = scoreRows.some(r => platform !== 'codeforces' || r.context !== 'practice') ? localScoreAc : null;
   }
   // 平台记录的赛时 AC 是当前 AC 的下界：本地同步可能缺提交，
   // 不能让「当前 AC < 赛时 AC」这种自相矛盾出现在展示上
-  const acProblemCount = Math.max(acProblems.size, inContestAc ?? 0);
+  const authoritativeAc = allSrcs.reduce((max, s) => Math.max(max, s.acceptedCount ?? 0), 0);
+  const acProblemCount = Math.max(acProblems.size, authoritativeAc, inContestAc ?? 0);
   // problemCount 的语义是**该场比赛一共几题**（列表「6 题 · AC 4」、复盘请求「AC 4/6 题」的分母），
   // 不是「我提交过几题」。曾经只用 problemKeys.size，于是牛客周赛162（共 6 题、交了 4 题全 AC）
   // 被显示成「4 题 · AC 4」——用户实测反馈的就是这个。
@@ -449,10 +473,12 @@ function qualifyGroup(platform: PlatformId, g: ContestGroup): ParticipatedContes
   //   ② 已拉取的题目集（CF contest.standings / 牛客 problem-list / AtCoder tasks）
   //   ③ 本地提交去重（兜底）
   const problemCount = Math.max(
-    src?.problemCount ?? 0,
-    src?.problems?.length ?? 0,
+    ...allSrcs.map(s => Math.max(s.problemCount ?? 0, s.problems?.length ?? 0)),
+    g.problemSet?.length ?? 0,
     problemKeys.size,
   );
+  const officialProblemCount = Math.max(g.problemSet?.length ?? 0, ...allSrcs.map(s => Math.max(s.problemCount ?? 0,
+    platform === 'atcoder' && !s.problems?.every(p => p.contestId === g.contestId) ? 0 : s.problems?.length ?? 0)));
   return {
     key: `${platform}:${g.contestId}`,
     platform,
@@ -462,19 +488,24 @@ function qualifyGroup(platform: PlatformId, g: ContestGroup): ParticipatedContes
     url: src?.url ?? calendar?.url ?? contestUrl(platform, g.contestId),
     startTimeIso: startIso,
     endTimeIso: endIso,
+    ...((officialStartMs === null || officialEndMs === null) && (firstIso || lastIso) ? { timeIsApproximate: true } : {}),
     submissionCount: g.rows.length,
     problemCount,
+    totalProblemCount: officialProblemCount || null,
     acProblemCount,
+    ...(missingAcIdentities ? { acCountIsLowerBound: true } : {}),
     inContestAcProblemCount: inContestAc,
     // 无提交的权威场次按官方结束时间排进列表（最近的在前）
     lastSubmittedAt: lastIso ?? endIso ?? '',
     evidence,
     source: src
       ? {
+          ...(src.account ? { account: src.account } : {}),
           rank: src.rank,
           rating: src.rating,
           ratingChange: src.ratingChange,
-          problemCount: src.problemCount,
+          // CF/AtCoder 参赛历史不带总题数，已获取的官方完整题集同样可信。
+          problemCount: officialProblemCount || null,
           acceptedCount: src.acceptedCount,
         }
       : null,
@@ -517,7 +548,7 @@ function buildContestIndex(
       index.set(`${platform}:${g.contestId}`, { platform, group: g });
     }
     // 同一场比赛可能有多个账号的参赛记录（participated_contests 主键含 account）：
-    // 列表仍只出一条，成绩取「本地该场提交最多的账号」那条，其余账号进 accounts 标注。
+    // 列表仍只出一条，成绩优先取正式参赛提交多的账号，其余账号进 accounts 标注。
     const srcsByContest = new Map<string, AuthoritativeContest[]>();
     for (const src of platformSources ?? []) {
       const list = srcsByContest.get(src.contestId) ?? [];
@@ -530,20 +561,16 @@ function buildContestIndex(
       const existing = index.get(key);
       if (existing) {
         existing.group.authoritative = pickSrcForContest(existing.group.rows, srcs);
+        existing.group.authoritativeRecords = srcs;
         existing.group.accounts = contestAccounts(existing.group.rows, srcs);
         continue;
       }
       // 本地无该场结构化提交组的平台：合成组按**权威参赛窗口**归因提交。
-      // 洛谷认 T 号比赛题（排除窗口内的日常练习）；牛客认「窗口内 + 题目属于该场」
-      // （题目集来自 problem-list，排除比赛进行时顺手刷的题库题；题目集缺失时
-      // 退化为整窗归因）。CF/AtCoder 不做窗口归因——它们的提交按 contestId
+      // 洛谷认 T 号比赛题（排除窗口内的日常练习）；牛客须有官方题目归属，
+      // 题目集缺失时只保留平台成绩。CF/AtCoder 不做窗口归因——它们的提交按 contestId
       // 结构化分组承载，合成组按窗口捞会误挂窗口内的其他练习。
       let attributed: ContestSubmissionRow[] = [];
-      if (
-        (platform === 'luogu' || platform === 'nowcoder') &&
-        src.startTimeMs !== null &&
-        src.endTimeMs !== null
-      ) {
+      if (platform === 'luogu' || platform === 'nowcoder') {
         // 洛谷：比赛题赛后转正 T→P（数字会变、无映射可反查），转正前同步的旧提交被自愈
         // 重定向到 P 号行、转正后同步的提交直存 P 号——T-only 过滤会把已转正场次的提交
         // 统计清零（2026-10 用户实测：月赛窗口内 2 条 P 号提交被滤成「无逐条提交记录」），
@@ -553,21 +580,20 @@ function buildContestIndex(
         // 题目集成员（牛客数字 id / 洛谷转正后 P 号都是稳定键）**不限时间窗**：赛后补题
         // 提交也归因到场——「当前 AC」含补题才能与「赛时 AC」配对看出补题进度（2026-10
         // 用户需求：一眼看出比赛题补完没有）。题号精确匹配本就比窗口更严，不会误挂练习。
-        const problemSetIds =
-          src.problems && src.problems.length > 0
-            ? new Set(src.problems.map((p) => p.id))
-            : null;
+        const problemSetIds = src.problems != null || src.problemSetState === 'empty'
+          ? new Set((src.problems ?? []).map(p => p.id)) : null;
         const inWindow = (r: ContestSubmissionRow): boolean => {
-          const t = Date.parse(r.submittedAt);
-          return Number.isFinite(t) && t >= src.startTimeMs! && t <= src.endTimeMs!;
+          return src.startTimeMs !== null && src.endTimeMs !== null && inOfficialWindow(r.submittedAt, src.startTimeMs, src.endTimeMs);
         };
         attributed = platformRows.filter((r) => {
+          // 已知开始时间时，重用的旧题在开赛前的练习不能冒充本场提交。
+          if (src.startTimeMs !== null && Date.parse(r.submittedAt) < src.startTimeMs) return false;
           if (problemSetIds?.has(r.problemKey)) return true;
           if (!inWindow(r)) return false;
           if (platform === 'luogu') {
             return !problemSetIds && isLuoguContestProblem(r.problemKey);
           }
-          return !problemSetIds; // nowcoder：有题目集时只认成员（窗口内顺手刷的题库题不归因）
+          return false; // 牛客没有题号归属证据时仅保留平台成绩，不猜测日常练习属于比赛。
         });
       }
       index.set(key, {
@@ -576,11 +602,21 @@ function buildContestIndex(
           contestId: src.contestId,
           rows: attributed,
           signals: new Set<ParticipationSignal>(['joined-list']),
+          calendar: cal.get(key),
           authoritative: srcs.length > 1 ? pickSrcForContest(attributed, srcs) : src,
+          authoritativeRecords: srcs,
           accounts: contestAccounts(attributed, srcs),
         },
       });
     }
+  }
+  for (const { platform, group } of index.values()) {
+    let problems = readContestProblemSet(db, platform, group.contestId);
+    for (const source of group.authoritativeRecords ?? []) {
+      if (platform === 'atcoder' && !source.problems?.every(p => p.contestId === group.contestId)) continue;
+      if (source.problems != null && (problems === null || source.problems.length > problems.length)) problems = source.problems;
+    }
+    if (problems !== null) group.problemSet = problems;
   }
   return index;
 }
@@ -593,8 +629,9 @@ function buildContestIndex(
  * 平级时按最后活动时间裁决（同日多场以近期活跃的靠前）；无开始时间的合成组排最后。
  * calendar 传入赛事日历聚合结果（routes 侧已带 60min 缓存）用于补赛名与时间窗；
  * sources 传入平台侧参赛记录（loadParticipationSources）——名称/时间/成绩的最高
- * 优先级来源，并让本地没有提交的场次也能进入列表。缺省时 CF/计蒜客/QOJ 仍可
- * 推导（不依赖日历），AtCoder 退化启发式，洛谷走 T 号 × 日历窗口回退。
+ * 优先级来源，并让本地没有提交的场次也能进入列表。缺省时 CF/计蒜客仍可
+ * 推导（不依赖日历），QOJ 无可靠参赛证据则不入列，AtCoder 退化启发式，
+ * 洛谷走 T 号 × 日历窗口回退。
  */
 export function deriveParticipatedContests(
   db: Db,
@@ -614,7 +651,8 @@ export function deriveParticipatedContests(
     if (a.lastSubmittedAt !== b.lastSubmittedAt) return a.lastSubmittedAt < b.lastSubmittedAt ? 1 : -1;
     return 0;
   });
-  return out.slice(0, MAX_LIST);
+  // 筛选、活动排序和分页需要完整历史，不能先按参赛时间截掉老比赛。
+  return out;
 }
 
 /**
@@ -636,10 +674,12 @@ export function resolveContestGroup(
   const contest = qualifyGroup(platform, group);
   if (!contest) return null;
   const submissions = [...group.rows].sort((a, b) => (a.submittedAt < b.submittedAt ? -1 : 1));
-  const problems = group.authoritative?.problems ?? null;
+  const problems = group.problemSet ?? group.authoritative?.problems ?? null;
   const problemSetState = group.authoritative?.problemSetState ?? 'unknown';
   // problemSetKnown 三态：state 为 ok/empty 即已知（含确认无题）；unknown 即未拉取
-  const problemSetKnown = problems !== null || problemSetState === 'ok' || problemSetState === 'empty';
+  const problemSetKnown = (problems !== null || problemSetState === 'ok' || problemSetState === 'empty')
+    && (platform !== 'atcoder' || problems?.every(p => p.contestId === contest.contestId) === true)
+    && (problems?.length ?? 0) >= (contest.totalProblemCount ?? contest.source?.problemCount ?? 0);
   const submittedKeys = new Set(group.rows.map((r) => r.problemKey));
   return {
     contest,
@@ -715,6 +755,7 @@ function renderAttempts(
 
 /** 概况里的赛时/补题拆分：赛时数未知或与当前持平（没有补题可看）时不加 */
 function contestAcSplitLabel(contest: ParticipatedContest): string {
+  if (contest.acCountIsLowerBound || (contest.accounts?.length ?? 0) > 1) return '';
   const inContest = contest.inContestAcProblemCount;
   if (inContest === null || inContest >= contest.acProblemCount) return '';
   return `（赛时 AC ${inContest}、赛后补题 ${contest.acProblemCount - inContest}）`;
@@ -743,6 +784,9 @@ export function renderContestContext(data: ContestReviewData, opts?: { db?: Db }
       `- 参赛账号：${contest.accounts!.join('、')}（这一场你用了多个账号，下方逐条提交已标注归属账号；「平台记录」里的成绩只属于其中一个账号）`,
     );
   }
+  if (contest.source?.account) lines.push(`- 平台成绩与赛时 AC 所属账号：${contest.source.account}；当前 AC 按所有账号合并去重。`);
+  if (contest.acCountIsLowerBound) lines.push('- 提交明细不全：当前 AC 仅为已知下限，无法精确计算已补或剩余题数。');
+  if (contest.timeIsApproximate) lines.push('- 以下时间含首次/末次提交的活动近似，并非完整官方赛程；不能据此判断赛时表现或做题用时。');
   if (contest.url) lines.push(`- 比赛链接：${contest.url}`);
   if (contest.startTimeIso) lines.push(`- 开始：${contest.startTimeIso}`);
   if (contest.endTimeIso) lines.push(`- 结束：${contest.endTimeIso}`);
@@ -773,10 +817,11 @@ export function renderContestContext(data: ContestReviewData, opts?: { db?: Db }
     'joined-list': '平台参赛记录',
   };
   const submittedCount = new Set(submissions.map((s) => s.problemKey)).size;
+  const acLabel = `${contest.acCountIsLowerBound ? '至少 ' : ''}${contest.acProblemCount}`;
   const summary =
     data.problemSetKnown && submissions.length > 0
-      ? `全场 ${submittedCount + data.unsubmittedProblems.length} 题中 AC ${contest.acProblemCount} 题${contestAcSplitLabel(contest)}、未提交 ${data.unsubmittedProblems.length} 题，共 ${contest.submissionCount} 次提交`
-      : `${contest.problemCount} 题中出现 AC ${contest.acProblemCount} 题${contestAcSplitLabel(contest)}，共 ${contest.submissionCount} 次提交`;
+      ? `全场 ${submittedCount + data.unsubmittedProblems.length} 题中 AC ${acLabel} 题${contestAcSplitLabel(contest)}、本地无提交 ${data.unsubmittedProblems.length} 题，共 ${contest.submissionCount} 次提交`
+      : `${contest.problemCount} 题中出现 AC ${acLabel} 题${contestAcSplitLabel(contest)}，共 ${contest.submissionCount} 次提交`;
   lines.push(`- 概况：${summary}（${evidenceLabel[contest.evidence as ParticipationSignal] ?? contest.evidence}）`);
 
   if (submissions.length === 0) {
@@ -904,7 +949,7 @@ export function renderContestContext(data: ContestReviewData, opts?: { db?: Db }
   } else if (submissions.length > 0) {
     lines.push('');
     lines.push(
-      '### 未提交的题\n（题目集已知，且本场所有题均有提交记录——赛时已全部开过题，无遗漏。）',
+      '### 未提交的题\n（题目集已知，且本场所有题均有本地提交记录；赛时是否开题需结合提交时间判断。）',
     );
   }
   // 题面注入（纯读库、零网络）：覆盖**所有题含已 AC 的题**，按优先级与预算裁剪，

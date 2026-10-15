@@ -6,26 +6,10 @@ import { throttledFetch } from '../net/hostThrottle.ts';
 import type { ContestReviewData } from './participated.ts';
 
 /**
- * 题面预取 + 落库缓存（复盘根因修复）。
- *
- * 背景：复盘时 AI 只有题名/难度/tags/时间线，没有题面。题名信息量极低且大量重名，
- * AI 凭题名推断题意会系统性出错（虚构一个符合题名的题意，再针对虚构题意给建议）。
- * 题面是把所有其他证据锚定到现实的那根桩。
- *
- * 设计：
- * - **抓取**：CF/AtCoder 是公开 SSR 页面，洛谷需 Cookie。复用 hostThrottle 节流。
- * - **落库**：problem_statements 表，题面几乎不变，缓存永久有效，仅 404/改版时失效重取。
- * - **预取/注入覆盖「所有题」，含赛时已 AC 的题**：曾经只覆盖「未通过 + 未提交」，
- *   结果 AI 对已 AC 的题凭空编造题意（已 AC ≠ 不需要题意：复盘要逐题点评思路与卡点）。
- *   优先级仍是 未通过 → 未提交 → 已 AC，已 AC 的题按更小的预算注入（只需题意与约束）。
- * - **拿不到题面时必须显式声明**：任何未注入题面的题都会在「未取到题面」清单里列名，
- *   提示词据此禁止模型凭题名概括题意——空态必须被说清，否则模型会把"没给"当成"可以编"。
- * - **可抓性按平台实测**（见 statementSupport）：AtCoder / 洛谷可抓（洛谷需过 C3VK 反爬）；
- *   CF 的 HTML 页被 Cloudflare / JS 校验拦死（含官方镜像 m1/m2，实测 403 或机器人校验页）、
- *   牛客题目页需登录、计蒜客·QOJ 无公开源 → 这些平台不抓，改成在上下文里说明原因并请用户粘贴题面。
- * - **噪声一律拒收**（见 statementLooksValid）：权限墙 / 挑战页 / 站点导航不能当题面落库——
- *   实测牛客未登录题库页会吐出 457 字符导航，被当成题面喂给模型比"没有题面"更糟。
- * - **不在 chat 请求路径里同步抓**：预取是后台通道，注入是纯读库。
+ * 平台题面提取与共享持久缓存。新入口使用 problems/statements.ts：
+ * 生成前有界准备、跨平台同题镜像、分页和证据状态统一在该服务处理。
+ * 此处保留旧复盘渲染与后台预取 API，兼容现有调用。
+ * 缓存正文最多 120K 字符，渲染预算与存储预算分离；截断必须保留标记。
  */
 
 const FETCH_TIMEOUT_MS = 15_000;
@@ -163,10 +147,30 @@ export interface StatementEntry {
  * CF 题目页的题面在 `<div class="problem-statement">` 内，含题意/输入输出格式/样例。
  */
 function extractCfStatement(html: string): string {
-  // 截取 problem-statement 区块（避免整页 htmlToText 带入导航噪声）
-  const m = html.match(/<div\s+class="[^"]*\bproblem-statement\b[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/i);
-  const block = m?.[1] ?? html;
-  return htmlToText(block);
+  return statementHtmlToText(elementBody(html, 'div', /\bclass=["'][^"']*\bproblem-statement\b[^"']*["']/i) ?? '');
+}
+
+/** 按同名标签的嵌套深度定界，不把公式中的 span/div 当成正文结束。 */
+function elementBody(html: string, tag: string, attributes: RegExp): string | null {
+  const tokens = new RegExp(`<\\/?${tag}\\b[^>]*>`, 'gi');
+  let start = -1;
+  let depth = 0;
+  for (const m of html.matchAll(tokens)) {
+    const closing = m[0].startsWith('</');
+    if (start < 0) {
+      if (!closing && attributes.test(m[0])) { start = m.index + m[0].length; depth = 1; }
+    } else {
+      depth += closing ? -1 : 1;
+      if (depth === 0) return html.slice(start, m.index);
+    }
+  }
+  return null;
+}
+
+function statementHtmlToText(html: string): string {
+  return htmlToText(html
+    .replace(/<img\b[^>]*\balt=["']([^"']*)["'][^>]*>/gi, ' $1 ')
+    .replace(/<\/pre\s*>/gi, '</p>'), { truncate: false });
 }
 
 /**
@@ -181,60 +185,72 @@ function extractCfStatement(html: string): string {
  */
 function extractAtcoderStatement(html: string): string {
   for (const cls of ['lang-en', 'lang-ja']) {
-    const m = html.match(
-      new RegExp(`<span[^>]*class="${cls}"[^>]*>([\\s\\S]*?)<\\/span>\\s*<\\/span>`, 'i'),
-    );
-    const text = m?.[1] ? htmlToText(m[1]).trim() : '';
+    const block = elementBody(html, 'span', new RegExp(`\\bclass=["'][^"']*\\b${cls}\\b[^"']*["']`, 'i'));
+    const text = block ? statementHtmlToText(block).trim() : '';
     if (text.length >= 20) return text;
   }
   // 退化：整个 task-statement 区块（截到分享组件/页脚之前，避免带进站点噪声）
-  const start = html.search(/<div[^>]*\bid="task-statement"[^>]*>/i);
-  if (start < 0) return htmlToText(html);
-  const rest = html.slice(start);
-  const ends = [rest.indexOf('class="a2a_kit"'), rest.indexOf('<footer')].filter((i) => i > 0);
-  const end = ends.length > 0 ? Math.min(...ends) : rest.length;
-  return htmlToText(rest.slice(0, end));
+  return statementHtmlToText(elementBody(html, 'div', /\bid=["']task-statement["']/i) ?? '');
 }
 
 /**
  * 从 HTML 中提取洛谷题面。
- * 洛谷题面在 `window.__INITIAL_STATE__` JSON 的 `problem.description` 字段（Markdown）。
+ * 洛谷题面在 INITIAL_STATE / lentille-context 的 problem/content 中，按章节组合正文与样例。
  * htmlToText 会剥掉 script，必须单独提取——同 extractLuoguSolutions 的模式。
  */
 function extractLuoguStatement(html: string): string {
-  for (const m of html.matchAll(/window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/g)) {
+  const jsonBlocks = [
+    ...html.matchAll(/window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/g),
+    ...html.matchAll(/<script\b[^>]*\bid=["']lentille-context["'][^>]*>([\s\S]*?)<\/script>/gi),
+  ];
+  for (const m of jsonBlocks) {
     try {
       const state = JSON.parse(m[1]!) as unknown;
-      const desc = findField(state, ['description', 'content']);
-      if (desc && typeof desc === 'string' && desc.length > 20) return desc;
+      const problem = findProblem(state);
+      if (!problem) continue;
+      const content = typeof problem.content === 'object' && problem.content !== null
+        ? problem.content as Record<string, unknown> : problem;
+      const parts: string[] = [];
+      for (const [key, label] of [['background', '题目背景'], ['description', '题目描述'], ['inputFormat', '输入格式'], ['outputFormat', '输出格式'], ['hint', '说明与约束']] as const) {
+        const value = content[key] || (key === 'inputFormat' ? content.formatI : key === 'outputFormat' ? content.formatO : undefined);
+        if (typeof value === 'string' && value) parts.push(`## ${label}\n${value}`);
+      }
+      const samples = problem.samples ?? content.samples;
+      if (Array.isArray(samples)) {
+        for (const [i, sample] of samples.entries()) {
+          if (Array.isArray(sample) && sample.every(s => typeof s === 'string')) {
+            parts.push(`## 样例 ${i + 1}\n输入：\n${sample[0]}\n输出：\n${sample[1]}`);
+          }
+        }
+      }
+      if (problem.limits) parts.push(`## 资源限制\n${JSON.stringify(problem.limits)}`);
+      if (parts.length) return parts.join('\n\n');
     } catch {
       // JSON 截断/编码不兼容：换下一处
     }
   }
-  // 降级：整页 htmlToText（须够长避免噪声）
-  const fallback = htmlToText(html);
-  return fallback.length > 200 ? fallback : '';
+  // SSR 页面只读取明确的题面区块，拒绝把站点导航当正文。
+  const article = elementBody(html, 'article', /<article\b/i);
+  return article ? `## 网页题面\n${statementHtmlToText(article)}` : '';
 }
 
-/** 递归搜索对象中第一个指定键的长字符串值 */
-function findField(node: unknown, keys: string[], depth = 0): string | null {
+/** 只接受题目对象，避免误用推荐卡片或站点 SEO description。 */
+function findProblem(node: unknown, depth = 0): Record<string, unknown> | null {
   if (depth > 10 || node == null) return null;
   if (typeof node === 'string') return null;
   if (Array.isArray(node)) {
     for (const child of node) {
-      const v = findField(child, keys, depth + 1);
+      const v = findProblem(child, depth + 1);
       if (v) return v;
     }
     return null;
   }
   if (typeof node === 'object') {
     const obj = node as Record<string, unknown>;
-    for (const k of keys) {
-      const v = obj[k];
-      if (typeof v === 'string' && v.length > 20) return v;
-    }
+    if (obj.problem && typeof obj.problem === 'object') return obj.problem as Record<string, unknown>;
+    if (typeof obj.description === 'string' && ('inputFormat' in obj || 'outputFormat' in obj)) return obj;
     for (const v of Object.values(obj)) {
-      const r = findField(v, keys, depth + 1);
+      const r = findProblem(v, depth + 1);
       if (r) return r;
     }
   }
@@ -251,7 +267,7 @@ function extractStatement(html: string, platform: PlatformId): string {
     case 'luogu':
       return extractLuoguStatement(html);
     default:
-      return htmlToText(html);
+      return statementHtmlToText(html);
   }
 }
 
@@ -263,17 +279,33 @@ function truncateStatement(text: string, budget: number): string {
 
 // ---------- 抓取 + 落库 ----------
 
-async function fetchPage(url: string, fetchFn: typeof fetch, cookie?: string): Promise<string> {
-  const res = await fetchFn(url, {
-    headers: {
-      'User-Agent': BROWSER_UA,
-      Accept: 'text/html,application/json',
-      ...(cookie ? { Cookie: cookie } : {}),
-    },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.text();
+async function fetchPage(url: string, fetchFn: typeof fetch, cookie?: string, signal?: AbortSignal): Promise<string> {
+  const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]) : AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  const origin = new URL(url).origin;
+  let current = url;
+  for (let hop = 0; hop < 4; hop++) {
+    requestSignal.throwIfAborted();
+    const res = await fetchFn(current, {
+      headers: {
+        'User-Agent': BROWSER_UA,
+        Accept: 'text/html,application/json',
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+      redirect: 'manual',
+      signal: requestSignal,
+    });
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      const location = res.headers.get('location');
+      if (!location) throw new Error('重定向缺失目标');
+      const next = new URL(location, current);
+      if (next.origin !== origin || next.username || next.password) throw new Error('拒绝跨源题面重定向');
+      current = next.href;
+      continue;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.text();
+  }
+  throw new Error('题面重定向次数过多');
 }
 
 /**
@@ -284,9 +316,10 @@ async function fetchPage(url: string, fetchFn: typeof fetch, cookie?: string): P
  * （实测匿名直连 `https://www.luogu.com.cn/problem/P1001` 就是 fetch failed）。
  * 导出复用：参赛记录的洛谷比赛题目集抓取（participationSources）走同一套反爬协议。
  */
-export async function fetchLuoguPage(url: string, fetchFn: typeof fetch, cookie: string): Promise<string> {
+export async function fetchLuoguPage(url: string, fetchFn: typeof fetch, cookie: string, signal?: AbortSignal): Promise<string> {
   let current = cookie;
   for (let attempt = 0; attempt <= 2; attempt += 1) {
+    signal?.throwIfAborted();
     if (attempt > 0) await sleep(300); // 重试间限速，避免毫秒级连发触发风控
     const res = await fetchFn(url, {
       headers: {
@@ -296,7 +329,7 @@ export async function fetchLuoguPage(url: string, fetchFn: typeof fetch, cookie:
         ...(current ? { Cookie: current } : {}),
       },
       redirect: 'manual',
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]) : AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (![301, 302, 303].includes(res.status)) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -330,6 +363,7 @@ export async function fetchProblemStatement(
   url: string,
   fetchFn: typeof fetch = throttledFetch,
   cookie?: string,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   // 默认抓「公开可抓」与「尽力抓」的平台；blocked 平台在**用户配置了该平台 Cookie** 时值得一试
   // （CF 的 Cloudflare 挑战可用浏览器里带出来的 cf_clearance 通过，同 QOJ 的做法）。
@@ -354,11 +388,13 @@ export async function fetchProblemStatement(
 
   try {
     const html = platform === 'luogu'
-      ? await fetchLuoguPage(url, fetchFn, cookie ?? '')
-      : await fetchPage(url, fetchFn, cookie);
+      ? await fetchLuoguPage(url, fetchFn, cookie ?? '', signal)
+      : await fetchPage(url, fetchFn, cookie, signal);
+    signal?.throwIfAborted();
     const text = extractStatement(html, platform).trim();
     if (!statementLooksValid(text)) return null; // 登录墙/挑战页/导航噪声：不落库
-    const truncated = truncateStatement(text, PER_PROBLEM_BUDGET);
+    // 持久层保存长正文，只有注入模型时才按上下文预算分页/截断。
+    const truncated = truncateStatement(text, 120_000);
     db.prepare(
       `INSERT INTO problem_statements (platform, problem_key, text, source_url, fetched_at)
        VALUES (?, ?, ?, ?, ?)
@@ -368,6 +404,7 @@ export async function fetchProblemStatement(
     fetchBackoff.delete(cacheKey); // 成功即清退避记录：此后由缓存命中挡住，不会再发请求
     return truncated;
   } catch {
+    if (signal?.aborted) { fetchBackoff.delete(cacheKey); signal.throwIfAborted(); }
     return null; // 失败静默：退避控制重试频率，不阻断对话
   }
 }

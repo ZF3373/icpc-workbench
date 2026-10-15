@@ -369,6 +369,8 @@ CREATE TABLE IF NOT EXISTS participated_contests (
   url         TEXT,
   start_ms    INTEGER,
   end_ms      INTEGER,
+  -- 1=来自官方赛程；0=旧版可能由 Rating 结算时间推算，不可据此判定赛时提交。
+  official_window INTEGER NOT NULL DEFAULT 0,
   contest_rank INTEGER,
   rating      INTEGER,
   rating_change INTEGER,
@@ -417,6 +419,15 @@ CREATE TABLE IF NOT EXISTS cf_problemset_cache (
   id         INTEGER PRIMARY KEY CHECK (id = 1),
   fetched_at TEXT NOT NULL,
   payload    TEXT NOT NULL
+);
+
+-- 官方比赛题单独立于账号成绩保存，虚拟赛/训练赛同样能复用总题数与未提交题。
+CREATE TABLE IF NOT EXISTS contest_problem_sets (
+  platform   TEXT NOT NULL,
+  contest_id TEXT NOT NULL,
+  refs       TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (platform, contest_id)
 );
 
 -- 题面缓存（单题一行；contests/problemStatements.ts 读写）：

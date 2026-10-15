@@ -16,6 +16,59 @@ import {
 import type { ContestReviewData } from '../src/contests/participated.ts';
 import type { PlatformId } from '../../shared/src/index.ts';
 
+test('洛谷题面保留输入输出、样例与约束，长正文不在落库前截断', async () => {
+  __resetProblemStatementsForTest();
+  const db = createDb(':memory:');
+  try {
+    const description = '求序列的最优划分。'.repeat(650);
+    const html = `<script>window.__INITIAL_STATE__ = ${JSON.stringify({
+      unrelated: { description: '这是一段无关的元信息描述'.repeat(15) },
+      problem: { content: { description, inputFormat: '输入 n 个整数', outputFormat: '输出最小代价', hint: '约束 n <= 200000' }, samples: [['3\n1 2 3', '6']] },
+    })};</script>`;
+    const text = await fetchProblemStatement(db, 'luogu', 'P12345', 'https://www.luogu.com.cn/problem/P12345', async () => new Response(html));
+    assert.ok(text);
+    assert.ok(text.startsWith('## 题目描述'));
+    assert.ok(text.includes(description));
+    assert.match(text, /输入 n 个整数/);
+    assert.match(text, /输出最小代价/);
+    assert.match(text, /n <= 200000/);
+    assert.match(text, /1 2 3/);
+    assert.equal(readProblemStatements(db, [{ platform: 'luogu', problemKey: 'P12345' }]).get('P12345'), text);
+  } finally { db.close(); }
+});
+
+test('AtCoder 嵌套语言 span 不得丢掉后面的约束和样例', async () => {
+  __resetProblemStatementsForTest();
+  const db = createDb(':memory:');
+  try {
+    const html = `<div id="task-statement"><span class="lang"><span class="lang-en"><section>${'Find the minimum value. '.repeat(10)}<span>nested<span>formula</span></span></section><section>Constraints: n up to 200000</section><section>Sample Output 1: 42</section></span></span></div>`;
+    const text = await fetchProblemStatement(db, 'atcoder', 'abc999_a', 'https://atcoder.jp/contests/abc999/tasks/abc999_a', async () => new Response(html));
+    assert.match(text ?? '', /Constraints: n up to 200000/);
+    assert.match(text ?? '', /Sample Output 1: 42/);
+  } finally { db.close(); }
+});
+
+test('HTML 题面超过通用网页的 50000 字符预算时仍保留末尾约束', async () => {
+  __resetProblemStatementsForTest();
+  const db = createDb(':memory:');
+  try {
+    const html = `<div id="task-statement"><span class="lang-en">${'long description '.repeat(4000)}<p>LAST_CONSTRAINT: n &#8804; 200000</p></span></div>`;
+    const text = await fetchProblemStatement(db, 'atcoder', 'abc999_b', 'https://atcoder.jp/contests/abc999/tasks/abc999_b', async () => new Response(html));
+    assert.match(text ?? '', /LAST_CONSTRAINT: n ≤ 200000/);
+  } finally { db.close(); }
+});
+
+test('洛谷真实 lentille-context 的 formatI/formatO 字段保留输入输出与范围', async () => {
+  __resetProblemStatementsForTest();
+  const db = createDb(':memory:');
+  try {
+    const html = `<script id="lentille-context" type="application/json">${JSON.stringify({ data: { problem: { content: { description: 'Given the efficiency of n-1 teams, find the missing team efficiency. '.repeat(5), formatI: 'The first line contains t test cases. 1 <= t <= 500; 2 <= n <= 100.', formatO: 'For each test case, output a line containing an integer.', hint: 'Example explanation.' }, samples: [['2\n4\n3 -4 5', '-4']] } } })}</script>`;
+    const text = await fetchProblemStatement(db, 'luogu', 'CF1877A', 'https://www.luogu.com.cn/problem/CF1877A', async () => new Response(html));
+    assert.match(text ?? '', /## 输入格式[\s\S]*2 <= n <= 100/);
+    assert.match(text ?? '', /## 输出格式[\s\S]*For each test case/);
+  } finally { db.close(); }
+});
+
 /**
  * 题面预取 + 落库缓存的测试：预取、缓存命中、抓取失败降级、预算控制。
  * 全部走内存库，不访问网络（注入 mock fetch）。

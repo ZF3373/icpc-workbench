@@ -46,8 +46,8 @@ let inflight: Promise<ContestInfo[]> | null = null;
 const CACHE_MS = 60 * 60 * 1000;
 const PAGES = 2;
 
-export async function fetchLuoguContests(fetchFn: typeof fetch = fetch): Promise<ContestInfo[]> {
-  if (cache && Date.now() - cache.at < CACHE_MS) return cache.contests;
+export async function fetchLuoguContests(fetchFn: typeof fetch = fetch, force = false): Promise<ContestInfo[]> {
+  if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache.contests;
   if (inflight) return inflight;
   inflight = (async () => {
     const pages = await Promise.all(

@@ -268,28 +268,91 @@ test('AtCoder：日历时间窗匹配参赛并取赛名；无日历时启发式�
   }
 });
 
-test('计蒜客 / QOJ：比赛题键命中即参赛，练习题不产生场次', () => {
+test('计蒜客：比赛题键命中参赛同步来源，练习题不产生场次', () => {
   const db = createDb(':memory:');
   try {
     seedAll(db, [
       { platform: 'jisuanke', problemKey: '12345-678', verdict: 'AC', submittedAt: '2026-09-08T08:00:00.000Z', externalId: 'j1' },
       { platform: 'jisuanke', problemKey: '12345-679', verdict: 'WA', submittedAt: '2026-09-08T08:20:00.000Z', externalId: 'j2' },
       { platform: 'jisuanke', problemKey: 'T1001', verdict: 'AC', submittedAt: '2026-09-08T09:00:00.000Z', externalId: 'j3' },
-      { platform: 'qoj', problemKey: '3588-17753', verdict: 'WA', submittedAt: '2026-09-07T12:00:00.000Z', externalId: 'q1' },
-      { platform: 'qoj', problemKey: '9242', verdict: 'AC', submittedAt: '2026-09-07T13:00:00.000Z', externalId: 'q2' },
     ]);
     const contests = deriveParticipatedContests(db, { calendar: [] });
     assert.deepEqual(
       contests.map((c) => [c.key, c.evidence]),
       [
         ['jisuanke:12345', 'key-pattern'],
-        ['qoj:3588', 'key-pattern'],
       ],
     );
     assert.equal(contests[0]!.url, 'https://www.jisuanke.com/contest/12345');
-    assert.equal(contests[1]!.url, 'https://qoj.ac/contest/3588');
     assert.equal(contests[0]!.acProblemCount, 1);
     assert.equal(contests[0]!.inContestAcProblemCount, null, '无日历无参赛记录：赛时/补题不划分');
+  } finally {
+    db.close();
+  }
+});
+
+test('QOJ：比赛题键仅表示题目归属，单题或集中补题都不算参赛', () => {
+  const db = createDb(':memory:');
+  try {
+    seedAll(db, [
+      { platform: 'qoj', problemKey: '3588-17753', submittedAt: '2026-09-07T12:00:00.000Z', externalId: 'q1' },
+      { platform: 'qoj', problemKey: '3589-17754', submittedAt: '2026-09-07T12:10:00.000Z', externalId: 'q2' },
+      { platform: 'qoj', problemKey: '3589-17755', submittedAt: '2026-09-07T12:20:00.000Z', externalId: 'q3' },
+      { platform: 'qoj', problemKey: '3589-17756', submittedAt: '2026-09-07T12:30:00.000Z', externalId: 'q4' },
+      { platform: 'qoj', problemKey: '9242', submittedAt: '2026-09-07T13:00:00.000Z', externalId: 'q5' },
+    ]);
+    assert.deepEqual(deriveParticipatedContests(db), [], '没有参赛证据时不凭题号或提交密度猜测');
+    assert.equal(resolveContestGroup(db, 'qoj:3588'), null, '复盘入口使用同一参赛判定');
+    assert.equal(resolveContestGroup(db, 'qoj:3589'), null);
+    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM submissions').get() as { n: number }).n, 5, '补题记录继续保留');
+  } finally {
+    db.close();
+  }
+});
+
+test('QOJ：有官方赛程时仅赛时提交证明参赛，后续补题并入已参赛场次', () => {
+  const db = createDb(':memory:');
+  try {
+    const calendar: ContestInfo[] = ['3588', '3589', '3590'].map((id) => ({
+      id: `qoj-${id}`, platform: 'qoj', name: `QOJ Contest ${id}`, category: 'ICPC',
+      startTimeIso: '2026-09-07T12:00:00.000Z', durationMinutes: 300, phase: 'FINISHED',
+      url: `https://qoj.ac/contest/${id}`,
+    }));
+    seedAll(db, [
+      { platform: 'qoj', problemKey: '3588-17753', submittedAt: '2026-09-07T12:30:00.000Z', externalId: 'q1' },
+      { platform: 'qoj', problemKey: '3588-17754', submittedAt: '2026-09-08T12:00:00.000Z', externalId: 'q2' },
+      { platform: 'qoj', problemKey: '3589-17755', submittedAt: '2026-09-07T17:00:01.000Z', externalId: 'q3' },
+      { platform: 'qoj', problemKey: '3590-17756', submittedAt: '2026-09-07T11:00:00.000Z', externalId: 'q4' },
+    ]);
+    const contests = deriveParticipatedContests(db, { calendar });
+    assert.deepEqual(contests.map((c) => [c.key, c.evidence]), [['qoj:3588', 'calendar-window']]);
+    assert.equal(contests[0]!.submissionCount, 2);
+    assert.equal(contests[0]!.acProblemCount, 2, '当前 AC 含补题');
+    assert.equal(contests[0]!.inContestAcProblemCount, 1, '赛中 AC 排除补题');
+    const review = resolveContestGroup(db, 'qoj:3588', { calendar });
+    assert.ok(review);
+    assert.equal(review.submissions.length, 2);
+    assert.equal(resolveContestGroup(db, 'qoj:3589', { calendar }), null, '比赛刚结束的补题也不能证明参赛');
+  } finally {
+    db.close();
+  }
+});
+
+test('QOJ：平台参赛记录可独立证明参赛，已有补题只补充进度', () => {
+  const db = createDb(':memory:');
+  try {
+    seedAll(db, [
+      { platform: 'qoj', problemKey: '3588-17753', submittedAt: '2026-09-21T12:00:00.000Z', externalId: 'q1' },
+    ]);
+    const sources = { qoj: [srcEntry('qoj', '3588'), srcEntry('qoj', '3589')] };
+    const contests = deriveParticipatedContests(db, { sources });
+    assert.equal(contests.length, 2, '本地无提交也可凭平台参赛记录入列');
+    assert.ok(contests.every((c) => c.evidence === 'joined-list'), '题号不能覆盖真实的参赛证据');
+    const review = resolveContestGroup(db, 'qoj:3588', { sources });
+    assert.ok(review);
+    assert.equal(review.submissions.length, 1);
+    assert.equal(review.contest.acProblemCount, 1);
+    assert.equal(review.contest.inContestAcProblemCount, 0);
   } finally {
     db.close();
   }
@@ -516,6 +579,20 @@ function srcEntry(
   };
 }
 
+test('官方完整题目集补足参赛记录缺失的总题数，支持可靠补题进度', () => {
+  const db = createDb(':memory:');
+  try {
+    seedAll(db, [{ platform: 'codeforces', problemKey: '2266A', verdict: 'AC', submittedAt: '2026-09-20T15:00:00.000Z', externalId: 'count-1', context: 'contest' }]);
+    const sources = { codeforces: [srcEntry('codeforces', '2266', {
+      problems: [{ id: '2266A' }, { id: '2266B' }, { id: '2266C' }], problemSetState: 'ok',
+    })] };
+    const [c] = deriveParticipatedContests(db, { sources });
+    assert.equal(c.acProblemCount, 1);
+    assert.equal(c.problemCount, 3);
+    assert.equal(c.source?.problemCount, 3, '向展示层提供官方题集总数，不能只提供本地去重题数');
+  } finally { db.close(); }
+});
+
 test('权威参赛记录合并：CF 旧数据（context=null）凭 user.rating 入列并补齐名称/成绩', () => {
   const db = createDb(':memory:');
   try {
@@ -644,7 +721,7 @@ test('牛客合成组：练习页已含比赛提交（context=null），按权�
     assert.match(md, /323650/);
     assert.doesNotMatch(md, /320640/);
 
-    // 题目集缺失（拉取失败）时退化为整窗归因：窗口内 3 条全归因
+    // 缺少题目集时无法分辨日常练习，不归因窗口内的任意提交。
     const degraded = deriveParticipatedContests(db, {
       sources: {
         nowcoder: [
@@ -656,7 +733,7 @@ test('牛客合成组：练习页已含比赛提交（context=null），按权�
         ],
       },
     })[0]!;
-    assert.equal(degraded.submissionCount, 3, '无题目集时退化为整窗归因');
+    assert.equal(degraded.submissionCount, 0, '无题目集时保留参赛记录，但不猜测提交归属');
   } finally {
     db.close();
   }
@@ -702,7 +779,7 @@ test('牛客补题归因：窗口外的题目集成员计入当前 AC，赛时 A
     assert.equal(review.submissions.length, 3);
     assert.match(
       renderContestContext(review),
-      /概况：全场 6 题中 AC 3 题（赛时 AC 1、赛后补题 2）、未提交 3 题，共 3 次提交/,
+      /概况：全场 6 题中 AC 3 题（赛时 AC 1、赛后补题 2）、本地无提交 3 题，共 3 次提交/,
     );
   } finally {
     db.close();
@@ -747,7 +824,7 @@ test('列表总题数 = 该场题目总数（牛客周赛162：共 6 题、交�
       ['323658', '323660'],
       '未提交的题 = 题目集 − 已提交',
     );
-    assert.match(renderContestContext(review), /全场 6 题中 AC 4 题、未提交 2 题/);
+    assert.match(renderContestContext(review), /全场 6 题中 AC 4 题、本地无提交 2 题/);
   } finally {
     db.close();
   }
@@ -813,8 +890,9 @@ test('provider 映射：CF user.rating / AtCoder history（stub fetch，不访�
     },
     '日历命中的场次用官方起止时间',
   );
-  // 日历没有的场次：结束时间回推 2h 近似窗口
-  assert.equal(cf[1]!.startTimeMs, Date.parse('2026-10-01T14:00:00.000Z'));
+  // Rating 更新时间不是赛程，无日历时不编造固定两小时窗口。
+  assert.equal(cf[1]!.startTimeMs, null);
+  assert.equal(cf[1]!.endTimeMs, null);
 
   const atFetch: typeof fetch = (async () =>
     new Response(JSON.stringify([
@@ -829,7 +907,7 @@ test('provider 映射：CF user.rating / AtCoder history（stub fetch，不访�
   assert.equal(at[0]!.rank, 8970);
   assert.equal(at[0]!.rating, 34);
   assert.equal(at[0]!.endTimeMs, Date.parse('2026-05-23T13:40:00.000Z'), 'EndTime(ISO) 解析为毫秒');
-  assert.equal(at[0]!.startTimeMs, Date.parse('2026-05-23T13:40:00.000Z') - 2 * 3_600_000, '无日历命中时按结束时间回推近似窗口');
+  assert.equal(at[0]!.startTimeMs, null, '只有官方结束时间时不倒推固定时长');
   assert.equal(at[1]!.rating, null, 'unrated 场次不携带 rating');
   assert.equal(at[1]!.endTimeMs, Date.parse('2026-05-16T13:40:00.000Z'), 'EndTimeStamp(Unix 秒) 仍兼容');
 });
@@ -1119,7 +1197,7 @@ test('复盘上下文列出「赛时未提交的题」：题目集已知但本�
     );
 
     const md = renderContestContext(review);
-    assert.match(md, /概况：全场 4 题中 AC 2 题、未提交 2 题，共 2 次提交/, '概况按题目集全集口径');
+    assert.match(md, /概况：全场 4 题中 AC 2 题、本地无提交 2 题，共 2 次提交/, '概况按题目集全集口径');
     assert.match(md, /### 未提交的题（题目集已知但本地无任何提交，共 2 题）/);
     assert.match(md, /- C 小月的项链/);
     assert.match(md, /- D 小月的棋盘，题目链接：https:\/\/ac\.nowcoder\.com\/acm\/problem\/323670/);
@@ -1181,7 +1259,7 @@ test('旧格式 problem_ids（纯 id 字符串数组）兼容解析：归因与�
     const snapshot = readParticipationSnapshot(db);
     assert.ok(snapshot.byPlatform.nowcoder, '存量行应读出参赛记录');
     const review = resolveContestGroup(db, 'nowcoder:140489', { sources: snapshot.byPlatform })!;
-    assert.equal(review.problemSetKnown, true, '旧格式解析后题目集视为已知');
+    assert.equal(review.problemSetKnown, false, '旧格式可解析，但仅有 2/6 题时不能声称完整题目集');
     assert.equal(review.submissions.length, 1, '归因仍按旧题目集排歧：窗口内的题库练习题不归因');
     assert.deepEqual(
       review.unsubmittedProblems.map((p) => p.id),
@@ -1396,9 +1474,9 @@ test('fetchContestProblemSet：AtCoder /contests/{slug}/tasks 解析题目集并
     assert.deepEqual(result, {
       status: 'ok',
       refs: [
-        { id: 'abc454_a', index: 'A', title: 'Closed interval' },
-        { id: 'abc454_b', index: 'B', title: 'Mapping' },
-        { id: 'abc454_g', index: 'G', title: 'Mode in the Subtree' },
+        { id: 'abc454_a', contestId: 'abc454', index: 'A', title: 'Closed interval' },
+        { id: 'abc454_b', contestId: 'abc454', index: 'B', title: 'Mapping' },
+        { id: 'abc454_g', contestId: 'abc454', index: 'G', title: 'Mode in the Subtree' },
       ],
     });
 
@@ -1580,7 +1658,7 @@ test('洛谷归因：题目集已知时按「属于该场」精确匹配——�
     assert.equal(review.submissions.length, 3);
     assert.match(
       renderContestContext(review),
-      /概况：全场 4 题中 AC 2 题（赛时 AC 1、赛后补题 1）、未提交 1 题，共 3 次提交/,
+      /概况：全场 4 题中 AC 2 题（赛时 AC 1、赛后补题 1）、本地无提交 1 题，共 3 次提交/,
     );
   } finally {
     db.close();

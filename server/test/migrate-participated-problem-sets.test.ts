@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createDb } from '../src/db/index.ts';
+import { readContestProblemSet, storeContestProblemSet } from '../src/contests/problemSetCache.ts';
 
 /**
  * v0.9.1 数据修复：参赛记录题目集串台清理。
@@ -18,6 +19,39 @@ function withTempDb<T>(fn: (dbPath: string) => T): T {
     for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${dbPath}${suffix}`, { force: true });
   }
 }
+
+test('迁移：旧库新增官方窗口标记，不改写原始时间、成绩或提交，反复打开保持幂等', () => {
+  withTempDb(dbPath => {
+    const db = createDb(dbPath);
+    db.prepare("INSERT INTO participated_contests(user_id,platform,account,contest_id,start_ms,end_ms,rating,fetched_at) VALUES(1,'codeforces','main','2001',123000,456000,1500,?)").run(new Date().toISOString());
+    db.exec('ALTER TABLE participated_contests DROP COLUMN official_window');
+    db.close();
+    for (let round = 0; round < 2; round++) {
+      const reopened = createDb(dbPath);
+      try {
+        assert.deepEqual({ ...reopened.prepare('SELECT start_ms,end_ms,rating,official_window FROM participated_contests').get() }, {
+          start_ms: 123000, end_ms: 456000, rating: 1500, official_window: 0,
+        });
+      } finally { reopened.close(); }
+    }
+  });
+});
+
+test('迁移：旧库自动建立独立题单缓存，重新打开仍保留且不生成参赛成绩', () => {
+  withTempDb(dbPath => {
+    const old = createDb(dbPath);
+    old.exec('DROP TABLE contest_problem_sets');
+    old.close();
+    const upgraded = createDb(dbPath);
+    storeContestProblemSet(upgraded, 'atcoder', 'abc400', [{ id: 'abc400_a', contestId: 'abc400' }, { id: 'abc400_b', contestId: 'abc400' }]);
+    upgraded.close();
+    const reopened = createDb(dbPath);
+    try {
+      assert.equal(readContestProblemSet(reopened, 'atcoder', 'abc400')?.length, 2);
+      assert.equal((reopened.prepare('SELECT count(*) AS n FROM participated_contests').get() as { n: number }).n, 0);
+    } finally { reopened.close(); }
+  });
+});
 
 test('迁移：CF/AtCoder 场次里不属于本场的题目集被清空，正确的保留', () => {
   withTempDb((dbPath) => {

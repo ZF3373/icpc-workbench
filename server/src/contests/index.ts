@@ -1,4 +1,4 @@
-import type { ContestInfo, PlatformId } from '../../../shared/src/index.ts';
+import { PLATFORMS, type ContestInfo, type PlatformId } from '../../../shared/src/index.ts';
 import { fetchAtcoderContests } from './atcoderContests.ts';
 import { fetchCfContests } from './cfContests.ts';
 import { fetchJisuankeContests } from './jisuankeContests.ts';
@@ -17,6 +17,7 @@ export type ContestPhase = 'upcoming' | 'running' | 'finished';
 export function contestPhase(c: ContestInfo, now = Date.now()): ContestPhase | null {
   if (!c.startTimeIso) return null;
   const start = new Date(c.startTimeIso).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(c.durationMinutes) || c.durationMinutes < 0) return null;
   const end = start + c.durationMinutes * 60_000;
   if (now < start) return 'upcoming';
   if (now < end) return 'running';
@@ -29,13 +30,13 @@ export interface AllContests {
   failures: Partial<Record<PlatformId, string>>;
 }
 
-export async function fetchAllContests(fetchFn: typeof fetch = throttledFetch): Promise<AllContests> {
+export async function fetchAllContests(fetchFn: typeof fetch = throttledFetch, force = false): Promise<AllContests> {
   const results = await Promise.allSettled([
-    fetchCfContests(fetchFn),
-    fetchAtcoderContests(fetchFn),
-    fetchLuoguContests(fetchFn),
-    fetchNowcoderContests(fetchFn),
-    fetchJisuankeContests(fetchFn),
+    fetchCfContests(fetchFn, force),
+    fetchAtcoderContests(fetchFn, force),
+    fetchLuoguContests(fetchFn, force),
+    fetchNowcoderContests(fetchFn, force),
+    fetchJisuankeContests(fetchFn, force),
   ]);
   const platforms: PlatformId[] = ['codeforces', 'atcoder', 'luogu', 'nowcoder', 'jisuanke'];
   const contests: ContestInfo[] = [];
@@ -58,15 +59,28 @@ export interface ContestFilter {
   type: ContestPhase;
   platform?: PlatformId;
   limit?: number;
+  offset?: number;
+  query?: string;
+  category?: string;
 }
 
-/** 筛选 + 排序：即将开始按开始时间升序；进行中按结束时间升序（即将结束的排前）；已结束按结束时间降序 */
-export function selectContests(all: ContestInfo[], filter: ContestFilter): ContestInfo[] {
+/** 先筛选排序再分页，搜索不能只在默认首屏的几十场中查找。 */
+export function browseContests(all: ContestInfo[], filter: ContestFilter): { contests: ContestInfo[]; total: number; categories: string[] } {
   const now = Date.now();
-  const limit = Math.min(100, Math.max(1, filter.limit ?? 20));
-  return all
+  const limit = Number.isFinite(filter.limit) ? Math.min(100, Math.max(1, Math.floor(filter.limit!))) : 20;
+  const offset = Number.isFinite(filter.offset) ? Math.max(0, Math.floor(filter.offset!)) : 0;
+  const normalize = (text: string) => text.normalize('NFKC').toLocaleLowerCase();
+  const terms = normalize(filter.query ?? '').trim().split(/\s+/).filter(Boolean);
+  const base = all
     .filter((c) => contestPhase(c, now) === filter.type)
-    .filter((c) => !filter.platform || c.platform === filter.platform)
+    .filter((c) => !filter.platform || c.platform === filter.platform);
+  const categories = [...new Set(base.map(c => c.category))].sort((a, b) => a.localeCompare(b));
+  const matching = base
+    .filter(c => !filter.category || c.category === filter.category)
+    .filter(c => {
+      const text = normalize([c.name, c.id, c.platform, PLATFORMS.find(p => p.id === c.platform)?.name, c.category].join(' '));
+      return terms.every(term => text.includes(term));
+    })
     .sort((a, b) => {
       if (filter.type === 'upcoming') {
         return new Date(a.startTimeIso!).getTime() - new Date(b.startTimeIso!).getTime();
@@ -74,6 +88,10 @@ export function selectContests(all: ContestInfo[], filter: ContestFilter): Conte
       const endA = new Date(a.startTimeIso!).getTime() + a.durationMinutes * 60_000;
       const endB = new Date(b.startTimeIso!).getTime() + b.durationMinutes * 60_000;
       return filter.type === 'running' ? endA - endB : endB - endA;
-    })
-    .slice(0, limit);
+    });
+  return { contests: matching.slice(offset, offset + limit), total: matching.length, categories };
+}
+
+export function selectContests(all: ContestInfo[], filter: ContestFilter): ContestInfo[] {
+  return browseContests(all, filter).contests;
 }

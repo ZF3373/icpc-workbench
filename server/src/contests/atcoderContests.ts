@@ -90,8 +90,8 @@ async function fetchOfficialUpcoming(fetchFn: typeof fetch): Promise<ContestInfo
 let cache: { at: number; contests: ContestInfo[] } | null = null;
 const CACHE_MS = 60 * 60 * 1000;
 
-export async function fetchAtcoderContests(fetchFn: typeof fetch = fetch): Promise<ContestInfo[]> {
-  if (cache && Date.now() - cache.at < CACHE_MS) return cache.contests;
+export async function fetchAtcoderContests(fetchFn: typeof fetch = fetch, force = false): Promise<ContestInfo[]> {
+  if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache.contests;
   const [history, upcoming] = await Promise.allSettled([
     fetchKenkooooHistory(fetchFn),
     fetchOfficialUpcoming(fetchFn),

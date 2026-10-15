@@ -72,6 +72,8 @@ export default function App() {
         width={200}
         collapsedWidth={68}
         collapsed={collapsed}
+        breakpoint="md"
+        onBreakpoint={setCollapsed}
         className="app-sider"
       >
         <div className="sider-logo">
@@ -120,7 +122,7 @@ export default function App() {
           </span>
         </div>
       </Sider>
-      <Content style={{ padding: '20px 24px 24px', background: 'transparent' }}>
+      <Content className="app-content" style={{ padding: '20px 24px 24px', background: 'transparent' }}>
         <UpdateChecker />
         <div className="content-container page-content" key={loc.pathname}>
           <Routes>

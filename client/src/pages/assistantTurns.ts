@@ -46,6 +46,7 @@ const TOOL_LABELS: Record<string, string> = {
   web_search: '正在联网检索',
   fetch_url: '正在读取网页',
   fetch_editorial: '正在查找题解',
+  read_problem: '正在读取题面',
 }
 
 /** 进度文案里附带参数的最大长度（详情可能是长 URL） */

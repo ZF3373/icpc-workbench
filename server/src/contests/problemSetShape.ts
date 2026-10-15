@@ -12,7 +12,7 @@ import type { PlatformId } from '../../../shared/src/index.ts';
  *
  * 这里用一个便宜的、按平台键格式的校验兜住这一类串台：
  * - codeforces：题目 key = `${contestId}${index}`（如 2241A / 2241C1）
- * - atcoder：题目 key = `${contestId}_${suffix}`（如 abc454_a）
+ * - atcoder：通常为 `${contestId}_${suffix}`（如 abc454_a）；共用题须带当前官方 tasks 页确认的归属
  * 其它平台（牛客/代码源/计蒜客/力扣/QOJ 等）的 id 没有可校验的前缀约定，
  * 一律视为合法——**宁可放过，也不误删**（它们的题目集本来就来自各自平台的接口）。
  */
@@ -45,10 +45,11 @@ export function isCfGymContestId(contestId: string): boolean {
 export function problemSetMatchesContest(
   platform: PlatformId,
   contestId: string,
-  refs: Array<{ id: string }> | null | undefined,
+  refs: Array<{ id: string; contestId?: string }> | null | undefined,
 ): boolean {
   if (!refs || refs.length === 0) return false;
   const prefix = problemIdPrefix(platform, contestId);
   if (prefix === null) return true; // 无约定 → 不校验
-  return refs.every((r) => typeof r.id === 'string' && r.id.startsWith(prefix));
+  return refs.every((r) => typeof r.id === 'string' && (r.id.startsWith(prefix)
+    || (platform === 'atcoder' && r.contestId === contestId && /^[a-z][a-z0-9_]*$/.test(r.id))));
 }

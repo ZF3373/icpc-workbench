@@ -538,10 +538,16 @@ export interface ParticipatedContest {
   startTimeIso: string | null;
   /** 官方结束时间（日历匹配到时），否则用末条提交时间近似 */
   endTimeIso: string | null;
+  /** 缺少完整官方赛程，展示时间包含提交活动近似，不能作为赛时归因依据。 */
+  timeIsApproximate?: boolean;
   submissionCount: number;
   problemCount: number;
+  /** 官方题单或平台元数据给出的全场题数；null = 未获取，独立于账号成绩。 */
+  totalProblemCount?: number | null;
   /** 当前 AC 的题数（含赛后补题；与赛时口径 inContestAcProblemCount 配对看补题进度） */
   acProblemCount: number;
+  /** 缺少平台赛时已 AC 题目的逐条身份，当前 AC 只保证至少这么多，不能精确计算剩余补题数。 */
+  acCountIsLowerBound?: boolean;
   /**
    * 赛时（比赛时间窗内）AC 的题数；null = 无法与补题划分（无平台赛时成绩、
    * 无 CF context、无官方起止时间）。与当前 AC 配对展示：赛中 < 当前 = 还有题没补完。
@@ -549,10 +555,12 @@ export interface ParticipatedContest {
   inContestAcProblemCount: number | null;
   /** 本场最后一次提交时间（列表按它倒序 = 最近复盘优先）；无提交时用官方结束时间 */
   lastSubmittedAt: string;
-  /** 参赛判定依据：contest（现场）/ virtual / gym / key-pattern（计蒜客·QOJ 比赛题键）/ calendar-window / heuristic / joined-list（平台参赛记录） */
+  /** 参赛判定依据：contest（现场）/ virtual / gym / key-pattern（计蒜客参赛同步题键）/ calendar-window / heuristic / joined-list（平台参赛记录）；QOJ 题键本身不证明参赛 */
   evidence: string;
   /** 平台参赛记录携带的成绩（user.rating / AtCoder history / 牛客参赛历史等来源；本地推导为 null） */
   source: {
+    /** 排名、Rating 与赛时 AC 的所属账号；当前 AC 则按 accounts 合并去重。 */
+    account?: string;
     rank: number | null;
     rating: number | null;
     ratingChange: number | null;
