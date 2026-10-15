@@ -4,6 +4,7 @@ import {
   FETCH_URL_TRANSPORT,
   executeFetchUrl,
   htmlToText,
+  sanitizeFetchedText,
   extractTitle,
   validatePublicFetchUrl,
   isPrivateIp,
@@ -133,6 +134,23 @@ describe('htmlToText', () => {
     assert.match(text, /内容已截断/);
   });
 
+  it('Codeforces 博客只保留文章正文，过滤站点动态流和评论', () => {
+    const page = [
+      '* [Recent actions](/recent-actions)',
+      "### [BledDest's blog](/blog/BledDest)",
+      '[Educational Codeforces Round 195 — Editorial](/blog/entry/157752)',
+      '**Solution (BledDest)**',
+      'The editorial body is here.',
+      '![](//codeforces.com/codeforces.org/s/65444/images/icons/paperclip-16x16.png) Tutorial of [the contest](/contest/2276)',
+      '* [Unrelated user post about cheating or hacking]',
+      'In English In Russian',
+    ].join('\n');
+    const text = sanitizeFetchedText(page, 'https://codeforces.com/blog/entry/157752');
+    assert.match(text, /The editorial body is here/);
+    assert.doesNotMatch(text, /Recent actions|Unrelated user post|hacking/);
+    assert.doesNotMatch(text, /paperclip-16x16/);
+  });
+
   it('折叠多余空白但保留换行结构', () => {
     const html = '<p>  多   个   空格  </p>\n\n\n\n<p>下一段</p>';
     const text = htmlToText(html);
@@ -231,6 +249,49 @@ describe('executeFetchUrl fallback (direct fetch)', () => {
       assert.equal(r.title, '测试页面');
       assert.match(r.content, /你好世界/);
       assert.equal(r.error, undefined);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  it('Codeforces 博客直连只把正文交给调用方', async () => {
+    const html = [
+      '<html><body>',
+      '<div>Recent actions: unrelated user post about hacking</div>',
+      "<h3>BledDest's blog</h3>",
+      '<p>Editorial body</p>',
+      '<p><img src="/images/paperclip-16x16.png"> Tutorial</p>',
+      '<p>Comments (13)</p><p>Unrelated comment</p>',
+      '</body></html>',
+    ].join('');
+    const mock = mockGlobalFetch([
+      { status: 200, body: html, headers: { 'Content-Type': 'text/html' } },
+    ]);
+    try {
+      const r = await executeFetchUrl('https://codeforces.com/blog/entry/157752', CFG_NO_KEY, undefined, mock.fetchFn);
+      assert.equal(r.error, undefined);
+      assert.match(r.content, /Editorial body/);
+      assert.doesNotMatch(r.content, /Recent actions|hacking|Unrelated comment|paperclip-16x16/);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  it('Tavily Extract 临时 HTTP 失败时自动重试一次', async () => {
+    const rawContent = 'G. Elimination of Players\n\ntime limit per test\n\n4 seconds\n\n' + 'A readable problem statement. '.repeat(8);
+    const mock = mockGlobalFetch([
+      { status: 503, body: 'temporary outage', headers: { 'Content-Type': 'text/plain' } },
+      { status: 200, body: JSON.stringify({ results: [{ raw_content: rawContent }] }), headers: { 'Content-Type': 'application/json' } },
+    ]);
+    try {
+      const r = await executeFetchUrl(
+        'https://codeforces.com/contest/2276/problem/G',
+        { ...CFG_NO_KEY, searchEngine: 'tavily', searchApiKey: 'test-key' },
+        undefined,
+        mock.fetchFn,
+      );
+      assert.match(r.content, /Elimination of Players/);
+      assert.equal(mock.calls.length, 2, '临时失败后应只额外重试一次 Extract');
     } finally {
       mock.restore();
     }

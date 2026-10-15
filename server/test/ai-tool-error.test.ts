@@ -102,3 +102,105 @@ test('工具抛网络层异常 → 转 tool 结果继续对话，不再整轮报
     db.close();
   }
 });
+
+test('模型拒绝工具结果做内容审查时：丢弃外部工具内容并继续收尾', async () => {
+  const db = createDb(':memory:');
+  let call = 0;
+  let fallbackMessages: ChatMessage[] | undefined;
+  const app = express();
+  app.use(express.json({ limit: '2mb' }));
+  app.use(
+    '/api/ai',
+    aiRoutes(db, () => CFG, {
+      fetchContests: async () => ({ contests: [], failures: {} }),
+      createProvider: () => ({
+        enabled: true,
+        chat: async () => 'ok',
+        chatStream: async function* (messages: ChatMessage[], opts: ChatOptions): AsyncGenerator<string, void, void> {
+          call += 1;
+          if (call === 1) {
+            opts.onFinish?.('tool_calls', [{
+              id: 'call_boom_inspection',
+              type: 'function',
+              function: { name: 'boom_probe', arguments: '{}' },
+            }]);
+            return;
+          }
+          if (call === 2) {
+            throw new Error(
+              'AI API HTTP 400: {"error":{"code":"data_inspection_failed","message":"Input text data may contain inappropriate content."}}',
+            );
+          }
+          fallbackMessages = messages;
+          opts.onFinish?.('stop', undefined);
+          yield '已跳过被模型安全检查拦截的外部资料，基于现有信息给出结论。';
+        },
+      }),
+    }),
+  );
+  const srv = await listenForTest(app);
+  try {
+    const res = await fetch(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: '复盘这场比赛' }] }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.equal(call, 3, '内容审查失败后应发起一次无工具结果的收尾请求');
+    assert.match(body, /跳过被模型安全检查拦截/);
+    assert.ok(!body.includes('AI 调用失败'), `降级成功时不应显示调用失败：${body}`);
+    assert.ok(body.includes('[DONE]'));
+    assert.ok(fallbackMessages, '应记录降级请求');
+    assert.equal(fallbackMessages!.at(-1)?.role, 'user');
+    assert.match(String(fallbackMessages!.at(-1)?.content), /安全检查/);
+  } finally {
+    srv.close();
+    db.close();
+  }
+});
+
+test('首轮输入触发内容审查时：去掉预注入题面后重试', async () => {
+  const db = createDb(':memory:');
+  let call = 0;
+  let fallbackMessages: ChatMessage[] | undefined;
+  const app = express();
+  app.use(express.json({ limit: '2mb' }));
+  app.use(
+    '/api/ai',
+    aiRoutes(db, () => CFG, {
+      fetchContests: async () => ({ contests: [], failures: {} }),
+      createProvider: () => ({
+        enabled: true,
+        chat: async () => 'ok',
+        chatStream: async function* (messages: ChatMessage[], opts: ChatOptions): AsyncGenerator<string, void, void> {
+          call += 1;
+          if (call === 1) {
+            throw new Error('AI API HTTP 400: {"error":{"code":"data_inspection_failed"}}');
+          }
+          fallbackMessages = messages;
+          opts.onFinish?.('stop', undefined);
+          yield '首轮审查失败后已完成安全收尾。';
+        },
+      }),
+    }),
+  );
+  const srv = await listenForTest(app);
+  try {
+    const res = await fetch(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: '分析题面' }] }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.equal(call, 2);
+    assert.match(body, /安全收尾/);
+    assert.ok(!body.includes('AI 调用失败'));
+    assert.ok(fallbackMessages?.[0]?.role === 'system');
+    assert.match(String(fallbackMessages?.at(-1)?.content), /当前对话/);
+  } finally {
+    srv.close();
+    db.close();
+  }
+});

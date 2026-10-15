@@ -168,11 +168,21 @@ export async function executeFetchUrl(
   if (engine === 'tavily' && apiKey) {
     const r = await tavilyExtract(url, apiKey);
     if (r.content.trim()) return r;
+    // Extract 偶发 5xx/429 或网络抖动时，立刻重试一次；否则题面抓取会被
+    // 下游题面服务的 5 分钟退避放大成整场比赛缺题。鉴权/参数错误不重试。
+    if (isRetryableTavilyError(r.error)) {
+      const retry = await tavilyExtract(url, apiKey);
+      if (retry.content.trim()) return retry;
+    }
   }
 
   // 兜底路径：直接 fetch + HTML 转文本（对服务端渲染页面有效），走全局节流
   const r = await directFetch(url, cookies, fetchFn);
   return r;
+}
+
+function isRetryableTavilyError(error: string | undefined): boolean {
+  return Boolean(error && /Tavily Extract HTTP (?:408|425|429|5\d{2})|Tavily Extract 请求失败|Tavily Extract 返回空内容/i.test(error));
 }
 
 /** Tavily Extract API：读取指定 URL 正文，返回 markdown 格式内容。能处理 JS 渲染页面。 */
@@ -202,7 +212,7 @@ async function tavilyExtract(url: string, apiKey: string): Promise<FetchResult> 
       // markdown 内容首行 # 标题可作为页面标题
       const titleMatch = first.raw_content.match(/^#\s+(.+)$/m);
       return {
-        content: truncate(first.raw_content),
+        content: truncate(sanitizeFetchedText(first.raw_content, url)),
         title: titleMatch ? titleMatch[1].trim() : url,
       };
     }
@@ -314,9 +324,9 @@ async function directFetch(
       }
       const html = await res.text();
       const title = extractTitle(html) || url;
-      const content = htmlToText(html);
+      const content = sanitizeFetchedText(htmlToText(html, { truncate: false }), url);
       if (!content.trim()) return { content: '', title: url, error: '页面正文为空（可能是 JS 渲染页面）' };
-      return { content, title };
+      return { content: truncate(content), title };
     }
     return { content: '', title: url, error: '重定向次数过多（>5 跳）' };
   } catch (e) {
@@ -328,6 +338,84 @@ async function directFetch(
 function truncate(text: string): string {
   if (text.length <= MAX_TEXT_CHARS) return text;
   return text.slice(0, MAX_TEXT_CHARS) + '\n[…内容已截断，原文较长]';
+}
+
+/**
+ * 去除抓取器返回的站点壳层和用户生成内容。
+ *
+ * Codeforces 的 blog 页面会把「Recent actions」、排行榜、评论和页脚一起
+ * 返回。它们与题解无关，却可能包含任意用户文本；这些文本进入模型上游的
+ * 内容检查后会造成误判。博客正文有稳定的作者标题和 Tutorial 图标边界，
+ * 因此只对 blog/entry 页面做结构化截取，其他网址保持原始正文语义。
+ */
+export function sanitizeFetchedText(text: string, url: string): string {
+  let s = text.replace(/\r\n?/g, '\n').trim();
+  if (isCodeforcesProblemUrl(url)) return sanitizeCodeforcesProblemText(s, url);
+  if (!isCodeforcesBlogEntryUrl(url)) return s;
+
+  const lines = s.split('\n');
+  const start = lines.findIndex((line) =>
+    /^\s*(?:#{2,6}\s+)?(?:\[[^\n\]]*['’]s\s+blog[^\]]*\]\([^)]*\)|[^\n]*['’]s\s+blog)\s*$/iu.test(line),
+  );
+  if (start < 0) return s;
+
+  const body = lines.slice(start);
+  const end = body.findIndex((line, index) => index > 0 && (
+    /paperclip-16x16/i.test(line) ||
+    /^\s*(?:#{1,6}\s*)?comments(?:\s*\(\d+\))?\s*$/iu.test(line) ||
+    /^\s*in english\s+in russian\s*$/iu.test(line) ||
+    /codeforces.*copyright\s+\d{4}/iu.test(line)
+  ));
+  const result = (end >= 0 ? body.slice(0, end) : body).join('\n');
+  return result.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** Tavily Extract 返回的 CF 题目页仍包含导航和页脚，只截取题目标题到页脚。 */
+function sanitizeCodeforcesProblemText(text: string, rawUrl: string): string {
+  let index = '';
+  try {
+    const match = new URL(rawUrl).pathname.match(/^\/(?:contest|gym)\/[^/]+\/problem\/([^/]+)/i);
+    index = match?.[1] ?? '';
+  } catch {
+    return '';
+  }
+  if (!index) return '';
+  const escaped = index.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const titleRe = new RegExp(`^\\s*(?:#{1,6}\\s*)?${escaped}\\.\\s+\\S`, 'i');
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => titleRe.test(line));
+  if (start < 0) return '';
+  const body = lines.slice(start);
+  const end = body.findIndex((line, offset) => offset > 0 && (
+    /codeforces.*copyright\s+\d{4}/i.test(line) ||
+    /^\s*in english\s+in russian\s*$/i.test(line)
+  ));
+  return (end >= 0 ? body.slice(0, end) : body)
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function isCodeforcesProblemUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase();
+    return (host === 'codeforces.com' || host === 'www.codeforces.com') &&
+      /^\/(?:contest|gym)\/[^/]+\/problem\/[^/]+/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function isCodeforcesBlogEntryUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase();
+    return (host === 'codeforces.com' || host === 'www.codeforces.com') &&
+      /^\/blog\/entry\//i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
 }
 
 /** 从 HTML 中提取 <title> 文本（在剥离前调用） */
@@ -350,6 +438,10 @@ export function htmlToText(html: string, opts: { truncate?: boolean } = {}): str
   s = s.replace(/<header\b[\s\S]*?<\/header>/gi, '');
   s = s.replace(/<footer\b[\s\S]*?<\/footer>/gi, '');
   s = s.replace(/<noscript\b[\s\S]*?<\/noscript>/gi, '');
+  // Codeforces uses this image as the stable boundary between an editorial and
+  // its comments. Keep an internal marker long enough for sanitizeFetchedText
+  // to see it; ordinary images remain omitted as before.
+  s = s.replace(/<img\b[^>]*paperclip-16x16[^>]*>/gi, 'paperclip-16x16');
   // 2. 块级标签闭合转换行（保留文档结构，pre/code 内容仅去标签保留文本）
   s = s.replace(/<\/(p|div|li|h[1-6]|tr|section|article|blockquote|ul|ol|table)>/gi, '\n');
   s = s.replace(/<br\s*\/?>/gi, '\n');

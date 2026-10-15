@@ -15,7 +15,10 @@ export const readProblemTool: AiTool = {
     if (!ctx.db || typeof args.platform !== 'string' || typeof args.problemKey !== 'string' || (args.offset !== undefined && (!Number.isSafeInteger(args.offset) || Number(args.offset) < 0))) {
       return { content: JSON.stringify({ status: 'unavailable', reason: '需要本地题库、platform、problemKey 与非负整数 offset。' }) };
     }
-    const result = await readStatement(ctx.db, { platform: args.platform, problemKey: args.problemKey }, ctx, Number(args.offset ?? 0));
+    const result = await readStatement(ctx.db, { platform: args.platform, problemKey: args.problemKey }, {
+      ...ctx,
+      searchConfig: { searchEngine: ctx.cfg.searchEngine, searchApiKey: ctx.cfg.searchApiKey },
+    }, Number(args.offset ?? 0));
     return { content: JSON.stringify(result) };
   },
 };

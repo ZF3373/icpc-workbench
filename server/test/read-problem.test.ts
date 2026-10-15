@@ -46,6 +46,49 @@ test('CF 无 Cookie 时读取同题洛谷镜像，不发送其他平台 Cookie',
   } finally { db.close(); }
 });
 
+test('CF 官方页被 Cloudflare 拦截时，使用 Tavily Extract 取得完整题面', async () => {
+  const db = createDb(':memory:');
+  __resetProblemStatementsForTest();
+  const originalFetch = globalThis.fetch;
+  let directFetches = 0;
+  globalThis.fetch = (async (input: URL | RequestInfo) => {
+    assert.match(String(input), /api\.tavily\.com\/extract/);
+    return new Response(JSON.stringify({ results: [{
+      url: 'https://codeforces.com/contest/2276/problem/A',
+      raw_content: [
+        '* [Recent actions](/recent-actions)',
+        'A. Perfect Sandwiches',
+        'time limit per test',
+        '1 second',
+        'memory limit per test',
+        '512 megabytes',
+        'Monocarp has a slices of cheese and b slices of sausage.',
+        'Input',
+        'The only line contains two integers a and b.',
+        'Output',
+        'Print the maximum number of sandwiches.',
+        '[Codeforces](https://codeforces.com/) (c) Copyright 2010-2026 Mike Mirzayanov',
+      ].join('\n'),
+    }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    const ctx: ToolContext = {
+      cfg: { ...cfg, searchEngine: 'tavily', searchApiKey: 'tavily-test-key' },
+      db,
+      fetchFn: async () => { directFetches += 1; return new Response('', { status: 403 }); },
+    };
+    const data = JSON.parse((await executeToolCall('read_problem', { platform: 'codeforces', problemKey: '2276A' }, ctx)).content);
+    assert.equal(data.status, 'available');
+    assert.match(data.text, /Monocarp has/);
+    assert.match(data.text, /Input/);
+    assert.doesNotMatch(data.text, /Recent actions|Codeforces.*Copyright/);
+    assert.equal(directFetches, 0, 'Tavily 取得到正文后不应再直连 Cloudflare 页面');
+  } finally {
+    globalThis.fetch = originalFetch;
+    db.close();
+  }
+});
+
 test('长题面可分页读到末尾，截断缓存不得声称完整', async () => {
   const db = createDb(':memory:');
   try {
@@ -139,6 +182,23 @@ test('预取预算用在未缓存题上，超时返回已有证据与缺失状�
     } });
     assert.match(text2, /"status":"unavailable"/);
   } finally { db.close(); }
+});
+
+test('预取默认覆盖七题比赛，不因默认上限漏掉最后一道', async () => {
+  const db = createDb(':memory:');
+  __resetProblemStatementsForTest();
+  let fetches = 0;
+  try {
+    const refs = Array.from({ length: 7 }, (_, i) => ({ platform: 'nowcoder', problemKey: String(900001 + i) }));
+    const text = await prepareStatementEvidence(db, refs, {
+      fetchFn: async () => { fetches += 1; return new Response('A readable problem statement. '.repeat(8), { status: 200 }); },
+    });
+    assert.equal(fetches, 7, '默认预取应覆盖七道题');
+    assert.doesNotMatch(text, /"status":"unavailable"/);
+  } finally {
+    __resetProblemStatementsForTest();
+    db.close();
+  }
 });
 
 test('关联题面只读当前用户拥有的计划和题单', () => {

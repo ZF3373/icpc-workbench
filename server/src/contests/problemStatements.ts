@@ -1,7 +1,8 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import type { Db } from '../db/index.ts';
-import { htmlToText, validatePublicFetchUrl } from '../ai/fetch-url.ts';
+import { executeFetchUrl, htmlToText, validatePublicFetchUrl } from '../ai/fetch-url.ts';
+import type { SearchConfig } from '../ai/search.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
 import type { ContestReviewData } from './participated.ts';
 
@@ -84,7 +85,7 @@ export type StatementSupport = 'ok' | 'gated' | 'blocked' | 'unsupported';
  * - `codeforces` ❌ 所有 HTML 页被 **Cloudflare** 拦截（实测 `/contest/1877/problem/A`、
  *   `/problemset/problem/1877/A` 均 403 "Just a moment..."，官方镜像 m1 返回 JS 机器人校验页、
  *   m2 403、mirror 连不上；补 Accept-Language/Referer 无效）；`codeforces.com/api/*` 可用但
- *   **不含题面** → 服务端默认拿不到 CF 题面（配了 cf_clearance Cookie 才试，见 fetchProblemStatement）。
+ *   **不含题面** → 无搜索密钥时只能依赖 cf_clearance Cookie；配置 Tavily 时改走 Extract。
  * - 其余（jisuanke/qoj/daimayuan/leetcode）❌ 无公开可抓来源（QOJ 403 challenge；计蒜客为 SPA）。
  */
 export function statementSupport(platform: PlatformId): StatementSupport {
@@ -352,7 +353,7 @@ export async function fetchLuoguPage(url: string, fetchFn: typeof fetch, cookie:
  *
  * 两道门槛：
  * 1. **平台支持矩阵**：CF（Cloudflare 拦截）/ 牛客（需登录）/ 计蒜客·QOJ（无公开源）
- *    直接不抓 —— 反复试只会白打网络，且失败原因会写进上下文让 AI 去问用户；
+ *    没有可用 Cookie 或搜索密钥时直接不抓 —— 反复试只会白打网络，且失败原因会写进上下文让 AI 去问用户；
  * 2. **「像题面吗」校验**：命中权限墙/挑战页/导航噪声一律不落库（宁缺毋滥，
  *    导航文字被当成题面喂给模型比没有题面更糟）。
  */
@@ -364,13 +365,15 @@ export async function fetchProblemStatement(
   fetchFn: typeof fetch = throttledFetch,
   cookie?: string,
   signal?: AbortSignal,
+  searchConfig?: SearchConfig,
 ): Promise<string | null> {
-  // 默认抓「公开可抓」与「尽力抓」的平台；blocked 平台在**用户配置了该平台 Cookie** 时值得一试
-  // （CF 的 Cloudflare 挑战可用浏览器里带出来的 cf_clearance 通过，同 QOJ 的做法）。
+  // 默认抓「公开可抓」与「尽力抓」的平台；blocked 平台在**用户配置了该平台 Cookie
+  // 或 Tavily 搜索密钥**时值得一试（CF 分别走 cf_clearance 或 Extract）。
   // 抓回来一律过 statementLooksValid —— 权限墙/挑战页/导航噪声不落库，
   // 所以"尽力试一次"没有副作用（最坏就是又一条「未取到题面」）。
   const support = statementSupport(platform);
-  if (support !== 'ok' && support !== 'gated' && !cookie?.trim()) return null;
+  const hasSearchKey = Boolean(searchConfig?.searchApiKey?.trim());
+  if (support !== 'ok' && support !== 'gated' && !cookie?.trim() && !hasSearchKey) return null;
 
   const cacheKey = `${platform}:${problemKey}`;
   const backoff = fetchBackoff.get(cacheKey);
@@ -387,11 +390,19 @@ export async function fetchProblemStatement(
   if (invalid) return null;
 
   try {
-    const html = platform === 'luogu'
-      ? await fetchLuoguPage(url, fetchFn, cookie ?? '', signal)
-      : await fetchPage(url, fetchFn, cookie, signal);
-    signal?.throwIfAborted();
-    const text = extractStatement(html, platform).trim();
+    let text = '';
+    if (platform === 'codeforces' && hasSearchKey) {
+      const extracted = await executeFetchUrl(url, searchConfig!, undefined, fetchFn);
+      signal?.throwIfAborted();
+      text = extracted.content.trim();
+    }
+    if (!statementLooksValid(text)) {
+      const html = platform === 'luogu'
+        ? await fetchLuoguPage(url, fetchFn, cookie ?? '', signal)
+        : await fetchPage(url, fetchFn, cookie, signal);
+      signal?.throwIfAborted();
+      text = extractStatement(html, platform).trim();
+    }
     if (!statementLooksValid(text)) return null; // 登录墙/挑战页/导航噪声：不落库
     // 持久层保存长正文，只有注入模型时才按上下文预算分页/截断。
     const truncated = truncateStatement(text, 120_000);

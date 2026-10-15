@@ -337,6 +337,36 @@ test('fetchProblemStatement：blocked 平台配了 Cookie 才尝试（CF + cf_cl
   }
 });
 
+test('fetchProblemStatement：Tavily Extract 失败时仍回退到 CF 直连题面提取', async () => {
+  __resetProblemStatementsForTest();
+  const db = createDb(':memory:');
+  const originalFetch = globalThis.fetch;
+  try {
+    let directCalls = 0;
+    globalThis.fetch = (async (input: URL | RequestInfo) => {
+      assert.match(String(input), /api\.tavily\.com\/extract/);
+      return new Response(JSON.stringify({ failed_results: [{ error: 'temporary extract failure' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    const html = `<div class="problem-statement"><div class="header"><div class="title">A. Fallback</div></div><div class="content"><p>${'Given n, print YES. Input: n (1 <= n <= 100). Output: YES or NO. '.repeat(4)}</p></div></div>`;
+    const text = await fetchProblemStatement(
+      db, 'codeforces', '700B', 'https://codeforces.com/contest/700/problem/B',
+      (async () => { directCalls += 1; return new Response(html, { status: 200 }); }) as typeof fetch,
+      undefined,
+      undefined,
+      { searchEngine: 'tavily', searchApiKey: 'tavily-test-key' },
+    );
+    assert.ok(text?.includes('Given n'), 'Extract 失败后仍应使用既有 CF HTML 提取器');
+    assert.ok(directCalls >= 1, 'Extract 失败后应继续尝试旧的直连路径');
+  } finally {
+    globalThis.fetch = originalFetch;
+    __resetProblemStatementsForTest();
+    db.close();
+  }
+});
+
 test('statementRetryDelayMs：指数退避 5→10→20→40→60 分钟封顶，±20% 抖动且同 key 可复现', () => {
   const MIN = 5 * 60_000;
   const d = (n: number, key = 'atcoder:abc800_a'): number => statementRetryDelayMs(n, key);

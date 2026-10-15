@@ -1,13 +1,14 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import type { PlatformCookies } from '../ai/tools/registry.ts';
+import type { SearchConfig } from '../ai/search.ts';
 import { fetchProblemStatement, statementLooksValid } from '../contests/problemStatements.ts';
 import { problemIdentity, problemIdentitySql } from './identity.ts';
 import { parseProblemListText } from './parseProblemList.ts';
 import { atcoderProblemIdCandidates, splitAtcoderProblemId } from '../adapters/problemKey.ts';
 
 export interface ProblemRef { platform: string; problemKey: string }
-export interface StatementOptions { fetchFn?: typeof fetch; cookies?: PlatformCookies; signal?: AbortSignal }
+export interface StatementOptions { fetchFn?: typeof fetch; cookies?: PlatformCookies; signal?: AbortSignal; searchConfig?: SearchConfig }
 export interface StatementEvidence extends ProblemRef {
   status: 'available' | 'partial' | 'unavailable';
   sourceUrl?: string | null;
@@ -106,7 +107,7 @@ export async function readStatement(db: Db, ref: ProblemRef, opts: StatementOpti
   const sourceRef = native ? { platform: native.platform, problemKey: native.problem_key } : ref;
   for (const target of sources(sourceRef, native?.url)) {
     opts.signal?.throwIfAborted();
-    await fetchProblemStatement(db, target.platform, target.problemKey, target.url, opts.fetchFn, opts.cookies?.[target.platform]?.cookie, opts.signal);
+    await fetchProblemStatement(db, target.platform, target.problemKey, target.url, opts.fetchFn, opts.cookies?.[target.platform]?.cookie, opts.signal, opts.searchConfig);
     row = cached(db, ref);
     if (row && statementLooksValid(row.text) && !needsRefresh(row)) break;
   }
@@ -171,7 +172,9 @@ export async function prepareStatementEvidence(db: Db, refs: ProblemRef[], opts:
       const row = cached(db, ref);
       return !row || !statementLooksValid(row.text) || needsRefresh(row);
     });
-    for (const ref of missing.slice(0, opts.limit ?? 6)) {
+    // 常见 Codeforces 场次有 7 道题；默认至少覆盖完整一场，调用方仍可用
+    // limit 主动收紧预算。超出部分继续由后续消息按需读取。
+    for (const ref of missing.slice(0, opts.limit ?? 8)) {
       signal.throwIfAborted();
       await readStatement(db, ref, { ...opts, signal });
     }
