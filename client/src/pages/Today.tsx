@@ -381,6 +381,12 @@ export default function Today() {
             </Card>
           )}
 
+          {/* 三档推荐标题栏 */}
+          <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-1)' }}>今日推荐</span>
+            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>按能力水平分三档，做完后同步数据推荐会进化</span>
+          </div>
+
           <Row gutter={[16, 16]}>
             {plan.bands.map((band) => (
               <Col xs={24} lg={8} key={band.key}>
@@ -398,7 +404,12 @@ export default function Today() {
                   style={{ height: '100%' }}
                   styles={{ body: { display: 'flex', flexDirection: 'column', gap: 8 } }}
                 >
-                  <p className="band-desc">{band.description}</p>
+                  <div className="band-header">
+                    <p className="band-desc" style={{ margin: 0 }}>{band.description}</p>
+                    {band.problems.length > 0 && (
+                      <span className="band-count">{band.problems.length} 道</span>
+                    )}
+                  </div>
                   {band.problems.length === 0 ? (
                     <Empty
                       description={`该难度段暂无候选题（题库 ${band.pool} 道）——可到「题目管理 → 拉取题库」扩充`}
@@ -439,7 +450,7 @@ export default function Today() {
                               <Tag key={`tag:${t}`}>{t}</Tag>
                             ))}
                           </Space>
-                          <Space size={4}>
+                          <div className="today-problem-actions">
                             <Tooltip title={isQueued(p) ? '已在复习队列，点击移出' : '加入复习队列（间隔复习）'}>
                               <Button
                                 size="small"
@@ -462,13 +473,13 @@ export default function Today() {
                                 同步
                               </Button>
                             </Tooltip>
-                          </Space>
+                          </div>
                         </div>
                       </Card>
                     ))
                   )}
                   {band.relaxed && (
-                    <p className="band-desc" style={{ color: 'var(--amber)' }}>
+                    <p className="band-desc" style={{ color: 'var(--amber)', marginTop: 'auto', paddingTop: 4 }}>
                       {band.relaxed}
                     </p>
                   )}
@@ -478,9 +489,9 @@ export default function Today() {
           </Row>
 
           <Card size="small" style={{ marginTop: 16 }}>
-            <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
+            <div className="today-footer">
               <span
-                style={{ color: 'var(--text-3)', fontSize: 12 }}
+                className="today-footer-text"
                 title={levelDetailTip(plan.levelDetail)}
               >
                 <SendOutlined />{' '}
@@ -488,13 +499,12 @@ export default function Today() {
               </span>
               {plan.planProgress && (
                 <Progress
-                  className="gradient-progress"
-                  style={{ width: 200, margin: 0 }}
+                  className="gradient-progress today-footer-progress"
                   percent={Math.round((plan.planProgress.checked / plan.planProgress.total) * 100)}
                   size="small"
                 />
               )}
-            </Space>
+            </div>
           </Card>
         </>
       )}

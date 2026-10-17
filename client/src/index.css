@@ -942,12 +942,13 @@ body {
 .stat-label {
   color: var(--text-3);
   font-size: 12px;
+  line-height: 1.3;
 }
 
 .stat-text strong {
   font-size: 20px;
   font-weight: 700;
-  line-height: 1.1;
+  line-height: 1.2;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
@@ -957,6 +958,55 @@ body {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-3);
+}
+
+/* 今日计划任务分组 */
+.today-task-group {
+  margin-bottom: 10px;
+}
+
+.today-task-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+
+.today-task-group-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.today-task-group-count {
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 500;
+}
+
+/* 底部信息栏 */
+.today-footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.today-footer-text {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.5;
+  flex: 1 1 0;
+  min-width: 280px;
+}
+
+.today-footer-progress {
+  width: 200px;
+  flex-shrink: 0;
 }
 
 /* 彩色图标底（cf-compass stat-icon）：走 Token，亮/暗各自校准 */
@@ -2439,6 +2489,7 @@ button.dist-row:hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  font-weight: 600;
 }
 
 .band-dot {
@@ -2452,16 +2503,39 @@ button.dist-row:hover {
   color: var(--text-3);
   font-size: 11px;
   font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--surface-2);
 }
 
 .band-desc {
-  margin: 0 0 2px;
+  margin: 0 0 4px;
   color: var(--text-3);
   font-size: 12px;
+  line-height: 1.5;
+}
+
+.band-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.band-count {
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 500;
 }
 
 .today-problem {
   background: var(--surface-2);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.today-problem:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
 }
 
 .today-problem .ant-card-body {
@@ -2481,8 +2555,8 @@ button.dist-row:hover {
 .today-problem-title {
   color: var(--text-2);
   font-weight: 600;
-  font-size: 13px;
-  line-height: 1.4;
+  font-size: 13.5px;
+  line-height: 1.45;
   word-break: break-word;
 }
 
@@ -2495,6 +2569,16 @@ button.dist-row:hover {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.today-problem-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
 }
 
 .weak-tag {
