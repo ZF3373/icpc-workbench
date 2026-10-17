@@ -3565,28 +3565,28 @@ button.dist-row:hover {
 }
 
 .plan-chat-msg {
-  margin-bottom: 12px;
+  margin-bottom: 16px;
   max-width: 92%;
 }
 
 .plan-chat-msg-user {
   margin-left: auto;
   background: var(--accent-bg);
-  border-radius: 10px 10px 2px 10px;
-  padding: 8px 12px;
+  border-radius: 12px 12px 2px 12px;
+  padding: 10px 14px;
   font-size: 13px;
 }
 
 .plan-chat-msg-assistant {
   background: var(--surface-2);
-  border-radius: 10px 10px 10px 2px;
-  padding: 8px 12px;
+  border-radius: 12px 12px 12px 2px;
+  padding: 10px 14px;
   font-size: 13px;
 }
 
 /* 助手消息复制按钮：默认低透明度，hover 消息时显现 */
 .msg-copy-btn {
-  margin-top: 6px;
+  margin-top: 8px;
   padding: 0 6px;
   font-size: 12px;
   color: var(--text-3);
@@ -3619,7 +3619,11 @@ button.dist-row:hover {
   flex-wrap: wrap;
   gap: 8px;
   align-items: flex-end;
-  margin-top: 10px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
 }
 
 /* ---------- 待发送附件：图片缩略图（对齐主流聊天产品的粘贴样式） ---------- */
@@ -3670,8 +3674,7 @@ button.dist-row:hover {
 .chat-input-topbar {
   display: flex;
   justify-content: flex-end;
-  margin-top: 10px;
-  margin-bottom: -2px;
+  margin-bottom: 8px;
 }
 
 .chat-model-chip {
@@ -3757,11 +3760,12 @@ button.dist-row:hover {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 2px 16px;
-  margin-top: 6px;
-  padding: 0 4px;
+  gap: 6px 18px;
+  margin-top: 10px;
+  padding: 6px 8px;
   font-size: 12px;
   color: var(--text-3);
+  border-top: 1px solid var(--line-soft);
 }
 
 .chat-status-seg {
@@ -3779,6 +3783,14 @@ button.dist-row:hover {
   margin-left: 10px;
 }
 
+.chat-status-cache {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--overlay-2);
+  font-size: 11px;
+}
+
 .chat-status-ctx {
   color: var(--brand);
 }
@@ -3794,8 +3806,8 @@ button.dist-row:hover {
 /* ---------- AI 助手页 / 题单整理 ---------- */
 .assistant-layout {
   display: flex;
-  gap: 14px;
-  height: calc(var(--app-viewport-height) - 190px);
+  gap: 16px;
+  height: calc(var(--app-viewport-height) - 170px);
   min-height: 420px;
 }
 
@@ -3803,6 +3815,7 @@ button.dist-row:hover {
   width: 260px;
   flex-shrink: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   transition: width 160ms ease;
 }
 
@@ -3810,7 +3823,7 @@ button.dist-row:hover {
 .assistant-side-head {
   display: flex;
   justify-content: flex-end;
-  padding: 0 2px 8px;
+  padding: 0 2px 10px;
 }
 
 .assistant-side-toggle {
@@ -3837,16 +3850,17 @@ button.dist-row:hover {
   border-color: var(--line);
 }
 
-/* 折叠态：64px 迷你栏（原 40px 对触摸/高 DPI 屏不够友好，且什么都放不下）。
-   overflow 从 hidden 改为 visible —— 会话浮层是绝对定位的，藏在滚动容器里会被裁掉。 */
+/* 折叠态：56px 迷你栏。overflow 从 hidden 改为 visible —— 会话浮层是绝对定位的，
+   藏在滚动容器里会被裁掉。 */
 .assistant-layout.is-side-collapsed .assistant-side {
-  width: 64px;
+  width: 56px;
   overflow: visible;
+  padding: 0 6px;
 }
 
 .assistant-layout.is-side-collapsed .assistant-side-head {
   justify-content: center;
-  padding: 0;
+  padding: 0 0 8px;
 }
 
 /* 收起后按钮独自漂在窄栏里，给个边框底色保证它仍然像"可以点" */
@@ -3855,12 +3869,21 @@ button.dist-row:hover {
   background: var(--surface, var(--bg-elevated));
 }
 
+/* 折叠态迷你栏整体容器：给窄边加统一卡片底，避免按钮像"浮在空中" */
+.assistant-layout.is-side-collapsed .assistant-mini-rail {
+  padding: 12px 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
 /* 折叠后：会话记录/上下文/能力值整体让位给对话区，但保留迷你栏 */
 .assistant-layout.is-side-collapsed .assistant-side > *:not(.assistant-side-head):not(.assistant-mini-rail) {
   display: none;
 }
 
-/* ---------- 折叠态迷你栏 + 会话浮层（P3-5） ---------- */
+/* ---------- 折叠态迷你栏：每个会话一个头像图标，点击直接切换 ---------- */
 
 .assistant-mini-rail {
   display: none;
@@ -3872,21 +3895,25 @@ button.dist-row:hover {
   align-items: center;
   gap: 8px;
   position: relative;
-  margin-top: 10px;
+  padding: 10px 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 .mini-rail-avatar {
   position: relative;
-  width: 42px;
-  height: 42px;
+  width: 36px;
+  height: 36px;
   flex-shrink: 0;
   display: grid;
   place-items: center;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--surface-2);
   color: var(--text-2);
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
@@ -3900,7 +3927,7 @@ button.dist-row:hover {
   background: var(--brand-soft);
 }
 
-/* 正在流式生成：右下角转圈，收起侧栏时也能看出"它还在写" */
+/* 正在流式生成：右下角转圈 */
 .mini-rail-stream {
   position: absolute;
   right: -3px;
@@ -3909,33 +3936,17 @@ button.dist-row:hover {
   border-radius: 50%;
   background: var(--surface);
   color: var(--brand);
-  font-size: 11px;
-}
-
-.mini-rail-badge {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: var(--amber);
-  color: var(--text-on-brand);
   font-size: 10px;
-  font-weight: 700;
-  line-height: 16px;
-  text-align: center;
 }
 
 .mini-rail-new {
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   flex-shrink: 0;
   display: grid;
   place-items: center;
   border: 1px dashed var(--item-border);
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-3);
   font-size: 13px;
@@ -3946,191 +3957,6 @@ button.dist-row:hover {
 .mini-rail-new:hover {
   border-color: var(--brand);
   color: var(--brand);
-}
-
-/* 悬停或键盘聚焦窄边时浮出会话列表 */
-.mini-rail-flyout {
-  position: absolute;
-  left: calc(100% + 10px);
-  top: 0;
-  z-index: 30;
-  opacity: 0;
-  visibility: hidden;
-  transform: translateX(-4px);
-  transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
-}
-
-.assistant-mini-rail:hover .mini-rail-flyout,
-.assistant-mini-rail:focus-within .mini-rail-flyout {
-  opacity: 1;
-  visibility: visible;
-  transform: translateX(0);
-}
-
-.mini-session-panel {
-  width: 264px;
-  max-height: calc(var(--app-viewport-height) * 0.6);
-  display: flex;
-  flex-direction: column;
-  padding: 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  box-shadow: var(--shadow);
-}
-
-.mini-session-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 2px 6px;
-  color: var(--text-3);
-  font-size: 11.5px;
-  letter-spacing: 0.06em;
-}
-
-.mini-session-list {
-  overflow-y: auto;
-  min-height: 0;
-}
-
-.mini-session-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 18px 8px;
-  color: var(--text-3);
-  font-size: 12.5px;
-}
-
-/* 行容器：不再是按钮本体（P7 起内部含键盘排序按钮，按钮不能嵌套按钮）。
-   切换会话的点击区是内层 .mini-session-btn，视觉上的 hover 高亮仍由整行承担。 */
-.mini-session-item {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  width: 100%;
-  margin-bottom: 2px;
-  border-radius: 8px;
-}
-
-.mini-session-item:hover {
-  background: var(--overlay-2);
-}
-
-.mini-session-item.is-active {
-  background: var(--brand-soft);
-}
-
-/* 内层按钮铺满行：行内边距归它，避免「点行空白处没反应」 */
-.mini-session-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-  padding: 7px 8px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-2);
-  font-family: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.mini-session-item.is-active .mini-session-btn {
-  color: var(--brand);
-}
-
-/* 浮层只有 264px 宽：命中区仍是 24×24（按钮本体），只是去掉外框描边让视觉更轻，
-   两枚并排 48px + 会话标题，仍不挤压标题 */
-.mini-session-item .reorder-btn {
-  width: 24px;
-  height: 24px;
-  font-size: 11px;
-  border-color: transparent;
-  background: transparent;
-}
-
-.mini-session-item .reorder-btn:hover:not(:disabled) {
-  border-color: var(--brand);
-}
-
-.mini-session-item .reorder-controls {
-  gap: 2px;
-}
-
-/* 会话行的 ⋯ 操作菜单（重命名/置顶/删除，与展开侧行同源）：
-   与排序按钮同款 hover/focus-within 显隐，去掉描边让 264px 浮层里视觉更轻 */
-.mini-session-more {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  flex-shrink: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-3);
-  font-size: 12px;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 140ms ease, color 120ms ease, background 120ms ease;
-}
-
-.mini-session-item:hover .mini-session-more,
-.mini-session-item:focus-within .mini-session-more {
-  opacity: 1;
-}
-
-.mini-session-more:hover {
-  color: var(--brand);
-  background: var(--brand-soft);
-}
-
-/* 行内重命名输入框：占满标题区（按钮让位），高度与行一致 */
-.mini-session-rename {
-  flex: 1;
-  min-width: 0;
-}
-
-/* ⋯ 菜单打开期间锁定浮层：菜单渲染在 portal，鼠标移过去会离开 rail 的 hover 触发区，
-   不锁的话浮层连着触发按钮一起隐藏，菜单就成了摆设。打开态由 Assistant.tsx 上报 */
-.assistant-mini-rail.is-flyout-locked .mini-rail-flyout {
-  opacity: 1;
-  visibility: visible;
-  transform: translateX(0);
-}
-
-.mini-session-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mini-session-stream {
-  flex-shrink: 0;
-  color: var(--brand);
-  font-size: 11px;
-}
-
-.mini-session-pin {
-  flex-shrink: 0;
-  color: var(--amber);
-  font-size: 11px;
-}
-
-.mini-session-turns {
-  flex-shrink: 0;
-  color: var(--text-dim);
-  font-size: 10.5px;
 }
 
 /* ---------- 输入框 `/` 快捷指令菜单（P3-5） ---------- */
@@ -4228,7 +4054,7 @@ button.dist-row:hover {
 }
 
 .ctx-select-row + .ctx-select-row {
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 .ctx-help {
@@ -4253,44 +4079,49 @@ button.dist-row:hover {
 .chat-empty {
   color: var(--text-3);
   font-size: 13px;
-  padding: 32px 16px;
+  padding: 48px 16px 32px;
   text-align: center;
 }
 
 .chat-empty-icon {
-  font-size: 32px;
+  font-size: 36px;
   display: block;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
+  color: var(--text-dim);
 }
 
 .chat-empty-title {
-  margin-bottom: 12px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-2);
 }
 
 .chat-empty-sugs {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 8px;
+  gap: 10px;
   max-width: 560px;
   margin: 0 auto;
 }
 
 .chat-empty-sug {
-  padding: 4px 12px;
+  padding: 6px 14px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface-2);
   color: var(--text-2);
-  font-size: 12px;
+  font-size: 12.5px;
   cursor: pointer;
-  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease, transform 120ms ease;
 }
 
 .chat-empty-sug:hover {
   color: var(--brand);
   border-color: var(--brand);
   background: var(--brand-soft);
+  transform: translateY(-1px);
 }
 
 /* 划选 AI 输出后的「引用到输入框」浮钮：fixed 定位在选区上方居中，

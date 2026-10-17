@@ -54,7 +54,7 @@ import Markdown from '../components/Markdown'
 import { getAppZoom } from '../appZoom'
 import ZoomControl from '../components/ZoomControl'
 import PageHeader from '../components/PageHeader'
-import SessionMiniPanel from '../components/SessionMiniPanel'
+// SessionMiniPanel removed: collapsed sidebar now shows session avatars directly
 import {
   commandPrompt,
   commandReady,
@@ -624,9 +624,7 @@ export default function Assistant() {
   const [listCreating, setListCreating] = useState(false)
   const [planCreating, setPlanCreating] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
-  /** 折叠态浮层里会话 ⋯ 菜单的打开态：打开期间锁定浮层，portal 菜单才够得着 */
-  const [miniActionsOpen, setMiniActionsOpen] = useState(false)
-  /** 删除会话的统一确认入口：展开侧行与折叠态浮层共用（React 19 下静态 Modal.confirm 静默失效，必须用 App 上下文实例） */
+  /** 删除会话的统一确认入口（React 19 下静态 Modal.confirm 静默失效，必须用 App 上下文实例） */
   const confirmDeleteSession = (id: string) => {
     modal.confirm({
       title: '删除这条会话？',
@@ -2054,6 +2052,7 @@ export default function Assistant() {
                 type="button"
                 className="assistant-side-toggle"
                 aria-label={sideCollapsed ? '展开侧栏' : '收起侧栏'}
+                tabIndex={-1}
                 aria-expanded={!sideCollapsed}
                 onClick={toggleSideCollapsed}
               >
@@ -2061,53 +2060,28 @@ export default function Assistant() {
               </button>
             </Tooltip>
           </div>
-          {/* 折叠态迷你栏（P3-5）：会话图标 + 附件/流式提示 + 新建入口；
-              悬停或键盘聚焦时浮出完整会话列表，不必先展开侧栏。
-              is-flyout-locked：浮层里 ⋯ 菜单打开期间锁住浮层显隐 —— 菜单渲染在 portal，
-              鼠标移向它会离开 rail 触发区，不锁的话浮层带着触发按钮一起消失 */}
-          <div className={`assistant-mini-rail${miniActionsOpen ? ' is-flyout-locked' : ''}`}>
-            <Tooltip title={`${activeSession?.title ?? '新会话'} —— 点击展开侧栏`} placement="right">
-              <button
-                type="button"
-                className="mini-rail-avatar"
-                aria-label={`展开侧栏（当前会话：${activeSession?.title ?? '新会话'}）`}
-                onClick={toggleSideCollapsed}
-              >
-                {railInitial}
-                {sending && <LoadingOutlined className="mini-rail-stream" />}
-                {railAttachments > 0 && (
-                  <span className="mini-rail-badge" title={`当前会话有 ${railAttachments} 个附件`}>
-                    {railAttachments}
-                  </span>
-                )}
-              </button>
-            </Tooltip>
+          {/* 折叠态迷你栏（P3-5）：每个会话一个小头像图标，点击直接切换；
+              不再使用鼠标悬停展开浮层，所有会话一目了然。 */}
+          <div className="assistant-mini-rail">
+            {miniSessions.map((s) => (
+              <Tooltip key={s.id} title={s.title || '新会话'} placement="right">
+                <button
+                  type="button"
+                  className={`mini-rail-avatar${s.id === activeId ? ' is-active' : ''}`}
+                  aria-label={`切换到会话：${s.title || '新会话'}`}
+                  onClick={() => switchToSession(s.id)}
+                  tabIndex={-1}
+                >
+                  {s.title.trim().slice(0, 1) || '新'}
+                  {s.streaming && <LoadingOutlined className="mini-rail-stream" />}
+                </button>
+              </Tooltip>
+            ))}
             <Tooltip title="新建会话" placement="right">
-              <button type="button" className="mini-rail-new" aria-label="新建会话" onClick={createNewSession}>
+              <button type="button" className="mini-rail-new" aria-label="新建会话" onClick={createNewSession} tabIndex={-1}>
                 <PlusOutlined />
               </button>
             </Tooltip>
-            <div className="mini-rail-flyout">
-              <SessionMiniPanel
-                sessions={miniSessions}
-                activeId={activeId}
-                onSelect={switchToSession}
-                onCreate={createNewSession}
-                /* 折叠态也能键盘排序：与展开侧栏的会话行共用同一个撤销提示 */
-                onMove={handleSessionMove}
-                /* 折叠态同样能重命名/置顶/删除：与展开侧行共用 renamingId 与确认弹窗 */
-                renamingId={renamingId}
-                onRenameStart={setRenamingId}
-                onRenameCommit={(id, title) => {
-                  renameSession(id, title)
-                  setRenamingId(null)
-                }}
-                onRenameCancel={() => setRenamingId(null)}
-                onTogglePin={toggleSessionPin}
-                onDeleteRequest={confirmDeleteSession}
-                onActionsOpenChange={setMiniActionsOpen}
-              />
-            </div>
           </div>
           {/* 会话记录 */}
           <Card
@@ -2376,10 +2350,10 @@ export default function Assistant() {
           >
             {ability ? (
               <>
-                <div style={{ fontSize: 28, fontWeight: 700 }}>{ability.effective}</div>
+                <div style={{ fontSize: 28, fontWeight: 700, lineHeight: 1.2 }}>{ability.effective}</div>
                 {/* 未调整时 effective 就是计算值，不重复报数；被 AI 调整过才给出计算值与理由 */}
                 {ability.override ? (
-                  <div style={{ fontSize: 12, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
                     <Tag color="purple" style={{ marginInlineEnd: 0 }}>
                       AI 调整
                     </Tag>
@@ -2389,11 +2363,11 @@ export default function Assistant() {
                     </span>
                   </div>
                 ) : (
-                  <div style={{ fontSize: 12, color: 'var(--text-3)' }}>加权解题证据估算</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>加权解题证据估算</div>
                 )}
                 {/* 赛事中心的 rating 记录参与了计算值时说明贡献了多少（AI 调整过也照样透出，便于核对计算值） */}
                 {abilityRatingLine && (
-                  <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>{abilityRatingLine}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 6, lineHeight: 1.5 }}>{abilityRatingLine}</div>
                 )}
               </>
             ) : abilityError ? (
@@ -2454,7 +2428,7 @@ export default function Assistant() {
               /* 空态建议做成可点的芯片：点击即填入输入框，不再只是装饰性文字 */
               <div className="chat-empty">
                 <RobotOutlined className="chat-empty-icon" />
-                <div className="chat-empty-title">试试这样问：</div>
+                <div className="chat-empty-title">试试这样问</div>
                 <div className="chat-empty-sugs">
                   {[
                     '我哪个知识点最弱？该怎么补？',
@@ -2793,7 +2767,7 @@ export default function Assistant() {
                   </div>
                 )}
               >
-                <button type="button" className="chat-model-chip" aria-label="切换 AI 模型">
+                <button type="button" className="chat-model-chip" aria-label="切换 AI 模型" tabIndex={-1}>
                   <span className="chat-model-chip-name">{aiInfo?.model || '未设置模型'}</span>
                   <DownOutlined className="chat-model-chip-caret" />
                 </button>
@@ -2894,6 +2868,7 @@ export default function Assistant() {
               title="附加图片或代码文件（图片走 Files API 上传，文本/代码文件读取内容到输入框）"
               disabled={uploadingAtts || sending}
               onClick={() => fileInputRef.current?.click()}
+              tabIndex={-1}
             />
             <input
               ref={fileInputRef}
@@ -2915,6 +2890,7 @@ export default function Assistant() {
                   danger
                   onClick={() => stopSending(activeId)}
                   title="停止本次生成（已输出的内容会保留）"
+                  tabIndex={-1}
                 >
                   停止
                 </Button>
@@ -2925,6 +2901,7 @@ export default function Assistant() {
                 icon={<SendOutlined />}
                 disabled={(!input.trim() && pendingAtts.length === 0) || uploadingAtts}
                 onClick={() => void send()}
+                tabIndex={-1}
               />
             )}
           </div>
@@ -2947,7 +2924,7 @@ export default function Assistant() {
                     <DatabaseOutlined />
                     {fmtTokenCount(sessionStats.totalTokens)} tok
                     {sessionStats.cacheHit !== null && (
-                      <span>缓存命中 {(sessionStats.cacheHit * 100).toFixed(1)}%</span>
+                      <span className="chat-status-cache">缓存命中 {(sessionStats.cacheHit * 100).toFixed(1)}%</span>
                     )}
                   </span>
                 </Tooltip>
