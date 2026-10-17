@@ -166,18 +166,47 @@ export function syncRoutes(db: Db): Router {
     res.send(body);
   });
 
-  // POST /api/sync/all → 一键同步所有已绑定的启用账号（顺序执行，避免同时打多个平台接口）。
+  // POST /api/sync/all  body: { accounts?: [{ platform, handle }] }
+  // 一键同步已绑定的启用账号（顺序执行，避免同时打多个平台接口）。
+  // body.accounts 省略时同步全部启用账号；提供时只同步勾选的账号
+  // （数据概览「同步数据」下拉勾选，handle 对不上当前绑定/启用状态的一律拒绝，
+  // 防止前端勾选缓存过期后同步到已解绑/停用的账号）。
   // 多账号（v0.8）：同一平台的多个启用账号依次同步（平台级互斥锁天然串行），
   // 结果按平台聚合（imported/errors 求和合并），批量进度仍以平台为粒度。
   // 每个账号沿用自身增量策略：AtCoder from_second / 牛客 since 截断 / CF·洛谷 已知提交号提前终止。
   // 未绑定账号的平台直接跳过；单平台失败不影响其余平台。
-  r.post('/all', asyncHandler(async (_req, res) => {
-    const accounts = db
+  r.post('/all', asyncHandler(async (req, res) => {
+    const sel = (req.body ?? {}).accounts;
+    if (sel !== undefined && !Array.isArray(sel)) {
+      return res.status(400).json({ error: 'accounts 需为 [{ platform, handle }] 数组（省略则同步全部启用账号）' });
+    }
+    const enabledAccounts = db
       .prepare(
         'SELECT platform, handle FROM platform_accounts WHERE user_id = ? AND enabled = 1 ORDER BY platform, id',
       )
       .all(DEFAULT_USER_ID) as Array<{ platform: PlatformId; handle: string }>;
-    const platforms = [...new Set(accounts.map((a) => a.platform))];
+    const accounts = Array.isArray(sel)
+      ? sel.map((item) => {
+          const platform = (item as { platform?: unknown })?.platform;
+          const handle = (item as { handle?: unknown })?.handle;
+          if (typeof platform !== 'string' || typeof handle !== 'string' || handle.trim() === '') {
+            return null;
+          }
+          return enabledAccounts.find((a) => a.platform === platform && a.handle === handle.trim()) ?? null;
+        })
+      : enabledAccounts;
+    if (Array.isArray(sel)) {
+      if (accounts.some((a) => a === null)) {
+        return res.status(400).json({
+          error: '勾选的账号不存在或已停用（可能刚被解绑/停用，请刷新后重新勾选）',
+        });
+      }
+      if (accounts.length === 0) {
+        return res.status(400).json({ error: '未勾选任何账号' });
+      }
+    }
+    const targets = accounts as Array<{ platform: PlatformId; handle: string }>;
+    const platforms = [...new Set(targets.map((a) => a.platform))];
     const results = [];
     // 整批进度：前端据此画出「待同步 / 同步中 / 已完成 +N 条 / 失败」的完整队列，
     // 而不是只知道「当前是谁」。finally 里收尾，异常路径也不留幽灵批次。
@@ -185,7 +214,7 @@ export function syncRoutes(db: Db): Router {
     try {
       for (const platform of platforms) {
         const started = Date.now();
-        const accountsOfPlatform = accounts.filter((a) => a.platform === platform);
+        const accountsOfPlatform = targets.filter((a) => a.platform === platform);
         const aggregate = {
           platform,
           handle: accountsOfPlatform.map((a) => a.handle).join(','),

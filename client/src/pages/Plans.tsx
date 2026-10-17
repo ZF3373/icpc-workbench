@@ -15,7 +15,6 @@ import {
   Progress,
   Select,
   Space,
-  Spin,
   Table,
   Tag,
 } from 'antd'
@@ -103,13 +102,19 @@ export default function Plans() {
     load()
   }, [load])
 
+  const [detailLoading, setDetailLoading] = useState(false)
+
   const openDetail = async (id: number) => {
+    setDetailLoading(true)
+    setDetailOpen(true)
     try {
       const d = await get<PlanDetail>(`/api/plans/${id}`)
       setDetail(d)
-      setDetailOpen(true)
     } catch (e) {
       message.error((e as Error).message)
+      setDetailOpen(false)
+    } finally {
+      setDetailLoading(false)
     }
   }
 
@@ -306,7 +311,9 @@ export default function Plans() {
       )}
 
       <Drawer title={detail?.title} open={detailOpen} onClose={() => setDetailOpen(false)} width={580}>
-        {detail ? (
+        {detailLoading || !detail ? (
+          <PageSkeleton stats={false} table rows={6} />
+        ) : (
           <div>
             <p className="plan-goal">{detail.goal}</p>
             <div className="plan-meta">
@@ -388,8 +395,6 @@ export default function Plans() {
               </div>
             ))}
           </div>
-        ) : (
-          <Spin />
         )}
       </Drawer>
 

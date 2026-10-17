@@ -3,15 +3,24 @@
 import type { AbilityLevelDetail } from '../../shared/src/index.ts'
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  });
-  if (!res.ok) throw await parseErrorResponse(res);
-  return (await res.json()) as T;
+  try {
+    const res = await fetch(path, {
+      headers: { 'Content-Type': 'application/json' },
+      ...init,
+    });
+    if (!res.ok) throw await parseErrorResponse(res);
+    return (await res.json()) as T;
+  } catch (e) {
+    // fetch 原生异常（断网、DNS 失败、CORS 拦截等）统一翻译为中文友好提示，
+    // 避免用户看到英文 TypeError: Failed to fetch 无法理解。
+    if (e instanceof TypeError || (e instanceof Error && e.name === 'TypeError')) {
+      throw new Error('网络连接失败，请检查网络或稍后重试');
+    }
+    throw e;
+  }
 }
 
-export const get = <T>(path: string): Promise<T> => api<T>(path);
+export const get = <T>(path: string, init?: RequestInit): Promise<T> => api<T>(path, init);
 
 export const post = <T>(path: string, body?: unknown): Promise<T> =>
   api<T>(path, {

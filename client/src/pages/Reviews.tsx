@@ -28,19 +28,21 @@ export default function Reviews() {
   const [query, setQuery] = useState('')
   const [platform, setPlatform] = useState<PlatformId | 'all'>('all')
   const [historyItem, setHistoryItem] = useState<ReviewItem | null>(null)
-  const requestId = useRef(0)
+  const abortRef = useRef<AbortController | null>(null)
   const [editing, setEditing] = useState<ReviewItem | null>(null)
   const [noteDraft, setNoteDraft] = useState('')
   // 展开的笔记条目 id：状态提升到页面持有，因为「展开/收起」按钮要放在右侧操作列（编辑按钮下方）
   const [openNoteIds, setOpenNoteIds] = useState<ReadonlySet<number>>(new Set())
 
   const load = useCallback((f: 'due' | 'all') => {
-    const id = ++requestId.current
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
     setLoading(true)
     setLoadError(null)
-    get<ReviewItem[]>(`/api/reviews${f === 'due' ? '?due=1' : ''}`)
+    get<ReviewItem[]>(`/api/reviews${f === 'due' ? '?due=1' : ''}`, { signal: ctrl.signal })
       .then((r) => {
-        if (id !== requestId.current) return
+        if (ctrl.signal.aborted) return
         setItems(r)
         setLoadError(null)
         // 每次重取列表后回到默认收起（列表重挂载，展开状态不跨刷新保留）
@@ -50,12 +52,17 @@ export default function Reviews() {
       // 「复习队列还是空的 —— 到题目管理加题」，把一次超时误导成用户自己的问题。
       // 这里落到 loadError，由 InlineError 出错误态 + 重试（重试沿用当前筛选）。
       .catch((e: Error) => {
-        if (id !== requestId.current) return
+        if (ctrl.signal.aborted) return
         setLoadError(e.message)
         message.error(e.message)
       })
-      .finally(() => { if (id === requestId.current) setLoading(false) })
+      .finally(() => { if (!ctrl.signal.aborted) setLoading(false) })
   }, [message])
+
+  useEffect(() => {
+    load(filter)
+    return () => { abortRef.current?.abort() }
+  }, [filter, load])
 
   const toggleNoteOpen = (id: number) =>
     setOpenNoteIds((s) => {
@@ -64,11 +71,6 @@ export default function Reviews() {
       else next.add(id)
       return next
     })
-
-  useEffect(() => {
-    load(filter)
-    return () => { requestId.current += 1 }
-  }, [filter, load])
 
   const { feedback, pending } = useReviewFeedback(() => load(filter))
 

@@ -119,22 +119,22 @@ export default function Mastery() {
   // 只认最后一次切换的结果：切走后旧请求返回不得再写 tagProblems（否则显示成上一个知识点的题）
   useEffect(() => {
     if (!active) return
-    let current = true
+    const ctrl = new AbortController()
     setTagProblems(null)
     setTagError(null)
-    get<TagProblem[]>(`/api/problems?tag=${encodeURIComponent(active.tag)}&bank=1`)
+    get<TagProblem[]>(`/api/problems?tag=${encodeURIComponent(active.tag)}&bank=1`, { signal: ctrl.signal })
       .then((rows) => {
-        if (!current) return
+        if (ctrl.signal.aborted) return
         setTagProblems(rows.sort(byDifficultyAsc))
         setTagError(null)
       })
       .catch((e: Error) => {
-        if (!current) return
+        if (ctrl.signal.aborted) return
         setTagError(e.message)
         setTagProblems([])
       })
     return () => {
-      current = false
+      ctrl.abort()
     }
   }, [active, tagRetry])
 

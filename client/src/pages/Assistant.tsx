@@ -910,6 +910,9 @@ export default function Assistant() {
 
   const handlePickFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return
+    // 记录上传开始时的活跃会话 id：图片上传是异步的，如果用户在此期间切换会话，
+    // 完成后的 setPendingAtts 不应把附件写到新会话（否则串会话）。
+    const uploadSessionId = activeId
     const all = Array.from(files)
     // 分流：图片走 Files API，文本直接读取内容，PDF + 文档走服务端提取
     const images = all.filter(isImageFile)
@@ -953,6 +956,8 @@ export default function Assistant() {
         if (picked.length < textAtts.length) message.warning('每条消息最多附带 8 个文件')
         if (picked.length > 0) {
           usedSlots += picked.length
+          // 会话已切换：丢弃这些附件（避免串到别的会话）
+          if (activeId !== uploadSessionId) return
           setPendingAtts((prev) => [...prev, ...picked])
           message.success(`已添加 ${picked.length} 个文本文件`)
         }
@@ -992,6 +997,7 @@ export default function Assistant() {
           if (picked.length < docAtts.length) message.warning('每条消息最多附带 8 个文件')
           if (picked.length > 0) {
             usedSlots += picked.length
+            if (activeId !== uploadSessionId) return
             setPendingAtts((prev) => [...prev, ...picked])
             message.success(`已提取 ${picked.length} 个文档文件`)
           }
@@ -1046,6 +1052,7 @@ export default function Assistant() {
       }
       if (uploaded.length > 0) {
         usedSlots += uploaded.length
+        if (activeId !== uploadSessionId) return
         setPendingAtts((prev) => [...prev, ...uploaded])
         message.success(`已上传 ${uploaded.length} 个图片`)
       }
@@ -1055,6 +1062,7 @@ export default function Assistant() {
         if (pickedInline.length < inlined.length) message.warning('每条消息最多附带 8 个文件')
         if (pickedInline.length > 0) {
           usedSlots += pickedInline.length
+          if (activeId !== uploadSessionId) return
           setPendingAtts((prev) => [...prev, ...pickedInline])
           message.info(`当前 AI 网关不支持文件上传，已改用内联方式附图（${pickedInline.length} 张）`)
         }

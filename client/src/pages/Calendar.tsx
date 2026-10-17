@@ -46,33 +46,36 @@ export default function CalendarPage() {
 
   // 只认最新一次请求：快速切换月份/日期会有多个请求在途，旧响应晚到会盖掉新视图
   //（与 Today.tsx / HistoryPanel 的 reqSeq 护栏同款）
+  // 月历数据与复习角标各用独立的 seq：两者是并行请求，不能共享同一个 seq
   const monthSeq = useRef(0)
+  const reviewSeq = useRef(0)
   const loadMonth = useCallback((m: string) => {
-    const seq = (monthSeq.current += 1)
+    const seq1 = (monthSeq.current += 1)
     setMonthError(null)
     get<DayPlanInfo[]>(`/api/checkins?month=${m}`)
       .then((rows) => {
-        if (seq !== monthSeq.current) return
+        if (seq1 !== monthSeq.current) return
         const map: Record<string, DayPlanInfo> = {}
         for (const r of rows) map[r.date] = r
         setMonthData(map)
       })
       .catch((e: Error) => {
         // 月历取不回来时格子里全成了「无任务」，只弹 toast 会让用户以为这个月真的没安排
-        if (seq === monthSeq.current) setMonthError(e.message)
+        if (seq1 === monthSeq.current) setMonthError(e.message)
         message.error(e.message)
       })
     // 复习到期角标：独立接口，失败只影响角标，不该让整个月历报错
     //（复习数据缺失时角标不显示，计划任务的打卡视图仍然完整可信）
+    const seq2 = (reviewSeq.current += 1)
     get<ReviewCalendarDay[]>(`/api/reviews/calendar?month=${m}`)
       .then((rows) => {
-        if (seq !== monthSeq.current) return
+        if (seq2 !== reviewSeq.current) return
         const map: Record<string, ReviewCalendarDay> = {}
         for (const r of rows) map[r.date] = r
         setReviewDays(map)
       })
       .catch(() => {
-        if (seq === monthSeq.current) setReviewDays({})
+        if (seq2 === reviewSeq.current) setReviewDays({})
       })
   }, [])
 

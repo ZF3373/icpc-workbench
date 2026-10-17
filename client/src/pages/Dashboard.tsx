@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { Button, Card, Col, Empty, Row, Space, App as AntdApp, Tooltip as AntTooltip } from 'antd'
+import { Button, Card, Checkbox, Col, Dropdown, Empty, Row, Space, App as AntdApp, Tooltip as AntTooltip } from 'antd'
 import {
   ArrowDownOutlined,
   ArrowUpOutlined,
@@ -88,6 +88,30 @@ function loadCollapsedModules(): string[] | null {
 function saveCollapsedModules(ids: string[]): void {
   try {
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify(ids))
+  } catch {
+    // 写入失败忽略
+  }
+}
+
+/**
+ * 「同步数据」勾选账号持久化：存勾选过的「platform/handle」数组。
+ * null（无记录）= 从未操作过 → 全选；[] = 用户手动全取消过（与「无记录」区分开）。
+ * 失效勾选（账号后来被解绑/停用）不回写清理，渲染时按当前账号列表过滤即可——
+ * 留着它，账号重新绑定后勾选意图自动恢复。
+ */
+const SYNC_CHECKED_KEY = 'icpc-dashboard-sync-checked-v1'
+function loadSyncChecked(): Set<string> | null {
+  try {
+    const raw = localStorage.getItem(SYNC_CHECKED_KEY)
+    return raw ? new Set(JSON.parse(raw) as string[]) : null
+  } catch {
+    // 隐私模式或无 localStorage
+    return null
+  }
+}
+function saveSyncChecked(keys: ReadonlySet<string>): void {
+  try {
+    localStorage.setItem(SYNC_CHECKED_KEY, JSON.stringify([...keys]))
   } catch {
     // 写入失败忽略
   }
@@ -278,6 +302,8 @@ export default function Dashboard() {
   /** 统计接口加载失败的原因：与「确实没有数据」分开渲染，不能让失败伪装成空态 */
   const [loadError, setLoadError] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
+  /** 「同步数据」下拉勾选的账号（platform/handle），null = 尚未操作过 → 视为全选；localStorage 持久化 */
+  const [syncChecked, setSyncChecked] = useState<Set<string> | null>(loadSyncChecked)
   const [platformOrder, setPlatformOrder] = useState<string[] | null>(getPlatformOrder)
   const [dragPlatform, setDragPlatform] = useState<PlatformId | null>(null)
   /** 同步完成后自增，驱动热力图等自带请求的子卡片重新拉数 */
@@ -598,15 +624,47 @@ export default function Dashboard() {
     message.success('已恢复默认布局')
   }
 
-  // 一键同步所有已绑定账号（增量），完成后刷新概览数据
-  const { refresh: refreshProgress } = useSyncProgress()
-  const doSync = async () => {
+  // 一键同步已绑定账号（增量），完成后刷新概览数据
+  const { refresh: refreshProgress, statuses: syncStatuses } = useSyncProgress()
+  /** 可勾选同步的账号清单：只列已启用的绑定（停用的账号即使勾了后端也会拒绝） */
+  const syncAccountOptions = useMemo(
+    () =>
+      syncStatuses.flatMap((s) =>
+        (s.accounts ?? [])
+          .filter((a) => a.enabled)
+          .map((a) => ({
+            key: `${s.platform}/${a.handle}`,
+            platform: s.platform,
+            handle: a.handle,
+          })),
+      ),
+    [syncStatuses],
+  )
+  /** 有效勾选集：未操作过（null）= 全选；操作过则剔除已解绑/停用的失效勾选 */
+  const effectiveChecked = useMemo(() => {
+    if (syncChecked === null) return new Set(syncAccountOptions.map((o) => o.key))
+    const valid = new Set(syncAccountOptions.map((o) => o.key))
+    return new Set([...syncChecked].filter((k) => valid.has(k)))
+  }, [syncChecked, syncAccountOptions])
+  const allChecked =
+    syncAccountOptions.length > 0 && effectiveChecked.size === syncAccountOptions.length
+  const doSync = async (targets?: Array<{ platform: PlatformId; handle: string }>) => {
     if (syncing) return
+    // targets 省略 = 同步全部启用账号（主按钮，保持原一键语义）；
+    // 传入 = 只同步勾选账号（下拉菜单「同步选中」）。勾选缓存可能过期
+    // （账号被解绑/停用），后端会再校验一次，对不上直接 400。
+    if (targets !== undefined && targets.length === 0) {
+      message.warning('请先勾选要同步的账号')
+      return
+    }
     setSyncing(true)
     // 立刻拉一次进度：让「同步中」在点下去的下一个渲染就出现，不必等轮询周期
     refreshProgress()
     try {
-      const r = await post<SyncAllResponse>('/api/sync/all')
+      const r = await post<SyncAllResponse>(
+        '/api/sync/all',
+        targets === undefined ? undefined : { accounts: targets },
+      )
       if (r.results.length === 0) {
         message.info('尚未绑定平台账号 —— 到「设置 → 平台账号与适配器」绑定后即可一键同步')
         return
@@ -644,16 +702,116 @@ export default function Dashboard() {
     }
   }
 
+  const toggleSyncChecked = (key: string, checked: boolean) => {
+    // 首次操作从「全选」开始改动：null（未操作过）与全选集同义，但不能直接在 null 上增减
+    const base = syncChecked === null ? new Set(syncAccountOptions.map((o) => o.key)) : new Set(syncChecked)
+    if (checked) base.add(key)
+    else base.delete(key)
+    setSyncChecked(base)
+    saveSyncChecked(base)
+  }
+  const setAllSyncChecked = (checked: boolean) => {
+    const next = checked ? new Set(syncAccountOptions.map((o) => o.key)) : new Set<string>()
+    setSyncChecked(next)
+    saveSyncChecked(next)
+  }
+  /** 部分勾选时主按钮文案带上数量，让用户点之前就知道这次同步的不是全平台 */
+  const syncButtonLabel =
+    syncChecked !== null && !allChecked && effectiveChecked.size > 0
+      ? `同步选中（${effectiveChecked.size}）`
+      : '同步数据'
+
+  /** 下拉勾选面板：复用全局同步状态里的账号列表（与「同步状态」卡同源，不额外发请求） */
+  const syncPickerContent = (
+    <div style={{ minWidth: 220, maxWidth: 300 }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 8,
+        }}
+      >
+        <Checkbox
+          checked={allChecked}
+          indeterminate={effectiveChecked.size > 0 && !allChecked}
+          onChange={(e) => setAllSyncChecked(e.target.checked)}
+        >
+          全选
+        </Checkbox>
+        <span style={{ fontSize: 12, color: t.text3 }}>
+          {effectiveChecked.size}/{syncAccountOptions.length} 个账号
+        </span>
+      </div>
+      {syncAccountOptions.length === 0 ? (
+        <div style={{ fontSize: 12, color: t.text3 }}>
+          暂无已启用的账号绑定，到「设置 → 平台账号与适配器」绑定后即可勾选同步
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {syncAccountOptions.map((o) => (
+            <Checkbox
+              key={o.key}
+              checked={effectiveChecked.has(o.key)}
+              onChange={(e) => toggleSyncChecked(o.key, e.target.checked)}
+            >
+              <PlatformTag id={o.platform} />
+              <span style={{ marginLeft: 6 }}>{o.handle}</span>
+            </Checkbox>
+          ))}
+        </div>
+      )}
+      <div style={{ marginTop: 10, textAlign: 'right' }}>
+        <Button
+          size="small"
+          type="primary"
+          disabled={effectiveChecked.size === 0 || syncing}
+          onClick={() =>
+            void doSync(
+              syncAccountOptions
+                .filter((o) => effectiveChecked.has(o.key))
+                .map((o) => ({ platform: o.platform, handle: o.handle })),
+            )
+          }
+        >
+          同步选中（{effectiveChecked.size}）
+        </Button>
+      </div>
+    </div>
+  )
+
   const syncButton = (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-      <AntTooltip
-        title="频繁拉取可能触发风控，如刷题记录过多请间隔分次逐渐拉取"
-        placement="left"
-      >
-        <Button icon={<SyncOutlined spin={syncing} />} loading={syncing} onClick={doSync}>
-          同步数据
-        </Button>
-      </AntTooltip>
+      <Space.Compact>
+        <AntTooltip
+          title="频繁拉取可能触发风控，如刷题记录过多请间隔分次逐渐拉取"
+          placement="left"
+        >
+          <Button
+            icon={<SyncOutlined spin={syncing} />}
+            loading={syncing}
+            onClick={() =>
+              void doSync(
+                // 用户在勾选面板里做过取舍就按勾选范围同步；从未碰过勾选 = 保持原「一键全部」
+                syncChecked === null || allChecked
+                  ? undefined
+                  : syncAccountOptions
+                      .filter((o) => effectiveChecked.has(o.key))
+                      .map((o) => ({ platform: o.platform, handle: o.handle })),
+              )
+            }
+          >
+            {syncButtonLabel}
+          </Button>
+        </AntTooltip>
+        <Dropdown
+          dropdownRender={() => syncPickerContent}
+          trigger={['click']}
+          placement="bottomRight"
+        >
+          <Button icon={<DownOutlined />} aria-label="选择要同步的账号" />
+        </Dropdown>
+      </Space.Compact>
       <SyncProgressHint />
     </div>
   )
