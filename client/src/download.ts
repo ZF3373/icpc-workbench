@@ -98,3 +98,34 @@ export async function saveUrlAsFile({
     message?.error((e as Error).message)
   }
 }
+
+/** 将前端生成的纯文本以「可选位置」方式保存 */
+export async function saveTextAsFile({
+  filename,
+  content,
+  mime = 'text/plain;charset=utf-8',
+  successText = '已导出',
+  message,
+}: {
+  filename: string
+  content: string
+  mime?: string
+  successText?: string | false
+  message?: MessageLike
+}): Promise<void> {
+  try {
+    try {
+      const saved = await saveViaPicker(filename, content, mime)
+      if (!saved) saveViaBlob(filename, content, mime)
+    } catch (e) {
+      if ((e as Error)?.name === 'AbortError') {
+        message?.info('已取消导出')
+        return
+      }
+      saveViaBlob(filename, content, mime)
+    }
+    if (successText !== false) message?.success(successText)
+  } catch (e) {
+    message?.error((e as Error).message)
+  }
+}

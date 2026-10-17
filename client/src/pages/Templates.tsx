@@ -140,6 +140,8 @@ export default function Templates() {
   const [categoryOpen, setCategoryOpen] = useState(false)
   const [categoryForm] = Form.useForm<CategoryFormValues>()
   const [contentEditing, setContentEditing] = useState<TemplateItemInfo | null>(null)
+  const [examplesEditing, setExamplesEditing] = useState<TemplateItemInfo | null>(null)
+  const [exampleRaw, setExampleRaw] = useState('')
   const [contentDraft, setContentDraft] = useState<TemplateContentInfo>({ code: '', idea: '', complexity: '', url: '' })
   const [syncingId, setSyncingId] = useState<string>()
   const [exporting, setExporting] = useState(false)
@@ -406,6 +408,29 @@ export default function Templates() {
       message.error((e as Error).message)
     } finally {
       setSyncingId(undefined)
+    }
+  }
+
+  const addExample = async () => {
+    if (!examplesEditing) return
+    try {
+      await post(`/api/templates/${encodeURIComponent(examplesEditing.id)}/examples`, { raw: exampleRaw })
+      message.success('例题已添加')
+      setExampleRaw('')
+      setExamplesEditing(null)
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  const removeExample = async (t: TemplateItemInfo, index: number) => {
+    try {
+      await del(`/api/templates/${encodeURIComponent(t.id)}/examples/${index}`)
+      message.success('例题已删除')
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
     }
   }
 
@@ -897,47 +922,56 @@ export default function Templates() {
                             )
                           )}
 
-                          {t.examples.length > 0 && (
-                            <div className="template-section">
-                              <div
-                                className="section-label"
-                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
-                              >
-                                <span>例题实战（点击做题，入库后自动追踪 AC）</span>
+                          <div className="template-section">
+                            <div
+                              className="section-label"
+                              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
+                            >
+                              <span>例题实战（点击做题，入库后自动追踪 AC）</span>
+                              <Space size={4}>
+                                <Button size="small" type="text" icon={<PlusOutlined />} onClick={() => { setExamplesEditing(t); setExampleRaw('') }}>
+                                  添加例题
+                                </Button>
                                 <Tooltip title="拉取例题平台的最新提交，自动刷新 AC 状态">
                                   <Button
                                     size="small"
                                     type="text"
                                     icon={<SyncOutlined />}
                                     loading={syncingId === t.id}
+                                    disabled={t.examples.length === 0}
                                     onClick={() => syncExamples(t)}
                                   >
                                     同步 AC
                                   </Button>
                                 </Tooltip>
-                              </div>
-                              <div className="template-examples">
-                                {t.examples.map((ex) => (
-                                  <div className="template-example-row" key={`${ex.platform}-${ex.key}`}>
+                              </Space>
+                            </div>
+                            {t.examples.length > 0 && <div className="template-examples">
+                              {t.examples.map((ex, index) => (
+                                <div className="template-example-row" key={`${ex.platform}-${ex.key}`}>
+                                  {ex.url ? (
                                     <a href={ex.url} target="_blank" rel="noreferrer" className="template-example">
                                       <LinkOutlined /> [{ex.key}] {ex.title} ↗
                                     </a>
-                                    {ex.ac ? (
-                                      <Tag color="success" className="dot-tag">已 AC</Tag>
-                                    ) : ex.inBank ? (
-                                      <Link to="/problems">
-                                        <Tag color="processing" className="dot-tag template-example-action">已入库 · 未 AC</Tag>
-                                      </Link>
-                                    ) : (
-                                      <Button size="small" type="text" icon={<ImportOutlined />} onClick={() => collectExample(t, ex)}>
-                                        入库
-                                      </Button>
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
+                                  ) : <span className="template-example">[{ex.key}] {ex.title}</span>}
+                                  {ex.ac ? (
+                                    <Tag color="success" className="dot-tag">已 AC</Tag>
+                                  ) : ex.inBank ? (
+                                    <Link to="/problems">
+                                      <Tag color="processing" className="dot-tag template-example-action">已入库 · 未 AC</Tag>
+                                    </Link>
+                                  ) : (
+                                    <Button size="small" type="text" icon={<ImportOutlined />} onClick={() => collectExample(t, ex)}>
+                                      入库
+                                    </Button>
+                                  )}
+                                  <Popconfirm title={`从「${t.name}」移除这道例题？`} onConfirm={() => void removeExample(t, index)} okText="移除" cancelText="取消">
+                                    <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label={`移除例题 ${ex.key}`} />
+                                  </Popconfirm>
+                                </div>
+                              ))}
+                            </div>}
+                          </div>
 
                           <div className="template-actions">
                             <Space size={8} wrap>
@@ -1002,6 +1036,22 @@ export default function Templates() {
             placeholder="自己的理解、踩过的坑、与哪些题联系紧密……（Markdown 语法，可直接粘贴 / 拖入截图）"
           />
         )}
+      </Modal>
+
+      <Modal
+        title={`添加例题 · ${examplesEditing?.name ?? ''}`}
+        open={examplesEditing !== null}
+        onCancel={() => setExamplesEditing(null)}
+        onOk={addExample}
+        okText="添加"
+        cancelText="取消"
+      >
+        <Input.TextArea
+          value={exampleRaw}
+          onChange={(event) => setExampleRaw(event.target.value)}
+          rows={3}
+          placeholder={'每次添加一道题，输入题号或链接：\nP1001 A+B Problem\nCF1234A\nhttps://atcoder.jp/contests/abc300/tasks/abc300_a'}
+        />
       </Modal>
 
       {/* 自建模板新建 / 编辑弹窗 */}

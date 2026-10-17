@@ -4,6 +4,8 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { CURRICULUM, TEMPLATE_TOTAL } from '../templates/curriculum.ts';
+import type { TemplateExample } from '../templates/curriculum.ts';
+import { parseProblemListText } from '../problems/parseProblemList.ts';
 import { listTemplateCategoryOptions } from '../templates/categories.ts';
 import {
   isTemplateId,
@@ -176,7 +178,11 @@ const categoryExists = (db: Db, key: string): boolean =>
     .prepare('SELECT 1 FROM template_categories WHERE user_id = ? AND key = ?')
     .get(DEFAULT_USER_ID, key);
 
-const mapCustomTemplate = (row: CustomRow, progress: Map<string, ProgressEntry>) => ({
+const mapCustomTemplate = (
+  row: CustomRow,
+  progress: Map<string, ProgressEntry>,
+  examples: Array<TemplateExample & { inBank?: boolean; ac?: boolean }>,
+) => ({
   custom: true,
   id: customId(row.id),
   name: row.name,
@@ -188,7 +194,7 @@ const mapCustomTemplate = (row: CustomRow, progress: Map<string, ProgressEntry>)
   useCases: '',
   pitfalls: '',
   url: row.url,
-  examples: [] as never[],
+  examples,
   status: progress.get(customId(row.id))?.status ?? 'todo',
   note: progress.get(customId(row.id))?.note ?? null,
   content: null,
@@ -379,6 +385,40 @@ function renderTemplatesMarkdown(db: Db): string {
 export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Router {
   const r = Router();
 
+  const baseExamples = (id: string): TemplateExample[] => {
+    const builtin = CURRICULUM.flatMap((cat) => cat.templates).find((t) => t.id === id);
+    return builtin?.examples.map((example) => ({ ...example })) ?? [];
+  };
+  const readExamples = (id: string, overrideCache?: Map<string, string>): TemplateExample[] => {
+    const overrideJson = overrideCache?.get(id) ?? (db
+      .prepare('SELECT examples FROM template_example_overrides WHERE user_id = ? AND template_id = ?')
+      .get(DEFAULT_USER_ID, id) as { examples: string } | undefined)?.examples;
+    if (overrideJson === undefined) return baseExamples(id);
+    try {
+      const parsed = JSON.parse(overrideJson) as unknown;
+      if (!Array.isArray(parsed)) return baseExamples(id);
+      return parsed.filter((ex): ex is TemplateExample =>
+        ex !== null && typeof ex === 'object' &&
+        typeof (ex as TemplateExample).platform === 'string' &&
+        typeof (ex as TemplateExample).key === 'string',
+      ).map((ex) => ({
+        platform: ex.platform,
+        key: ex.key,
+        title: typeof ex.title === 'string' && ex.title ? ex.title : ex.key,
+        url: typeof ex.url === 'string' ? ex.url : '',
+      }));
+    } catch {
+      return baseExamples(id);
+    }
+  };
+  const saveExamples = (id: string, examples: TemplateExample[]) => {
+    db.prepare(
+      `INSERT INTO template_example_overrides (user_id, template_id, examples, updated_at)
+       VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT (user_id, template_id) DO UPDATE SET examples = excluded.examples, updated_at = datetime('now')`,
+    ).run(DEFAULT_USER_ID, id, JSON.stringify(examples));
+  };
+
   // GET /api/templates → 课程大纲全量（合并自建模板，含个人进度、用户写入内容、例题状态）+ 统计 + 下一课
   r.get('/', (_req, res) => {
     const progress = loadProgress(db);
@@ -386,13 +426,23 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
     const custom = db
       .prepare('SELECT * FROM custom_templates WHERE user_id = ? ORDER BY id')
       .all(DEFAULT_USER_ID) as unknown as CustomRow[];
+    const overrideCache = new Map(
+      (db.prepare('SELECT template_id, examples FROM template_example_overrides WHERE user_id = ?')
+        .all(DEFAULT_USER_ID) as Array<{ template_id: string; examples: string }>)
+        .map((row) => [row.template_id, row.examples]),
+    );
 
-    // 收集全部内置例题 (platform, key) 做一次性状态查询
+    // 收集用户当前看到的全部例题 (platform, key) 做一次性状态查询
     const examplePairs: Array<{ platform: PlatformId; key: string }> = [];
     for (const cat of CURRICULUM)
       for (const t of cat.templates)
-        for (const ex of t.examples) examplePairs.push({ platform: ex.platform, key: ex.key });
+        for (const ex of readExamples(t.id, overrideCache)) examplePairs.push({ platform: ex.platform, key: ex.key });
+    for (const row of custom) for (const ex of readExamples(customId(row.id), overrideCache)) examplePairs.push({ platform: ex.platform, key: ex.key });
     const exampleStatus = loadExampleStatus(db, examplePairs);
+    const exampleInfos = (id: string) => readExamples(id, overrideCache).map((ex) => ({
+      ...ex,
+      ...(exampleStatus.get(`${ex.platform}:${ex.key}`) ?? { inBank: false, ac: false }),
+    }));
 
     const customByCategory = new Map<string, CustomRow[]>();
     for (const row of custom) {
@@ -411,7 +461,7 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
           ...cat.templates.map((t) => ({
             custom: false,
             ...t,
-            examples: t.examples.map((ex) => ({
+            examples: readExamples(t.id, overrideCache).map((ex) => ({
               ...ex,
               ...(exampleStatus.get(`${ex.platform}:${ex.key}`) ?? { inBank: false, ac: false }),
             })),
@@ -419,7 +469,7 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
             note: progress.get(t.id)?.note ?? null,
             content: contentMap.get(t.id) ?? null,
           })),
-          ...(customByCategory.get(cat.key) ?? []).map((row) => mapCustomTemplate(row, progress)),
+          ...(customByCategory.get(cat.key) ?? []).map((row) => mapCustomTemplate(row, progress, exampleInfos(customId(row.id)))),
         ],
       })),
       ...loadCustomCategories(db).map((category) => ({
@@ -428,7 +478,7 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
         description: category.description,
         custom: true,
         templates: (customByCategory.get(category.key) ?? []).map((row) =>
-          mapCustomTemplate(row, progress),
+          mapCustomTemplate(row, progress, exampleInfos(customId(row.id))),
         ),
       })),
     ];
@@ -548,9 +598,11 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
     try {
       const delTemplate = db.prepare('DELETE FROM custom_templates WHERE id = ? AND user_id = ?');
       const delProgress = db.prepare('DELETE FROM template_progress WHERE template_id = ? AND user_id = ?');
+      const delExamples = db.prepare('DELETE FROM template_example_overrides WHERE user_id = ? AND template_id = ?');
       for (const row of rows) {
         delTemplate.run(row.id, DEFAULT_USER_ID);
         delProgress.run(customId(row.id), DEFAULT_USER_ID);
+        delExamples.run(DEFAULT_USER_ID, customId(row.id));
       }
       db.prepare('DELETE FROM template_categories WHERE user_id = ? AND key = ?').run(DEFAULT_USER_ID, key);
       db.exec('COMMIT');
@@ -653,6 +705,10 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
         customId(dbId),
         DEFAULT_USER_ID,
       );
+      db.prepare('DELETE FROM template_example_overrides WHERE user_id = ? AND template_id = ?').run(
+        DEFAULT_USER_ID,
+        customId(dbId),
+      );
       db.exec('COMMIT');
     } catch (e) {
       db.exec('ROLLBACK');
@@ -662,6 +718,43 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
   });
 
   // ---------- 例题练习 ----------
+
+  // POST /api/templates/:id/examples  body: { raw } → 给任意模板追加一题（格式同题单导入）
+  r.post('/:id/examples', (req, res) => {
+    const id = String(req.params.id ?? '');
+    if (!assertTemplateExists(db, id)) return res.status(404).json({ error: '模板不存在' });
+    const raw: string = typeof req.body?.raw === 'string' ? req.body.raw.trim() : '';
+    const parsed = parseProblemListText(raw);
+    const lineCount = raw.split(/\r?\n/).filter((line) => line.trim()).length;
+    if (!raw || lineCount !== 1 || parsed.length !== 1) return res.status(400).json({ error: '请提供一行可识别的题号或链接' });
+    const item = parsed[0];
+    const examples = readExamples(id);
+    if (examples.some((ex) => ex.platform === item.platform && ex.key === item.problemKey)) {
+      return res.status(409).json({ error: '这道题已在例题列表中' });
+    }
+    examples.push({
+      platform: item.platform,
+      key: item.problemKey,
+      title: item.title || item.problemKey,
+      url: item.url || '',
+    });
+    saveExamples(id, examples);
+    res.json({ ok: true });
+  });
+
+  // DELETE /api/templates/:id/examples/:index → 删除当前例题列表中的一题
+  r.delete('/:id/examples/:index', (req, res) => {
+    const id = String(req.params.id ?? '');
+    if (!assertTemplateExists(db, id)) return res.status(404).json({ error: '模板不存在' });
+    const index = Number(req.params.index);
+    const examples = readExamples(id);
+    if (!Number.isInteger(index) || index < 0 || index >= examples.length) {
+      return res.status(404).json({ error: '例题不存在' });
+    }
+    examples.splice(index, 1);
+    saveExamples(id, examples);
+    res.json({ ok: true });
+  });
 
   // POST /api/templates/examples/collect
   // body: { platform, key, title, url?, tags? } → 例题一键入库题目管理（不产生提交，不污染统计）
@@ -697,12 +790,11 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
     if (typeof templateId !== 'string' || !templateId) {
       return res.status(400).json({ error: 'templateId 必填' });
     }
-    const item = CURRICULUM.flatMap((cat) => cat.templates).find((t) => t.id === templateId);
-    if (!item || item.examples.length === 0) {
-      return res.status(404).json({ error: `课程中不存在模板 ${templateId} 或该模板没有例题` });
-    }
+    if (!assertTemplateExists(db, templateId)) return res.status(404).json({ error: `模板 ${templateId} 不存在` });
+    const examples = readExamples(templateId);
+    if (examples.length === 0) return res.status(404).json({ error: '该模板还没有例题' });
     const results: Array<Omit<SyncResult, 'handle'> & { handle: string | null }> = [];
-    for (const platform of new Set(item.examples.map((ex) => ex.platform))) {
+    for (const platform of new Set(examples.map((ex) => ex.platform))) {
       const account = db
         .prepare(
           'SELECT handle FROM platform_accounts WHERE user_id = ? AND platform = ? AND enabled = 1 ORDER BY id LIMIT 1',

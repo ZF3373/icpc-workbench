@@ -1,3 +1,5 @@
+import type { PlatformId } from '../../../shared/src/index.ts';
+
 /**
  * 模板库学习大纲（A 路线：系统学习板块的课程骨架）。
  * 这里只定义「学什么」：分类、模板名称、难度、标签、例题与一句话要点；
@@ -49,7 +51,7 @@
  */
 
 export interface TemplateExample {
-  platform: 'codeforces' | 'luogu';
+  platform: PlatformId;
   key: string;
   title: string;
   url: string;

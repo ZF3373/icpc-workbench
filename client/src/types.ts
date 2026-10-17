@@ -199,7 +199,7 @@ export type {
 export type TemplateStatus = 'todo' | 'learning' | 'mastered'
 
 export interface TemplateExampleInfo {
-  platform: 'codeforces' | 'luogu'
+  platform: PlatformId
   key: string
   title: string
   url: string

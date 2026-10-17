@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   Drawer,
+  Dropdown,
   Form,
   Input,
   Modal,
@@ -21,7 +22,9 @@ import {
   ArrowDownOutlined,
   ArrowUpOutlined,
   BulbOutlined,
+  DownloadOutlined,
   DeleteOutlined,
+  DownOutlined,
   ExperimentOutlined,
   HolderOutlined,
   PlusOutlined,
@@ -40,6 +43,8 @@ import InlineError from '../components/InlineError'
 import { del, get, patch, post } from '../api'
 import { difficultyColor } from '../ui'
 import { mergeSuggestedOrder } from '../listOrder'
+import { saveTextAsFile } from '../download'
+import { platformMeta } from '../../../shared/src/index.ts'
 
 /**
  * 题单整理（issue #4）：导入平台题单（粘贴文本自动识别题号/链接），
@@ -134,6 +139,35 @@ export default function Lists() {
   }
 
   const reloadDetail = () => detail && openDetail(detail.id)
+
+  const exportDetail = (format: 'txt' | 'md') => {
+    if (!detail) return
+    if (detail.items.length === 0) {
+      message.info('这份题单没有题目可导出')
+      return
+    }
+    const lines = detail.items.map((item) => {
+      const platform = item.platform as PlatformId
+      if (format === 'txt') return `${platformMeta(platform).name} ${item.problem_key}`
+      let vjudgeId: string | null = null
+      if (platform === 'codeforces') {
+        vjudgeId = item.url?.includes('/gym/') ? `Gym-${item.problem_key}` : `CF-${item.problem_key}`
+      } else if (platform === 'luogu') vjudgeId = `Luogu-${item.problem_key}`
+      else if (platform === 'atcoder') vjudgeId = `AtCoder-${item.problem_key}`
+      else if (platform === 'nowcoder') vjudgeId = `nowcoder-${item.problem_key}`
+      else if (platform === 'qoj') vjudgeId = `QOJ-${item.problem_key}`
+      if (vjudgeId) return `[problem:${vjudgeId}]`
+      const label = `${platformMeta(platform).name} ${item.problem_key}`
+      return item.url ? `- [${label}](${item.url})` : `- ${label}`
+    })
+    const safeTitle = detail.title.replace(/[\\/:*?"<>|]/g, '-').trim() || `题单-${detail.id}`
+    void saveTextAsFile({
+      filename: `${safeTitle}.${format}`,
+      content: `${format === 'md' ? `# ${detail.title}\n\n` : ''}${lines.join('\n')}\n`,
+      message,
+      successText: format === 'md' ? 'Virtual Judge Markdown 题单已导出' : '题单题号已导出',
+    })
+  }
 
   const submitImport = async () => {
     const v = (await importForm.validateFields().catch(() => null)) as unknown as {
@@ -662,6 +696,21 @@ export default function Lists() {
         width={720}
         extra={
           <Space wrap>
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: [
+                  { key: 'txt', label: '纯文本题号（.txt）' },
+                  { key: 'md', label: 'Virtual Judge Markdown（.md）' },
+                ],
+                onClick: ({ key }) => exportDetail(key as 'txt' | 'md'),
+              }}
+              disabled={!detail?.items.length}
+            >
+              <Button size="small" icon={<DownloadOutlined />} disabled={!detail?.items.length}>
+                导出题号 <DownOutlined />
+              </Button>
+            </Dropdown>
             <Button size="small" icon={<PlusOutlined />} loading={busy === 'add-items'} onClick={() => setAddItemOpen(true)}>
               添加题目
             </Button>
