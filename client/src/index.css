@@ -2410,12 +2410,20 @@ button.dist-row:hover {
 .template-example-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
+}
+
+.template-example-row .template-example {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .template-example-row .template-example-action {
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .template-brief-ac {
