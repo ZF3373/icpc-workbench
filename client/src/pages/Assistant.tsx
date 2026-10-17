@@ -65,7 +65,7 @@ import {
 import { platformName } from '../ui'
 import { createStreamBuffer } from '../streamBuffer'
 import { rememberSessionFiles, getSessionFileText, forgetSessionFiles } from './sessionFiles'
-import { moveSessionBy, pinFirstOrder, restoreSessionOrder, sessionIdOrder } from './assistantSessionOrder'
+import { pinFirstOrder, restoreSessionOrder, sessionIdOrder } from './assistantSessionOrder'
 import { sanitizeOutgoingTurns, describeToolStatus, EMPTY_REPLY_NOTICE } from './assistantTurns'
 import {
   aggregateSessionStats,
@@ -297,19 +297,6 @@ function reorderSessions(fromId: string, toId: string): void {
   })
 }
 
-/**
- * 键盘排序：把 `id` 对应会话上移/下移一格（拖拽的无障碍替代，§6.2）。
- * 返回是否真的移动了 —— 越界时为 false，调用方据此不弹撤销提示。
- */
-function moveSession(id: string, delta: -1 | 1): boolean {
-  const before = chatState.sessions
-  const next = moveSessionBy(before, id, delta)
-  if (!next) return false
-  // CAS：仅当期间没人动过列表时才落盘，避免覆盖并发的增删/切换
-  setChatState((prev) => (prev.sessions === before ? { ...prev, sessions: next } : prev))
-  return true
-}
-
 /** 撤销键盘/拖拽排序：按 id 序列还原顺序；列表已增删（id 对不上）时返回 false */
 function restoreSessionOrderByIds(orderedIds: string[]): boolean {
   const before = chatState.sessions
@@ -537,14 +524,6 @@ export default function Assistant() {
   const contestKey = activeSession?.contestKey
   const sending = sendingIds.has(activeId)
 
-  /**
-   * 折叠态迷你栏要展示的信息（P3-5）：
-   * - 当前会话首字当作"图标"，让收起后仍能认出会话切换过没有；
-   * - 当前会话里的附件总数（图片/文件是用户手动传的，收起来后最容易忘了它在哪个会话）；
-   * - 是否正在流式生成（多会话可并行，「它还在写」必须能看见）。
-   */
-  const railAttachments = messages.reduce((n, m) => n + (m.attachments?.length ?? 0), 0)
-  const railInitial = (activeSession?.title ?? '新').trim().slice(0, 1) || '新'
   // 置顶会话浮动到列表前部（组内保持手动顺序）；store 数组不动，拖拽/撤销仍按手动顺序运作
   const orderedSessions = useMemo(() => pinFirstOrder(sessions), [sessions])
   const miniSessions = useMemo(
@@ -1185,11 +1164,6 @@ export default function Assistant() {
   }
 
   /** 键盘排序：上移/下移一格；真的移动了才给撤销入口 */
-  const handleSessionMove = (id: string, delta: -1 | 1) => {
-    const before = sessionIdOrder(sessions)
-    if (moveSession(id, delta)) showSessionUndo(before)
-  }
-
   // ?plan=<id> 消费 + 计划列表加载 + 清理已删除的计划关联
   useEffect(() => {
     const urlPlan = searchParams.get('plan')
