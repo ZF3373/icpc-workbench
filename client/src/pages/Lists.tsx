@@ -148,7 +148,8 @@ export default function Lists() {
     }
     const lines = detail.items.map((item) => {
       const platform = item.platform as PlatformId
-      if (format === 'txt') return `${platformMeta(platform).name} ${item.problem_key}`
+      const label = `${platformMeta(platform).name} ${item.problem_key}`
+      if (format === 'txt') return item.url ? `${label} ${item.url}` : label
       let vjudgeId: string | null = null
       if (platform === 'codeforces') {
         vjudgeId = item.url?.includes('/gym/') ? `Gym-${item.problem_key}` : `CF-${item.problem_key}`
@@ -156,8 +157,7 @@ export default function Lists() {
       else if (platform === 'atcoder') vjudgeId = `AtCoder-${item.problem_key}`
       else if (platform === 'nowcoder') vjudgeId = `nowcoder-${item.problem_key}`
       else if (platform === 'qoj') vjudgeId = `QOJ-${item.problem_key}`
-      if (vjudgeId) return `[problem:${vjudgeId}]`
-      const label = `${platformMeta(platform).name} ${item.problem_key}`
+      if (vjudgeId) return item.url ? `[problem:${vjudgeId}] ${item.url}` : `[problem:${vjudgeId}]`
       return item.url ? `- [${label}](${item.url})` : `- ${label}`
     })
     const safeTitle = detail.title.replace(/[\\/:*?"<>|]/g, '-').trim() || `题单-${detail.id}`
