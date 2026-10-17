@@ -15,7 +15,7 @@ import {
   type ContestTab, type ContestView, type EvidenceFilter, type ProgressFilter,
 } from './contestsView'
 import type { ContestInfo, ParticipatedContest } from '../types'
-import type { PlatformId } from '../../../shared/src/index.ts'
+import type { ContestRatingStatus, PlatformId } from '../../../shared/src/index.ts'
 
 // antd 预设色由 theme.algorithm 配对亮暗前景与底色，不替换成 CSS 变量。
 const CATEGORY_COLOR: Record<string, string> = {
@@ -32,6 +32,11 @@ const EVIDENCE_TAG: Record<string, { color: string; label: string; detail: strin
   'calendar-window': { color: 'default', label: '赛时提交', detail: '根据该场比赛的官方赛程与赛时提交匹配。' },
   heuristic: { color: 'default', label: '疑似参赛', detail: '缺少官方赛程，根据集中提交推测，可能是练习或补题。' },
   'joined-list': { color: 'purple', label: '平台记录', detail: '平台参赛历史中有这场记录；逐条提交可能尚未同步。' },
+}
+const RATING_STATUS_TAG: Record<ContestRatingStatus, { color: string; label: string }> = {
+  rated: { color: 'green', label: 'Rated 正式参赛' },
+  unrated: { color: 'default', label: '非正式参赛' },
+  pending: { color: 'gold', label: 'Rating 待确认' },
 }
 const CALENDAR_PLATFORMS = [
   { value: 'codeforces', label: 'Codeforces' }, { value: 'atcoder', label: 'AtCoder' },
@@ -84,13 +89,13 @@ export default function Contests() {
   const nav = useNavigate()
   const [params, setParams] = useSearchParams()
   const view = readContestView(params)
-  const { tab, platform, query, category, progress, evidence, sort } = view
+  const { tab, platform, query, category, progress, evidence, ratingStatus, sort } = view
   const setView = (patch: Partial<ContestView>) => {
     const next = readContestView(contestViewParams({ ...view, ...patch, page: patch.page ?? 1 }))
     setParams(contestViewParams(next), { replace: patch.query !== undefined })
   }
-  const clearFilters = () => setView({ platform: undefined, query: '', category: '', progress: 'all', evidence: 'all', sort: 'date' })
-  const hasFilters = !!(platform || query.trim() || category || progress !== 'all' || evidence !== 'all')
+  const clearFilters = () => setView({ platform: undefined, query: '', category: '', progress: 'all', evidence: 'all', ratingStatus: 'all', sort: 'date' })
+  const hasFilters = !!(platform || query.trim() || category || progress !== 'all' || evidence !== 'all' || ratingStatus !== 'all')
   const [debouncedQuery, setDebouncedQuery] = useState(query)
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query), 250)
@@ -225,6 +230,10 @@ export default function Contests() {
           <Select aria-label="参赛依据" value={evidence} onChange={value => setView({ evidence: value as EvidenceFilter })} options={[
             { value: 'all', label: '全部参赛依据' }, { value: 'recorded', label: '平台记录与赛时提交' }, { value: 'inferred', label: '训练与推测记录' },
           ]} />
+          <Select aria-label="Rating 变化" value={ratingStatus} onChange={value => setView({ ratingStatus: value as ContestView['ratingStatus'] })} options={[
+            { value: 'all', label: '全部 Rating 类型' }, { value: 'rated', label: 'Rated 正式参赛' },
+            { value: 'unrated', label: '非正式参赛' }, { value: 'pending', label: 'Rating 待确认' },
+          ]} />
           <Select aria-label="历史排序" value={sort} onChange={value => setView({ sort: value })} options={[
             { value: 'date', label: '最近参赛优先' }, { value: 'activity', label: '最近补题 / 活动优先' },
           ]} />
@@ -279,8 +288,10 @@ export default function Contests() {
 function ParticipationCard({ contest: c, onReview }: { contest: ParticipatedContest; onReview: () => void }) {
   const progress = upsolveProgress(c)
   const evidence = EVIDENCE_TAG[c.evidence] ?? { color: 'default', label: '依据待确认', detail: '暂无法识别这条参赛记录的依据。' }
+  const ratingStatus = c.ratingStatus ?? (c.source?.ratingChange == null ? 'pending' : 'rated')
+  const ratingTag = RATING_STATUS_TAG[ratingStatus]
   return <Card size="small" className="contest-card">
-    <div className="today-problem-head"><PlatformTag id={c.platform} /><Tooltip title={evidence.detail}><Tag color={evidence.color}>{evidence.label}</Tag></Tooltip></div>
+    <div className="today-problem-head"><PlatformTag id={c.platform} /><Tooltip title={evidence.detail}><Tag color={evidence.color}>{evidence.label}</Tag></Tooltip><Tag color={ratingTag.color}>{ratingTag.label}</Tag></div>
     {c.url ? <a className="today-problem-title" href={c.url} target="_blank" rel="noreferrer">{c.name ?? `${platformName(c.platform)} · ${c.contestId}`} ↗</a>
       : <span className="today-problem-title">{c.name ?? `${platformName(c.platform)} · ${c.contestId}`}</span>}
     <div className="contest-meta"><Tooltip title={c.timeIsApproximate ? '时间来自提交活动近似，完整官方赛程未知。' : '官方比赛时间'}><span><ClockCircleOutlined /> {c.timeIsApproximate ? '约 ' : ''}{fmtStart(c.startTimeIso)}</span></Tooltip><span>{c.submissionCount > 0 ? `${c.submissionCount} 次提交` : '逐条提交未同步'}</span></div>

@@ -6,7 +6,7 @@
  * 不碰请求、不碰 React 状态。
  */
 
-import { PLATFORMS, type ParticipatedContest, type PlatformId } from '../../../shared/src/index.ts'
+import { PLATFORMS, type ContestRatingStatus, type ParticipatedContest, type PlatformId } from '../../../shared/src/index.ts'
 
 export type ContestTab = 'upcoming' | 'running' | 'finished' | 'participated'
 export type ProgressFilter = 'all' | 'pending' | 'complete' | 'unknown'
@@ -18,6 +18,7 @@ export interface ContestView {
   category: string
   progress: ProgressFilter
   evidence: EvidenceFilter
+  ratingStatus: 'all' | ContestRatingStatus
   sort: 'date' | 'activity'
   page: number
 }
@@ -30,11 +31,13 @@ export function readContestView(params: URLSearchParams): ContestView {
   const platform = CALENDAR_PLATFORMS.has(rawPlatform) || (tab === 'participated' && rawPlatform === 'qoj') ? rawPlatform : undefined
   const progress = params.get('progress')
   const evidence = params.get('evidence')
+  const ratingStatus = params.get('ratingStatus')
   const page = Number(params.get('page') ?? 1)
   return {
     tab, platform, query: params.get('q') ?? '', category: tab === 'participated' ? '' : params.get('category') ?? '',
     progress: tab === 'participated' && (progress === 'pending' || progress === 'complete' || progress === 'unknown') ? progress : 'all',
     evidence: tab === 'participated' && (evidence === 'recorded' || evidence === 'inferred') ? evidence : 'all',
+    ratingStatus: tab === 'participated' && (ratingStatus === 'rated' || ratingStatus === 'unrated' || ratingStatus === 'pending') ? ratingStatus : 'all',
     sort: tab === 'participated' && params.get('sort') === 'activity' ? 'activity' : 'date',
     page: Number.isSafeInteger(page) && page > 0 ? Math.min(10000, page) : 1,
   }
@@ -48,6 +51,7 @@ export function contestViewParams(view: ContestView): URLSearchParams {
   if (view.category) params.set('category', view.category)
   if (view.progress !== 'all') params.set('progress', view.progress)
   if (view.evidence !== 'all') params.set('evidence', view.evidence)
+  if (view.ratingStatus !== 'all') params.set('ratingStatus', view.ratingStatus)
   if (view.sort !== 'date') params.set('sort', view.sort)
   if (view.page > 1) params.set('page', String(view.page))
   return params
@@ -76,6 +80,8 @@ export function filterParticipated(contests: readonly ParticipatedContest[], fil
     if (filter.progress && filter.progress !== 'all' && upsolveProgress(c).status !== filter.progress) return false
     if (filter.evidence === 'recorded' && !recorded.has(c.evidence)) return false
     if (filter.evidence === 'inferred' && c.evidence !== 'gym' && c.evidence !== 'heuristic') return false
+    const ratingStatus = c.ratingStatus ?? (c.source?.ratingChange == null ? 'pending' : c.source.ratingChange === 0 ? 'unrated' : 'rated')
+    if (filter.ratingStatus && filter.ratingStatus !== 'all' && ratingStatus !== filter.ratingStatus) return false
     const platform = PLATFORMS.find(p => p.id === c.platform)
     const text = normalize([c.name, c.contestId, c.platform, platform?.name, ...(c.accounts ?? [])].join(' '))
     return terms.every(term => text.includes(term))

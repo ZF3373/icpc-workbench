@@ -671,6 +671,23 @@ export function resolveContestGroup(
   if (!PARTICIPATED_PLATFORMS.has(platform)) return null;
   const group = buildContestIndex(db, { ...opts, targetPlatform: platform }).get(key)?.group;
   if (!group) return null;
+  return reviewDataForGroup(db, platform, group);
+}
+
+/** Resolve every review group from one shared submission index (for aggregate views). */
+export function resolveAllContestGroups(
+  db: Db,
+  opts?: { calendar?: ContestInfo[]; sources?: ParticipationSources['byPlatform'] },
+): ContestReviewData[] {
+  const reviews: ContestReviewData[] = [];
+  for (const { platform, group } of buildContestIndex(db, opts).values()) {
+    const review = reviewDataForGroup(db, platform, group);
+    if (review) reviews.push(review);
+  }
+  return reviews;
+}
+
+function reviewDataForGroup(db: Db, platform: PlatformId, group: ContestGroup): ContestReviewData | null {
   const contest = qualifyGroup(platform, group);
   if (!contest) return null;
   const submissions = [...group.rows].sort((a, b) => (a.submittedAt < b.submittedAt ? -1 : 1));

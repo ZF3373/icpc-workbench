@@ -319,6 +319,15 @@ CREATE TABLE IF NOT EXISTS custom_templates (
   updated_at   TEXT
 );
 
+-- 用户对模板例题的完整个人版本（内置例题可删改，自建模板可追加）；模板 id 为内置 id 或 c-<id>
+CREATE TABLE IF NOT EXISTS template_example_overrides (
+  user_id     INTEGER NOT NULL REFERENCES users(id),
+  template_id TEXT NOT NULL,
+  examples    TEXT NOT NULL DEFAULT '[]',
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, template_id)
+);
+
 -- 用户自建模板分类（模板库左侧标签）；key 由服务端生成，name 在同一用户内唯一。
 CREATE TABLE IF NOT EXISTS template_categories (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -385,6 +394,19 @@ CREATE TABLE IF NOT EXISTS participated_contests (
   PRIMARY KEY (user_id, platform, account, contest_id)
 );
 CREATE INDEX IF NOT EXISTS idx_participated_platform ON participated_contests(user_id, platform);
+
+-- 赛时分析用户标签：只作用于一场比赛中的一道平台题目，不写回题库全局标签。
+CREATE TABLE IF NOT EXISTS contest_analysis_tags (
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  contest_key TEXT NOT NULL,
+  platform    TEXT NOT NULL REFERENCES platforms(id),
+  problem_key TEXT NOT NULL,
+  tag         TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, contest_key, platform, problem_key, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_contest_analysis_tags_contest
+  ON contest_analysis_tags(user_id, contest_key);
 
 -- 参赛记录拉取状态（增量游标）：
 -- backlog_done=已完整翻到列表末尾（此后才允许「整页无新内容即提前终止」）；

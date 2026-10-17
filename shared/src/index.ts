@@ -567,6 +567,35 @@ export interface ParticipatedContest {
     problemCount: number | null;
     acceptedCount: number | null;
   } | null;
+  /** Rated classification from the platform's explicit rating-change record; absent before contest analysis loads. */
+  ratingStatus?: ContestRatingStatus;
+}
+
+/** Contest-level rating status. Missing source data must remain pending. */
+export type ContestRatingStatus = 'rated' | 'unrated' | 'pending';
+
+export interface ContestAnalysisProblem {
+  contestKey: string;
+  platform: PlatformId;
+  problemKey: string;
+  title: string;
+  url: string | null;
+  attemptCount: number;
+  postContestAttemptCount: number;
+  contestAccepted: boolean;
+  postContestAccepted: boolean;
+  tags: string[];
+}
+
+export interface ContestAnalysisContest {
+  contest: ParticipatedContest;
+  ratingStatus: ContestRatingStatus;
+  problems: ContestAnalysisProblem[];
+  untaggedStuckCount: number;
+}
+
+export interface ContestAnalysisResponse {
+  contests: ContestAnalysisContest[];
 }
 
 // ---------- 知识点掌握度地图（刷题数据 × 模板课程联动） ----------

@@ -1,10 +1,11 @@
 import { Router } from 'express';
-import type { PlatformId } from '../../../shared/src/index.ts';
+import type { ContestAnalysisResponse, ParticipatedContest, PlatformId } from '../../../shared/src/index.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { fetchAllContests, browseContests } from '../contests/index.ts';
 import { calendarCache } from '../contests/calendarCache.ts';
 import { deriveParticipatedContests } from '../contests/participated.ts';
+import { contestRatingStatus, deriveContestAnalysis } from '../contests/contestAnalysis.ts';
 import { refreshContestProblemSets } from '../contests/problemSetRefresh.ts';
 import {
   kickBackgroundRefresh,
@@ -13,9 +14,46 @@ import {
 } from '../contests/participationSources.ts';
 import type { Db } from '../db/index.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
+import { DEFAULT_USER_ID } from '../constants.ts';
+
+const MAX_ANALYSIS_TAG_LENGTH = 40;
+type AnalysisTagIdentity = { contestKey: string; platform: PlatformId; problemKey: string; tag: string };
 
 export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): Router {
   const r = Router();
+
+  const addRatingStatus = (contests: ParticipatedContest[]) => contests.map(contest => ({
+    ...contest,
+    ratingStatus: contestRatingStatus(contest),
+  }));
+
+  const currentContestAnalysis = async (): Promise<ContestAnalysisResponse> => {
+    const calendar = await calendarCache.load(db);
+    const snapshot = readParticipationSnapshot(db);
+    const contests = deriveParticipatedContests(db, { calendar, sources: snapshot.byPlatform });
+    return { contests: deriveContestAnalysis(db, contests, { calendar, sources: snapshot.byPlatform }) };
+  };
+
+  const parseTagIdentity = (body: unknown): AnalysisTagIdentity | null => {
+    if (!body || typeof body !== 'object') return null;
+    const value = body as Record<string, unknown>;
+    if (typeof value.contestKey !== 'string' || !/^[a-z]+:[\w.-]+$/.test(value.contestKey)) return null;
+    if (typeof value.platform !== 'string' || !PLATFORMS.some(platform => platform.id === value.platform)) return null;
+    if (typeof value.problemKey !== 'string' || !value.problemKey.trim() || value.problemKey.length > 200) return null;
+    if (typeof value.tag !== 'string') return null;
+    const tag = value.tag.trim();
+    if (!tag || Array.from(tag).length > MAX_ANALYSIS_TAG_LENGTH) return null;
+    return { contestKey: value.contestKey, platform: value.platform as PlatformId, problemKey: value.problemKey.trim(), tag };
+  };
+
+  const hasAnalysisProblem = (response: ContestAnalysisResponse, item: AnalysisTagIdentity) =>
+    response.contests.some(contest => contest.contest.key === item.contestKey
+      && contest.problems.some(problem => problem.platform === item.platform && problem.problemKey === item.problemKey));
+
+  const readProblemTags = (item: AnalysisTagIdentity): string[] =>
+    (db.prepare(`SELECT tag FROM contest_analysis_tags
+      WHERE user_id = ? AND contest_key = ? AND platform = ? AND problem_key = ? ORDER BY tag COLLATE NOCASE`)
+      .all(DEFAULT_USER_ID, item.contestKey, item.platform, item.problemKey) as Array<{ tag: string }>).map(row => row.tag);
 
   // GET /api/contests?type=upcoming|running|finished&platform=&limit=
   // 聚合 Codeforces / AtCoder / 洛谷 / 牛客 公开赛事（各源独立缓存 60 分钟，单源失败降级跳过）
@@ -63,7 +101,7 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       const sources = await loadParticipationSources(db, calendar, { fetchFn });
       const contests = deriveParticipatedContests(db, { calendar, sources: sources.byPlatform });
       res.json({
-        contests,
+        contests: addRatingStatus(contests),
         sourceFailures: sources.failures,
         refreshing: refreshContestProblemSets(db, contests, fetchFn).platforms,
       });
@@ -81,7 +119,7 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     const contests = deriveParticipatedContests(db, { calendar, sources: snapshot.byPlatform });
     const problemSets = refreshContestProblemSets(db, contests, fetchFn);
     res.json({
-      contests,
+      contests: addRatingStatus(contests),
       sourceFailures: snapshot.failures,
       refreshing: [...new Set([...refreshing, ...problemSets.platforms])],
     });
@@ -98,10 +136,37 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     const sources = await loadParticipationSources(db, calendar, { force: true, fetchFn });
     const contests = deriveParticipatedContests(db, { calendar, sources: sources.byPlatform });
     res.json({
-      contests,
+      contests: addRatingStatus(contests),
       sourceFailures: sources.failures,
       refreshing: refreshContestProblemSets(db, contests, fetchFn).platforms,
     });
+  }));
+
+  // GET /api/contests/analysis: isolated projection over reliably attributed submissions.
+  r.get('/analysis', asyncHandler(async (_req, res) => {
+    res.json(await currentContestAnalysis());
+  }));
+
+  // PUT /api/contests/analysis/tags: save a user-owned tag for one contest problem.
+  r.put('/analysis/tags', asyncHandler(async (req, res) => {
+    const item = parseTagIdentity(req.body);
+    if (!item) return res.status(400).json({ error: `标签信息无效，标签长度需为 1-${MAX_ANALYSIS_TAG_LENGTH} 个字符。` });
+    const analysis = await currentContestAnalysis();
+    if (!hasAnalysisProblem(analysis, item)) return res.status(404).json({ error: '这道题不属于可可靠归属的参赛题单。' });
+    db.prepare(`INSERT INTO contest_analysis_tags (user_id, contest_key, platform, problem_key, tag)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id, contest_key, platform, problem_key, tag) DO NOTHING`)
+      .run(DEFAULT_USER_ID, item.contestKey, item.platform, item.problemKey, item.tag);
+    res.json({ tags: readProblemTags(item) });
+  }));
+
+  // DELETE /api/contests/analysis/tags: remove only the selected contest-scoped tag.
+  r.delete('/analysis/tags', asyncHandler(async (req, res) => {
+    const item = parseTagIdentity(req.body);
+    if (!item) return res.status(400).json({ error: `标签信息无效，标签长度需为 1-${MAX_ANALYSIS_TAG_LENGTH} 个字符。` });
+    db.prepare(`DELETE FROM contest_analysis_tags
+      WHERE user_id = ? AND contest_key = ? AND platform = ? AND problem_key = ? AND tag = ?`)
+      .run(DEFAULT_USER_ID, item.contestKey, item.platform, item.problemKey, item.tag);
+    res.json({ tags: readProblemTags(item) });
   }));
 
   return r;

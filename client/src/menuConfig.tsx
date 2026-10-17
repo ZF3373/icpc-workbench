@@ -5,6 +5,7 @@
 import type { ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 import {
+  BarChartOutlined,
   CalendarOutlined,
   CodeOutlined,
   DashboardOutlined,
@@ -39,6 +40,7 @@ export const MENU: MenuMeta[] = [
   { key: '/calendar', icon: <CalendarOutlined />, label: '日历打卡' },
   { key: '/reviews', icon: <ReadOutlined />, label: '复习库' },
   { key: '/contests', icon: <FlagOutlined />, label: '赛事中心' },
+  { key: '/contest-analysis', icon: <BarChartOutlined />, label: '赛时分析' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' },
   { key: '/about', icon: <InfoCircleOutlined />, label: '关于' },
 ]
@@ -74,7 +76,7 @@ export interface MenuGroup {
 export const MENU_GROUPS: MenuGroup[] = [
   { key: 'training', label: '训练', items: ['/today', '/ai', '/templates', '/plans'] },
   { key: 'bank', label: '题库', items: ['/problems', '/lists', '/reviews', '/mastery'] },
-  { key: 'contest', label: '赛事', items: ['/contests'] },
+  { key: 'contest', label: '赛事', items: ['/contests', '/contest-analysis'] },
 ]
 
 /** 固定项（不在分组内、不可拖拽）：数据概览置顶，日历打卡紧随其下（每日练习入口） */
