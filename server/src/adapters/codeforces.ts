@@ -31,7 +31,9 @@ interface CFSubmission {
   verdict?: string;
   programmingLanguage?: string;
   creationTimeSeconds: number;
-  /** 参赛方式：CONTESTED=比赛现场 / OUT_OF_COMPETITION=现场非正式 / VIRTUAL=虚拟赛 / PRACTICE=赛后补题或题单练习 */
+  /** author：提交人信息。participantType 在真实响应里嵌在这里（2026-10-18 实测 Educational Round 195） */
+  author?: { participantType?: string };
+  /** 兼容声明：真实 API 从不在顶层下发 participantType，见 contextOf 的注释 */
   participantType?: string;
 }
 
@@ -39,10 +41,17 @@ interface CFSubmission {
  * participantType → 提交语境。现场参赛（含非正式）与虚拟赛都是「当场发挥」，算 contest/virtual；
  * PRACTICE 既含题单练习也含赛后补题（CF 的 user.status 对两者同义），能力值算法再结合
  * 尝试次数与跨度进一步降权。未知/缺省 → undefined（视为平台不下发）。
+ *
+ * 取值位置：真实响应里 participantType 嵌在 author 对象内（author.participantType）。
+ * 曾经读顶层 s.participantType 且枚举拼成 CONTESTED——CF 顶层从不下发该字段、真实值
+ * 是 CONTESTANT，两重错误叠加导致 context 恒为 null：赛事分析页对 CF 按 context
+ * 判定赛时/赛后（contestAnalysis.ts），于是已同步的 CF 比赛全部显示「未尝试」，
+ * 与赛事中心的计数互相矛盾。顶层字段仅作为 author 缺失时的兜底（实际不会命中）。
  */
-function contextOf(participantType: string | undefined): SubmissionContext | undefined {
-  switch (participantType) {
-    case 'CONTESTED':
+function contextOf(s: CFSubmission): SubmissionContext | undefined {
+  const p = s.author?.participantType ?? s.participantType;
+  switch (p) {
+    case 'CONTESTANT':
     case 'OUT_OF_COMPETITION':
       return 'contest';
     case 'VIRTUAL':
@@ -170,11 +179,14 @@ export function createCodeforcesAdapter(
             // PARTIAL/CHALLENGED 等一律落 SKIPPED）。与 atcoder/jisuanke/luogu 同一自愈机制，
             // 见 types.ts 的 knownVerdicts 契约。重发行不计入 unknownInPage：整页已知（含少量
             // 改判）时增量早停仍然成立，改判行数量极少、照常计入新增上限预算。
+            // knownMissingContext：participantType 读错位置的历史 bug 造成库内 context 全空，
+            // 本次能解析出语境的已知行重发一次，由写入层 backfillContext 补上。
             const storedVerdict = knownVerdicts?.get(id);
             const storedKey = knownProblemKeys?.get(id);
             const changed =
               (storedVerdict !== undefined && storedVerdict !== norm.verdict) ||
-              (storedKey !== undefined && storedKey !== norm.problem.problemKey);
+              (storedKey !== undefined && storedKey !== norm.problem.problemKey) ||
+              (norm.context !== undefined && opts?.knownMissingContext?.has(id) === true);
             if (!changed) continue;
           } else {
             unknownInPage += 1;
@@ -233,7 +245,7 @@ export function createCodeforcesAdapter(
 function normalize(s: CFSubmission): NormalizedSubmission {
   const { contestId, index } = s.problem;
   const key = contestId !== undefined ? `${contestId}${index}` : index;
-  const context = contextOf(s.participantType);
+  const context = contextOf(s);
   return {
     problem: {
       platform: 'codeforces' as PlatformId,

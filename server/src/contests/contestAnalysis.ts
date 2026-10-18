@@ -103,8 +103,18 @@ export function deriveContestAnalysis(
       let inContest = false;
       let afterContest = false;
       if (contest.platform === 'codeforces') {
-        inContest = row.context === 'contest' || row.context === 'virtual';
-        afterContest = row.context === 'practice';
+        if (row.context === 'contest' || row.context === 'virtual') {
+          inContest = true;
+        } else if (row.context === 'practice') {
+          afterContest = true;
+        } else if (window) {
+          // 老行兜底（context 为空）：CF 适配器曾读错 participantType 位置（2026-10 修复，
+          // 见 adapters/codeforces.ts contextOf），历史行 context 全空——在语境回填完成前，
+          // 有可信时间窗的场次退回与其他平台相同的时间窗判定，避免「已同步比赛在分析页
+          // 全部显示未尝试」。时间窗口径与 buildContestIndex 的 calendar-window 证据一致。
+          inContest = submittedAt >= window.start && submittedAt < window.end;
+          afterContest = submittedAt >= window.end;
+        }
       } else if (window) {
         inContest = submittedAt >= window.start && submittedAt < window.end;
         afterContest = submittedAt >= window.end;

@@ -66,6 +66,13 @@ export interface FetchOptions {
    * 未注入或该行无题目键时适配器维持跳过语义（兼容旧调用方）。
    */
   knownProblemKeys?: Map<string, string>;
+  /**
+   * 库中「存储的 context 为空」的提交号集合（同步层注入，与 knownExternalIds 同源）。
+   * 历史 bug（CF 适配器读错 participantType 位置）造成的老行 context 全空：上游能给出
+   * 语境而库内缺失的已知行需要重发一次，由写入层 backfillContext 补上（与改判/改题号
+   * 重发同一机制）。未注入时维持跳过语义（兼容旧调用方）。
+   */
+  knownMissingContext?: Set<string>;
   /** 分页间隔（毫秒），仅测试用：传 0 跳过限速 sleep，缺省由适配器自定（洛谷 300ms） */
   pageDelayMs?: number;
   /**

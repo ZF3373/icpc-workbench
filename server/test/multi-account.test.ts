@@ -236,3 +236,25 @@ test('multi-account sync: verdict refresh and context backfill hit only own acco
   assert.equal(small.verdict, 'WA', '其他账号行不受影响');
   assert.equal(small.context, null);
 });
+
+test('sync 自愈：库内 context 为空的老行，再次同步时被重发并回填（CF participantType 回归）', async () => {
+  // 场景复刻 Educational Round 195：适配器曾读错 participantType 位置，历史行 context 全空。
+  // 第一轮同步落库（context 未带）；第二轮同步适配器给出语境 → 已知行重发 → backfillContext 补上。
+  makeFake({ big: [sub('1919A', 'e-old')] });
+  await syncPlatform(db, 'codeforces', 'big');
+  // 老行 context 为空（历史 bug 状态）
+  assert.equal(
+    (db.prepare("SELECT context FROM submissions WHERE external_id = 'e-old'").get() as { context: string | null }).context,
+    null,
+  );
+
+  makeFake({ big: [{ ...sub('1919A', 'e-old'), context: 'contest' }] });
+  const r = await syncPlatform(db, 'codeforces', 'big');
+  // 口径与既有 backfillContext 一致：语境回填不算 imported（行本身早已入库）
+  assert.equal(r.imported, 0);
+  assert.equal(
+    (db.prepare("SELECT context FROM submissions WHERE external_id = 'e-old'").get() as { context: string | null }).context,
+    'contest',
+    '写入层 backfillContext 把语境补上',
+  );
+});

@@ -108,23 +108,29 @@ test('maps non-AC verdicts and missing verdict', async () => {
 });
 
 test('participantType maps to submission context (赛场/补题/虚拟赛)', async () => {
+  // participantType 在 CF user.status 真实响应里位于 author 对象内（2026-10-18 实测
+  // Educational Round 195：现场提交 author.participantType="CONTESTANT"）。曾经读顶层
+  // s.participantType（CF 从不下发）+ 拼错枚举值 CONTESTED，导致 context 永远为 null，
+  // 赛事分析页对 CF 全部显示「未尝试」——本用例按真实结构喂 author.participantType。
   const adapter = createCodeforcesAdapter(async () =>
     cfRes({
       status: 'OK',
       result: [
-        submission({ id: 10, participantType: 'CONTESTED' }),
-        submission({ id: 11, participantType: 'OUT_OF_COMPETITION' }),
-        submission({ id: 12, participantType: 'VIRTUAL' }),
-        submission({ id: 13, participantType: 'PRACTICE' }),
-        submission({ id: 14, participantType: 'UNKNOWN_TYPE' }),
+        submission({ id: 10, author: { participantType: 'CONTESTANT' } }),
+        submission({ id: 11, author: { participantType: 'OUT_OF_COMPETITION' } }),
+        submission({ id: 12, author: { participantType: 'VIRTUAL' } }),
+        submission({ id: 13, author: { participantType: 'PRACTICE' } }),
+        submission({ id: 14, author: { participantType: 'UNKNOWN_TYPE' } }),
         submission({ id: 15 }),
+        // 顶层字段（不存在于真实 API）：不得被采用
+        submission({ id: 16, participantType: 'PRACTICE', author: { participantType: 'CONTESTANT' } }),
       ],
     }),
   );
   const rows = await adapter.fetchUserSubmissions('u');
   assert.deepEqual(
     rows.map((r) => r.context ?? null),
-    ['contest', 'contest', 'virtual', 'practice', null, null],
+    ['contest', 'contest', 'virtual', 'practice', null, null, 'contest'],
   );
 });
 
@@ -203,6 +209,33 @@ test('known ids: 改判/改题号的已知行重发刷新，未变的跳过（SK
   });
   assert.deepEqual(rows.map((r) => r.externalId).sort(), ['10', '8']); // 只重发改判的 10、改题号的 8
   assert.equal(rows.find((r) => r.externalId === '10')?.verdict, 'AC');
+});
+
+test('known ids: 库内缺 context 的已知行，上游能给出语境时重发自愈（Educational 195 回归）', async () => {
+  // 回归：CF 适配器曾读顶层 s.participantType（真实 API 嵌在 author 内）且把 CONTESTANT
+  // 拼成 CONTESTED，context 恒为 null——赛事分析页对 CF 按 context 判定赛时/赛后，
+  // 已同步比赛全部显示「未尝试」与赛事中心互相矛盾。修复后存量老行靠本重发条件自愈：
+  // 库内无 context 且本次解析出 context 的已知行重发一次，交写入层 backfillContext 补上。
+  const adapter = createCodeforcesAdapter(async () =>
+    cfRes({
+      status: 'OK',
+      result: [
+        submission({ id: 20, author: { participantType: 'CONTESTANT' } }), // 缺 context + 本次有 → 重发
+        submission({ id: 19, author: { participantType: 'PRACTICE' } }),   // 缺 context + 本次有 → 重发
+        submission({ id: 18 }),                                            // 上游无语境（题单外提交）→ 跳过
+        submission({ id: 17, author: { participantType: 'VIRTUAL' } }),    // 库内已有 context → 跳过
+      ],
+    }),
+  );
+  const rows = await adapter.fetchUserSubmissions('u', {
+    knownExternalIds: new Set(['17', '18', '19', '20']),
+    knownVerdicts: new Map([['17', 'AC'], ['18', 'AC'], ['19', 'AC'], ['20', 'AC']]),
+    knownProblemKeys: new Map([['17', '1919C'], ['18', '1919C'], ['19', '1919C'], ['20', '1919C']]),
+    knownMissingContext: new Set(['18', '19', '20']),
+  });
+  assert.deepEqual(rows.map((r) => r.externalId).sort(), ['19', '20']);
+  assert.equal(rows.find((r) => r.externalId === '20')?.context, 'contest');
+  assert.equal(rows.find((r) => r.externalId === '19')?.context, 'practice');
 });
 
 test('known ids: mixed page keeps new ones and continues until a fully-known page', async () => {

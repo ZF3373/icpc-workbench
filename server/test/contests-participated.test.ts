@@ -11,6 +11,7 @@ import {
   resolveContestGroup,
   type ContestReviewData,
 } from '../src/contests/participated.ts';
+import { deriveContestAnalysis } from '../src/contests/contestAnalysis.ts';
 import {
   __flushLuoguProblemSetPrefetchForTest,
   __setLuoguProblemSetPrefetchForTest,
@@ -1761,6 +1762,86 @@ test('洛谷题目集后台预取：脱离同步任务异步落库，下次读�
       .get() as { problem_ids: string; problem_set_state: string };
     assert.equal(row.problem_set_state, 'ok', '预取成功即落库');
     assert.match(row.problem_ids, /P17538/);
+  } finally {
+    db.close();
+  }
+});
+
+// ---------- deriveContestAnalysis：赛事分析页投影（context 缺失老行的兜底口径） ----------
+
+test('deriveContestAnalysis：CF 提交 context 为空的老行按权威时间窗归类（Educational 195 回归）', () => {
+  // 场景复刻 2026-10-18 实测：CF 适配器曾读错 participantType 位置，历史行 context 全空，
+  // 赛事分析页对 CF 只认 context → 已同步比赛全部「未尝试」，与赛事中心计数矛盾。
+  // 真实链路里这场靠 CF 平台参赛记录（joined-list）入列，时间窗来自 participated_contests。
+  // 修复口径：context 缺失且有可信时间窗（日历或权威记录）时退回时间窗判定。
+  const db = createDb(':memory:');
+  try {
+    seedAll(db, [
+      // Educational Round 195（对齐真实库）：2276A 赛时 3 发（2 WA + 1 AC）、2276B 赛后补题 AC
+      { platform: 'codeforces', problemKey: '2276A', verdict: 'WA', submittedAt: '2026-10-14T15:08:24.000Z', externalId: 'e1', context: null },
+      { platform: 'codeforces', problemKey: '2276A', verdict: 'WA', submittedAt: '2026-10-14T15:12:46.000Z', externalId: 'e2', context: null },
+      { platform: 'codeforces', problemKey: '2276A', verdict: 'AC', submittedAt: '2026-10-14T15:20:49.000Z', externalId: 'e3', context: null },
+      { platform: 'codeforces', problemKey: '2276B', verdict: 'AC', submittedAt: '2026-10-16T01:42:58.000Z', externalId: 'e4', context: null },
+    ]);
+    // CF 平台参赛记录（对齐真实库 participated_contests：1791988500000 = 14:35，+120min）
+    const sources = {
+      codeforces: [{
+        platform: 'codeforces' as const,
+        contestId: '2276',
+        name: 'Educational Codeforces Round 195 (Rated for Div. 2)',
+        url: 'https://codeforces.com/contest/2276',
+        startTimeMs: Date.parse('2026-10-14T14:35:00.000Z'),
+        endTimeMs: Date.parse('2026-10-14T16:35:00.000Z'),
+        rank: 9732,
+        rating: 960,
+        ratingChange: -68,
+        problemCount: 7,
+        acceptedCount: null,
+        problems: [
+          { id: '2276A', title: 'Perfect Sandwiches' },
+          { id: '2276B', title: 'Replace and Compress' },
+          { id: '2276C', title: 'Subarrays' },
+          { id: '2276D', title: 'Caveman' },
+          { id: '2276E', title: 'Good Substrings' },
+          { id: '2276F', title: 'Permutation Coloring Game' },
+          { id: '2276G', title: 'Elimination of Players' },
+        ],
+        problemSetState: 'ok' as const,
+      }],
+    };
+    const contests = deriveParticipatedContests(db, { sources });
+    assert.equal(contests.length, 1, '平台参赛记录证明参赛（joined-list）');
+    const analysis = deriveContestAnalysis(db, contests, { sources });
+    assert.equal(analysis.length, 1);
+    const problems = analysis[0]!.problems;
+    const a = problems.find((p) => p.problemKey === '2276A')!;
+    assert.equal(a.attemptCount, 3, '3 条赛时提交按时间窗归入赛时（15:08–15:20 在 14:35–16:35 窗内）');
+    assert.equal(a.contestAccepted, true, '2276A 赛时 AC');
+    assert.equal(a.postContestAttemptCount, 0);
+    const b = problems.find((p) => p.problemKey === '2276B')!;
+    assert.equal(b.attemptCount, 0, '2276B 提交在窗口结束之后');
+    assert.equal(b.postContestAttemptCount, 1, '按时间窗归入赛后补题');
+    assert.equal(b.postContestAccepted, true, '赛后补题 AC');
+  } finally {
+    db.close();
+  }
+});
+
+test('deriveContestAnalysis：有 context 的 CF 行仍按 context 判定（老行兜底不侵蚀正常路径）', () => {
+  const db = createDb(':memory:');
+  try {
+    seedAll(db, [
+      // 同一提交号在窗内但 context=practice：以 context 为准（时间窗只是缺语境时的兜底）
+      { platform: 'codeforces', problemKey: '1877A', verdict: 'AC', submittedAt: '2026-09-20T14:20:00.000Z', externalId: 'c1', context: 'practice' },
+      { platform: 'codeforces', problemKey: '1877B', verdict: 'AC', submittedAt: '2026-09-20T14:40:00.000Z', externalId: 'c2', context: 'contest' },
+    ]);
+    const analysis = deriveContestAnalysis(db, deriveParticipatedContests(db, { calendar: CAL }), { calendar: CAL });
+    assert.equal(analysis.length, 1);
+    const a = analysis[0]!.problems.find((p) => p.problemKey === '1877A')!;
+    assert.equal(a.attemptCount, 0, 'context=practice 的窗内提交不算赛时');
+    assert.equal(a.postContestAttemptCount, 1);
+    const b = analysis[0]!.problems.find((p) => p.problemKey === '1877B')!;
+    assert.equal(b.attemptCount, 1, 'context=contest 正常计赛时');
   } finally {
     db.close();
   }
