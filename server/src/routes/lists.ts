@@ -644,7 +644,7 @@ export function listsRoutes(
       .all(DEFAULT_USER_ID, id) as Array<{ id: number; platform: string; problem_key: string; title: string | null; category: string; difficulty: number | null; solved: number }>;
     if (items.length === 0) return res.status(400).json({ error: '题单为空' });
     const lines = items
-      .map((it, i) => `${i + 1}. [${it.category}] ${it.platform}/${it.problem_key}《${it.title ?? ''}》${it.difficulty ? `难度${it.difficulty}` : ''}${it.solved ? '（已AC）' : ''}`)
+      .map((it, i) => `${i + 1}. [${it.category}] ${it.platform}/${it.problem_key}《${it.title ?? ''}》${it.difficulty !== null ? `难度${it.difficulty}` : ''}${it.solved ? '（已AC）' : ''}`)
       .join('\n');
     const weakness = computeWeakness(db, DEFAULT_USER_ID, { minAttempts: 5, topN: 8 });
     const summaryPrompt = renderSummaryForPrompt(buildPracticeSummary(db, DEFAULT_USER_ID));

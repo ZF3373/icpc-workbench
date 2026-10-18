@@ -10,6 +10,7 @@ import {
   requestRestore,
 } from '../backup.ts';
 import { isDockerRuntime } from '../runtime-env.ts';
+import { sendRouteError } from './routeError.ts';
 
 export interface BackupsRoutesOptions {
   /** 是否 Docker 环境：决定前端恢复引导文案，以及是否暴露「重启容器」端点 */
@@ -68,7 +69,8 @@ export function backupsRoutes(db: Db, opts: BackupsRoutesOptions = {}): Router {
       const b = createBackup(db, 'manual');
       res.json({ ok: true, file: b.file, size: b.size });
     } catch (e) {
-      res.status(500).json({ error: `备份创建失败: ${(e as Error).message}` });
+      // 备份失败多与磁盘/权限相关（消息带绝对路径）：原文只进日志（此前服务端零痕迹）
+      sendRouteError(res, 500, e, '备份创建失败，请检查磁盘空间后查看服务端日志');
     }
   });
 
@@ -127,12 +129,13 @@ export function backupsRoutes(db: Db, opts: BackupsRoutesOptions = {}): Router {
     }
     res.json({ ok: true, restarting: true, file: pending.file });
     // 响应写完后退出：容器 restart 策略拉起新进程，createDb 之前由 applyPendingRestore 完成回滚。
-    res.on('finish', () => {
-      setTimeout(() => {
-        console.log(`[backup] 收到重启请求：进程退出以应用恢复点 ${pending.file}`);
-        shutdown();
-      }, restartDelayMs);
-    });
+    // 不挂 res.on('finish')：客户端中途断开（响应未完整送达）时 finish 不触发，
+    // 恢复流程会静默卡住。res.json 已同步把响应写进输出缓冲，直接调度即可；
+    // restartDelayMs（默认 300ms）就是给内核冲刷响应留的时间。
+    setTimeout(() => {
+      console.log(`[backup] 收到重启请求：进程退出以应用恢复点 ${pending.file}`);
+      shutdown();
+    }, restartDelayMs);
   });
 
   // DELETE /api/backups/:name → 删除单个恢复点（连带其知识点伴生快照）。

@@ -331,7 +331,18 @@ function getChatSnapshot(): ChatState {
 
 function createNewSession(): void {
   const s = createSession()
-  setChatState((prev) => ({ ...prev, sessions: [s, ...prev.sessions], activeId: s.id, input: '' }))
+  setChatState((prev) => {
+    // 内存数组与落盘口径对齐（saveToStorage 只存前 MAX_SESSIONS 个）：不淘汰的话
+    // 第 51 个以后的旧会话只在内存活着，刷新后静默消失——用户以为删了，其实只是没存。
+    // 置顶会话永远保留（pinned 优先于位置序）。
+    const rest = prev.sessions.filter((x) => x.pinned)
+    const unpinned = prev.sessions.filter((x) => !x.pinned)
+    while (rest.length + unpinned.length >= MAX_SESSIONS) {
+      const victim = unpinned.pop()
+      if (!victim || victim.id === prev.activeId) break
+    }
+    return { ...prev, sessions: [s, ...rest, ...unpinned], activeId: s.id, input: '' }
+  })
 }
 
 function switchToSession(id: string): void {
@@ -2480,7 +2491,8 @@ export default function Assistant() {
                   onClick={() => switchToSession(s.id)}
                   tabIndex={-1}
                 >
-                  {s.title.trim().slice(0, 1) || '新'}
+                  {/* Array.from 按 Unicode 码点取首字符：slice(0,1) 遇 emoji/代理对会渲染半个乱码 */}
+                  {Array.from(s.title.trim())[0] ?? '新'}
                   {s.streaming && <LoadingOutlined className="mini-rail-stream" />}
                 </button>
               </Tooltip>

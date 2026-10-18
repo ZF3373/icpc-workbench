@@ -122,7 +122,13 @@ export function useAccountScope(): [AccountScope, (scope: AccountScope) => void]
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key !== STORAGE_KEY) return;
-      setScope(e.newValue ? normalizeScope(JSON.parse(e.newValue)) : ALL_ACCOUNTS);
+      // 其他标签页/扩展写进来的可能是脏值（非 JSON）：裸 parse 会抛未捕获异常，
+      // 与 readScope 同口径回退全部账号
+      try {
+        setScope(e.newValue ? normalizeScope(JSON.parse(e.newValue)) : ALL_ACCOUNTS);
+      } catch {
+        setScope(ALL_ACCOUNTS);
+      }
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);

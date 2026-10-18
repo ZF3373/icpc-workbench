@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Button, Card, Empty, Input, Select, Space, Tag, App as AntdApp } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
@@ -41,16 +41,23 @@ export default function ContestAnalysis() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [filters, setFilters] = useState<Filters>({ query: '' })
+  // 请求序号护栏（与 Dashboard/Mastery 的 reqSeq 同款）：连点「刷新」或保存标签失败
+  // 自动重试时，慢的旧响应会后到并覆盖新数据
+  const reqSeq = useRef(0)
 
   const load = useCallback(async () => {
+    const seq = ++reqSeq.current
     setLoading(true)
     setError(null)
     try {
-      setData(await api<ContestAnalysisResponse>('/api/contests/analysis'))
+      const next = await api<ContestAnalysisResponse>('/api/contests/analysis')
+      if (seq !== reqSeq.current) return
+      setData(next)
     } catch (cause) {
+      if (seq !== reqSeq.current) return
       setError((cause as Error).message)
     } finally {
-      setLoading(false)
+      if (seq === reqSeq.current) setLoading(false)
     }
   }, [])
 
@@ -77,7 +84,9 @@ export default function ContestAnalysis() {
   const platformOptions = [...new Set((data?.contests ?? []).map(item => item.contest.platform))]
     .map(platform => ({ value: platform, label: platformName(platform) }))
 
-  const persistTag = async (problem: ContestAnalysisProblem, tag: string, add: boolean) => {
+  // 乐观更新全部走 setData 函数式更新，不读组件作用域状态 → 依赖恒空；
+  // 稳定引用让 memo 的 ContestCard/ProblemRow 不因每次渲染新回调而全量重渲染
+  const persistTag = useCallback(async (problem: ContestAnalysisProblem, tag: string, add: boolean) => {
     const path = '/api/contests/analysis/tags'
     const body = JSON.stringify({ contestKey: problem.contestKey, platform: problem.platform, problemKey: problem.problemKey, tag })
     const optimistic = (current: ContestAnalysisResponse | null, tags: string[]) => current && ({
@@ -104,7 +113,7 @@ export default function ContestAnalysis() {
       message.error(`赛时标签保存失败：${(cause as Error).message}`)
       void load()
     }
-  }
+  }, [load, message])
 
   return <div className="contest-analysis-page" aria-busy={loading}>
     <PageHeader title="赛时分析" description="单独查看比赛期间卡住的题目和赛后补题，不影响日常薄弱项分析。" extra={
@@ -152,7 +161,8 @@ export default function ContestAnalysis() {
   </div>
 }
 
-function ContestCard({ item, onAddTag, onRemoveTag }: {
+// memo：搜索框每击键都会重建整页，比赛卡片与题目行只依赖自己的 item/problem
+const ContestCard = memo(function ContestCard({ item, onAddTag, onRemoveTag }: {
   item: ContestAnalysisContest
   onAddTag: (problem: ContestAnalysisProblem, tag: string) => void
   onRemoveTag: (problem: ContestAnalysisProblem, tag: string) => void
@@ -178,9 +188,9 @@ function ContestCard({ item, onAddTag, onRemoveTag }: {
         {item.problems.map(problem => <ProblemRow key={`${problem.platform}:${problem.problemKey}`} problem={problem} onAddTag={onAddTag} onRemoveTag={onRemoveTag} />)}
       </div>}
   </Card>
-}
+})
 
-function ProblemRow({ problem, onAddTag, onRemoveTag }: {
+const ProblemRow = memo(function ProblemRow({ problem, onAddTag, onRemoveTag }: {
   problem: ContestAnalysisProblem
   onAddTag: (problem: ContestAnalysisProblem, tag: string) => void
   onRemoveTag: (problem: ContestAnalysisProblem, tag: string) => void
@@ -213,4 +223,4 @@ function ProblemRow({ problem, onAddTag, onRemoveTag }: {
       {draft.trim() && <Button size="small" type="link" onClick={add}>添加</Button>}
     </div>
   </div>
-}
+})

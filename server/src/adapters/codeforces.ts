@@ -218,12 +218,14 @@ export function createCodeforcesAdapter(
     },
 
     problemUrl({ problemKey }) {
+      // 与 normalize 的 problemUrlFor 同一映射（gym/contest 分流），改一处漏一处是
+      // 历史包袱；这里把题号拆分结果转成 (contestId, index) 委托过去，仅「拆不出来」
+      // 的退化分支（整键当普通题号）留在这边。
       const { contestId, index } = splitKey(String(problemKey));
       if (!contestId) {
         return `https://codeforces.com/problemset/problem/${String(problemKey)}`;
       }
-      const base = Number(contestId) >= 100000 ? 'gym' : 'contest';
-      return `https://codeforces.com/${base}/${contestId}/problem/${index}`;
+      return problemUrlFor(Number(contestId), index);
     },
   };
 }

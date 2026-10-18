@@ -16,8 +16,17 @@
 
 import { COOKIE_FIELDS, type PlatformId } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
-import type { SettingLookup } from '../db/settings.ts';
+import { type SettingLookup } from '../db/settings.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
+
+/**
+ * 单 key 即时读取器（预编译复用）：本模块三处共用的口径。调用方已持有请求内快照时
+ * 直接传 `read` 覆盖；否则构造一次、多次读取不再重复 prepare（原三处各自内联闭包）。
+ */
+function dbSettingLookup(db: Db): SettingLookup {
+  const getStmt = db.prepare('SELECT value FROM settings WHERE key = ?');
+  return (key) => (getStmt.get(key) as { value: string } | undefined)?.value;
+}
 
 /** 单个账号的凭据槽位（cookie 为拼装后的 Cookie 头；csrf 等遗留键不在账号级存储） */
 export interface AccountCredSlot {
@@ -35,11 +44,7 @@ export function readAccountCreds(
   read?: SettingLookup,
 ): Record<string, AccountCredSlot> {
   const key = accountCredsKey(platform);
-  const raw = read
-    ? read(key)
-    : (
-        db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
-      )?.value;
+  const raw = (read ?? dbSettingLookup(db))(key);
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -94,8 +99,7 @@ export function effectiveCredentials(
   handle: string,
   read?: SettingLookup,
 ): EffectiveCredentials {
-  const readSetting: SettingLookup = read ?? ((key) =>
-    (db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)?.value);
+  const readSetting = read ?? dbSettingLookup(db);
   const slot = readAccountCreds(db, platform, readSetting)[handle];
   const cookie = slot?.cookie ?? '';
   const ua = readSetting(`ua.${platform}`);
@@ -125,8 +129,7 @@ export function effectiveCredentials(
  * @returns 是否发生了实际迁移（用于启动日志）
  */
 export function migratePlatformCookieToAccounts(db: Db): boolean {
-  const readSetting = (key: string): string | undefined =>
-    (db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)?.value;
+  const readSetting = dbSettingLookup(db);
   const setFlag = (key: string): void => {
     db.prepare(
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
