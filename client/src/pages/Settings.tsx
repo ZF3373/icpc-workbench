@@ -30,7 +30,7 @@ import {
   App as AntdApp,
 } from 'antd'
 import type { InputNumberProps } from 'antd'
-import { ApiOutlined, DeleteOutlined, ImportOutlined, PlusOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, LinkOutlined, DatabaseOutlined } from '@ant-design/icons'
+import { ApiOutlined, DeleteOutlined, DownloadOutlined, ImportOutlined, PlusOutlined, RobotOutlined, UploadOutlined, UserOutlined, BellOutlined, FileMarkdownOutlined, LinkOutlined, DatabaseOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
@@ -1337,6 +1337,15 @@ function NumberUnitInput({
  *   一起收集、校验成请求体（提供商密钥留空 = 保持已存值，语义与服务端缺省合并对齐）。
  */
 
+/** 卡片内模型目录条目：在服务端条目上带一个草稿期的稳定 UI key（不落库，见 draftOf） */
+type ModelDraftEntry = AiProviderModelEntry & {
+  /**
+   * 仅前端使用的行标识：目录行可编辑、可删除，用下标做 key 会在删除中间条目后
+   * 让后续输入框复用错位节点（受控值被旧 DOM 占着）；模型 id 编辑期间也不唯一，故另发一个。
+   */
+  uiKey: string
+}
+
 /** 卡片内正在编辑的一个提供商草稿（apiKey 只装「本次新输入」；'' = 未改动，保存时不下发） */
 type ProviderDraft = {
   id: string
@@ -1355,7 +1364,7 @@ type ProviderDraft = {
   /** 自动填写已生效的模型名：同一模型不重复覆盖（用户改过的数值得以保留） */
   capsModel?: string
   /** 模型目录（对齐 dsh 的模型管理）：候选清单 + 条目级参数；条目参数优先于提供商级生效 */
-  models: AiProviderModelEntry[]
+  models: ModelDraftEntry[]
 }
 
 type AiFormValues = {
@@ -1372,6 +1381,19 @@ export type AiSettingsCardHandle = {
   /** 保存成功后清空「本次新输入」的密钥草稿（输入的清空只发生在保存动作成功后，全局刷新不碰草稿） */
   clearSubmittedApiKeys: () => void
   resetFields: () => void
+}
+
+/** 草稿期模型条目的 UI key：只需在本卡片内唯一且跨渲染稳定，不参与保存 */
+function newModelUiKey(): string {
+  return `m_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+}
+
+/**
+ * 纯逻辑（如 mergePickedModels）返回的条目：来自草稿的已带 uiKey，新采纳的没有。
+ * 统一补成草稿条目，避免用下标 key（删除中间条目后输入框值会错位）。
+ */
+function withModelUiKey(m: AiProviderModelEntry & { uiKey?: string }): ModelDraftEntry {
+  return { ...m, uiKey: m.uiKey ?? newModelUiKey() }
 }
 
 /** 服务端已存提供商视图 → 编辑草稿（密钥原文不下发，草稿里 apiKey 恒从空开始） */
@@ -1391,7 +1413,7 @@ function draftOf(p: AiProviderView): ProviderDraft {
     contextWindow: p.contextWindow,
     // 服务端已带参数 → 标记「该模型已填过」，失焦不重填（保住用户已调的值）
     capsModel: p.maxTokens !== undefined || p.contextWindow !== undefined ? p.model : undefined,
-    models: p.models ? p.models.map((m) => ({ ...m })) : [],
+    models: p.models ? p.models.map((m) => ({ ...m, uiKey: newModelUiKey() })) : [],
   }
 }
 
@@ -1639,7 +1661,7 @@ const AiSettingsCard = ({
       capsBy[id]?.[model.trim()] ?? guessModelCaps(model)
     const models = target.models.map((m) => {
       const caps = capsFor(m.id)
-      return caps ? { id: m.id, ...capsPatch(caps) } : m
+      return caps ? { ...m, ...capsPatch(caps) } : m
     })
     const activeModel = target.model.trim()
     const activeCaps = activeModel ? capsFor(activeModel) : null
@@ -1725,7 +1747,7 @@ const AiSettingsCard = ({
       // 自定义网关：目录留空，默认模型走「目录外」行（档位能认出就先垫上）
       models:
         preset.defaultModels.length > 0
-          ? preset.defaultModels.map((mid) => ({ id: mid, ...(guessModelCaps(mid) ?? {}) }))
+          ? preset.defaultModels.map((mid) => ({ id: mid, ...(guessModelCaps(mid) ?? {}), uiKey: newModelUiKey() }))
           : [],
       ...(caps && !preset.defaultModels.includes(model) ? capsPatch(caps) : {}),
       ...(caps ? { capsModel: model } : {}),
@@ -1763,7 +1785,7 @@ const AiSettingsCard = ({
 
   const addModelEntry = (pid: string) => {
     setProviders((ps) =>
-      ps.map((p) => (p.id !== pid ? p : { ...p, models: [...p.models, { id: '' }] })),
+      ps.map((p) => (p.id !== pid ? p : { ...p, models: [...p.models, { id: '', uiKey: newModelUiKey() }] })),
     )
   }
 
@@ -1774,7 +1796,7 @@ const AiSettingsCard = ({
         if (p.id !== pid) return p
         const preset = [...AI_PROVIDER_PRESETS, AI_PROVIDER_CUSTOM_PRESET].find((x) => x.key === p.presetKey)
         if (!preset || preset.defaultModels.length === 0) return p
-        return { ...p, models: preset.defaultModels.map((id) => ({ id, ...(guessModelCaps(id) ?? {}) })) }
+        return { ...p, models: preset.defaultModels.map((id) => ({ id, ...(guessModelCaps(id) ?? {}), uiKey: newModelUiKey() })) }
       }),
     )
   }
@@ -1790,7 +1812,10 @@ const AiSettingsCard = ({
     }
     // 上限判断前移到采纳动作：否则草稿会超上限、保存时被服务端静默截断，
     // 而界面仍显示全部（结构对账不会回写目录）→ 界面与库永久不一致
-    const { models, skipped } = mergePickedModels(target.models, picker.candidates, pickedIds)
+    const merged = mergePickedModels(target.models, picker.candidates, pickedIds)
+    // 纯逻辑只认业务字段：新采纳的条目补上草稿期 UI key（已有条目来自草稿，自带 key）
+    const models = merged.models.map(withModelUiKey)
+    const skipped = merged.skipped
     setProviders((ps) => ps.map((p) => (p.id === pid ? { ...p, models } : p)))
     if (skipped > 0) {
       message.warning(
@@ -2194,7 +2219,7 @@ const AiSettingsCard = ({
                       )}
                       {p.models.map((m, i) => (
                         <div
-                          key={i}
+                          key={m.uiKey}
                           style={{ border: '1px solid var(--line-soft)', borderRadius: 8, padding: '6px 8px', marginBottom: 6, background: 'var(--bg-elevated)' }}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -2623,6 +2648,17 @@ interface BackupItem {
   knowledge?: boolean
 }
 
+/** GET /api/backups 的响应：列表 + 待恢复标记 + 部署形态 */
+interface BackupsResponse {
+  backups: BackupItem[]
+  /** 已登记、等待重启生效的恢复目标；无标记时为 null */
+  pendingRestore: { file: string; requestedAt: string } | null
+  /** 运行在 Docker 容器内（恢复引导文案不同） */
+  docker?: boolean
+  /** 「重启容器」端点可用（仅 Docker 环境） */
+  canRestart?: boolean
+}
+
 /** 知识点管线设置卡：统计置信度阈值 + 切换期双口径对比（tag vs 知识点弱项）。 */
 function KnowledgePipelineCard() {
   const { message } = AntdApp.useApp()
@@ -2763,15 +2799,41 @@ function BackupCard({ refreshKey = 0 }: { refreshKey?: number }) {
   const [backups, setBackups] = useState<BackupItem[]>([])
   const [loading, setLoading] = useState(false)
   const [creating, setCreating] = useState(false)
+  /** 已登记、等待重启生效的恢复目标；再点其他备份会覆盖它（覆盖前弹确认） */
+  const [pendingFile, setPendingFile] = useState<string | null>(null)
+  /** Docker 部署：恢复引导文案改为「重启容器」，并可一键触发容器重启 */
+  const [docker, setDocker] = useState(false)
+  /** 「重启此容器」按钮的进行中状态：请求成功后进程退出，页面会失去连接 */
+  const [restarting, setRestarting] = useState(false)
+  /** 组件是否仍挂载：重启轮询在用户离开设置页后应立即停止 */
+  const aliveRef = useRef(true)
+  useEffect(() => {
+    // StrictMode 下 effect 会「挂载→卸载→再挂载」：必须在这里置回 true，
+    // 只有 cleanup 置 false 会让开发模式的轮询一启动就退出。
+    aliveRef.current = true
+    return () => {
+      aliveRef.current = false
+    }
+  }, [])
 
   const load = () => {
     setLoading(true)
-    get<{ backups: BackupItem[] }>('/api/backups')
-      .then((d) => setBackups(d.backups))
+    get<BackupsResponse>('/api/backups')
+      .then((d) => {
+        setBackups(d.backups)
+        setPendingFile(d.pendingRestore?.file ?? null)
+        setDocker(d.docker === true)
+      })
       .catch((e) => message.error((e as Error).message))
       .finally(() => setLoading(false))
   }
   useEffect(load, [message, refreshKey])
+
+  /** 恢复生效的操作指引：Docker 用户要重启容器，桌面版要重启应用 */
+  const restartHint = docker
+    ? '请重启容器（docker restart icpc-workbench）使恢复生效'
+    : '请重启应用使恢复生效'
+  const restartShort = docker ? '重启容器（docker restart icpc-workbench）' : '重启应用'
 
   const createNow = async () => {
     setCreating(true)
@@ -2786,14 +2848,32 @@ function BackupCard({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   }
 
+  /** 真正登记恢复（已确认过覆盖/数据丢失） */
+  const doRestore = async (b: BackupItem) => {
+    try {
+      await post(`/api/backups/${encodeURIComponent(b.file)}/restore`)
+      setPendingFile(b.file)
+      message.warning(`已登记恢复请求：${restartHint}`)
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
   const confirmRestore = (b: BackupItem) => {
+    // 已登记了另一个恢复目标：先明确告知「会覆盖」，避免静默换目标后还以为之前那个会生效
+    const overwriting = pendingFile !== null && pendingFile !== b.file
     modal.confirm({
-      title: '恢复此备份？',
+      title: overwriting ? '改选另一个恢复点？' : '恢复此备份？',
       width: 480,
       content: (
         <div style={{ fontSize: 13 }}>
+          {overwriting && (
+            <p style={{ color: 'var(--red)' }}>
+              当前待恢复的是 {pendingFile}，登记本次恢复会覆盖它（重启后只会回滚到下面这个恢复点）。
+            </p>
+          )}
           <p>数据库将回滚到 {new Date(b.createdAtMs).toLocaleString()}（{BACKUP_REASON_LABEL[b.reason] ?? b.reason}，{formatBytes(b.size)}）。</p>
-          <p style={{ color: 'var(--red)' }}>备份之后产生的同步、打卡、复习等数据会丢失。恢复在重启应用后生效。</p>
+          <p style={{ color: 'var(--red)' }}>备份之后产生的同步、打卡、复习等数据会丢失。恢复在{restartShort}后生效。</p>
           {b.knowledge === false ? (
             <p style={{ color: 'var(--red)' }}>
               该恢复点不含知识点标注快照（升级前的旧备份）：数据库会回滚，但知识点标注不会被回退。
@@ -2803,18 +2883,40 @@ function BackupCard({ refreshKey = 0 }: { refreshKey?: number }) {
           )}
         </div>
       ),
-      okText: '登记恢复（重启生效）',
+      okText: overwriting ? '覆盖并登记恢复' : '登记恢复（重启生效）',
       okButtonProps: { danger: true },
       cancelText: '取消',
-      onOk: async () => {
-        try {
-          await post(`/api/backups/${encodeURIComponent(b.file)}/restore`)
-          message.warning('已登记恢复请求：请重启应用以完成回滚')
-        } catch (e) {
-          message.error((e as Error).message)
-        }
-      },
+      onOk: () => doRestore(b),
     })
+  }
+
+  /** Docker：让进程退出，由 compose 的 restart: unless-stopped 拉起并应用恢复点 */
+  const restartContainer = async () => {
+    setRestarting(true)
+    try {
+      await post('/api/backups/restart')
+      message.warning('容器正在重启以应用恢复点，恢复完成后页面会自动刷新')
+      // 进程退出后接口会短暂不可达：轮询探活，回来后自动刷新，免去用户手点
+      for (let i = 0; i < 60 && aliveRef.current; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        try {
+          const h = await get<{ ok?: boolean }>('/api/health')
+          if (h.ok) {
+            window.location.reload()
+            return
+          }
+        } catch {
+          // 进程还没起来，继续等
+        }
+      }
+      if (aliveRef.current) {
+        setRestarting(false)
+        message.info('容器尚未恢复响应：请执行 docker ps 确认状态，或手动 docker restart icpc-workbench')
+      }
+    } catch (e) {
+      message.error((e as Error).message)
+      setRestarting(false)
+    }
   }
 
   // 删除单个恢复点（连带其知识点伴生快照）：避免长期使用后备份堆积占用磁盘
@@ -2835,9 +2937,41 @@ function BackupCard({ refreshKey = 0 }: { refreshKey?: number }) {
           立即备份
         </Button>
         <span style={{ color: 'var(--text-3)', fontSize: 12 }}>
-          自动备份时机：每日首次启动、应用升级前、大批量导入前、换账号重置前；恢复需重启应用生效；备份可手动删除。
+          自动备份时机：每日首次启动、应用升级前、大批量导入前、换账号重置前；恢复需{restartShort}生效；备份可下载或手动删除。
         </span>
       </Space>
+      {pendingFile && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 8 }}
+          message={`已登记恢复：${pendingFile}`}
+          description={
+            <Space direction="vertical" size={4}>
+              <span>{restartHint}。重启前再选其他备份会覆盖当前待恢复项（会二次确认）。</span>
+              {docker && (
+                <Popconfirm
+                  title="立即重启容器？"
+                  description={
+                    <span style={{ display: 'inline-block', maxWidth: 320 }}>
+                      将让服务进程退出，由 compose 的 restart: unless-stopped 自动拉起并应用恢复点；页面会短暂断开。若容器未配置 restart
+                      策略，退出后需手动 docker start icpc-workbench。
+                    </span>
+                  }
+                  okText="重启容器"
+                  cancelText="取消"
+                  okButtonProps={{ danger: true }}
+                  onConfirm={() => void restartContainer()}
+                >
+                  <Button size="small" type="primary" danger loading={restarting}>
+                    立即重启容器
+                  </Button>
+                </Popconfirm>
+              )}
+            </Space>
+          }
+        />
+      )}
       <List
         size="small"
         loading={loading}
@@ -2848,6 +2982,23 @@ function BackupCard({ refreshKey = 0 }: { refreshKey?: number }) {
             actions={[
               <Button key="restore" size="small" color="green" variant="outlined" onClick={() => confirmRestore(b)}>
                 恢复
+              </Button>,
+              <Button
+                key="download"
+                size="small"
+                icon={<DownloadOutlined />}
+                onClick={() =>
+                  void saveUrlAsFile({
+                    url: `/api/backups/${encodeURIComponent(b.file)}/download`,
+                    filename: b.file,
+                    mime: 'application/octet-stream',
+                    binary: true,
+                    successText: `已下载恢复点 ${b.file}（可异地留存，需要时直接替换数据目录中的同名备份）`,
+                    message,
+                  })
+                }
+              >
+                下载
               </Button>,
               <Popconfirm
                 key="delete"
@@ -2863,6 +3014,7 @@ function BackupCard({ refreshKey = 0 }: { refreshKey?: number }) {
           >
             <Space size={8} wrap>
               <Tag>{BACKUP_REASON_LABEL[b.reason] ?? b.reason}</Tag>
+              {pendingFile === b.file && <Tag color="warning">重启后恢复</Tag>}
               {b.knowledge === false && <Tag color="warning">不含知识点快照</Tag>}
               <span style={{ fontSize: 12 }}>{new Date(b.createdAtMs).toLocaleString()}</span>
               <span style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatBytes(b.size)}</span>

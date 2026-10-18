@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Empty, Input, Select, Space, Tag, message } from 'antd'
+import { Alert, Button, Card, Empty, Input, Select, Space, Tag, App as AntdApp } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import type { ContestAnalysisContest, ContestAnalysisProblem, ContestAnalysisResponse, ContestRatingStatus, PlatformId } from '../../../shared/src/index.ts'
@@ -35,6 +35,7 @@ function dateLabel(iso: string | null, approximate = false): string {
 }
 
 export default function ContestAnalysis() {
+  const { message } = AntdApp.useApp()
   const navigate = useNavigate()
   const [data, setData] = useState<ContestAnalysisResponse | null>(null)
   const [loading, setLoading] = useState(true)

@@ -130,12 +130,144 @@ export function apiStartupGate(host: string, port: number, waitMs = 20000): Plug
   }
 }
 
+/**
+ * 构建后剥离字体里的 woff / ttf 回退格式。
+ *
+ * @fontsource 与 katex 的 CSS 给每个字重同时声明 woff2 + woff (+ ttf)，Vite 会把
+ * 三种格式都复制进 assets（共 ~1.4 MB 的 woff/ttf 是死重量）。现代浏览器与
+ * WebView2 一律支持 woff2，且 @font-face 的 src 是按顺序取第一个**支持的格式**，
+ * woff2 排在首位时后面的 woff/ttf 永远不会被请求 —— 文件删掉后 CSS 里的 url
+ * 虽然指向不存在的路径，浏览器也不会去 404。
+ *
+ * 实现上没有直接按扩展名全删，而是逐个 @font-face 块判定：只有同一块里已经声明了
+ * woff2（外链文件或内联 data URI 皆可）时才删它的 woff/ttf。KaTeX_Size3 的 woff2
+ * 被 Vite 内联成 data URI，block 里仍留着 woff/ttf 两个外链 —— 这种也算安全可删。
+ * 万一某个块的 woff2 排在 woff/ttf 之后（顺序决定选型），保留不动并告警。
+ */
+function stripLegacyFontFormats(): Plugin {
+  let outDir = ''
+
+  return {
+    name: 'strip-legacy-font-formats',
+    apply: 'build',
+    configResolved(config) {
+      outDir = path.resolve(config.root, config.build.outDir)
+    },
+    closeBundle: {
+      order: 'post',
+      sequential: true,
+      handler() {
+        const assetsDir = path.join(outDir, 'assets')
+        if (!fs.existsSync(assetsDir)) return
+
+        const cssFiles = fs.readdirSync(assetsDir).filter((f) => f.endsWith('.css'))
+        // woff2 是本块字体的主力格式时，该块里其余 woff/ttf 文件即可删除
+        const deletable = new Set<string>()
+        const required = new Set<string>()
+        const outOfOrder: string[] = []
+        let inlineWoff2Blocks = 0
+
+        for (const css of cssFiles) {
+          const text = fs.readFileSync(path.join(assetsDir, css), 'utf8')
+          for (const block of text.matchAll(/@font-face\s*\{[^}]*\}/g)) {
+            const urls = [...block[0].matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/g)].map((m) => m[1])
+            const woff2At = urls.findIndex((u) => u.startsWith('data:font/woff2') || u.endsWith('.woff2'))
+            if (woff2At === -1) continue
+            if (urls[woff2At].startsWith('data:font/woff2')) inlineWoff2Blocks += 1
+
+            urls.forEach((u, i) => {
+              if (u.startsWith('data:') || !/\.(woff|ttf)$/i.test(u)) return
+              const name = path.basename(u)
+              // woff2 必须排在回退格式之前，否则浏览器可能先选中它俩
+              if (i > woff2At) deletable.add(name)
+              else {
+                required.add(name)
+                outOfOrder.push(`${css}: ${name}`)
+              }
+            })
+          }
+        }
+
+        if (outOfOrder.length > 0) {
+          console.warn(
+            `\x1b[33m[fonts]\x1b[0m ${outOfOrder.length} 个 woff/ttf 排在 woff2 之前，已保留不删：`,
+          )
+          for (const line of outOfOrder) console.warn(`  - ${line}`)
+        }
+
+        const removed: string[] = []
+        let bytes = 0
+        for (const name of deletable) {
+          if (required.has(name)) continue
+          const file = path.join(assetsDir, name)
+          if (!fs.existsSync(file)) continue
+          bytes += fs.statSync(file).size
+          fs.rmSync(file)
+          removed.push(name)
+        }
+
+        if (removed.length === 0) return
+        const kb = (bytes / 1024).toFixed(0)
+        console.log(
+          `\x1b[36m[fonts]\x1b[0m 删除 ${removed.length} 个未被请求的 woff/ttf（${kb} KB）` +
+            (inlineWoff2Blocks > 0 ? `，其中 ${inlineWoff2Blocks} 个字体用内联 woff2` : ''),
+        )
+        for (const name of removed.sort()) console.log(`  - assets/${name}`)
+      },
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), apiStartupGate('127.0.0.1', apiPort)],
+  plugins: [react(), apiStartupGate('127.0.0.1', apiPort), stripLegacyFontFormats()],
   server: {
     port: 5173,
     proxy: {
       '/api': `http://localhost:${apiPort}`,
+    },
+  },
+  build: {
+    // Vite 8 的打包器是 Rolldown：旧的 manualChunks 虽仍可传，但函数形式会被整体
+    // 转成一个 codeSplitting group，且默认 includeDependenciesRecursively 会把依赖
+    // 递归吞进该组。实测这样分组时 react 整个被并进 antd 组、jsx-runtime 落进
+    // codemirror 组，首屏反而要静态下载 718 KB 的编辑器，chunk 间还出现
+    // react ⇄ PageHeader 的静态循环依赖（页面直接白屏）。所以这里用
+    // codeSplitting.groups 显式分组：保留默认的依赖递归以保证 chunk 自洽无循环，
+    // 靠 priority 让 react 先被认领，而不是靠关闭递归去抢模块。
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            // react 优先级最高：先于 antd / codemirror 认领 react 家族模块，
+            // 避免 jsx-runtime 被大组的依赖递归顺带吞走。
+            {
+              name: 'react',
+              test: /[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler)[\\/]/,
+              priority: 100,
+            },
+            {
+              name: 'antd',
+              test: /[\\/]node_modules[\\/](antd|@ant-design|@rc-component|rc-[^\\/]*|antd-style)[\\/]/,
+              priority: 90,
+            },
+            {
+              name: 'recharts',
+              test: /[\\/]node_modules[\\/](recharts|d3-[^\\/]*|victory-vendor)[\\/]/,
+              priority: 90,
+            },
+            {
+              name: 'codemirror',
+              test: /[\\/]node_modules[\\/](@codemirror|@uiw|@lezer|codemirror)[\\/]/,
+              priority: 90,
+            },
+            {
+              name: 'markdown',
+              test: /[\\/]node_modules[\\/](react-markdown|katex|rehype-[^\\/]*|remark-[^\\/]*|micromark[^\\/]*|mdast-util[^\\/]*|unified|hast|hast-util-[^\\/]*|highlight\.js|lowlight|vfile[^\\/]*)[\\/]/,
+              priority: 90,
+            },
+          ],
+        },
+      },
     },
   },
 })
