@@ -10,6 +10,7 @@ import {
   checkForUpdate,
   compareVersions,
   applyStagedUpdate,
+  applyStagedUpdateAsync,
   nightlyCommitSha,
   resolveUpdate,
 } from '../src/routes/update.ts';
@@ -439,6 +440,65 @@ test('applyStagedUpdate：有 staged 时按顺序「先备份、再应用」，�
     );
     assert.equal(r.ok, true, '升级前备份失败只记录，不阻塞更新');
     assert.equal(r.message, '更新完成');
+  } finally {
+    setUpdatePhaseForTests('idle');
+    h.db.close();
+    fs.rmSync(h.dataDir, { recursive: true, force: true });
+  }
+});
+
+test('applyStagedUpdateAsync：异步备份钩子被 await，失败仍不阻塞更新', async () => {
+  /**
+   * /apply 请求路径走 Async 版（优化计划 #80）：preUpgradeBackup 可能返回 Promise
+   * （VACUUM INTO 全库复制），必须等它落定再替换文件；备份 reject 只记录不阻塞。
+   */
+  const h = openBackupHarness();
+  const staging = path.join(h.dataDir, 'update-staging');
+  fs.mkdirSync(staging, { recursive: true });
+  fs.writeFileSync(path.join(staging, 'icpc-workbench.exe'), 'NEW-SHELL');
+  fs.writeFileSync(path.join(staging, 'icpc-core.exe'), 'NEW-CORE');
+  setUpdatePhaseForTests('staged');
+  try {
+    const order: string[] = [];
+    let backupObserved = false;
+    const ok = await applyStagedUpdateAsync(
+      staging,
+      async () => {
+        // 异步钩子：await 一个微任务后再落笔，验证调用方确实等待了 Promise
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        order.push('backup');
+        backupObserved = true;
+      },
+      () => {
+        assert.ok(backupObserved, 'apply 必须在异步备份完成后才被调用');
+        order.push('apply');
+        return { ok: true, message: '更新完成' };
+      },
+    );
+    assert.equal(ok.ok, true);
+    assert.deepEqual(order, ['backup', 'apply'], '异步路径同样保持「先备份、再应用」');
+
+    // 备份 reject（磁盘满等）：只记录，不阻塞更新
+    setUpdatePhaseForTests('staged');
+    const r = await applyStagedUpdateAsync(
+      staging,
+      async () => {
+        throw new Error('磁盘已满');
+      },
+      () => ({ ok: true, message: '更新完成' }),
+    );
+    assert.equal(r.ok, true, '异步升级前备份失败只记录，不阻塞更新');
+    assert.equal(r.message, '更新完成');
+
+    // 无待更新：与同步版一致，不调备份、不调 apply
+    setUpdatePhaseForTests('idle');
+    const none = await applyStagedUpdateAsync(staging, () => {
+      throw new Error('无 staged 时不应调备份');
+    }, () => {
+      throw new Error('无 staged 时不应调 apply');
+    });
+    assert.equal(none.ok, false);
+    assert.match(none.message ?? '', /没有已下载待应用的更新/);
   } finally {
     setUpdatePhaseForTests('idle');
     h.db.close();

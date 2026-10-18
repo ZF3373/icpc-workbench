@@ -76,9 +76,12 @@ export async function ensureTypstBinary({ quiet = false } = {}) {
   fs.mkdirSync(archiveDir, { recursive: true });
 
   if (!quiet) console.log(`[typst] 下载 v${TYPST_VERSION} (${key}) ...`);
+  // 无超时的 fetch 在网络挂起时会让构建/测试无限卡住（优化计划 #94）；
+  // GitHub release 资产约 15-40MB，120s 对慢速链路也足够
   const response = await fetch(url, {
     headers: { 'User-Agent': 'icpc-workbench-build' },
     redirect: 'follow',
+    signal: AbortSignal.timeout(120_000),
   });
   if (!response.ok) throw new Error(`下载 Typst 失败：HTTP ${response.status}`);
   const archive = Buffer.from(await response.arrayBuffer());

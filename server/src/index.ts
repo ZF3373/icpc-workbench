@@ -112,7 +112,8 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     time: new Date().toISOString(),
     platforms: PLATFORMS.map((p) => p.id),
-    dbPath: config.dbPath,
+    // 与 sea.ts 同口径：只回数据目录，不回完整 db 文件路径（优化计划 #78）
+    dataDir: path.dirname(config.dbPath),
     version: APP_VERSION,
   });
 });

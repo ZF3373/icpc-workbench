@@ -12,6 +12,7 @@ import {
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
+import { sendRouteError } from './routeError.ts';
 import { safeTags } from '../analysis/stats.ts';
 import { backfillDifficulties, GAP_TTL_MS, parseGapState } from '../analysis/difficultyBackfill.ts';
 import {
@@ -579,7 +580,8 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
             }),
       });
     } catch (e) {
-      res.status(502).json({ error: (e as Error).message });
+      // 引擎/DB 细节只进日志；上游 HTTP 状态码（403/429 等）保留给前端做可操作提示
+      sendRouteError(res, 502, e, `题库拉取失败`);
     }
   }));
 
@@ -789,7 +791,8 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       ).c;
       res.json({ ok: true, stopped: signal.aborted, results, unknownLeft });
     } catch (e) {
-      res.status(502).json({ error: (e as Error).message });
+      // 回填链路含上游抓取与本地批处理：引擎/DB 细节只进日志，上游状态码保留
+      sendRouteError(res, 502, e, `难度回填失败`);
     } finally {
       // 必须走到：否则后续点击会一直撞 409
       finishBackfillRun();

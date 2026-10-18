@@ -21,6 +21,7 @@ import {
 } from '../config.ts';
 import type { AiProviderConfig, AiProviderView } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
+import { sendRouteError } from './routeError.ts';
 import { readSettingsSnapshot, snapshotLookup, type SettingLookup } from '../db/settings.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
@@ -613,7 +614,8 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       // caps 仅在网关确实返回了参数档位时下发（旧断言/旧客户端按 { models } 口径兼容）
       res.json({ models: ids, ...(Object.keys(caps).length > 0 ? { caps } : {}) });
     } catch (e) {
-      res.status(502).json({ error: `获取模型列表失败：${(e as Error).message}` });
+      // 上游网关的错误文案（401 / 404）用户可操作；引擎细节只进日志
+      sendRouteError(res, 502, e, '获取模型列表失败');
     }
   }));
 
@@ -700,7 +702,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       db.exec('COMMIT');
     } catch (e) {
       db.exec('ROLLBACK');
-      return res.status(500).json({ error: `改名失败：${(e as Error).message}` });
+      return sendRouteError(res, 500, e, '改名失败');
     }
     // 账号级凭据槽位随账号改名迁移（放在事务外：迁移失败不回滚改名，读侧有回退兜底）
     const slots = readAccountCreds(db, platform);
@@ -754,9 +756,8 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     try {
       backup = createBackup(db, 'pre-account-delete');
     } catch (e) {
-      return res.status(500).json({
-        error: `删除前创建恢复点失败：${(e as Error).message}（已取消删除，请检查磁盘空间后重试）`,
-      });
+      // 备份落盘失败多与磁盘/权限相关（消息带绝对路径），客户端只看固定指引
+      return sendRouteError(res, 500, e, '删除前创建恢复点失败（已取消删除，请检查磁盘空间后重试）');
     }
 
     const count = db
@@ -781,7 +782,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       db.exec('COMMIT');
     } catch (e) {
       db.exec('ROLLBACK');
-      return res.status(500).json({ error: `删除失败：${(e as Error).message}` });
+      return sendRouteError(res, 500, e, '删除失败');
     }
     // 联动清理该账号的凭据槽位（放在事务外：槽位清理失败不影响已成功的删除，读侧有回退兜底）
     removeAccountCreds(db, platform, trimmed);

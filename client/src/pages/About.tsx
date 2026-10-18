@@ -31,14 +31,11 @@ export default function About() {
   const [dataDir, setDataDir] = useState('')
 
   useEffect(() => {
-    get<{ version?: string; dbPath?: string }>('/api/health')
+    get<{ version?: string; dataDir?: string }>('/api/health')
       .then((h) => {
         setAppVersion(h.version ?? '')
-        // dbPath 形如 .../server/data/icpc.db，取其所在目录作为数据文件夹绝对路径
-        if (h.dbPath) {
-          const parts = h.dbPath.replace(/\\/g, '/')
-          setDataDir(parts.substring(0, parts.lastIndexOf('/')))
-        }
+        // dataDir 是服务端解析好的数据文件夹绝对路径（About 页迁移/备份指引展示用）
+        if (h.dataDir) setDataDir(h.dataDir)
       })
       .catch(() => {})
   }, [])

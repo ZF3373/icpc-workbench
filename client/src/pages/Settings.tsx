@@ -2896,15 +2896,27 @@ function BackupCard({ refreshKey = 0 }: { refreshKey?: number }) {
     try {
       await post('/api/backups/restart')
       message.warning('容器正在重启以应用恢复点，恢复完成后页面会自动刷新')
-      // 进程退出后接口会短暂不可达：轮询探活，回来后自动刷新，免去用户手点
+      // 进程退出后接口会短暂不可达：轮询探活，回来后自动刷新，免去用户手点。
+      // ⚠ 只看 /api/health 不够：旧进程退出前有 300ms 优雅退出宽限（restartDelayMs），
+      // 宽限期内旧进程照样应答 health——此时 reload 刷回来的是**回滚前的旧数据**，
+      // 用户会误以为恢复失败。必须同时确认待恢复标记已被新进程消费（pendingRestore 清空）。
       for (let i = 0; i < 60 && aliveRef.current; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 1000))
         try {
           const h = await get<{ ok?: boolean }>('/api/health')
-          if (h.ok) {
+          if (!h.ok) continue
+          const d = await get<BackupsResponse>('/api/backups')
+          if (!d.pendingRestore) {
             window.location.reload()
             return
           }
+          // 新进程起来了但标记还在（applyPendingRestore 失败/被跳过）：停止轮询提示人工处理，
+          // 否则会 60 秒后以「容器未恢复」误导用户
+          if (aliveRef.current) {
+            setRestarting(false)
+            message.error('容器已重启，但待恢复标记未被消费（恢复可能失败）：请查看服务端日志或重新发起恢复')
+          }
+          return
         } catch {
           // 进程还没起来，继续等
         }

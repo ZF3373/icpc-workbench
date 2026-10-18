@@ -20,9 +20,9 @@ export function extractAbilityUpdate(reply: string): { level: number; reason?: s
   if (!m) return null
   try {
     const v = JSON.parse(m[1].trim()) as { level?: unknown; reason?: unknown }
-    const level = Number(v.level)
-    if (!Number.isInteger(level)) return null
-    return { level, ...(typeof v.reason === 'string' ? { reason: v.reason } : {}) }
+    // 先验类型再收数：Number(null)=0、Number('')=0 会绕过 isInteger，null 被静默当成 level 0
+    if (typeof v.level !== 'number' || !Number.isInteger(v.level)) return null
+    return { level: v.level, ...(typeof v.reason === 'string' ? { reason: v.reason } : {}) }
   } catch {
     return null
   }
@@ -56,11 +56,12 @@ export function extractTemplateAdd(reply: string): TemplateAddDraft[] {
       const v = JSON.parse(m[1].trim()) as Record<string, unknown>
       const name = typeof v.name === 'string' ? v.name.trim() : ''
       if (!name) continue
-      const difficulty = Number(v.difficulty)
+      // 先验类型（Number(null)=0 会绕过 isInteger）：数字缺失/非整数按声明回退 3
+      const difficulty = typeof v.difficulty === 'number' && Number.isInteger(v.difficulty) ? v.difficulty : 3
       drafts.push({
         categoryKey: typeof v.categoryKey === 'string' ? v.categoryKey.trim() : '',
         name,
-        difficulty: Number.isInteger(difficulty) ? difficulty : 3,
+        difficulty,
         tags: Array.isArray(v.tags) ? v.tags.map(String).filter(Boolean).slice(0, 12) : [],
         code: typeof v.code === 'string' ? v.code : '',
         ...(typeof v.idea === 'string' && v.idea.trim() !== '' ? { idea: v.idea } : {}),

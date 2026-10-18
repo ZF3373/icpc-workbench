@@ -210,7 +210,7 @@ function loadFromStorage(): ChatSession[] {
   }
 }
 
-function saveToStorage(sessions: ChatSession[]): void {
+function saveToStorageNow(sessions: ChatSession[]): void {
   try {
     const toSave = sessions
       .filter((s) => s.messages.length > 0)
@@ -228,6 +228,38 @@ function saveToStorage(sessions: ChatSession[]): void {
   } catch {
     /* localStorage 可能不可用或已满，静默忽略 */
   }
+}
+
+/**
+ * 落盘防抖：流式生成期间 sessions 每 50ms 换一次引用（streamBuffer 攒批），
+ * 同步全量 JSON.stringify 最多 50 个会话会每秒阻塞主线程约 20 次，长对话时
+ * 卡顿比渲染还明显。trailing 500ms 已足够——生成中页面关闭前有 pagehide 兜底落盘。
+ */
+const SAVE_DEBOUNCE_MS = 500
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+function saveToStorage(sessions: ChatSession[]): void {
+  if (saveTimer !== null) clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => {
+    saveTimer = null
+    saveToStorageNow(sessions)
+  }, SAVE_DEBOUNCE_MS)
+}
+
+// 立即落盘挂起的写入（生成收尾 finally 与关页/切后台共用）：
+// 防抖窗口内的最后一批更新不能丢。pagehide 在 bfcache 场景也可靠触发；
+// visibilitychange 兜底移动端与部分嵌入 WebView。
+function flushPendingSave(): void {
+  if (saveTimer === null) return
+  clearTimeout(saveTimer)
+  saveTimer = null
+  saveToStorageNow(chatState.sessions)
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', flushPendingSave)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPendingSave()
+  })
 }
 
 // ---------- 模块级 store ----------
@@ -2146,6 +2178,8 @@ export default function Assistant() {
         next.delete(sessionId)
         return { ...prev, sendingIds: next }
       })
+      // 生成收尾（含错误/停止标记）立即落盘：防抖窗口内关页会丢掉收尾状态
+      flushPendingSave()
     }
   }
 

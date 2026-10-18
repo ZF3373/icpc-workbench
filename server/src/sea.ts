@@ -212,7 +212,9 @@ export function startServer(
       ok: true,
       time: new Date().toISOString(),
       platforms: PLATFORMS.map((p) => p.id),
-      dbPath: config.dbPath,
+      // 只回数据目录（About 页迁移/备份指引用），不回完整 db 文件路径：本端点无鉴权，
+      // 绝对路径里的用户名/安装位置属于不必要的暴露面（优化计划 #78）
+      dataDir: path.dirname(config.dbPath),
       version: APP_VERSION,
       sea: isSea(),
     });
