@@ -1,13 +1,15 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { PLATFORMS, type PlatformId } from '../../../shared/src/index.ts';
 import { problemSetMatchesContest } from '../contests/problemSetShape.ts';
 import { atcoderProblemIdCandidates } from '../adapters/problemKey.ts';
+import { SERVER_ROOT } from '../server-root.ts';
+import { IDENTITY_COLUMN_EXPR } from '../problems/identity.ts';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
+// 走 server 根 + src 相对路径（而不是 __dirname/schema.sql）：esbuild bundle 后本模块
+// 落在 server/dist/sea.cjs，__dirname 变成 server/dist，资源路径必须与「源码目录布局」解耦
+const SCHEMA_PATH = path.join(SERVER_ROOT, 'src', 'db', 'schema.sql');
 
 /** SEA 单文件分发时 schema 由入口（sea.ts）内嵌注入，不再读磁盘 */
 let schemaOverride: string | null = null;
@@ -29,10 +31,23 @@ export function createDb(dbPath: string): Db {
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
+  // 页缓存 20MB（负值 = KiB）：题库/标注/提交三张大表的基本工作集，避免反复读盘。
+  db.exec('PRAGMA cache_size = -20000;');
+  // 只读内存映射 256MB：查询期读页走 mmap，绕过 read() 系统调用；WAL 下安全（写仍走 WAL 文件）。
+  db.exec('PRAGMA mmap_size = 268435456;');
   db.exec(schemaOverride ?? fs.readFileSync(SCHEMA_PATH, 'utf8'));
   migrate(db);
   seed(db);
   return db;
+}
+
+/**
+ * v0.11 迁移辅助：判断 problems 表是否已有生成列 identity。
+ * `PRAGMA table_info` 只返回普通列，生成列只出现在 `table_xinfo`（hidden=2/3）。
+ */
+function problemIdentityColumnExists(db: Db): boolean {
+  const info = db.prepare('PRAGMA table_xinfo(problems)').all() as Array<{ name: string; hidden: number }>;
+  return info.some((c) => c.name === 'identity' && c.hidden !== 0);
 }
 
 /**
@@ -76,6 +91,13 @@ function migrate(db: Db): void {
   // v0.6.1: 「上游确认没有」的负缓存列（回填不再每轮重查同一批无解的行）
   if (!problemCols.has('gap_state')) db.exec('ALTER TABLE problems ADD COLUMN gap_state TEXT');
   if (!problemCols.has('gap_checked_at')) db.exec('ALTER TABLE problems ADD COLUMN gap_checked_at TEXT');
+  // v0.11: 题目身份生成列 + 索引（镜像归一口径见 problems/identity.ts）。
+  // PRAGMA table_info **不返回生成列**，必须用 table_xinfo（hidden=2 才是生成列）判断，
+  // 否则每次启动都会重复 ALTER 并直接抛 "duplicate column name: identity"。
+  if (!problemCols.has('identity') && !problemIdentityColumnExists(db)) {
+    db.exec(`ALTER TABLE problems ADD COLUMN identity TEXT GENERATED ALWAYS AS (${IDENTITY_COLUMN_EXPR}) VIRTUAL`);
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_problems_identity ON problems(identity)');
   // 题目删除墓碑的题目快照列（回收站恢复依据）；无表则 schema.sql 已建全列，这里只补老表
   const tombstoneCols = columnsOf('deleted_problems');
   for (const col of ['title', 'url', 'tags', 'difficulty_source', 'native_difficulty', 'difficulty_scale']) {
@@ -469,8 +491,9 @@ function rebuildSubmissionsForMultiAccount(db: Db): void {
     }
     db.exec('DROP TABLE submissions');
     db.exec('ALTER TABLE submissions_new RENAME TO submissions');
-    // 索引随旧表一起被 DROP，按新口径重建（与 schema.sql 保持一致）
-    db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_platform ON submissions(user_id, platform)');
+    // 索引随旧表一起被 DROP，按新口径重建（与 schema.sql 保持一致）。
+    // 不再重建 idx_submissions_user_platform：它已被 idx_submissions_user_account 的
+    // (user_id, platform) 前缀覆盖（见 migrate 里的 DROP INDEX）。
     db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_problem ON submissions(problem_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_time ON submissions(user_id, submitted_at)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_submissions_user_account ON submissions(user_id, platform, account)');

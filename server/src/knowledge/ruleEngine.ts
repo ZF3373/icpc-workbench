@@ -7,11 +7,11 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { isValidCode } from './taxonomy.ts';
+import { SERVER_ROOT } from '../server-root.ts';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RULES_PATH = path.join(__dirname, 'rules.json');
+// 与 db/index.ts 同口径：bundle 后本模块目录变成 server/dist，资源路径锚定 server 根
+const RULES_PATH = path.join(SERVER_ROOT, 'src', 'knowledge', 'rules.json');
 
 export interface RuleDef {
   id: string;

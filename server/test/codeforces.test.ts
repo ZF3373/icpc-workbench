@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createCodeforcesAdapter } from '../src/adapters/codeforces.ts';
+import { splitCodeforcesProblemKey } from '../src/adapters/problemKey.ts';
+import { contestIdOf } from '../src/contests/participated.ts';
 
 function cfRes(body: unknown, ok = true): Response {
   return new Response(JSON.stringify(body), { status: ok ? 200 : 500 });
@@ -37,6 +39,41 @@ test('problemUrl: 纯数字题号按「末 2 位是题号」拆分（92101 回�
   assert.equal(url('1A'), 'https://codeforces.com/contest/1/problem/A');
   assert.equal(url('921A'), 'https://codeforces.com/contest/921/problem/A');
   assert.equal(url('1234B2'), 'https://codeforces.com/contest/1234/problem/B2');
+});
+
+test('problemUrl: 与 contestIdOf 共用同一份拆分规则（边界题号不再各写一份正则）', () => {
+  /**
+   * 2026-10 复审：适配器的 splitKey 与 contests/participated.ts 的 contestIdOf 各写了一份
+   * 纯数字键规则，修一处漏一处（`92101` 曾只在 participated 侧修好）。现在两者都走
+   * adapters/problemKey.ts 的 splitCodeforcesProblemKey —— 本用例锁住「同键同解」，
+   * 任何一侧再各行其是都会在这里现形。
+   *
+   * 边界：≤6 位的纯数字键是普通比赛题（末 2 位题号）；7 位起同样按末 2 位拆，
+   * 但只有前段 ≥100000 才走 /gym/（gym 编号实测 100001–106768），否则仍是 /contest/。
+   */
+  const adapter = createCodeforcesAdapter();
+  const cases: Array<{ key: string; contestId: string; index: string; url: string }> = [
+    // 纯数字：末 2 位是题号（AIM Tech Mini Marathon 1 实测的 01–14 号题）
+    { key: '92101', contestId: '921', index: '01', url: 'https://codeforces.com/contest/921/problem/01' },
+    // 7 位纯数字：仍是「前段 + 末 2 位」，前段 12345 不是 gym 编号 → contest
+    { key: '1234567', contestId: '12345', index: '67', url: 'https://codeforces.com/contest/12345/problem/67' },
+    // 8 位纯数字：gym 100001 + 题号 01 → 必须走 /gym/
+    { key: '10000101', contestId: '100001', index: '01', url: 'https://codeforces.com/gym/100001/problem/01' },
+    // 字母题号：前缀数字即比赛号，字母/字母+数字是题号
+    { key: '1234A', contestId: '1234', index: 'A', url: 'https://codeforces.com/contest/1234/problem/A' },
+    { key: '100001A', contestId: '100001', index: 'A', url: 'https://codeforces.com/gym/100001/problem/A' },
+    { key: '104821B', contestId: '104821', index: 'B', url: 'https://codeforces.com/gym/104821/problem/B' },
+    { key: '2241C1', contestId: '2241', index: 'C1', url: 'https://codeforces.com/contest/2241/problem/C1' },
+  ];
+  for (const c of cases) {
+    assert.deepEqual(splitCodeforcesProblemKey(c.key), { contestId: c.contestId, index: c.index }, c.key);
+    assert.equal(adapter.problemUrl({ problemKey: c.key }), c.url, c.key);
+    assert.equal(contestIdOf('codeforces', c.key, null), c.contestId, `${c.key} 的 contestIdOf 必须同解`);
+  }
+  // 拆不出来：整键退化为按题号拼链接（旧行为），不拼出半截比赛链接
+  assert.equal(splitCodeforcesProblemKey('12'), null);
+  assert.equal(adapter.problemUrl({ problemKey: '12' }), 'https://codeforces.com/problemset/problem/12');
+  assert.equal(splitCodeforcesProblemKey(''), null);
 });
 
 test('normalizes CF submission (OK -> AC, rating/tags/link)', async () => {  const adapter = createCodeforcesAdapter(async () =>

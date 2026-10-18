@@ -6,6 +6,7 @@ import { renderMarkdownToTypst } from './markdownTypst.ts';
 import { typstString } from './typstEscape.ts';
 import { templateTierLabel } from '../../../shared/src/index.ts';
 import type { ExportBundle } from '../routes/templates.ts';
+import { SERVER_ROOT } from '../server-root.ts';
 
 export { typstString };
 
@@ -52,8 +53,9 @@ function platformKey(): string {
 }
 
 function vendoredTypstPath(): string {
-  const serverRoot = path.resolve(import.meta.dirname, '..', '..');
-  return path.join(serverRoot, 'vendor', 'typst', platformKey(), `v${TYPST_VERSION}`, typstBinaryName);
+  // 锚定 server 根而非模块目录：bundle 后本模块落在 server/dist/sea.cjs，
+  // 用 import.meta.dirname 向上两级会指到 /app（镜像里没有 vendor/typst）
+  return path.join(SERVER_ROOT, 'vendor', 'typst', platformKey(), `v${TYPST_VERSION}`, typstBinaryName);
 }
 
 function extractBundledTypst(dataDir: string): string {

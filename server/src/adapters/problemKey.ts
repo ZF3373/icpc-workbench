@@ -9,6 +9,30 @@
  */
 import type { PlatformId } from '../../../shared/src/index.ts';
 
+// ---------- Codeforces ----------
+
+/**
+ * CF 题号 → { contestId, index }（唯一真源）。
+ *
+ * 纯数字题号要特殊处理：CF 实测存在 `92101`（= 比赛 921 + 题号 `01`，见下方形态校验注释
+ * 引用的取证记录）这类合法键，而贪婪的 `/^(\d+)(.+)$/` 会把比赛号错拆成 `9210`、题号拆成
+ * `1`，拼出 `contest/9210/problem/1` 这种打不开的链接。纯数字键一律「末 2 位是题号」。
+ * 非纯数字键（`1A`、`1234B2`、`100001A`）不存在歧义，按前缀数字 + 其余部分拆分。
+ *
+ * 拆不出来（`12`、空串、无数字前缀）返回 null，由调用方决定退化为整键链接或不猜。
+ * 适配器（problemUrl）、参赛记录反解（contests/participated.ts）都走这里，避免两处漂移。
+ */
+export function splitCodeforcesProblemKey(raw: string): { contestId: string; index: string } | null {
+  const key = raw.trim();
+  if (key === '') return null;
+  if (/^\d+$/.test(key)) {
+    const m = /^(\d+?)(\d{2})$/.exec(key);
+    return m && m[1] !== '' ? { contestId: m[1], index: m[2]! } : null;
+  }
+  const m = /^(\d+)(.+)$/.exec(key);
+  return m ? { contestId: m[1]!, index: m[2]! } : null;
+}
+
 // ---------- AtCoder（kenkoooo） ----------
 
 /**

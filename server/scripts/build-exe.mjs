@@ -68,22 +68,10 @@ try {
 }
 console.log(`      BUILD_COMMIT = ${buildCommit}`);
 // CJS bundle：SEA 主脚本按 CJS 执行（embedderRunCjs）。
-// 源码普遍在模块顶层用 fileURLToPath(import.meta.url) 定位资源，
-// CJS 下 import.meta 为空对象会当场抛错 —— 打包期重写为 __filename/__dirname。
+// import.meta 的改写由 scripts/esbuild-import-meta.mjs 提供，与 Docker 的
+// build-server-bundle.mjs 共用同一份实现（两份正则会悄悄漂移）。
 const { build } = await import('esbuild');
-const importMetaPlugin = {
-  name: 'rewrite-import-meta',
-  setup(b) {
-    b.onLoad({ filter: /\.(ts|tsx)$/ }, (args) => {
-      const src = fs.readFileSync(args.path, 'utf8');
-      const rewritten = src
-        .replace(/fileURLToPath\(import\.meta\.url\)/g, '__filename')
-        .replace(/import\.meta\.dirname/g, '__dirname')
-        .replace(/import\.meta\.url/g, 'pathToFileURL(__filename).href');
-      return rewritten === src ? null : { contents: rewritten, loader: 'ts' };
-    });
-  },
-};
+const { rewriteImportMetaPlugin } = await import('./esbuild-import-meta.mjs');
 await build({
   entryPoints: [path.join(serverRoot, 'src', 'sea.ts')],
   bundle: true,
@@ -93,7 +81,7 @@ await build({
   outfile: path.join(outDir, 'sea-bundle.cjs'),
   external: ['node:*'],
   minify: true,
-  plugins: [importMetaPlugin],
+  plugins: [rewriteImportMetaPlugin],
   define: {
     'process.env.APP_VERSION': JSON.stringify(appVersion),
     'process.env.BUILD_COMMIT': JSON.stringify(buildCommit),

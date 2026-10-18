@@ -1,11 +1,13 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import type { NormalizedSubmission } from '../../shared/src/index.ts';
+import { canonicalTag } from '../../shared/src/index.ts';
 import { createDb, type Db } from '../src/db/index.ts';
 import { insertNormalized } from '../src/import/importService.ts';
-import { computeOverall, fetchRows, bucketForDifficulty, rate } from '../src/analysis/stats.ts';
+import { computeOverall, fetchRows, bucketForDifficulty, rate, safeTags } from '../src/analysis/stats.ts';
 import { computeWeakness } from '../src/analysis/weakness.ts';
 import { computeTrend, getWeekKey } from '../src/analysis/trend.ts';
+import { filterNoiseTags } from '../src/analysis/tags.ts';
 
 let db: Db;
 beforeEach(() => {
@@ -122,6 +124,85 @@ test('computeOverall respects time window filter', () => {
   const s = computeOverall(db, 1, { from: '2026-08-01T00:00:00.000Z' });
   assert.equal(s.attempts, 3); // 仅 8 月的 3 条
   assert.equal(s.solvedProblems, 2);
+});
+
+/**
+ * 回归：computeOverall 改为「按题目 GROUP BY + JS 展开」后，byTag 的条目顺序仍必须
+ * 等于旧实现（逐提交聚合）的首次出现序 —— 前端与导出 Markdown 都直接按数组顺序渲染。
+ * 旧序取决于 fetchRows 的行序，而行序由 SQLite 选中的索引决定：无时间窗走
+ * (platform, account, id)，带时间窗走 (submitted_at, id)。两种情形都要覆盖。
+ * 这里手工按两种行序各算一遍旧算法，与行序无关的字段（attempts/ac/solved）也必须相等。
+ */
+test('computeOverall：按题聚合后 byTag 顺序与旧逐提交聚合一致（含时间窗）', () => {
+  seed();
+  const perSubmission = (rows: ReturnType<typeof fetchRows>) => {
+    const map = new Map<string, { attempts: number; ac: number; solved: Set<string> }>();
+    for (const r of rows) {
+      for (const tag of new Set(filterNoiseTags(safeTags(r.tags)).map(canonicalTag))) {
+        const cur = map.get(tag) ?? { attempts: 0, ac: 0, solved: new Set<string>() };
+        cur.attempts += 1;
+        if (r.verdict === 'AC') {
+          cur.ac += 1;
+          cur.solved.add(`${r.platform}:${r.problem_key}`);
+        }
+        map.set(tag, cur);
+      }
+    }
+    return [...map.entries()].map(([tag, s]) => ({ tag, ...s })).map(({ tag, attempts, ac, solved }) => ({
+      tag,
+      attempts,
+      ac,
+      acRate: rate(attempts, ac),
+      solved: solved.size,
+    }));
+  };
+
+  // 无时间窗：fetchRows 的行序（SQLite 实际返回序）就是基准
+  const plain = fetchRows(db, 1);
+  assert.deepEqual(computeOverall(db, 1).byTag, perSubmission(plain));
+
+  // 带时间窗：行序换成时间序，基准也要换成时间序（旧实现在这条查询下就是这个顺序）
+  const from = '2026-08-01T00:00:00.000Z';
+  const windowed = [...fetchRows(db, 1, { from })].sort(
+    (a, b) => a.submitted_at.localeCompare(b.submitted_at),
+  );
+  assert.deepEqual(computeOverall(db, 1, { from }).byTag, perSubmission(windowed));
+});
+
+test('computeWeakness 复用外部 rows 时与自行拉取结果完全一致', () => {
+  seed();
+  const rows = fetchRows(db, 1);
+  const strip = (v: { generatedAt?: string }) => {
+    const { generatedAt: _ignored, ...rest } = v;
+    return rest;
+  };
+  assert.deepEqual(
+    strip(computeWeakness(db, 1, { minAttempts: 2, topN: 5, rows })),
+    strip(computeWeakness(db, 1, { minAttempts: 2, topN: 5 })),
+  );
+});
+
+test('computeTrend 复用外部 rows 时与自行拉取结果完全一致', () => {
+  seed();
+  const now = new Date('2026-08-04T12:00:00Z');
+  // summary 传进来的是带 tags 的全量行（fetchRows），自行拉取走轻量行（fetchLiteRows）：
+  // 两者只差 tags 列，趋势不应受影响
+  assert.deepEqual(
+    computeTrend(db, 1, 12, now, {}, fetchRows(db, 1)),
+    computeTrend(db, 1, 12, now),
+  );
+});
+
+test('computeTrend 时间窗下推不丢首周提交（首周从周一算起）', () => {
+  // 首周周一的提交：窗口下界若错取为「cursor 当日」，这条会被 SQL 过滤掉
+  insertNormalized(db, 1, [
+    sub('codeforces', 'M', 'AC', '2026-07-27T00:00:00.000Z', ['dp'], 1500), // 2026-W31 周一
+    sub('codeforces', 'N', 'WA', '2026-07-26T23:00:00.000Z', ['dp'], 1500), // 上一周（W30）
+  ]);
+  const t = computeTrend(db, 1, 3, new Date('2026-08-10T12:00:00Z')); // 横轴 W31~W33
+  assert.deepEqual(t.map((p) => p.week), ['2026-W31', '2026-W32', '2026-W33']);
+  assert.equal(t[0].attempts, 1);
+  assert.equal(t[0].ac, 1);
 });
 
 test('computeWeakness ranks tags by gap below average', () => {

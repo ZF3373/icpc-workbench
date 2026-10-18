@@ -21,6 +21,7 @@ import {
 } from '../config.ts';
 import type { AiProviderConfig, AiProviderView } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
+import { readSettingsSnapshot, snapshotLookup, type SettingLookup } from '../db/settings.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { getAdapter } from '../adapters/registry.ts';
@@ -72,10 +73,14 @@ function maskCookieHeader(raw: string): string {
     .join('; ');
 }
 
-function readReminder(db: Db): { enabled: boolean; time: string } {
+/** 未传请求内快照时的兜底读取器：预编译一条语句，多次读取不重复编译（与快照同签名）。 */
+function singleKeyReader(db: Db): SettingLookup {
   const getStmt = db.prepare('SELECT value FROM settings WHERE key = ?');
-  const get = (key: string): string | undefined =>
-    (getStmt.get(key) as { value: string } | undefined)?.value;
+  return (key) => (getStmt.get(key) as { value: string } | undefined)?.value;
+}
+
+function readReminder(db: Db, read?: SettingLookup): { enabled: boolean; time: string } {
+  const get = read ?? singleKeyReader(db);
   const time = get('reminder.time');
   return {
     enabled: get('reminder.enabled') === 'true',
@@ -85,10 +90,8 @@ function readReminder(db: Db): { enabled: boolean; time: string } {
 
 const DEFAULT_CONTEST_REMINDER_MINUTES = 30;
 
-export function readContestReminder(db: Db): { enabled: boolean; minutesBefore: number } {
-  const getStmt = db.prepare('SELECT value FROM settings WHERE key = ?');
-  const get = (key: string): string | undefined =>
-    (getStmt.get(key) as { value: string } | undefined)?.value;
+export function readContestReminder(db: Db, read?: SettingLookup): { enabled: boolean; minutesBefore: number } {
+  const get = read ?? singleKeyReader(db);
   const minutes = Number(get('contestReminder.minutesBefore'));
   return {
     enabled: get('contestReminder.enabled') === 'true',
@@ -112,16 +115,14 @@ const MAX_SYNC_AUTO_CONTINUE_ROUNDS = 50;
  * - jisuankePracticeSync：`settings['jisuanke.practiceSync']` 非 'false' 即开启（键缺失 = 默认开启，
  *   口径与适配器 `readSetting('jisuanke.practiceSync') !== 'false'` 完全一致）。
  */
-export function readSyncSettings(db: Db): {
+export function readSyncSettings(db: Db, read?: SettingLookup): {
   maxSubmissions: number;
   autoContinueRounds: number;
   jisuankePracticeSync: boolean;
   requestIntervalScale: number;
   requestIntervalBase: Record<string, number>;
 } {
-  const getStmt = db.prepare('SELECT value FROM settings WHERE key = ?');
-  const get = (key: string): string | undefined =>
-    (getStmt.get(key) as { value: string } | undefined)?.value;
+  const get = read ?? singleKeyReader(db);
   const n = Number(get('sync.maxSubmissions'));
   const scale = Number(get('sync.requestIntervalScale'));
   return {
@@ -129,7 +130,7 @@ export function readSyncSettings(db: Db): {
       Number.isInteger(n) && n >= MIN_SYNC_MAX_SUBMISSIONS && n <= MAX_SYNC_MAX_SUBMISSIONS
         ? n
         : DEFAULT_SYNC_MAX_SUBMISSIONS,
-    autoContinueRounds: getAutoContinueRounds(db),
+    autoContinueRounds: getAutoContinueRounds(db, get),
     jisuankePracticeSync: get('jisuanke.practiceSync') !== 'false',
     // 拉取速度全局倍率：越界/缺失回退默认 1×（= 安全下限）。与节流层实际生效值同源同口径。
     requestIntervalScale:
@@ -154,7 +155,11 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
 
   // GET /api/settings → AI 配置 + 平台账号 + 适配器开关 + Cookie 配置 + 打卡提醒
   r.get('/', (_req, res) => {
-    const { ai } = aiSettingsView(db, config);
+    // settings 是小表：一次整表查询建快照，供本请求内所有读取点共用。
+    // 原先逐 key 查询（AI 配置 + 每个平台的 enabled/cookie/csrf/ua + 提醒 + 同步）要 15+ 次，
+    // 且每次都是重新 prepare 的同一条语句。快照只在本请求内有效，写操作后另行重建（见各 POST）。
+    const read = snapshotLookup(readSettingsSnapshot(db));
+    const { ai } = aiSettingsView(db, config, read);
     const accounts = db
       .prepare(
         'SELECT platform, handle, last_sync_at, enabled FROM platform_accounts WHERE user_id = ?',
@@ -163,28 +168,15 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     const adapterEnabled: Record<string, boolean> = {};
     const cookies: Record<string, { configured: boolean; masked?: string; hasUa?: boolean }> = {};
     for (const p of PLATFORMS) {
-      const row = db
-        .prepare('SELECT value FROM settings WHERE key = ?')
-        .get(`adapter.${p.id}.enabled`) as { value: string } | undefined;
-      adapterEnabled[p.id] = row?.value !== 'false';
-      const c = db
-        .prepare('SELECT value FROM settings WHERE key = ?')
-        .get(`cookie.${p.id}`) as { value: string } | undefined;
-      const csrf = db
-        .prepare('SELECT value FROM settings WHERE key = ?')
-        .get(`csrf.${p.id}`) as { value: string } | undefined;
+      adapterEnabled[p.id] = read(`adapter.${p.id}.enabled`) !== 'false';
+      const c = read(`cookie.${p.id}`);
+      const csrf = read(`csrf.${p.id}`);
       // 「浏览器 UA」类配置项（QOJ）：即使只有 UA 也要让前端知道已配置，否则表单会误判为未配置
-      const hasUa = CREDENTIAL_UA_FIELDS[p.id]
-        ? Boolean(
-            (db.prepare('SELECT value FROM settings WHERE key = ?').get(`ua.${p.id}`) as
-              | { value: string }
-              | undefined)?.value,
-          )
-        : false;
+      const hasUa = CREDENTIAL_UA_FIELDS[p.id] ? Boolean(read(`ua.${p.id}`)) : false;
       if (c || csrf || hasUa) {
         cookies[p.id] = {
           configured: true,
-          ...(c?.value ? { masked: maskCookieHeader(c.value) } : {}),
+          ...(c ? { masked: maskCookieHeader(c) } : {}),
           ...(CREDENTIAL_UA_FIELDS[p.id] ? { hasUa } : {}),
         };
       }
@@ -194,7 +186,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     const accountCreds: Record<string, Record<string, { configured: boolean; masked: string }>> = {};
     for (const p of PLATFORMS) {
       if (!COOKIE_FIELDS[p.id]) continue;
-      for (const [handle, slot] of Object.entries(readAccountCreds(db, p.id))) {
+      for (const [handle, slot] of Object.entries(readAccountCreds(db, p.id, read))) {
         if (!slot.cookie) continue;
         (accountCreds[p.id] ??= {})[handle] = { configured: true, masked: maskCookieHeader(slot.cookie) };
       }
@@ -206,9 +198,9 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       platforms: PLATFORMS,
       cookies,
       accountCreds,
-      reminder: readReminder(db),
-      contestReminder: readContestReminder(db),
-      sync: readSyncSettings(db),
+      reminder: readReminder(db, read),
+      contestReminder: readContestReminder(db, read),
+      sync: readSyncSettings(db, read),
     });
   });
 
@@ -281,8 +273,9 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     );
     const remove = db.prepare('DELETE FROM settings WHERE key = ?');
-    const readSetting = (key: string): string | undefined =>
-      (db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)?.value;
+    // 本路由会边读边写（ua 可能在本次请求里刚被改），必须读**实时值**，不能用请求前的快照；
+    // 同一请求内多次读取复用一条预编译语句，避免重复 prepare。
+    const readSetting = singleKeyReader(db);
     const readCookie = (): string => readSetting(`cookie.${platform}`) ?? '';
 
     // 单字段合并：只动用户显式填写的字段（空串 = 显式清空该项，未列出的字段保留已保存值）
@@ -364,8 +357,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       return res.status(400).json({ error: `未知 Cookie 字段: ${String(fieldKey)}` });
     }
     const rawHandle = typeof handle === 'string' ? handle.trim() : '';
-    const readSetting = (key: string): string | undefined =>
-      (db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)?.value;
+    const readSetting = singleKeyReader(db);
     if (rawHandle) {
       const bound = db
         .prepare('SELECT 1 AS ok FROM platform_accounts WHERE user_id = ? AND platform = ? AND handle = ?')
@@ -374,7 +366,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       // configOnly（QOJ 浏览器 UA）属浏览器属性、全部账号共用：账号卡片里点眼睛同样返回共享值
       const value = def.configOnly
         ? readSetting(`ua.${platform}`) ?? ''
-        : cookieFieldValue(readAccountCreds(db, platform)[rawHandle]?.cookie ?? '', def.cookieName);
+        : cookieFieldValue(readAccountCreds(db, platform, readSetting)[rawHandle]?.cookie ?? '', def.cookieName);
       return res.json({ value });
     }
     const value = def.configOnly ? readSetting(`ua.${platform}`) ?? '' : cookieFieldValue(readSetting(`cookie.${platform}`) ?? '', def.cookieName);
@@ -396,16 +388,14 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     }
     // 账号级检测优先用账号名；请求体显式带的 cookie（先填后测）仍最优先
     const checkHandle = typeof handle === 'string' ? handle.trim() : '';
+    // 本路由只读不写：一次快照供下面 cookie/csrf/ua 与账号凭据共用
+    const read = snapshotLookup(readSettingsSnapshot(db));
     const cookieVal =
       typeof cookie === 'string' && cookie.trim()
         ? cookie.trim()
         : checkHandle
-          ? effectiveCredentials(db, platform, checkHandle).cookie
-          : (
-              db.prepare('SELECT value FROM settings WHERE key = ?').get(`cookie.${platform}`) as
-                | { value: string }
-                | undefined
-            )?.value;
+          ? effectiveCredentials(db, platform, checkHandle, read).cookie
+          : read(`cookie.${platform}`);
     if (!cookieVal) {
       return res.json({
         ok: false,
@@ -415,13 +405,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       });
     }
     const csrfVal =
-      typeof csrf === 'string' && csrf.trim()
-        ? csrf.trim()
-        : (
-            db.prepare('SELECT value FROM settings WHERE key = ?').get(`csrf.${platform}`) as
-              | { value: string }
-              | undefined
-          )?.value;
+      typeof csrf === 'string' && csrf.trim() ? csrf.trim() : read(`csrf.${platform}`);
     // 检测应与同步走同一数据页：带上目标账号的 handle（缺省取首个已绑定账号）
     const account = checkHandle
       ? { handle: checkHandle }
@@ -431,11 +415,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
             .get(DEFAULT_USER_ID, platform) as { handle: string } | undefined
         );
     // 复刻浏览器 UA（QOJ 等 cf_clearance 绑定 UA 的平台需要）：与同步层同一来源
-    const uaVal = (
-      db.prepare('SELECT value FROM settings WHERE key = ?').get(`ua.${platform}`) as
-        | { value: string }
-        | undefined
-    )?.value;
+    const uaVal = read(`ua.${platform}`);
     const result = await adapter.checkAuth({
       cookie: cookieVal,
       ...(csrfVal ? { csrf: csrfVal } : {}),
@@ -709,6 +689,14 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
         .run(to, DEFAULT_USER_ID, platform, from);
       db.prepare('UPDATE participation_sync SET account = ? WHERE user_id = ? AND platform = ? AND account = ?')
         .run(to, DEFAULT_USER_ID, platform, from);
+      /**
+       * 同步历史（sync_runs.handle）也以「平台 + handle」归属，改名必须一起搬：
+       * 漏掉时新 handle 在同步中心「上次同步结果」里一条记录都没有（看起来从未同步过），
+       * 而旧 handle 的每一条历史都会残留成幽灵行——在历史抽屉里点「重试」会去同步一个
+       * 已不存在的账号。历史行是审计数据：只换归属，imported/skipped/truncated 等原样保留。
+       */
+      db.prepare('UPDATE sync_runs SET handle = ? WHERE user_id = ? AND platform = ? AND handle = ?')
+        .run(to, DEFAULT_USER_ID, platform, from);
       db.exec('COMMIT');
     } catch (e) {
       db.exec('ROLLBACK');
@@ -914,10 +902,10 @@ function providerView(p: AiProviderConfig): AiProviderView {
  * 用它）。它不落库，所以提供商卡片自己的 hasApiKey 可能仍是 false —— 前端据此显示
  * 「密钥来自环境变量」而不是红标「未配密钥」，避免把「其实能用」误报成没配。
  */
-function aiSettingsView(db: Db, config: AppConfig): { ai: Record<string, unknown> } {
-  const savedAi = aiConfigFromDb(db, config);
-  const providers = readAiProviders(db, config);
-  const global = globalAiTuning(db, config);
+function aiSettingsView(db: Db, config: AppConfig, read?: SettingLookup): { ai: Record<string, unknown> } {
+  const savedAi = aiConfigFromDb(db, config, read);
+  const providers = readAiProviders(db, config, read);
+  const global = globalAiTuning(db, config, read);
   return {
     ai: {
       ...savedAi,
@@ -928,7 +916,7 @@ function aiSettingsView(db: Db, config: AppConfig): { ai: Record<string, unknown
       hasApiKey: Boolean(savedAi.apiKey),
       hasSearchApiKey: Boolean(savedAi.searchApiKey),
       apiKeyFromEnv: Boolean((process.env.AI_API_KEY ?? '').trim()),
-      activeProviderId: activeProviderIdOf(db, providers),
+      activeProviderId: activeProviderIdOf(db, providers, read),
       providers: providers.map(providerView),
       ...(global.maxTokens !== undefined ? { globalMaxTokens: global.maxTokens } : {}),
       ...(global.contextWindow !== undefined ? { globalContextWindow: global.contextWindow } : {}),

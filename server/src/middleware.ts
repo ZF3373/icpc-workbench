@@ -1,3 +1,4 @@
+import compression from 'compression';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 
 /**
@@ -9,6 +10,46 @@ export function securityHeaders(_req: Request, res: Response, next: NextFunction
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'no-referrer');
   next();
+}
+
+/**
+ * SSE 端点清单（应用级路径）。流式响应绝不能被压缩中间件接管：
+ * gzip 会攒够一个压缩块才出字节，前端「逐 delta 渲染」就退化成「等回答完才显示」，
+ * 点击停止时也无法通过 res.close 及时中断上游。
+ *
+ * 注意：不能指望 compression 的默认 filter 挡住它——默认 filter 基于 compressible，
+ * 而 `text/event-stream` 在 mime-db 里标记为可压缩（实测 compressible('text/event-stream')
+ * 返回 true），默认行为会**压缩 SSE**。因此这里必须显式排除。
+ *
+ * 新增流式端点时必须把路径补进本清单（响应头的 text/event-stream 作为第二道兜底）。
+ */
+const SSE_PATHS = ['/api/ai/chat'];
+
+/** 请求路径是否命中 SSE 端点（含其子路径）。 */
+export function isSsePath(pathname: string): boolean {
+  return SSE_PATHS.some((sse) => pathname === sse || pathname.startsWith(`${sse}/`));
+}
+
+/**
+ * gzip/br 响应压缩（Docker 远程访问时 5.9 MB 前端产物首屏全量传输的主要成本）。
+ *
+ * 必须挂在所有路由与 express.static 之前：compression 通过 on-headers 在响应头写出时
+ * 决定是否压缩，挂晚了就只对后续注册的中间件生效。
+ *
+ * filter 设计：
+ * - 命中 SSE_PATHS → false（流式端点，见上）；
+ * - 响应 Content-Type 为 text/event-stream → false（未来端点未列入清单时的兜底）；
+ * - 其余交回 compression.filter() 的默认判断（按 Content-Type 可压缩性 + 1 KB 阈值）。
+ */
+export function compressionMiddleware(): RequestHandler {
+  return compression({
+    filter: (req, res) => {
+      if (isSsePath(req.path)) return false;
+      const contentType = String(res.getHeader('Content-Type') ?? '').toLowerCase();
+      if (contentType.includes('text/event-stream')) return false;
+      return compression.filter(req, res);
+    },
+  });
 }
 
 /** 回环主机名（IPv6 字面量保留方括号形式）：Host 头白名单的基准。 */

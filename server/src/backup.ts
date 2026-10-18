@@ -166,6 +166,13 @@ export function pruneBackups(db: Db, reason: BackupReason, dir?: string): void {
   if (all.length > KEEP_TOTAL) {
     for (const b of all.slice(KEEP_TOTAL)) doomed.add(b.file);
   }
+  // 待恢复目标永不清理（见 deleteBackup 的同款守卫）：它可能正被用户「点了恢复、等待重启」，
+  // 删掉后 applyPendingRestore 会因备份缺失而静默清标记——用户看不到任何恢复失败提示。
+  // 因此无论它是否超出同 reason 窗口或总量上限，都从待删清单剔除。
+  const pending = readPendingRestore(db, dir)?.file;
+  if (pending && doomed.delete(pending)) {
+    console.log(`[backup] 保留待恢复目标 ${pending}（超出保留窗口也不清理，待重启应用恢复后再回收）`);
+  }
   for (const f of doomed) {
     try {
       fs.unlinkSync(path.join(backupDir, f));
@@ -184,6 +191,41 @@ export function listBackups(db: Db, dir?: string): BackupMeta[] {
 
 const RESTORE_MARKER = 'restore-pending.json';
 
+/** 待恢复标记（restore-pending.json）的内容 */
+export interface PendingRestore {
+  file: string;
+  requestedAt: string;
+}
+
+/**
+ * 读取待恢复标记：无标记、标记损坏、file 字段非法时返回 null。
+ * 与 applyPendingRestore 的容错口径一致——损坏的标记不会被当成待恢复目标。
+ */
+export function readPendingRestore(db: Db, dir?: string): PendingRestore | null {
+  const backupDir = backupDirFor(db, dir);
+  const markerPath = path.join(path.dirname(backupDir), RESTORE_MARKER);
+  if (!fs.existsSync(markerPath)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as { file?: unknown; requestedAt?: unknown };
+    if (typeof raw.file !== 'string' || !FILE_RE.test(raw.file)) return null;
+    return { file: raw.file, requestedAt: typeof raw.requestedAt === 'string' ? raw.requestedAt : '' };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 解析备份文件的绝对路径（下载接口用）。
+ * FILE_RE 白名单已禁止路径分隔符，天然防目录穿越；名称非法 / 文件不存在都抛错由调用方分流。
+ */
+export function backupFilePath(db: Db, file: string, dir?: string): string {
+  const backupDir = backupDirFor(db, dir);
+  if (!FILE_RE.test(file)) throw new Error(`备份名称非法: ${file}`);
+  const target = path.join(backupDir, file);
+  if (!fs.existsSync(target)) throw new Error(`备份不存在: ${file}`);
+  return target;
+}
+
 /**
  * 删除单个恢复点：删除备份文件本身并连带其知识点伴生快照（.knowledge.json）。
  * FILE_RE 校验文件名（无路径分隔符，天然防目录穿越）；
@@ -191,21 +233,9 @@ const RESTORE_MARKER = 'restore-pending.json';
  */
 export function deleteBackup(db: Db, file: string, dir?: string): void {
   const backupDir = backupDirFor(db, dir);
-  if (!FILE_RE.test(file)) throw new Error(`备份名称非法: ${file}`);
-  const target = path.join(backupDir, file);
-  if (!fs.existsSync(target)) throw new Error(`备份不存在: ${file}`);
-  const markerPath = path.join(path.dirname(backupDir), RESTORE_MARKER);
-  if (fs.existsSync(markerPath)) {
-    let pendingFile: string | null = null;
-    try {
-      const raw = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as { file?: string };
-      pendingFile = typeof raw.file === 'string' ? raw.file : null;
-    } catch {
-      // 标记损坏视为无待恢复目标（applyPendingRestore 也会忽略它）
-    }
-    if (pendingFile === file) {
-      throw new Error('该备份已登记为待恢复目标（重启后生效），不能删除；请先重启应用完成或取消恢复');
-    }
+  const target = backupFilePath(db, file, dir);
+  if (readPendingRestore(db, dir)?.file === file) {
+    throw new Error('该备份已登记为待恢复目标（重启后生效），不能删除；请先重启应用完成或取消恢复');
   }
   fs.rmSync(target, { force: true });
   const snapshot = knowledgeSnapshotPath(backupDir, file);

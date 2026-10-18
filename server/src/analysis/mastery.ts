@@ -15,7 +15,7 @@ import type {
 import { canonicalTag, codeOfTag, expandTag } from '../../../shared/src/index.ts';
 import { CURRICULUM } from '../templates/curriculum.ts';
 import type { Db } from '../db/index.ts';
-import { accountClause, fetchRows, rate, round2, safeTags } from './stats.ts';
+import { accountClause, rate, round2, safeTags } from './stats.ts';
 import { filterNoiseTags } from './tags.ts';
 import { allPoints } from '../knowledge/taxonomy.ts';
 import { getConfidenceThreshold, READABLE_SOURCES_SQL } from '../knowledge/store.ts';
@@ -101,13 +101,6 @@ export function computeMastery(db: Db, userId: number, opts: MasteryOptions = {}
   const clause = accountClause(scope);
   const evidenceFor = loadPracticeEvidence(db, userId);
 
-  // 总体 AC 率是掌握度 gap 的基准，必须与知识点统计同一作用域，否则「相对自身平均」
-  // 仍是全部账号的稀释平均
-  const totals = db
-    .prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END), 0) AS ac FROM submissions s WHERE s.user_id = ?${clause.sql}`)
-    .get(userId, ...clause.params) as { n: number; ac: number };
-  const avgAcRate = rate(totals.n, totals.ac);
-
   interface Acc {
     attempts: number;
     ac: number;
@@ -116,58 +109,112 @@ export function computeMastery(db: Db, userId: number, opts: MasteryOptions = {}
     attempted: Set<string>;
     evidenceSolved: Set<string>;
   }
-  const bumpAcc = (map: Map<string, Acc>, key: string, isAc: boolean, platform: string, problemKey: string, submittedAt: string): void => {
+  /**
+   * 按题聚合后的一次性累加：attempts/ac 为整题合计；
+   * attempted 记录「练过的题」（无论是否 AC，与旧实现逐提交 bump 的集合内容一致），
+   * solved/recentSolved/evidenceSolved 只在该题至少一次 AC 时计入。
+   */
+  const bumpProblem = (
+    map: Map<string, Acc>,
+    key: string,
+    attempts: number,
+    ac: number,
+    hadRecentAc: boolean,
+    platform: string,
+    problemKey: string,
+  ): void => {
     let acc = map.get(key);
     if (!acc) {
       acc = { attempts: 0, ac: 0, solved: new Set(), recentSolved: new Set(), attempted: new Set(), evidenceSolved: new Set() };
       map.set(key, acc);
     }
-    acc.attempts += 1;
+    acc.attempts += attempts;
     const identity = problemIdentity({ platform, problemKey });
     acc.attempted.add(identity);
-    if (isAc) {
-      acc.ac += 1;
+    if (ac > 0) {
+      acc.ac += ac;
       acc.solved.add(`${platform}:${problemKey}`);
       acc.evidenceSolved.add(identity);
-      if (submittedAt >= recentCutoff) acc.recentSolved.add(`${platform}:${problemKey}`);
+      if (hadRecentAc) acc.recentSolved.add(`${platform}:${problemKey}`);
     }
   };
 
-  // 1) 知识点口径：problem_keypoints 达标标注（一题多 code 各自计入）
-  const byCode = new Map<string, Acc>();
-  const codeRows = db
+  // 提交先按题压成一行（attempts / ac / 近期是否 AC）：标签、知识点和判定都与具体提交无关，
+  // 一题无论刷了多少次都只需处理一次。旧实现每条提交各跑一遍 JOIN（知识点口径 + 回退口径
+  // 两次全量扫描），5 万提交时两段各扫 5 万行，同一题在 JS 里被重复累加数十次。
+  //
+  // 知识点用 json_group_array 在题目级一次取回（无标注 = '[]' → 走 tag 回退），
+  // 取代旧实现「EXISTS 决定 tags 是否取 '[]' + 另跑一次 JOIN 拿 code」的两遍写法：
+  // 标注表只在这里点查一次，回退判断直接看数组是否为空。
+  //
+  // 总体 AC 率的基准也在 CTE 层汇总（tot 单行，CROSS JOIN 代价可忽略）：旧实现的总计查询
+  // 不 JOIN problems，指向已删题目的提交（正常情况下外键拦住了，只可能来自历史脏库）仍计入分母；
+  // 直接对 JOIN 后的行求和会把这类提交静默漏掉，改变 gap 基准。
+  //
+  // 不排序：返回结构不受影响 —— 各知识点只累加计数与集合（去重后与顺序无关），
+  // points 末尾另有全序排序 (level, solved, tag)，且 tag 在同一点集内唯一。
+  // 唯一与顺序有关的浮点累加（evidence 的 creditedSolved/supportGap）按题目集合求和，
+  // 对真实库（984 条提交）与合成库（5 万条提交）验证过：改变扫描序后输出仍逐字节一致。
+  //
+  // 口径提醒：近期 AC 用 MAX(CASE ...) 而不是比较 MAX(submitted_at) —— 窗口口径是
+  // 「56 天内有过 AC」，取时间最大值会把「很久前 AC + 最近一次 WA」误判为非近期。
+  const rows = db
     .prepare(
-      `SELECT s.platform, s.verdict, s.submitted_at, p.problem_key, pk.code
-       FROM submissions s
-       JOIN problems p ON s.problem_id = p.id
-       JOIN problem_keypoints pk ON pk.platform = p.platform AND pk.problem_key = p.problem_key AND pk.confidence >= ? AND pk.${READABLE_SOURCES_SQL}
-       WHERE s.user_id = ?${clause.sql}`,
+      `WITH sub AS MATERIALIZED (
+         SELECT s.problem_id AS problem_id, s.platform AS platform,
+                COUNT(*) AS attempts,
+                SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END) AS ac,
+                MAX(CASE WHEN s.verdict = 'AC' AND s.submitted_at >= ? THEN 1 ELSE 0 END) AS recent_ac
+           FROM submissions s
+          WHERE s.user_id = ?${clause.sql}
+          GROUP BY s.problem_id, s.platform
+       ), tot AS (
+         SELECT COALESCE(SUM(attempts), 0) AS attempts, COALESCE(SUM(ac), 0) AS ac FROM sub
+       )
+       SELECT sub.platform AS platform, p.problem_key AS problem_key, p.tags AS tags,
+              sub.attempts AS attempts, sub.ac AS ac, sub.recent_ac AS recent_ac,
+              tot.attempts AS total_attempts, tot.ac AS total_ac,
+              COALESCE((SELECT json_group_array(pk.code) FROM problem_keypoints pk
+                         WHERE pk.platform = p.platform AND pk.problem_key = p.problem_key
+                           AND pk.confidence >= ? AND pk.${READABLE_SOURCES_SQL}), '[]') AS codes
+         FROM sub JOIN problems p ON p.id = sub.problem_id CROSS JOIN tot`,
     )
-    .all(threshold, userId, ...clause.params) as unknown as Array<{
+    .all(recentCutoff, userId, ...clause.params, threshold) as unknown as Array<{
     platform: string;
-    verdict: string;
-    submitted_at: string;
     problem_key: string;
-    code: string;
+    tags: string;
+    attempts: number;
+    ac: number;
+    recent_ac: number;
+    total_attempts: number;
+    total_ac: number;
+    codes: string;
   }>;
-  for (const r of codeRows) {
-    bumpAcc(byCode, r.code, r.verdict === 'AC', r.platform, r.problem_key, r.submitted_at);
-  }
 
-  // 2) 未覆盖回退：无达标标注的提交按净化 tag 聚合；与 taxonomy 同名的并入对应 code
-  const nameToCode = new Map(allPoints().map((p) => [p.name, p.code]));
-  const fallbackSql =
-    `CASE WHEN EXISTS (SELECT 1 FROM problem_keypoints pk WHERE pk.platform = p.platform AND pk.problem_key = p.problem_key AND pk.confidence >= ${threshold} AND pk.${READABLE_SOURCES_SQL}) ` +
-    `THEN '[]' ELSE p.tags END AS tags`;
-  const fallbackRows = fetchRows(db, userId, scope, fallbackSql);
+  // 总计与行集同时返回（老实现另跑一次 COUNT/SUM 全表扫描）；全部同作用域，
+  // 「相对自身平均」的基准不会退化成全部账号的稀释平均。
+  const avgAcRate = rate(rows[0]?.total_attempts ?? 0, rows[0]?.total_ac ?? 0);
+
+  const byCode = new Map<string, Acc>();
   const byTag = new Map<string, Acc>();
-  for (const r of fallbackRows) {
-    const isAc = r.verdict === 'AC';
-    // CF 等平台的英文标签归并到课程中文知识点（binary search → 二分），避免同一知识点拆成两个点
+  const nameToCode = new Map(allPoints().map((p) => [p.name, p.code]));
+
+  for (const r of rows) {
+    const hadRecentAc = r.recent_ac === 1;
+    const codes = JSON.parse(r.codes) as string[];
+    if (codes.length > 0) {
+      // 知识点口径：problem_keypoints 达标标注（一题多 code 各自计入）
+      for (const code of codes) {
+        bumpProblem(byCode, code, r.attempts, r.ac, hadRecentAc, r.platform, r.problem_key);
+      }
+      continue;
+    }
+    // 未覆盖回退：无达标标注的题按净化 tag 聚合；与 taxonomy 同名的并入对应 code
+    // （CF 等平台的英文标签归并到课程中文知识点：binary search → 二分，避免同一知识点拆成两个点）
     for (const tag of new Set(filterNoiseTags(safeTags(r.tags)).map((t) => canonicalTag(t)))) {
       const code = nameToCode.get(tag);
-      if (code) bumpAcc(byCode, code, isAc, r.platform, r.problem_key, r.submitted_at);
-      else bumpAcc(byTag, tag, isAc, r.platform, r.problem_key, r.submitted_at);
+      if (code) bumpProblem(byCode, code, r.attempts, r.ac, hadRecentAc, r.platform, r.problem_key);
+      else bumpProblem(byTag, tag, r.attempts, r.ac, hadRecentAc, r.platform, r.problem_key);
     }
   }
 

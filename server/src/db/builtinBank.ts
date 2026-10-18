@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { PlatformId } from '../../../shared/src/index.ts';
+import { SERVER_ROOT } from '../server-root.ts';
 import type { DifficultyScale } from '../../../shared/src/difficulty.ts';
 import type { Db } from './index.ts';
 import { upsertBankProblems } from '../import/bankService.ts';
@@ -61,11 +61,9 @@ function loadBuiltinBank(): BuiltinBankFile | null {
   return bank;
 }
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 function readDiskFile(): string | null {
   try {
-    return fs.readFileSync(path.join(__dirname, '..', 'data', 'bank-builtin.json'), 'utf8');
+    return fs.readFileSync(path.join(SERVER_ROOT, 'src', 'data', 'bank-builtin.json'), 'utf8');
   } catch {
     return null;
   }

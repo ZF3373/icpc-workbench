@@ -1,6 +1,11 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
-import { bucketForDifficulty, fetchRows, type MutableStat } from './stats.ts';
+import {
+  bucketForDifficulty,
+  fetchLiteRows,
+  type MutableStat,
+  type SubmissionLiteRow,
+} from './stats.ts';
 
 export interface TrendPoint {
   week: string;
@@ -29,6 +34,19 @@ export function getWeekKey(d: Date): string {
   return `${date.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
 }
 
+/**
+ * 趋势窗口的 SQL 下界（ISO 字符串）。
+ * 窗口按 UTC 日划分（getWeekKey 用 submitted_at 的 UTC 日期），横轴首周是
+ * 「now 的 UTC 日往前 (weeks-1) 周」所在的那一周 —— 注意它可能从该周的周一更早开始，
+ * 因此下界取其**周一零点**，而不是 cursor 当日：否则首周会漏掉周一至 cursor 之间的提交，
+ * 让首周计数变小。再往前多留一天纯属保守余量（多出的行属于上一周，不在输出窗口内，不影响结果）。
+ */
+function trendWindowStart(now: Date, weeks: number): string {
+  const cursor = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - (weeks - 1) * 7 * 86400000;
+  const dayNum = (new Date(cursor).getUTCDay() + 6) % 7;
+  return new Date(cursor - (dayNum + 1) * 86400000).toISOString();
+}
+
 export function computeTrend(
   db: Db,
   userId: number,
@@ -37,14 +55,21 @@ export function computeTrend(
   now: Date = new Date(),
   /** 账号/平台作用域（多账号统计隔离）；省略 = 全部账号，与既有调用行为一致 */
   scope: { platform?: PlatformId; account?: string } = {},
+  /** 已拉取好的提交行（summary 内复用同一份快照）；必须与 scope 同作用域 */
+  rows?: SubmissionLiteRow[],
 ): TrendPoint[] {
-  const rows = fetchRows(db, userId, scope);
+  // 行序显式固定为 (platform, account, id)：difficultyDist 的键序取决于各难度桶首次出现的
+  // 先后，而带时间窗的查询原本会走 idx_submissions_user_time（按时间序），键序会随之改变。
+  // 这是唯一一处把「不排序的索引扫描序」固化成对外可见结构的依赖，故在此显式钉住。
+  const allRows =
+    rows ??
+    fetchLiteRows(db, userId, { ...scope, from: trendWindowStart(now, weeks) }, 's.platform, s.account, s.id');
   const byWeek = new Map<string, MutableStat>();
   const solvedByWeek = new Map<string, Set<string>>();
   const acDifficultyByWeek = new Map<string, number[]>();
   const distByWeek = new Map<string, Map<string, number>>();
 
-  for (const r of rows) {
+  for (const r of allRows) {
     const wk = getWeekKey(new Date(r.submitted_at));
     const isAc = r.verdict === 'AC';
     bump(byWeek, wk, isAc);

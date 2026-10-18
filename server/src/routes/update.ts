@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Router } from 'express';
 import { applyUpdate, startDownload, updateState, cleanupOldFiles } from '../updater.ts';
 import { asyncHandler } from '../asyncHandler.ts';
@@ -315,6 +317,43 @@ function canSelfUpdate(): boolean {
   return process.platform === 'win32' && APP_VERSION !== 'dev' && BUILD_COMMIT !== 'dev';
 }
 
+/** 应用结果：失败只回 message（与 applyUpdate 的 { ok, message } 契约一致）。 */
+export interface ApplyResult {
+  ok: boolean;
+  message?: string;
+}
+
+/**
+ * 校验「确实有可应用的暂存更新」并应用。
+ * 顺序很关键：**先校验、后建升级前备份**。原实现先无条件调 preUpgradeBackup，
+ * 无待更新时反复点「应用」会不断产生 pre-upgrade 备份，把真正的升级前恢复点
+ * （同 reason 只留 3 份）挤出保留窗口。
+ * 校验口径与 applyUpdate / replaceStagedFiles 一致：状态机必须到 staged，
+ * 且两个暂存 exe 都在（防止阶段状态与实际文件脱节）。
+ * 校验失败时不创建备份、不改动安装目录。
+ */
+export function applyStagedUpdate(
+  stagingDir: string,
+  preUpgradeBackup?: () => void,
+  apply: (dir: string) => ApplyResult = applyUpdate,
+): ApplyResult {
+  if (updateState().phase !== 'staged') {
+    return { ok: false, message: '没有已下载待应用的更新' };
+  }
+  const missing = [SHELL_NAME, CORE_NAME].filter((name) => !fs.existsSync(path.join(stagingDir, name)));
+  if (missing.length > 0) {
+    return { ok: false, message: `暂存目录缺少 ${missing.join('、')}，请重新下载更新后再应用` };
+  }
+  if (preUpgradeBackup) {
+    try {
+      preUpgradeBackup();
+    } catch (e) {
+      console.error(`[backup] 升级前备份失败（继续更新）: ${(e as Error).message}`);
+    }
+  }
+  return apply(stagingDir);
+}
+
 /** /check 的成功结果短 TTL 缓存：/download 直接复用，避免重复请求 GitHub API
  *  （消耗匿名限流配额）并消除两次请求间的竞态（下载瞬间限流会导致误报"无产物"）。 */
 let lastCheck: { info: UpdateInfo; at: number } | null = null;
@@ -378,14 +417,7 @@ export function updateRoutes(config: AppConfig, preUpgradeBackup?: () => void): 
       res.json({ ok: false, message: '当前环境不支持一键更新' });
       return;
     }
-    if (preUpgradeBackup) {
-      try {
-        preUpgradeBackup();
-      } catch (e) {
-        console.error(`[backup] 升级前备份失败（继续更新）: ${(e as Error).message}`);
-      }
-    }
-    res.json(applyUpdate(stagingDir));
+    res.json(applyStagedUpdate(stagingDir, preUpgradeBackup));
   });
   return r;
 }

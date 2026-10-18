@@ -14,17 +14,20 @@
 
 ## 一、错误处理与信息泄露（高收益，改动小）
 
-- [ ] **1. 全局错误中间件回显内部细节** ✅ · `server/src/middleware.ts:30`
+- [x] **1. 全局错误中间件回显内部细节** ✅ · `server/src/middleware.ts:30`
   所有未特判错误统一 `res.status(500).json({ error: \`服务器内部错误：${err.message}\` })`，把文件路径 / SQL / 上游错误原文直接暴露给前端。
   **改法**：500 统一返回模糊文案，`err.message` 只进 `console.error`。
+  **已修复**：500 统一回「服务器内部错误，请稍后重试或查看服务端日志」，原文只进日志；回归见 `server/test/error-handler.test.ts`。
 
-- [ ] **2. body-parser JSON 解析错误误报 500** ✅ · `server/src/middleware.ts:24-30`
+- [x] **2. body-parser JSON 解析错误误报 500** ✅ · `server/src/middleware.ts:24-30`
   `express.json()` 的 `entity.parse.failed`（status 400）未特判，落到 500 分支并回显解析器原文。
   **改法**：补 `err.type === 'entity.parse.failed'` 分支返回 400「请求体不是合法 JSON」。
+  **已修复**：该分支已就位（同时保留 `entity.too.large` → 413）；回归见 `server/test/error-handler.test.ts`。
 
-- [ ] **3. `headersSent` 分支未转交，可能挂起** ✅ · `server/src/middleware.ts:21`
+- [x] **3. `headersSent` 分支未转交，可能挂起** ✅ · `server/src/middleware.ts:21`
   `if (res.headersSent) return;` 注释写「交给 Express 默认处理」但未调 `next(err)`，响应已发出后抛错时连接可能挂到超时。
   **改法**：改为 `return next(err)`。
+  **已修复**：`if (res.headersSent) return next(err);`；回归见 `server/test/error-handler.test.ts`（含「回退实现会 timeout」的对照验证）。
 
 - [ ] **4. 多处 502/500 回显上游原文** ⚠️ · `server/src/routes/problems.ts:525,710`、`lists.ts:257`、`settings.ts:591,662`
   拉取失败 / 回填失败 / 改名删号失败等把 `e.message`（含上游 fetch / AI / DB 异常）原样返回。
@@ -46,13 +49,19 @@
   `(SELECT ri.id FROM review_items ri WHERE ri.problem_id = p.id AND ri.user_id = ${DEFAULT_USER_ID})` 逐题标量子查询，`GET /` 不分页返回约 1.9 万行时即 1.9 万次子查询。
   **改法**：一次 `LEFT JOIN` 或请求内预取 Map 消除 N+1。
 
-- [ ] **8. settings 逐 key 重复 prepare** ⚠️ · `server/src/routes/settings.ts:65-89,152-218` + `config.ts:96-102`
+- [x] **8. settings 逐 key 重复 prepare** ✅ · `server/src/routes/settings.ts:65-89,152-218` + `config.ts:96-102`
   一次 `GET /settings` 累计 15+ 次同名 `SELECT value FROM settings WHERE key=?`。
   **改法**：settings 是小表，一次 `SELECT key,value` 建 Map 复用。
+  **已修复**：新增 `server/src/db/settings.ts`（`readSettingsSnapshot` / `snapshotLookup`），GET 路由与
+  `aiConfigFromDb` / `readAiProviders` / `activeProviderIdOf` / `globalAiTuning` / `readReminder` /
+  `readContestReminder` / `readSyncSettings` / `readAccountCreds` / `effectiveCredentials` 均接受可选读取器；
+  只做**请求内**快照（不跨请求缓存，避免写后读到旧值）。回归见 `server/test/settings-snapshot.test.ts`。
 
-- [ ] **9. 冗余索引** ✅ · `server/src/db/schema.sql:197` + `db/index.ts:109`
+- [x] **9. 冗余索引** ✅ · `server/src/db/schema.sql:197` + `db/index.ts:109`
   `idx_submissions_user_platform(user_id,platform)` 是 `idx_submissions_user_account(user_id,platform,account)` 的严格前缀，完全冗余，每条提交 INSERT 多维护一个索引。
   **改法**：删除（注意迁移幂等，老库需一并处理）。
+  **已修复**：schema.sql 不再建；`migrate` 里 `DROP INDEX IF EXISTS`（幂等）；多账号重建函数也不再重建它。
+  EXPLAIN 确认 `(user_id, platform)` 过滤仍走 `idx_submissions_user_account` 前缀。回归见 `server/test/redundant-index.test.ts`。
 
 ---
 
@@ -459,7 +468,7 @@ const level = v.level
 
 ## 十三、桌面壳与构建脚本（#89–#111，子代理报告）
 
-> **关键结论**：现行壳 = `desktop/app/src-tauri/`（`icpc-workbench`）；`desktop/src-tauri/` 是历史遗留的 `icpc-widget` 挂件旧壳（`Cargo.toml` name=`icpc-widget`），无任何构建脚本/CI 引用，属**死代码**，可整目录归档。以下标注「遗留树」的条目可随归档一并处理或忽略。
+> **关键结论**：现行壳 = `desktop/app/src-tauri/`（`icpc-workbench`）。历史遗留的 `desktop/src-tauri/`（`icpc-widget` 挂件旧壳）与 `desktop/ui/offline.html` **已于 2026-10-18 删除**——grep 全仓（排除 `desktop/app`）确认它们只被本文档与 `docs/superpowers/plans/2026-08-18-desktop-widget.md` 这两份历史文档引用，无任何 CI/构建脚本/源码依赖。下面标注「遗留树」的条目随该目录一并作废，仅保留作为历史记录。
 
 - [ ] **89.【高·性能】reqwest::Client 每次探测重建** · `desktop/app/src-tauri/src/discovery.rs:7-13`
   `check()` 每次新建 Client（连接池/DNS/TLS 全重来），`find_server` 一次并行 20 个 = 20 Client。改法：`OnceLock<Client>` 全局复用。
@@ -541,4 +550,4 @@ const level = v.level
 | 第二批 | #17-19、#26-30、#54-60 | 前端竞态 + 重复收敛 + 分析域 N+1/性能 | 中 |
 | 第三批 | 其余后端/前端/分析零散项 | 渲染微调 + 边界 + 一致性 | 低 |
 | 第四批 | #89-92、#96-99（现行树） | 桌面壳性能（Client 复用 / hint / 锁） + 脚本一致性 | 中（需 Rust 重编译） |
-| 归档随动 | #91、#92、#95、#104、#105 等遗留树 | 随 `desktop/src-tauri` 死代码归档一并处理或忽略 | — |
+| 归档随动 | #91、#92、#95、#104、#105 等遗留树 | **已完成**：`desktop/src-tauri` 与 `desktop/ui/offline.html` 已删除，上述条目作废 | — |

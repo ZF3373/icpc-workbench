@@ -44,6 +44,23 @@ ICPC 备赛工作台 的原创代码、界面设计与品牌图标以 [GPL-3.0 L
 | [oxlint](https://oxc.rs) | MIT | Lint |
 | [@resvg/resvg-js](https://github.com/nickbabcock/resvg-js) （内置 [resvg](https://github.com/linebender/resvg)） | MIT | 品牌 SVG → 多尺寸图标 |
 
+## 依赖安全覆盖（`package.json` 的 `overrides`）
+
+`package.json` 是 JSON，不便写注释；而 `overrides` 里的每一项都是**供应链漏洞修复**，
+不是随手升级，改动前请先读这一节。四项均只收紧到上游版本约束本就允许的修复版，
+没有强制不兼容升级：
+
+| 包 | 收紧到 | 原因 | 依赖链 / 是否进产物 |
+| --- | --- | --- | --- |
+| `adm-zip` | `^0.6.1` | 修复 0.6.0 及以下的多项漏洞：异步 DEFLATE 解压未处理 error 事件导致进程崩溃（GHSA-8238-w5pm-2374，high）、解压炸弹防护可被「声明解压后大小为 0」绕过（GHSA-rcw4-f5rp-g42v，high）、解压保留 SUID/SGID 位导致本地提权（CVE-2026-102282，high），另有两条 medium | `server → epub2`；**进产物**（EPub 附件解析，输入为不可信文件，需保留） |
+| `shell-quote` | `^1.12.0` | `quote()` 遇 `{ comment }` 后跟含换行的 token 会产出行注入（CVE-2026-102422，critical） | 根 `devDependencies/concurrently`；仅开发期，不进产物 |
+| `proxy-addr` | `^2.0.8` | IPv4-mapped IPv6 的信任子网判断有误，可伪造来源 IP（CVE-2026-90711，critical） | `server → express`；进产物（本仓库未使用 trust proxy，当前不可利用，仍升级消警） |
+| `source-map-js` | `^1.2.2` | 构造的 source map section offset 可拖死事件循环（CVE-2026-93749，high） | `client → vite → postcss`；仅构建期 |
+
+`npm audit` 因本地镜像源不提供审计接口，需临时切官方源复核：
+`npm audit --registry=https://registry.npmjs.org`。有意不修的条目（katex / sprintf-js / uuid 等）
+及其可达性论证见提交 `3765cd6` 的说明。
+
 ## 其他声明
 
 - 品牌 logo（favicon / 应用图标）为本仓库原创设计

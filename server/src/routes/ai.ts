@@ -1,7 +1,6 @@
 import { Router, raw } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { AiConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
@@ -43,8 +42,7 @@ import {
 } from '../contests/participationSources.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
 import type { ContestInfo } from '../../../shared/src/index.ts';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { SERVER_ROOT } from '../server-root.ts';
 
 /** /chat 请求中前端发来的消息轮次（校验前的宽松形态） */
 interface IncomingTurn {
@@ -137,7 +135,7 @@ export function setAssistantPromptTemplate(tpl: string): void {
 export function ASSISTANT_PROMPT_TEMPLATE(): string {
   if (promptOverride !== null) return promptOverride;
   if (promptFromDisk === null) {
-    promptFromDisk = fs.readFileSync(path.join(__dirname, '..', 'ai', 'assistant-prompt.md'), 'utf8');
+    promptFromDisk = fs.readFileSync(path.join(SERVER_ROOT, 'src', 'ai', 'assistant-prompt.md'), 'utf8');
   }
   return promptFromDisk;
 }
@@ -147,7 +145,7 @@ let titlePromptFromDisk: string | null = null;
 
 export function TITLE_PROMPT_TEMPLATE(): string {
   if (titlePromptFromDisk === null) {
-    titlePromptFromDisk = fs.readFileSync(path.join(__dirname, '..', 'ai', 'title-prompt.md'), 'utf8');
+    titlePromptFromDisk = fs.readFileSync(path.join(SERVER_ROOT, 'src', 'ai', 'title-prompt.md'), 'utf8');
   }
   return titlePromptFromDisk;
 }

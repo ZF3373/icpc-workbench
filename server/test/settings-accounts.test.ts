@@ -358,6 +358,50 @@ test('accounts/rename: 目标 handle 残留过参赛记录时改名不撞主键'
   });
 });
 
+test('accounts/rename: 同步历史（sync_runs.handle）与游标一并迁移，历史记录不挂旧 handle', async () => {
+  /**
+   * P2-C 复审：改名事务原先只迁 platform_accounts / submissions / participated_contests /
+   * participation_sync，漏了 sync_runs.handle。同步中心的历史行因此永久挂着旧 handle：
+   * - 新 handle 在历史里一条没有（「上次同步」看起来从没跑过）；
+   * - 旧 handle 的逐条记录点「重试」会去同步一个已不存在的账号（404/空跑）。
+   * 账号行、提交、参赛两表、同步历史必须一起搬，且游标（last_sync_at / sync_truncated /
+   * backfill_page）与历史行的 imported/skipped 原样保留（不触发全量重拉、不丢审计数据）。
+   * `newHandle` 目标残留过旧历史时也不能撞任何约束（sync_runs 无唯一键，只可能残留幽灵行，
+   * 这里断言旧行确实"改名"而不是"被删或被复制"）。
+   */
+  await withServer(async (db, base) => {
+    db.prepare(
+      `INSERT INTO platform_accounts (user_id, platform, handle, last_sync_at, enabled, sync_truncated, backfill_page)
+       VALUES (?, 'codeforces', 'oldname', '2026-02-02T00:00:00.000Z', 1, 1, 7)`,
+    ).run(DEFAULT_USER_ID);
+    db.prepare(
+      `INSERT INTO sync_runs (user_id, platform, handle, started_at, finished_at, mode, status, imported, skipped, truncated)
+       VALUES (?, 'codeforces', 'oldname', '2026-02-01T00:00:00.000Z', '2026-02-01T00:01:00.000Z', 'incremental', 'ok', 42, 3, 1)`,
+    ).run(DEFAULT_USER_ID);
+
+    const res = await fetch(`${base}/accounts/rename`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'codeforces', handle: 'oldname', newHandle: 'newname' }),
+    });
+    assert.equal(res.status, 200);
+
+    const runs = db.prepare('SELECT handle, imported, skipped, truncated FROM sync_runs').all() as Array<{
+      handle: string; imported: number; skipped: number; truncated: number;
+    }>;
+    assert.deepEqual(runs.map((r) => r.handle), ['newname'], '同步历史随账号改名，旧 handle 不得残留');
+    assert.equal(runs[0]!.imported, 42, '历史数据原样保留（只换归属，不改内容）');
+    assert.equal(runs[0]!.skipped, 3);
+
+    const acc = db
+      .prepare("SELECT last_sync_at, sync_truncated, backfill_page FROM platform_accounts WHERE handle = 'newname'")
+      .get() as { last_sync_at: string | null; sync_truncated: number; backfill_page: number | null };
+    assert.equal(acc.last_sync_at, '2026-02-02T00:00:00.000Z', '增量起点保留');
+    assert.equal(acc.sync_truncated, 1, '补全标记保留（不重头拉）');
+    assert.equal(acc.backfill_page, 7, '补全游标保留（不重头拉）');
+  });
+});
+
 test('accounts/remove: 参赛记录与增量游标随账号一起清除', async () => {
   /**
    * accounts/remove 会先建「删除前恢复点」，而 createBackup 需要真实的库文件路径

@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { PlatformId } from '../../../shared/src/index.ts';
 import { canonicalTag } from '../../../shared/src/index.ts';
 import type { AiConfig } from '../config.ts';
@@ -18,8 +17,7 @@ import { getAdapter } from '../adapters/registry.ts';
 import { listUpcomingReviewItems } from '../reviews/query.ts';
 import { problemStatuses } from '../problems/trainingCatalog.ts';
 import { parseProblemListText } from '../problems/parseProblemList.ts';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { SERVER_ROOT } from '../server-root.ts';
 
 /** 提示词模板：懒加载（SEA bundle 中磁盘路径不存在，注入值优先；dev 首次调用读文件） */
 let promptOverride: string | null = null;
@@ -32,7 +30,7 @@ export function setPromptTemplate(tpl: string): void {
 export function PROMPT_TEMPLATE(): string {
   if (promptOverride !== null) return promptOverride;
   if (promptFromDisk === null) {
-    promptFromDisk = fs.readFileSync(path.join(__dirname, '..', 'ai', 'plan-prompt.md'), 'utf8');
+    promptFromDisk = fs.readFileSync(path.join(SERVER_ROOT, 'src', 'ai', 'plan-prompt.md'), 'utf8');
   }
   return promptFromDisk;
 }

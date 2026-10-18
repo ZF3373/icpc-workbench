@@ -1,12 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { AiProviderConfig } from '../../shared/src/index.ts';
 import { AI_PROVIDERS_MAX, AI_PROVIDER_MODELS_MAX } from '../../shared/src/index.ts';
 import type { Db } from './db/index.ts';
+import type { SettingLookup } from './db/settings.ts';
+import { SERVER_ROOT } from './server-root.ts';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_CONFIG_PATH = path.join(SERVER_ROOT, 'config.json');
 
 export interface AiConfig {
@@ -97,8 +96,12 @@ function validate(cfg: AppConfig): void {
   }
 }
 
-/** settings 表单条读取（aiConfigFromDb / 提供商读写共用；预编译避免每个 key 重复 prepare） */
-function settingsGetter(db: Db): (key: string) => string | undefined {
+/**
+ * settings 读取器：调用方传入请求内快照（见 db/settings.ts）时直接复用，否则按需 prepare
+ * 一条同名语句。默认路径保留单条预编译语句，构造一次、多次读取不再重复编译。
+ */
+function settingsGetter(db: Db, read?: SettingLookup): SettingLookup {
+  if (read) return read;
   const getStmt = db.prepare('SELECT value FROM settings WHERE key = ?');
   return (key: string): string | undefined => {
     const row = getStmt.get(key) as { value: string } | undefined;
@@ -118,9 +121,11 @@ function settingsGetter(db: Db): (key: string) => string | undefined {
  * 既是界面回显的来源、又是 POST /ai 保存时「保持已存密钥」的兜底值，若把 env 密钥合成进来，
  * 用户点一次「保存 AI 配置」就会把它原文写进 settings（并随之进入每日备份），
  * 而旧版单密钥路径下 env 密钥是永不落库的。
+ *
+ * @param read 请求内 settings 快照（可选）；缺省即时查询
  */
-export function readAiProviders(db: Db, cfg: AppConfig): AiProviderConfig[] {
-  const get = settingsGetter(db);
+export function readAiProviders(db: Db, cfg: AppConfig, read?: SettingLookup): AiProviderConfig[] {
+  const get = settingsGetter(db, read);
   const raw = get('ai.providers');
   if (raw) {
     const providers = sanitizeProviders(parseJsonArray(raw));
@@ -210,8 +215,8 @@ function sanitizeProviders(list: unknown[]): AiProviderConfig[] {
 }
 
 /** 当前活跃提供商 id：`ai.activeProvider` 指向失效（被删/未设置）时回退第一个 */
-export function activeProviderIdOf(db: Db, providers: AiProviderConfig[]): string {
-  const raw = settingsGetter(db)('ai.activeProvider');
+export function activeProviderIdOf(db: Db, providers: AiProviderConfig[], read?: SettingLookup): string {
+  const raw = settingsGetter(db, read)('ai.activeProvider');
   if (raw && providers.some((p) => p.id === raw)) return raw;
   return providers[0]?.id ?? '';
 }
@@ -250,8 +255,12 @@ export function saveAiProviders(
  * 全局兜底档位（不含提供商覆盖）：设置页回显「留空 = 跟随全局默认」用。
  * maxTokens/contextWindow 已下沉到提供商级，这里只保留 config.json/DB 全局键的兜底链。
  */
-export function globalAiTuning(db: Db, cfg: AppConfig): { maxTokens?: number; contextWindow?: number } {
-  const get = settingsGetter(db);
+export function globalAiTuning(
+  db: Db,
+  cfg: AppConfig,
+  read?: SettingLookup,
+): { maxTokens?: number; contextWindow?: number } {
+  const get = settingsGetter(db, read);
   const maxTokens = Number(get('ai.maxTokens'));
   const contextWindow = Number(get('ai.contextWindow'));
   return {
@@ -265,11 +274,11 @@ export function globalAiTuning(db: Db, cfg: AppConfig): { maxTokens?: number; co
 }
 
 /** 读取运行时 AI 配置：全局项读 settings 表（缺省落 config.json），baseURL/apiKey/model 取当前活跃提供商。 */
-export function aiConfigFromDb(db: Db, cfg: AppConfig): AiConfig {
-  const get = settingsGetter(db);
+export function aiConfigFromDb(db: Db, cfg: AppConfig, read?: SettingLookup): AiConfig {
+  const get = settingsGetter(db, read);
 
-  const providers = readAiProviders(db, cfg);
-  const activeId = activeProviderIdOf(db, providers);
+  const providers = readAiProviders(db, cfg, get);
+  const activeId = activeProviderIdOf(db, providers, get);
   const active = providers.find((p) => p.id === activeId) ?? providers[0]!;
 
   const enabledRaw = get('ai.enabled');
@@ -277,7 +286,7 @@ export function aiConfigFromDb(db: Db, cfg: AppConfig): AiConfig {
   const timeoutMs = timeoutRaw !== undefined ? Number(timeoutRaw) : cfg.ai.timeoutMs;
   // 输出/上下文档位三级回退：当前模型命中的目录条目 → 提供商级 → 全局兜底链。
   // 目录条目参数最精确（来自网关真实值或用户手填），提供商级是「当前模型不在目录里」时的档位。
-  const global = globalAiTuning(db, cfg);
+  const global = globalAiTuning(db, cfg, get);
   const entry = active.models?.find((m) => m.id === active.model.trim());
   const searchEngineRaw = get('ai.searchEngine');
   const searchEngine = searchEngineRaw === 'tavily' || searchEngineRaw === 'brave'

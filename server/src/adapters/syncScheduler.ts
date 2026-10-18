@@ -12,6 +12,7 @@
 import type { SyncResult } from '../../../shared/src/index.ts';
 import type { PlatformId } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
+import type { SettingLookup } from '../db/settings.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { syncPlatform, isSyncBusyResult } from './sync.ts';
 
@@ -74,10 +75,16 @@ export function configureSyncScheduler(partial: Partial<SchedulerDeps>): void {
   };
 }
 
-/** 读取续拉轮数上限（0 = 关闭） */
-export function getAutoContinueRounds(database: Db): number {
-  const row = database.prepare('SELECT value FROM settings WHERE key = ?').get('sync.autoContinueRounds') as { value: string } | undefined;
-  const n = Number(row?.value);
+/** 读取续拉轮数上限（0 = 关闭）；`read` 为请求内 settings 快照（可选） */
+export function getAutoContinueRounds(database: Db, read?: SettingLookup): number {
+  const raw = read
+    ? read('sync.autoContinueRounds')
+    : (
+        database.prepare('SELECT value FROM settings WHERE key = ?').get('sync.autoContinueRounds') as
+          | { value: string }
+          | undefined
+      )?.value;
+  const n = Number(raw);
   if (!Number.isInteger(n) || n < 0 || n > 50) return DEFAULT_AUTO_CONTINUE_ROUNDS;
   return n;
 }

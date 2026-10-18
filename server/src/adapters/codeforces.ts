@@ -8,6 +8,7 @@ import { difficultyFields } from '../../../shared/src/difficulty.ts';
 import type { PlatformAdapter } from './types.ts';
 import { asHttpClient, sleep, type HttpInit } from './http.ts';
 import { recordWait } from './pagination.ts';
+import { splitCodeforcesProblemKey } from './problemKey.ts';
 
 const API_BASE = 'https://codeforces.com/api';
 const PAGE_SIZE = 1000;
@@ -69,21 +70,12 @@ const VERDICT_MAP: Record<string, Verdict> = {
 };
 
 /**
- * CF 题号 → { contestId, index }。
- *
- * 纯数字题号要特殊处理：CF 实测存在 `92101`（= 比赛 921 + 题号 `01`）这类合法键
- * （见 problemKey.ts:82 的实测记录），而贪婪的 `/^(\d+)(.+)$/` 会把比赛号错拆成 `9210`、
- * 题号拆成 `1`，拼出 `contest/9210/problem/1` 这种打不开的链接。
- * 与 contests/participated.ts:95 的 `contestIdOf` 保持同一口径：末 2 位是题号。
- * 非纯数字键（`1A`、`1234B2`）走原来的贪婪拆分，那里不存在歧义。
+ * CF 题号 → { contestId, index }：规则唯一真源在 adapters/problemKey.ts 的
+ * splitCodeforcesProblemKey（与 contests/participated.ts 的 contestIdOf 同一口径）。
+ * 这里只负责把「拆不出来」转成 problemUrl 的保守退化（整键当普通题号拼链接）。
  */
 function splitKey(key: string): { contestId?: string; index: string } {
-  if (/^\d+$/.test(key)) {
-    const m = /^(\d+?)(\d{2})$/.exec(key);
-    return m ? { contestId: m[1], index: m[2] } : { index: key };
-  }
-  const m = /^(\d+)(.+)$/.exec(key);
-  return m ? { contestId: m[1], index: m[2] } : { index: key };
+  return splitCodeforcesProblemKey(key) ?? { index: key };
 }
 
 /**
@@ -95,6 +87,8 @@ function splitKey(key: string): { contestId?: string; index: string } {
  * 只在头部增长，旧行只会后移，从游标页继续不会跳过未知行）——CF 必须穿过任意长的已知前缀
  * 走向更旧，「连续 N 页整页已知即收尾」对无游标直穿的场景会把更早历史永久锁死，故补全模式
  * 不设该判据。**重叠页必须小于页数预算**（否则「每轮推进 = 预算 - 重叠 = 0」，游标原地打转）。
+ * days 窗口（opts.windowSince）：列表按新到旧，遇到早于窗口起点的行即收尾，不计截断——
+ * 与 pagination.ts 的语义一致，避免向用户谎报「窗口内仍有未覆盖的记录」。
  */
 export function createCodeforcesAdapter(
   fetchFn: HttpInit = fetch,
@@ -115,6 +109,14 @@ export function createCodeforcesAdapter(
           ? Math.min(Math.ceil(maxSubmissions / PAGE_SIZE) * 2, PER_SYNC_MAX_PAGES)
           : PER_SYNC_MAX_PAGES;
       const out: NormalizedSubmission[] = [];
+      /**
+       * 「仅同步最近 N 天」窗口起点（毫秒）。同步层只在 days 窗口模式注入（见 types.ts）。
+       * CF 的 user.status 没有按时间过滤的参数（`from` 是 1 起的条目索引，实测传 UNIX 秒会被拒：
+       * `from: Field should be no more than 1000000000`），窗口只能靠逐行比较 creationTimeSeconds
+       * 实现：列表按新到旧返回，遇到早于窗口起点的行即停，该行及后续都更旧。
+       */
+      const windowSinceMs = opts?.windowSince ? Date.parse(opts.windowSince) : NaN;
+      const hasWindow = Number.isFinite(windowSinceMs);
       // 补全续拉游标（backfill_page，1 起的页码）：CF 列表只会在头部增长（旧行只会后移），
       // 从游标页继续不会跳过任何未知行；回退 OVERLAP_PAGES 页覆盖轮间新增的提交——
       // 已知行由 knownExternalIds 去重，代价每轮仅几次重复请求。轮间新增超过 2 整页的
@@ -134,6 +136,7 @@ export function createCodeforcesAdapter(
       let naturalEnd = false;
       let caughtUp = false;
       let rowCapped = false;
+      let windowEnded = false; // 已越过「仅同步最近 N 天」的窗口起点（不是截断）
       for (let n = 0; n < budget; n += 1) {
         const url = `${API_BASE}/user.status?handle=${encodeURIComponent(handle)}&from=${from}&count=${PAGE_SIZE}`;
         const res = await http.fetch(url, {}, {
@@ -153,6 +156,13 @@ export function createCodeforcesAdapter(
         for (const s of page) {
           const id = String(s.id);
           const norm = normalize(s);
+          // 窗口终止：列表按新到旧，本行已早于窗口起点 → 本行与后续页都更旧，直接收尾。
+          // 与 pagination.ts 的口径一致（洛谷/牛客/力扣/代码源同一语义），且**不计截断**：
+          // 窗口内能拉到的已经全在 out 里，报「窗口内仍有未覆盖的记录」是谎报。
+          if (hasWindow && Date.parse(norm.submittedAt) < windowSinceMs) {
+            windowEnded = true;
+            break;
+          }
           if (known?.has(id)) {
             // 已入库：仅平台侧改判（评测中 TESTING → 终态、平台重判）或改题号时重发，交由写入层
             // refreshVerdict / mergeProblemRow 刷新既有行——否则评测中被同步到的提交会被
@@ -176,6 +186,7 @@ export function createCodeforcesAdapter(
           }
         }
         if (rowCapped) break;
+        if (windowEnded) break;
         if (page.length < PAGE_SIZE) {
           naturalEnd = true; // 最后一页
           break;
@@ -192,12 +203,13 @@ export function createCodeforcesAdapter(
         from += PAGE_SIZE;
         await sleep(PAGE_DELAY_MS); // CF 建议 <= 2 req/s
       }
-      // 截断：触及上限，或页数预算耗尽（未自然结束/未增量早停）。
+      // 截断：触及上限，或页数预算耗尽（未自然结束/未增量早停/未到 windowSince 窗口起点）。
       // 补全模式下即使 0 新增（预算全花在穿越已知前缀）也要如实回传截断并回写游标——
       // 否则同步层清掉 sync_truncated/backfill_page，已知前缀之后的更早历史被永久放弃。
       // from 此刻指向下一页起点；rowCapped 中断时仍指向正在处理的页——两种情况
       // 「从这一页重新开始」都是安全的（已知行被 knownExternalIds 去重）。
-      const truncated = rowCapped || (!naturalEnd && !caughtUp);
+      // windowEnded 是「窗口到头」，窗口内能拉到的已经全在 out 里，不是截断（与 pagination.ts 同口径）。
+      const truncated = rowCapped || (!naturalEnd && !caughtUp && !windowEnded);
       if (truncated && opts) {
         opts.truncated = true;
         opts.backfillReachedPage = Math.floor((from - 1) / PAGE_SIZE) + 1;

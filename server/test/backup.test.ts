@@ -10,6 +10,8 @@ import {
   deleteBackup,
   listBackups,
   maybeDailyBackup,
+  pruneBackups,
+  readPendingRestore,
   requestRestore,
 } from '../src/backup.ts';
 
@@ -251,4 +253,101 @@ test('deleteBackup：已登记为待恢复目标的备份拒绝删除', () => {
   const b2 = createBackup(db, 'manual', dir);
   deleteBackup(db, b2.file, dir);
   assert.ok(!fs.existsSync(path.join(dir, b2.file)));
+});
+
+// ---------- 保留策略不得清理待恢复目标（P2-1 回归） ----------
+// 背景：pruneBackups 原先只按 reason/总量裁剪，可能删掉 restore-pending.json 登记的备份；
+// 之后 applyPendingRestore 因备份缺失而静默清标记 —— 用户点了恢复、重启后什么都没发生也无日志。
+
+/** 生产布局：<dataDir>/main.db + <dataDir>/backups/，标记写在 <dataDir>/restore-pending.json */
+function openRealDb(): { dataDir: string; real: Db; dbPath: string } {
+  const dataDir = path.join(dir, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const dbPath = path.join(dataDir, 'main.db');
+  return { dataDir, real: createDb(dbPath), dbPath };
+}
+
+/** 按指定 mtime（相对基准时间的分钟数）投放备份文件；retention 只看 mtime 排序 */
+function seedBackup(dataDir: string, file: string, minute: number): void {
+  const backupDir = path.join(dataDir, 'backups');
+  fs.mkdirSync(backupDir, { recursive: true });
+  const target = path.join(backupDir, file);
+  fs.writeFileSync(target, 'seed');
+  const t = new Date(Date.UTC(2026, 0, 1, 0, 0, 0) + minute * 60_000);
+  fs.utimesSync(target, t, t);
+}
+
+test('pruneBackups：超出保留窗口的待恢复目标仍保留，其余按窗口裁剪', () => {
+  const { dataDir, real } = openRealDb();
+  // 12 份 manual（窗口 10）：最旧两份本应被裁，其中一份登记为待恢复
+  const stale = 'icpc-20260101-000000-manual.db';
+  const normalStale = 'icpc-20260101-000100-manual.db';
+  for (let i = 0; i < 12; i += 1) {
+    seedBackup(dataDir, `icpc-20260101-0000${String(i).padStart(2, '0')}-manual.db`, i);
+  }
+  requestRestore(real, stale);
+  assert.equal(readPendingRestore(real)?.file, stale);
+
+  pruneBackups(real, 'manual');
+
+  const files = listBackups(real).map((b) => b.file);
+  assert.equal(files.length, 11, `待恢复目标不受窗口约束：10 份窗口 + 1 份保留目标，实际 ${files.length}`);
+  assert.ok(files.includes(stale), `待恢复目标被保留策略删除了: ${stale}`);
+  assert.ok(!files.includes(normalStale), '窗口外的普通备份仍应被裁剪');
+  real.close();
+});
+
+test('pruneBackups：待恢复目标保留后，applyPendingRestore 能正常完成恢复', () => {
+  const { real, dbPath } = openRealDb();
+  real.prepare("INSERT INTO settings (key, value) VALUES ('phase', 'before')").run();
+  const oldest = createBackup(real, 'manual').file;
+  requestRestore(real, oldest);
+  // 备份之后改数据：恢复成功能把 'phase' 拉回 'before' 并让 'after' 消失
+  real.prepare("INSERT INTO settings (key, value) VALUES ('after', 'x')").run();
+  // 把待恢复目标压到窗口外，再补 12 份更新的备份逼出裁剪
+  const old = new Date(Date.UTC(2026, 0, 1));
+  fs.utimesSync(path.join(dir, 'data', 'backups', oldest), old, old);
+  for (let i = 1; i <= 12; i += 1) {
+    seedBackup(path.join(dir, 'data'), `icpc-20260201-${String(i).padStart(6, '0')}-manual.db`, i * 60);
+  }
+  pruneBackups(real, 'manual');
+  assert.ok(listBackups(real).some((b) => b.file === oldest), '待恢复目标仍在磁盘上');
+  real.close();
+
+  assert.equal(applyPendingRestore(dbPath), oldest, '待恢复目标应被正常应用，而不是静默清标记');
+  assert.ok(!fs.existsSync(path.join(dir, 'data', 'restore-pending.json')), '恢复成功后清除标记');
+  const restored = createDb(dbPath);
+  const rows = restored.prepare("SELECT value FROM settings WHERE key = 'phase'").all() as Array<{ value: string }>;
+  assert.equal(rows.length, 1, '数据库应回滚到待恢复目标的时间点');
+  assert.equal(rows[0]!.value, 'before');
+  assert.equal(
+    restored.prepare("SELECT COUNT(*) AS c FROM settings WHERE key = 'after'").get()!.c,
+    0,
+    '备份之后写入的数据应被回滚掉',
+  );
+  restored.close();
+});
+
+test('pruneBackups：总量兜底裁剪时也跳过待恢复目标，且伴生快照一并保留', () => {
+  const { dataDir, real } = openRealDb();
+  // KEEP_TOTAL=30：造 35 份跨 reason 的备份，最旧的 5 份会被兜底裁剪
+  const reasons = ['manual', 'daily', 'pre-upgrade', 'pre-import', 'pre-reset', 'pre-account-delete'];
+  for (let i = 0; i < 35; i += 1) {
+    seedBackup(dataDir, `icpc-20260301-0000${String(i).padStart(2, '0')}-${reasons[i % reasons.length]}.db`, i);
+  }
+  const pendingFile = 'icpc-20260301-000000-manual.db';
+  fs.writeFileSync(path.join(dataDir, 'backups', pendingFile.replace(/\.db$/, '.knowledge.json')), '{"version":1}');
+  requestRestore(real, pendingFile);
+
+  pruneBackups(real, 'manual');
+
+  const files = listBackups(real).map((b) => b.file);
+  assert.ok(files.includes(pendingFile), `总量兜底裁剪不得删除待恢复目标: ${pendingFile}`);
+  assert.ok(!files.includes('icpc-20260301-000001-daily.db'), '兜底裁剪仍应删掉其他最旧备份');
+  assert.ok(
+    fs.existsSync(path.join(dataDir, 'backups', pendingFile.replace(/\.db$/, '.knowledge.json'))),
+    '待恢复目标的伴生快照必须同生共死地保留',
+  );
+  assert.ok(files.length <= 31, `总量上限只应多出待恢复目标这一份，实际 ${files.length}`);
+  real.close();
 });

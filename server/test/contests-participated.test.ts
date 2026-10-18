@@ -122,6 +122,8 @@ test('contestIdOf：各平台反解比赛标识，无信号的平台返回 null'
   // 纯数字键（CF 实测存在，见 problemKey.ts 的取证记录）：贪婪 \d+ 曾把 92101 错拆成比赛 9210
   assert.equal(contestIdOf('codeforces', '92101', null), '921', '末 2 位是题号，比赛号取前段');
   assert.equal(contestIdOf('codeforces', '92101', 'https://codeforces.com/contest/1901/problem/01'), '1901', '有 url 时优先取 url');
+  // gym 的 URL 形如 /gym/{id}/problem/{index}：同样优先于键内拆分（与适配器 problemUrl 同源）
+  assert.equal(contestIdOf('codeforces', '100001A', 'https://codeforces.com/gym/100001/problem/A'), '100001', 'gym url 也优先');
   assert.equal(contestIdOf('atcoder', 'abc300_a', 'https://atcoder.jp/contests/abc300/tasks/abc300_a'), 'abc300');
   assert.equal(contestIdOf('atcoder', 'abc300_a', null), null, 'AtCoder 无 url 时不猜');
   assert.equal(contestIdOf('jisuanke', '12345-678', null), '12345');

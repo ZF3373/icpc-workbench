@@ -15,6 +15,7 @@ import {
   round2,
   safeTags,
   type MutableStat,
+  type SubmissionRow,
 } from './stats.ts';
 import { filterNoiseTags } from './tags.ts';
 import { conceptStatsFor, INFORMATIVENESS_FLOOR } from '../knowledge/conceptStats.ts';
@@ -31,6 +32,11 @@ export interface WeaknessOptions {
   /** 账号/平台作用域：整体平均 AC 率（弱项基准）也随作用域收窄，见 accountClause */
   platform?: PlatformId;
   account?: string;
+  /**
+   * 已拉取好的提交行（summary 内与总体统计共用同一份快照，避免再跑一遍全量查询）。
+   * 必须由同作用域、同 tagsSql 的 fetchRows 产出；给了 rows 时 tagsSql 不再生效。
+   */
+  rows?: SubmissionRow[];
 }
 
 /**
@@ -47,7 +53,7 @@ export function computeWeakness(
   const minAttempts = opts.minAttempts ?? 5;
   const topN = opts.topN ?? 10;
   const scope = { platform: opts.platform, account: opts.account };
-  const rows = fetchRows(db, userId, scope, opts.tagsSql);
+  const rows = opts.rows ?? fetchRows(db, userId, scope, opts.tagsSql);
   const totalAc = rows.filter((r) => r.verdict === 'AC').length;
   const avgAcRate = rate(rows.length, totalAc);
 

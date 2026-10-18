@@ -10,10 +10,12 @@
     "start": "tsx src/index.ts",
     "prepare:typst": "node scripts/prepare-typst.mjs",
     "pretest": "node scripts/prepare-typst.mjs",
+    "bundle": "node scripts/build-server-bundle.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/**/*.test.ts"
   },
   "dependencies": {
+    "compression": "^1.8.2",
     "epub2": "^3.0.2",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
@@ -24,6 +26,7 @@
     "unpdf": "^1.8.1"
   },
   "devDependencies": {
+    "@types/compression": "^1.8.1",
     "@types/express": "^4.17.21",
     "@types/node": "^24.0.0",
     "@types/turndown": "^5.0.6",
