@@ -8,17 +8,25 @@
 
 ## 2026-10-18 核实与修复记录
 
-对全文 111 条做了逐条核实（以当日工作区代码为准，非 v0.5.3 基线）+ 两批提交修复：
+对全文 111 条做了逐条核实（以当日工作区代码为准，非 v0.5.3 基线）+ 三批提交修复：
 
-- **本次提交修复（b34e6fc / ab9608f）**：#4、#15、#41、#45（收尾）、#47、#78、#79、#80、#93、#94，
+- **第一、二批修复（b34e6fc / ab9608f）**：#4、#15、#41、#45（收尾）、#47、#78、#79、#80、#93、#94，
   另含 6 项计划外新发现（Assistant 流式 localStorage 防抖、Docker 重启探活确认标记消费、
   backups 错误口径、accountCreds 查询收敛、CF gym/contest 分流单一真源、ContestAnalysis 竞态护栏）。
+- **第三批修复（3ea02f3）**：#18（深链 searchParams 监听重放）、#21-25（Assistant 常量外提、
+  Problems/Plans columns useMemo、Markdown pre 单趟扫描、updateContext value memo、platformName Map）、
+  #27（kind 映射 + formatBytes 收敛 ui.ts）、#48/#49（ai.ts 轮次日志降级 + 首轮流守卫）、
+  #65（difficultyBackfill 复用 safeTags）。
+- **部分修复/核实无需改**：#20（拖拽入口已 useCallback 化；useMemo 被 rules-of-hooks 挡住——
+  moduleNodes 位于 loading/错误/空态 early return 之后不能挂 Hook，代码注释记录了原因）、
+  #26（parseErrorResponse 已在早前重构中存在，五入口均已接入）。
 - **此前已修但文档未勾选（本次核实补勾）**：#5、#6、#7、#10、#11、#12、#17、#19、#54、#55、#60、#74、#75、#76。
 - **部分成立改写口径**：#13（仅 problemBank 路径无缓存）、#14（仅 problemBank 侧无退避）、#45、#58。
 - **误报澄清**：原计划外报告「sea.ts installProcessGuards 模块加载即挂监听器污染测试进程」不成立——
   sea.ts 是入口文件（bundle 后即程序入口），无任何测试 import 该模块，模块级安装守卫是正确语义，不改。
-- **仍然有效的高价值待办**：#18（Assistant 深链只在挂载消费一次）、#20-25（前端渲染性能）、#26-27（重复收敛）、
-  #48/#49（ai.ts 轮次日志与首轮守卫）、#65（difficultyBackfill 裸 JSON.parse）、#79 前身的 staging 清理已完成。
+- **剩余待办**：#13/#14 的 problemBank 残留路径、#28-32（归一化题号/白名单/符号映射收敛等）、
+  #33-40（日期口径/可访问性细节）、#42-44/#46 等零散边界项、#50（saveAiConfig 结果重读）、
+  #66-73（分析域中低项）、#81-88（基础设施零散项）、#89-111（桌面壳与脚本）。
 
 ## 总体评估
 
@@ -128,9 +136,10 @@
   **改法**：补 `reqSeq`/`current` 序号护栏。
   **（核实/修复）**：已修复（2026-10 核实）：Dashboard/Mastery 均已加 reqSeq 护栏（与 Problems/Today 同款）。
 
-- [ ] **18. AI 深链只在挂载消费一次** ⚠️ · `client/src/pages/Assistant.tsx:929-1015`
+- [x] **18. AI 深链只在挂载消费一次** ⚠️ · `client/src/pages/Assistant.tsx:929-1015`
   `?contest=`/`?plan=` 二次跳转被静默丢弃；Problems 对 `?q=` 有专门监听。
   **改法**：对 `searchParams` 增监听，参数变化时重新消费。
+  **（核实/修复）**：已修复（2026-10 第三批提交 3ea02f3）：深链拆独立 effect 监听 searchParams；contests 改 null=未加载语义。
 
 - [x] **19. 速度滑块防抖定时器未清理** ⚠️ · `client/src/pages/Settings.tsx:220,631-637,406-412`
   `scaleSaveTimer` 卸载时未 `clearTimeout`，600ms 内离开页面会打到已卸载组件。
@@ -141,41 +150,46 @@
 
 ## 五、前端渲染性能
 
-- [ ] **20. Dashboard 图表每次渲染重建** ⚠️ · `client/src/pages/Dashboard.tsx:714-901`
+- [x] **20. Dashboard 图表每次渲染重建** ⚠️ · `client/src/pages/Dashboard.tsx:714-901`
   `moduleNodes`（含 3 个 recharts 图表 + HistoryPanel）整体重建且无 `React.memo`，拖拽时每次 mousemove 全量重渲染。
   **改法**：`React.memo` 卡片子组件 + 必要时 `useMemo` 图表节点。
+  **（部分）**：部分修复（2026-10 第三批）：拖拽入口已 useCallback 化；useMemo 被 rules-of-hooks 挡住（moduleNodes 在 early return 之后不能挂 Hook），代码内注释记录了原因。
 
-- [ ] **21. 组件体内定义常量数组** ⚠️ · `client/src/pages/Assistant.tsx:662-682`
+- [x] **21. 组件体内定义常量数组** ⚠️ · `client/src/pages/Assistant.tsx:662-682`
   `TEXT_EXTENSIONS` 等三个数组 + 4 个 `is*File` 函数定义在组件体内每次重建（流式时每秒重渲染十几次）；同文件 `STORAGE_KEY`/`MAX_SESSIONS` 已是模块级。
   **改法**：提为模块级常量。
+  **（核实/修复）**：已修复（2026-10 第三批提交）：常量数组与 is*File 提为模块级。
 
-- [ ] **22. `cols` 未 useMemo** ⚠️ · `client/src/pages/Problems.tsx:1070-1243`、`Plans.tsx:172-207`
+- [x] **22. `cols` 未 useMemo** ⚠️ · `client/src/pages/Problems.tsx:1070-1243`、`Plans.tsx:172-207`  **（核实/修复）**：已修复（2026-10 第三批提交）：Problems/Plans columns 均 useMemo（依赖的行操作 handler 已 useCallback 化）。
   ColumnsType 大数组 + render 闭包每次渲染重建。
 
-- [ ] **23. Markdown `pre` 双重遍历** ⚠️ · `client/src/components/Markdown.tsx:257`
+- [x] **23. Markdown `pre` 双重遍历** ⚠️ · `client/src/components/Markdown.tsx:257`
   每次渲染 `langOf()`+`collectText()` 两次整棵高亮子树遍历，超长代码块每帧重跑。
   **改法**：合并为单次遍历或 `React.memo` 代码块。
+  **（核实/修复）**：已修复（2026-10 第三批提交）：langOf+collectText 合并为单趟 scanPre。
 
-- [ ] **24. context value 每帧新建** ⚠️ · `client/src/updateContext.tsx:188`
+- [x] **24. context value 每帧新建** ⚠️ · `client/src/updateContext.tsx:188`  **（核实/修复）**：已修复（2026-10 第三批提交）：updateContext value 已 useMemo。
   （`themeContext.tsx:195` 已用 useMemo，此处不一致）。
 
-- [ ] **25. 平台名线性查找** ⚠️ · `client/src/ui.ts:174-176`
+- [x] **25. 平台名线性查找** ⚠️ · `client/src/ui.ts:174-176`  **（核实/修复）**：已修复（2026-10 第三批提交）：platformName 改模块级 Map。
   `platformName` 每次 `PLATFORMS.find()`（`menuConfig` 已用 Map）。
 
 ---
 
 ## 六、一致性 / 重复代码收敛
 
-- [ ] **26. API 错误解析块重复 3-5 次** ✅（部分） · `client/src/api.ts`
+- [x] **26. API 错误解析块重复 3-5 次** ✅（部分） · `client/src/api.ts`
   `api` / `chatWithAssistantStream` / `uploadAiFile` / `uploadImage` / `extractDocumentText` 各一份 `if(!res.ok){...res.json()...}`。
   **改法**：抽 `parseErrorResponse(res)` 辅助函数。
+  **（部分）**：核实无需改：parseErrorResponse 已在早前重构中存在，api/流式/上传/提取五入口均已接入。
 
-- [ ] **27. 四类复制粘贴收敛** ⚠️：
+- [x] **27. 四类复制粘贴收敛** ⚠️：
   - 撤销提示（`message.destroy()+message.open`）：`Dashboard.tsx:376`、`Templates.tsx:481`、`Lists.tsx:293`、`Assistant.tsx:896`
   - 拖拽 mouse 事件方案：Dashboard（2 处）、Templates、Lists、Assistant
   - `kind→标签/颜色`：`Plans.tsx:36-47` 与 `Calendar.tsx:15-26` 完全重复
   - `formatBytes`：`Assistant.tsx:395` 与 `Settings.tsx:1872` 精度不一致
   **改法**：抽公共组件 / hook / 常量。
+  **（核实/修复）**：已修复（2026-10 第三批提交）：kind 标签/颜色/选项收敛到 ui.ts；formatBytes 统一进 ui.ts。
 
 - [ ] **28. 归一化题号表达式跨文件内联** ⚠️ · `LOWER(REPLACE(...,' ',''))`
   problems.ts 三处手写内联（虽已抽 `NORMALIZED_KEY_SQL` 常量却未用）、`import/importService.ts:84`、`import/problemMerge.ts:105`、`db/index.ts:86` 亦重复，口径易漂移。
@@ -260,10 +274,10 @@
 
 ## 十、代码卫生
 
-- [ ] **48. console.error 打正常流程日志** ⚠️ · `server/src/routes/ai.ts:742,804,832`
+- [x] **48. console.error 打正常流程日志** ⚠️ · `server/src/routes/ai.ts:742,804,832`  **（核实/修复）**：已修复（2026-10 第三批提交）：轮次日志降为 console.log。
   「轮次 N 开始/结束」应降为 debug/log。
 
-- [ ] **49. 首轮流式缺 `writableEnded` 守卫** ⚠️ · `server/src/routes/ai.ts:737-739`
+- [x] **49. 首轮流式缺 `writableEnded` 守卫** ⚠️ · `server/src/routes/ai.ts:737-739`  **（核实/修复）**：已修复（2026-10 第三批提交）：首轮 res.write 已补 writableEnded 守卫。
   与后续轮次写法不一致。
 
 - [ ] **50. `saveAiConfig` 结果被丢弃又重读** ⚠️ · `server/src/routes/settings.ts:457,469`
@@ -416,7 +430,7 @@ const level = v.level
 - [ ] **64.【中·一致性】1 位小数百分比公式重复三处** · `analysis/summary.ts:178,359` + `knowledge/store.ts:517`
   `summary.ts:178` 与 `rate()` 同式，应复用 `rate`；统一一个 percent helper。
 
-- [ ] **65.【中·健壮性】difficultyBackfill 裸 JSON.parse(r.tags)** · `analysis/difficultyBackfill.ts:399,420`
+- [x] **65.【中·健壮性】difficultyBackfill 裸 JSON.parse(r.tags)** · `analysis/difficultyBackfill.ts:399,420`  **（核实/修复）**：已修复（2026-10 第三批提交）：两处复用 safeTags 容错。
   无 try/catch、无 Array 校验（对比 stats.ts:200-207 的 safeTags），同行还 parse 两次。改法：复用 safeTags 风格，避免同行重复 parse。
 
 - [ ] **66.【中·性能】xcpcFacets 常量词逐 board 重复归一化 + 循环内重建正则** · `analysis/xcpcFacets.ts:79-83,262,277,279,285`
