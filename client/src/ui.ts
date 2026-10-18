@@ -171,8 +171,54 @@ export const PLATFORM_COLOR: Record<PlatformId, string> = {
   qoj: '#b18cff', // QOJ / Universal Cup：暗色底可读的紫罗兰
 }
 
+// id→name 的 O(1) 索引：platformName 在列表渲染等热路径被逐行调用，
+// 每次 PLATFORMS.find 线性扫（menuConfig 同场景已用 Map，此处对齐口径）
+const PLATFORM_NAME_BY_ID = new Map<string, string>(PLATFORMS.map((p) => [p.id as string, p.name]))
+
 export function platformName(id: PlatformId): string {
-  return PLATFORMS.find((p) => p.id === id)?.name ?? id
+  return PLATFORM_NAME_BY_ID.get(id) ?? id
+}
+
+/* ============================================================
+   三·五、训练任务类型（kind）单一真源
+   ============================================================ */
+
+/** 训练任务的四种类型（与 shared 的 TodayPlanTask.kind / types.ts 的 PlanTask.kind 同口径） */
+export type TaskKind = 'practice' | 'review' | 'topic' | 'contest'
+
+/** kind → 中文标签（Plans 的 kindTag 与 Calendar 的 KIND_LABEL 原为两份独立实现） */
+export const KIND_LABEL: Record<TaskKind, string> = {
+  practice: '练习',
+  review: '回顾',
+  topic: '专题',
+  contest: '模拟赛',
+}
+
+/** kind → antd Tag 配色（同上，两份实现已漂移风险高） */
+export const KIND_COLOR: Record<TaskKind, string> = {
+  practice: 'geekblue',
+  review: 'purple',
+  topic: 'cyan',
+  contest: 'volcano',
+}
+
+/** 新建计划时的类型下拉选项 */
+export const KIND_OPTIONS: Array<{ value: TaskKind; label: string }> = [
+  { value: 'practice', label: KIND_LABEL.practice },
+  { value: 'review', label: KIND_LABEL.review },
+  { value: 'topic', label: KIND_LABEL.topic },
+  { value: 'contest', label: KIND_LABEL.contest },
+]
+
+/** 字节数的人类可读格式化（Assistant 的 fmtBytes 与 Settings 的 formatBytes 两份实现精度不一） */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  const kb = bytes / 1024
+  if (kb < 1024) return `${kb.toFixed(kb >= 100 ? 0 : 1)} KB`
+  const mb = kb / 1024
+  if (mb < 1024) return `${mb.toFixed(1)} MB`
+  return `${(mb / 1024).toFixed(2)} GB`
 }
 
 /* ============================================================

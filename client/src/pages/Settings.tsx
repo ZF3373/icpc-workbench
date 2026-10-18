@@ -45,7 +45,7 @@ import PlatformTag from '../components/PlatformTag'
 import { del, get, post } from '../api'
 import { fetchShellAuthStatus, requestShellAuth, waitShellAuthResult, type ShellAuthStatus } from '../shellAuth'
 import { buildCookieItem, extractCookieValue } from '../cookies'
-import { pct } from '../ui'
+import { pct, formatBytes } from '../ui'
 import { relativeTimeText } from '../syncStatus'
 import { openExternal } from '../externalLinks'
 import { useTheme, type ThemePreference } from '../themeContext'
@@ -2784,12 +2784,6 @@ const BACKUP_REASON_LABEL: Record<string, string> = {
   'pre-upgrade': '升级前',
   'pre-import': '导入前',
   'pre-reset': '重置前',
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / 1024 / 1024).toFixed(2)} MB`
 }
 
 /** 备份与恢复点：每日首次启动 / 升级前 / 大批量导入前 / 换账号重置前自动创建；恢复重启后生效。

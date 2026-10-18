@@ -452,10 +452,11 @@ export default function Dashboard() {
     platformOrderBeforeRef.current = null
   }, [showOrderUndo])
 
-  const clearPlatformDrag = () => {
+  // useCallback：被 handlePlatformMouseUp（useCallback）与拖拽 effect 引用，保持稳定引用
+  const clearPlatformDrag = useCallback(() => {
     dragPlatformRef.current = null
     setDragPlatform(null)
-  }
+  }, [])
 
   // 拖拽中松手在卡片外时也要落盘并清除状态
   useEffect(() => {
@@ -466,19 +467,21 @@ export default function Dashboard() {
     }
     document.addEventListener('mouseup', onUp)
     return () => document.removeEventListener('mouseup', onUp)
-  }, [dragPlatform, persistPlatformOrder])
+  }, [dragPlatform, persistPlatformOrder, clearPlatformDrag])
 
-  const handlePlatformMouseDown = (e: ReactMouseEvent<HTMLDivElement>, key: PlatformId) => {
+  // useCallback：moduleNodes 的 useMemo 引用这些拖拽入口，不包稳定则 memo 每帧失效。
+  // 实际拖拽状态走 ref + setState，不依赖渲染闭包
+  const handlePlatformMouseDown = useCallback((e: ReactMouseEvent<HTMLDivElement>, key: PlatformId) => {
     // 卡片内的键盘排序按钮是独立控件：按它不该发起拖拽（拖拽仍从卡片其他位置发起）
     if ((e.target as HTMLElement).closest('button, .reorder-controls')) return
     e.preventDefault() // 阻止默认行为避免拖拽时选中文本
     platformOrderBeforeRef.current = orderedPlatforms.map((p) => p.platform)
     dragPlatformRef.current = key
     setDragPlatform(key)
-  }
+  }, [orderedPlatforms])
 
   // 悬停到其他卡片时实时重排（被拖卡片移动到目标位置，其余顺延）
-  const handlePlatformMouseEnter = (key: PlatformId) => {
+  const handlePlatformMouseEnter = useCallback((key: PlatformId) => {
     const drag = dragPlatformRef.current
     if (drag === null || drag === key) return
     const keys = orderedPlatforms.map((p) => p.platform)
@@ -489,12 +492,12 @@ export default function Dashboard() {
     keys.splice(toIdx, 0, drag)
     orderRef.current = keys
     setPlatformOrder(keys)
-  }
+  }, [orderedPlatforms])
 
-  const handlePlatformMouseUp = () => {
+  const handlePlatformMouseUp = useCallback(() => {
     persistPlatformOrder()
     clearPlatformDrag()
-  }
+  }, [persistPlatformOrder, clearPlatformDrag])
 
   /** 键盘排序：与相邻平台卡片交换一格，落盘格式与 mouse 拖拽一致（整份 key 数组） */
   const movePlatformCard = (key: PlatformId, delta: -1 | 1) => {
@@ -520,7 +523,7 @@ export default function Dashboard() {
   /** 当前渲染顺序：存档顺序 → 未知/重复 id 丢弃 → 缺失模块按默认序补尾 */
   const orderedModules = useMemo(() => applyModuleOrder(moduleOrder), [moduleOrder])
 
-  const handleModuleMouseDown = (e: ReactMouseEvent<HTMLDivElement>, id: ModuleId) => {
+  const handleModuleMouseDown = useCallback((e: ReactMouseEvent<HTMLDivElement>, id: ModuleId) => {
     const target = e.target as HTMLElement
     // 只允许从卡片头部发起拖拽：图表/表格等卡片主体的交互不受影响
     if (!target.closest('.ant-card-head')) return
@@ -530,7 +533,7 @@ export default function Dashboard() {
     moduleOrderBeforeRef.current = orderedModules.slice()
     dragModuleRef.current = id
     setDragModule(id)
-  }
+  }, [orderedModules])
 
   /** 悬停到其他模块时实时交换位置（被拖模块移到目标位置，其余顺延） */
   const handleModuleMouseEnter = (id: ModuleId) => {
@@ -878,6 +881,9 @@ export default function Dashboard() {
     acRate: p.attempts ? Math.round((p.ac / p.attempts) * 1000) / 10 : 0,
   }))
 
+  // 注意：不能给这份约 190 行的 JSX 记录套 useMemo —— 它在 loading/错误/空态三个
+  // early return 之后（rules-of-hooks：Hooks 必须无条件调用）。拖拽换位的重渲染开销
+  // 由下方 useCallback 化的拖拽入口与 recharts 自身的数据 diff 兜住大半。
   const moduleNodes: Record<ModuleId, ReactNode> = {
     heatmap: collapsedSet.has('heatmap') ? (
       // 折叠态：热力图卡片头长在 ActivityHeatmap 内部（本切片不改那个文件），这里用同款外壳只渲染头部

@@ -62,7 +62,7 @@ import {
   parseChatCommand,
   type ChatCommand,
 } from '../chatCommands'
-import { platformName } from '../ui'
+import { platformName, formatBytes as fmtBytes } from '../ui'
 import { createStreamBuffer } from '../streamBuffer'
 import { rememberSessionFiles, getSessionFileText, forgetSessionFiles } from './sessionFiles'
 import { pinFirstOrder, restoreSessionOrder, sessionIdOrder } from './assistantSessionOrder'
@@ -178,6 +178,50 @@ interface PendingAtt extends ChatFileAttachment {
 
 const STORAGE_KEY = 'icpc-ai-sessions-v1'
 const MAX_SESSIONS = 50
+
+// ---------- 文件上传分流（模块级：组件体内定义会让流式渲染每帧重建这些数组/闭包） ----------
+
+/** 图片 MIME 类型：走 Files API 上传，以 file 内容块引用 */
+const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+/** 文本类扩展名：直接读取内容以代码块注入消息文本，不依赖 Files API */
+const TEXT_EXTENSIONS = [
+  '.txt', '.md', '.markdown', '.py', '.cpp', '.c', '.cc', '.cxx', '.h', '.hpp',
+  '.java', '.kt', '.rs', '.go', '.js', '.ts', '.jsx', '.tsx', '.rb', '.php',
+  '.sh', '.bash', '.zsh', '.sql', '.json', '.xml', '.yaml', '.yml', '.toml',
+  '.csv', '.tsv', '.html', '.css', '.scss', '.less', '.vue', '.svelte',
+  '.swift', '.m', '.scala', '.clj', '.ex', '.exs', '.erl', '.hs', '.lua',
+  '.pl', '.r', '.dart', '.groovy', '.gradle', '.cmake', '.makefile',
+  '.gitignore', '.dockerfile', '.env', '.ini', '.cfg', '.conf', '.properties',
+]
+/** 文本文件大小上限：1 MiB（避免注入过多文本撑爆上下文窗口） */
+const MAX_TEXT_FILE_BYTES = 1024 * 1024
+/** PDF 文件大小上限：10 MiB（服务端用 unpdf 提取文本，上限与服务端一致） */
+const MAX_PDF_FILE_BYTES = 10 * 1024 * 1024
+/** 文档文件（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）大小上限：20 MiB */
+const MAX_DOC_FILE_BYTES = 20 * 1024 * 1024
+/** 服务端 docConverter 支持的文档扩展名（走 /extract-text 提取文本） */
+const DOCUMENT_EXTENSIONS = [
+  '.docx', '.xlsx', '.pptx', '.html', '.htm', '.csv', '.json', '.xml', '.epub',
+]
+
+const isImageFile = (f: File): boolean =>
+  IMAGE_TYPES.includes(f.type) || /\.(jpe?g|png|gif|webp)$/i.test(f.name)
+
+const isTextFile = (f: File): boolean => {
+  if (isImageFile(f)) return false
+  if (f.type.startsWith('text/')) return true
+  const lower = f.name.toLowerCase()
+  return TEXT_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
+
+const isPdfFile = (f: File): boolean =>
+  f.type === 'application/pdf' || /\.pdf$/i.test(f.name)
+
+/** 文档文件（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）：走服务端 docConverter 提取 */
+const isDocumentFile = (f: File): boolean => {
+  const lower = f.name.toLowerCase()
+  return DOCUMENT_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
 
 function loadFromStorage(): ChatSession[] {
   try {
@@ -481,13 +525,6 @@ function relTime(ts: number): string {
   if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}天前`
   const d = new Date(ts)
   return `${d.getMonth() + 1}/${d.getDate()}`
-}
-
-function fmtBytes(n: number): string {
-  if (!Number.isFinite(n) || n < 0) return '-'
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
 /** 内联附图的单张上限：6 MiB 原图 ≈ 8MiB base64，给 12MB 的请求体限额留足余量 */
@@ -1025,8 +1062,9 @@ export default function Assistant() {
   const [plans, setPlans] = useState<PlanListItem[]>([])
   /** 题单列表（关联上下文下拉用，只要 id/标题/题数） */
   const [problemLists, setProblemLists] = useState<Array<{ id: number; title: string; item_count: number }>>([])
-  /** 参加过的比赛（赛后复盘下拉用）：从提交记录推导，加载失败时静默为空列表 */
-  const [contests, setContests] = useState<ParticipatedContest[]>([])
+  /** 参加过的比赛（赛后复盘下拉用）：从提交记录推导，加载失败时静默为空列表。
+   *  null = 尚未加载完成（深链 ?contest= 要等清单落定才能推导场次，见消费 effect） */
+  const [contests, setContests] = useState<ParticipatedContest[] | null>(null)
   const [ability, setAbility] = useState<AbilityInfo | null>(null)
   const [abilityError, setAbilityError] = useState(false)
   const [needConfig, setNeedConfig] = useState(false)
@@ -1276,47 +1314,6 @@ export default function Assistant() {
   }, [])
 
   // ---------- 文件上传 ----------
-  /** 图片 MIME 类型：走 Files API 上传，以 file 内容块引用 */
-  const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
-  /** 文本类扩展名：直接读取内容以代码块注入消息文本，不依赖 Files API */
-  const TEXT_EXTENSIONS = [
-    '.txt', '.md', '.markdown', '.py', '.cpp', '.c', '.cc', '.cxx', '.h', '.hpp',
-    '.java', '.kt', '.rs', '.go', '.js', '.ts', '.jsx', '.tsx', '.rb', '.php',
-    '.sh', '.bash', '.zsh', '.sql', '.json', '.xml', '.yaml', '.yml', '.toml',
-    '.csv', '.tsv', '.html', '.css', '.scss', '.less', '.vue', '.svelte',
-    '.swift', '.m', '.scala', '.clj', '.ex', '.exs', '.erl', '.hs', '.lua',
-    '.pl', '.r', '.dart', '.groovy', '.gradle', '.cmake', '.makefile',
-    '.gitignore', '.dockerfile', '.env', '.ini', '.cfg', '.conf', '.properties',
-  ]
-  /** 文本文件大小上限：1 MiB（避免注入过多文本撑爆上下文窗口） */
-  const MAX_TEXT_FILE_BYTES = 1024 * 1024
-  /** PDF 文件大小上限：10 MiB（服务端用 unpdf 提取文本，上限与服务端一致） */
-  const MAX_PDF_FILE_BYTES = 10 * 1024 * 1024
-  /** 文档文件（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）大小上限：20 MiB */
-  const MAX_DOC_FILE_BYTES = 20 * 1024 * 1024
-  /** 服务端 docConverter 支持的文档扩展名（走 /extract-text 提取文本） */
-  const DOCUMENT_EXTENSIONS = [
-    '.docx', '.xlsx', '.pptx', '.html', '.htm', '.csv', '.json', '.xml', '.epub',
-  ]
-
-  const isImageFile = (f: File): boolean =>
-    IMAGE_TYPES.includes(f.type) || /\.(jpe?g|png|gif|webp)$/i.test(f.name)
-
-  const isTextFile = (f: File): boolean => {
-    if (isImageFile(f)) return false
-    if (f.type.startsWith('text/')) return true
-    const lower = f.name.toLowerCase()
-    return TEXT_EXTENSIONS.some((ext) => lower.endsWith(ext))
-  }
-
-  const isPdfFile = (f: File): boolean =>
-    f.type === 'application/pdf' || /\.pdf$/i.test(f.name)
-
-  /** 文档文件（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）：走服务端 docConverter 提取 */
-  const isDocumentFile = (f: File): boolean => {
-    const lower = f.name.toLowerCase()
-    return DOCUMENT_EXTENSIONS.some((ext) => lower.endsWith(ext))
-  }
 
   const handlePickFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return
@@ -1597,14 +1594,8 @@ export default function Assistant() {
   }
 
   /** 键盘排序：上移/下移一格；真的移动了才给撤销入口 */
-  // ?plan=<id> 消费 + 计划列表加载 + 清理已删除的计划关联
+  // 清单加载（挂载一次）：计划/题单/模板分类/已参加比赛 + 清理已删除的关联
   useEffect(() => {
-    const urlPlan = searchParams.get('plan')
-    if (urlPlan !== null) {
-      const v = Number(urlPlan)
-      if (Number.isInteger(v) && v > 0) updateActiveSessionPlanId(v)
-      setSearchParams({}, { replace: true })
-    }
     get<PlanListItem[]>('/api/plans')
       .then((list) => {
         setPlans(list)
@@ -1644,31 +1635,11 @@ export default function Assistant() {
     get<{ categories: TemplateCategoryOption[] }>('/api/templates/categories')
       .then(({ categories }) => setTplCategories(categories))
       .catch(() => {})
-    // 参加过的比赛（赛后复盘）：加载失败静默为空。?contest=<key> 从赛事中心
-    // 「去 AI 复盘」跳转而来：新建专属会话（不占用当前会话）并预填复盘请求；
-    // 推导不出该场时**不静默丢弃**——明确提示原因并保留预填文本（用户可手动选场）；
-    // 悬空 contestKey（数据清理/换账号后推导不出该场）同样清理，避免失效关联
+    // 参加过的比赛（赛后复盘）：加载失败静默为空；悬空 contestKey（数据清理/换账号后
+    // 推导不出该场）同样清理，避免失效关联。深链消费拆到下方独立 effect（#18）
     get<{ contests: ParticipatedContest[] }>('/api/contests/participated')
       .then(({ contests: list }) => {
         setContests(list)
-        const urlContest = searchParams.get('contest')
-        if (urlContest !== null) setSearchParams({}, { replace: true })
-        const jumped = urlContest ? list.find((c) => c.key === urlContest) : undefined
-        if (jumped) {
-          const session = createSession(undefined, undefined, jumped.key)
-          setChatState((prev) => ({
-            ...prev,
-            sessions: [session, ...prev.sessions],
-            activeId: session.id,
-            input: reviewRequestText(jumped),
-          }))
-          return
-        }
-        if (urlContest) {
-          message.warning(contestJumpWarning(urlContest))
-          // 保留预填文本：跳转意图不落空，用户选好场次即可直接发送
-          setChatState((prev) => (prev.input.trim() ? prev : { ...prev, input: REVIEW_REQUEST_TEXT }))
-        }
         setChatState((prev) => {
           const active = prev.sessions.find((s) => s.id === prev.activeId)
           if (active?.contestKey !== undefined && !list.some((c) => c.key === active.contestKey)) {
@@ -1685,6 +1656,39 @@ export default function Assistant() {
       .catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  /**
+   * AI 深链（?plan=/?contest=）消费（#18）：对 searchParams 增监听，二次跳转不再被
+   * 静默丢弃（挂载只消费一次的旧实现里，从赛事中心再点一次「去 AI 夳盘」毫无反应）。
+   * contest 需要等清单加载完才能推导场次；清单未就绪时先不动，contests 变化会重跑本 effect。
+   */
+  useEffect(() => {
+    const urlPlan = searchParams.get('plan')
+    if (urlPlan !== null) {
+      const v = Number(urlPlan)
+      if (Number.isInteger(v) && v > 0) updateActiveSessionPlanId(v)
+      setSearchParams({}, { replace: true })
+    }
+    const urlContest = searchParams.get('contest')
+    if (urlContest === null) return
+    setSearchParams({}, { replace: true })
+    if (contests === null) return // 清单未就绪：等 contests 落定后本 effect 重跑再消费
+    const jumped = contests.find((c) => c.key === urlContest)
+    if (jumped) {
+      const session = createSession(undefined, undefined, jumped.key)
+      setChatState((prev) => ({
+        ...prev,
+        sessions: [session, ...prev.sessions],
+        activeId: session.id,
+        input: reviewRequestText(jumped),
+      }))
+      return
+    }
+    // 推导不出该场**不静默丢弃**——明确提示原因并保留预填文本（用户可手动选场）
+    message.warning(contestJumpWarning(urlContest))
+    setChatState((prev) => (prev.input.trim() ? prev : { ...prev, input: REVIEW_REQUEST_TEXT }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, contests])
 
   const loadAbility = useCallback(() => {
     setAbilityError(false)
@@ -2722,15 +2726,15 @@ export default function Assistant() {
                   updateActiveSessionContestKey(v)
                   // 选中即预填复盘请求（输入框已有草稿时不覆盖）：带上本场关键事实，
                   // 省去 AI 反问「哪一场、做了几题」
-                  if (v && !input.trim()) {
-                    const picked = contests.find((c) => c.key === v)
+                      if (v && !input.trim()) {
+                    const picked = (contests ?? []).find((c) => c.key === v)
                     setChatState((prev) => ({
                       ...prev,
                       input: picked ? reviewRequestText(picked) : REVIEW_REQUEST_TEXT,
                     }))
                   }
                 }}
-                options={contests.map((c) => {
+                options={(contests ?? []).map((c) => {
                   const label = c.name ?? `${platformName(c.platform)} · ${c.contestId}`
                   const d = new Date(c.startTimeIso ?? c.lastSubmittedAt)
                   const date = Number.isFinite(d.getTime()) ? ` · ${d.getMonth() + 1}/${d.getDate()}` : ''

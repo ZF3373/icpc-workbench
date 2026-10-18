@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -185,7 +186,11 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const busy = phase === 'downloading' || phase === 'verifying'
   const hasUpdate = !!(info?.ok && (info.hasUpdate || info.hasCommitUpdate))
 
-  const value: UpdateContextValue = { info, checking, check, phase, percent, busy, result, runUpdate, hasUpdate }
+  // useMemo：Provider value 每帧新建会让所有消费组件跟着重渲染（themeContext 同款口径）
+  const value = useMemo<UpdateContextValue>(
+    () => ({ info, checking, check, phase, percent, busy, result, runUpdate, hasUpdate }),
+    [info, checking, check, phase, percent, busy, result, runUpdate, hasUpdate],
+  )
 
   return <UpdateContext.Provider value={value}>{children}</UpdateContext.Provider>
 }
