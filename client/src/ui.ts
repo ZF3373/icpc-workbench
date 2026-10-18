@@ -194,10 +194,10 @@ export const KIND_LABEL: Record<TaskKind, string> = {
   contest: '模拟赛',
 }
 
-/** kind → antd Tag 配色（同上，两份实现已漂移风险高） */
+/** kind → antd Tag 配色（同上，两份实现已漂移风险高）。回顾用 gold：全站去紫（见 UI 优化方案），四类型蓝/金/青/橙红色环分布均匀 */
 export const KIND_COLOR: Record<TaskKind, string> = {
   practice: 'geekblue',
-  review: 'purple',
+  review: 'gold',
   topic: 'cyan',
   contest: 'volcano',
 }
@@ -360,14 +360,16 @@ export function gapColor(gap: number): string {
    六、知识点标签散列色
    ============================================================ */
 
-/** 标签散列配色：同一标签永远取同一颜色（分类栏圆点标记用）。固定色板，不跟随主题 */
+/** 标签散列配色：同一标签永远取同一颜色（分类栏圆点标记用）。固定色板，不跟随主题。
+ *  含 #9fb8d9（灰蓝）：原 #c080ff 紫在全站去紫时替换（UI 优化方案 §配色收敛），
+ *  所有标签颜色 hash 重排一次是已知取舍 */
 const TAG_PALETTE = [
   '#86a8ff',
   '#69d7a5',
   '#f2c46d',
   '#ff7b84',
   '#45d5e5',
-  '#c080ff',
+  '#9fb8d9',
   '#ffbd61',
   '#58a3ff',
   '#8ee7c0',

@@ -1136,7 +1136,7 @@ export default function Dashboard() {
             icon: <CheckCircleOutlined />,
             tone: 'green',
           },
-          { label: '已解题目', value: stats.solvedProblems, icon: <TrophyOutlined />, tone: 'violet' },
+          { label: '已解题目', value: stats.solvedProblems, icon: <TrophyOutlined />, tone: 'cyan' },
           {
             label: '活跃平台',
             value: (

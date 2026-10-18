@@ -307,7 +307,7 @@ export default function Today() {
           {/* 能力概览条 */}
           <div className="stats-strip" style={{ marginBottom: 16 }}>
             <div className="stat-item">
-              <span className="stat-strip-icon stat-icon-violet">
+              <span className="stat-strip-icon stat-icon-cyan">
                 <BulbOutlined />
               </span>
               <div className="stat-text">

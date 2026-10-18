@@ -2778,7 +2778,7 @@ export default function Assistant() {
                 {/* 未调整时 effective 就是计算值，不重复报数；被 AI 调整过才给出计算值与理由 */}
                 {ability.override ? (
                   <div style={{ fontSize: 12, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
-                    <Tag color="purple" style={{ marginInlineEnd: 0 }}>
+                    <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>
                       AI 调整
                     </Tag>
                     <span>

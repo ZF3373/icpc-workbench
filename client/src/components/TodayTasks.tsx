@@ -4,7 +4,7 @@ import { CheckOutlined } from '@ant-design/icons'
 import type { TodayPlanTask } from '../../../shared/src/index.ts'
 
 const KINDS = [
-  { kind: 'review', label: '回顾', color: 'purple' },
+  { kind: 'review', label: '回顾', color: 'gold' },
   { kind: 'practice', label: '练习', color: 'geekblue' },
   { kind: 'topic', label: '专题', color: 'cyan' },
   { kind: 'contest', label: '模拟赛', color: 'volcano' },

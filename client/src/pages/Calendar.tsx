@@ -235,7 +235,7 @@ export default function CalendarPage() {
                 </>
               ),
               icon: <TrophyOutlined />,
-              tone: 'violet',
+              tone: 'cyan',
             },
             {
               label: '累计打卡天数',

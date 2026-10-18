@@ -18,10 +18,11 @@ import type { ContestInfo, ParticipatedContest } from '../types'
 import type { ContestRatingStatus, PlatformId } from '../../../shared/src/index.ts'
 
 // antd 预设色由 theme.algorithm 配对亮暗前景与底色，不替换成 CSS 变量。
+// 分类色收敛（UI 优化方案）：去掉 purple/magenta/lime，13 种预设 → 9 种；ICPC 用 gold 呼应金银铜牌语义。
 const CATEGORY_COLOR: Record<string, string> = {
   'Div. 1': 'volcano', 'Div. 2': 'geekblue', 'Div. 3': 'cyan', 'Div. 4': 'green',
-  Educational: 'purple', Global: 'gold', ICPC: 'magenta', ABC: 'blue', ARC: 'orange',
-  AGC: 'red', AHC: 'lime', 月赛: 'magenta', 入门赛: 'green', 重现赛: 'default',
+  Educational: 'blue', Global: 'gold', ICPC: 'gold', ABC: 'blue', ARC: 'orange',
+  AGC: 'red', AHC: 'cyan', 月赛: 'gold', 入门赛: 'green', 重现赛: 'default',
   训练: 'processing', 周赛: 'gold', 小白月赛: 'cyan', 挑战赛: 'volcano', 练习赛: 'blue', 校赛: 'geekblue',
 }
 const EVIDENCE_TAG: Record<string, { color: string; label: string; detail: string }> = {
@@ -31,7 +32,7 @@ const EVIDENCE_TAG: Record<string, { color: string; label: string; detail: strin
   'key-pattern': { color: 'cyan', label: '比赛提交', detail: '来自计蒜客参赛同步记录；QOJ 的比赛题号本身不作为参赛证据。' },
   'calendar-window': { color: 'default', label: '赛时提交', detail: '根据该场比赛的官方赛程与赛时提交匹配。' },
   heuristic: { color: 'default', label: '疑似参赛', detail: '缺少官方赛程，根据集中提交推测，可能是练习或补题。' },
-  'joined-list': { color: 'purple', label: '平台记录', detail: '平台参赛历史中有这场记录；逐条提交可能尚未同步。' },
+  'joined-list': { color: 'gold', label: '平台记录', detail: '平台参赛历史中有这场记录；逐条提交可能尚未同步。' },
 }
 const RATING_STATUS_TAG: Record<ContestRatingStatus, { color: string; label: string }> = {
   rated: { color: 'green', label: 'Rated 正式参赛' },

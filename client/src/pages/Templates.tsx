@@ -629,7 +629,7 @@ export default function Templates() {
               </>
             ),
             icon: <CodeOutlined />,
-            tone: 'violet',
+            tone: 'cyan',
           },
           {
             label: '学习中',
