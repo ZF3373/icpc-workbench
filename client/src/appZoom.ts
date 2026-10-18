@@ -1,4 +1,3 @@
-import { setupRegionTextZoom } from './regionTextZoom'
 import { getZoomPreferences, initializeZoomPreferences, setZoomPreference, ZOOM_STEP } from './zoomPreferences'
 
 /** 返回应用缩放倍率，用于把屏幕坐标转换为布局坐标。 */
@@ -8,7 +7,6 @@ export function getAppZoom(): number {
 
 /** 整页缩放包含 body 下的弹窗；捕获阶段也能覆盖输入框和代码编辑器。 */
 export function setupAppZoom(): () => void {
-  const textZoom = setupRegionTextZoom()
   initializeZoomPreferences()
 
   const onKey = (event: KeyboardEvent) => {
@@ -45,7 +43,6 @@ export function setupAppZoom(): () => void {
       setZoomPreference('reply', getZoomPreferences().reply + direction * ZOOM_STEP)
       return
     }
-    textZoom.zoom(event.target, direction, event.timeStamp)
   }
 
   window.addEventListener('keydown', onKey, true)
@@ -53,6 +50,5 @@ export function setupAppZoom(): () => void {
   return () => {
     window.removeEventListener('keydown', onKey, true)
     window.removeEventListener('wheel', onWheel, true)
-    textZoom.cleanup()
   }
 }
