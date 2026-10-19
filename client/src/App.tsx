@@ -1,21 +1,23 @@
-import { useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import { Layout, Tooltip } from 'antd'
 import { MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined } from '@ant-design/icons'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+// 首屏页面保持同步 import：Dashboard 是默认路由，懒加载只会多一次往返
 import Dashboard from './pages/Dashboard'
-import Problems from './pages/Problems'
-import Plans from './pages/Plans'
-import Assistant from './pages/Assistant'
-import Lists from './pages/Lists'
-import CalendarPage from './pages/Calendar'
-import Settings from './pages/Settings'
-import About from './pages/About'
-import Today from './pages/Today'
-import Reviews from './pages/Reviews'
-import Contests from './pages/Contests'
-import ContestAnalysis from './pages/ContestAnalysis'
-import Templates from './pages/Templates'
-import Mastery from './pages/Mastery'
+// 其余页面路由级懒加载：recharts / katex / codemirror 等重依赖随之拆出主 chunk
+const Problems = lazy(() => import('./pages/Problems'))
+const Plans = lazy(() => import('./pages/Plans'))
+const Assistant = lazy(() => import('./pages/Assistant'))
+const Lists = lazy(() => import('./pages/Lists'))
+const CalendarPage = lazy(() => import('./pages/Calendar'))
+const Settings = lazy(() => import('./pages/Settings'))
+const About = lazy(() => import('./pages/About'))
+const Today = lazy(() => import('./pages/Today'))
+const Reviews = lazy(() => import('./pages/Reviews'))
+const Contests = lazy(() => import('./pages/Contests'))
+const Templates = lazy(() => import('./pages/Templates'))
+const Mastery = lazy(() => import('./pages/Mastery'))
+import PageSkeleton from './components/PageSkeleton'
 import Reminder from './Reminder'
 import ContestReminder from './ContestReminder'
 import UpdateChecker from './UpdateChecker'
@@ -126,22 +128,24 @@ export default function App() {
       <Content className="app-content" style={{ padding: '20px 24px 24px', background: 'transparent' }}>
         <UpdateChecker />
         <div className="content-container page-content" key={loc.pathname}>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/today" element={<Today />} />
-            <Route path="/ai" element={<Assistant />} />
-            <Route path="/templates" element={<Templates />} />
-            <Route path="/lists" element={<Lists />} />
-            <Route path="/problems" element={<Problems />} />
-            <Route path="/mastery" element={<Mastery />} />
-            <Route path="/plans" element={<Plans />} />
-            <Route path="/calendar" element={<CalendarPage />} />
-            <Route path="/reviews" element={<Reviews />} />
-            <Route path="/contests" element={<Contests />} />
-            <Route path="/contest-analysis" element={<ContestAnalysis />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="/about" element={<About />} />
-          </Routes>
+          {/* Suspense 放 key 容器内层：切路由时 key 先强制重挂载，再按新页面 chunk 加载显示骨架 */}
+          <Suspense fallback={<PageSkeleton stats={false} table rows={8} />}>
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/today" element={<Today />} />
+              <Route path="/ai" element={<Assistant />} />
+              <Route path="/templates" element={<Templates />} />
+              <Route path="/lists" element={<Lists />} />
+              <Route path="/problems" element={<Problems />} />
+              <Route path="/mastery" element={<Mastery />} />
+              <Route path="/plans" element={<Plans />} />
+              <Route path="/calendar" element={<CalendarPage />} />
+              <Route path="/reviews" element={<Reviews />} />
+              <Route path="/contests" element={<Contests />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/about" element={<About />} />
+            </Routes>
+          </Suspense>
         </div>
       </Content>
     </Layout>

@@ -6,6 +6,28 @@
 >
 > **验证状态图例**：✅ = 已人工读码复核属实；⚠️ = 子代理报告、待复核；无标记 = 待复核。
 
+## 2026-10-18 核实与修复记录
+
+对全文 111 条做了逐条核实（以当日工作区代码为准，非 v0.5.3 基线）+ 三批提交修复：
+
+- **第一、二批修复（b34e6fc / ab9608f）**：#4、#15、#41、#45（收尾）、#47、#78、#79、#80、#93、#94，
+  另含 6 项计划外新发现（Assistant 流式 localStorage 防抖、Docker 重启探活确认标记消费、
+  backups 错误口径、accountCreds 查询收敛、CF gym/contest 分流单一真源、ContestAnalysis 竞态护栏）。
+- **第三批修复（3ea02f3）**：#18（深链 searchParams 监听重放）、#21-25（Assistant 常量外提、
+  Problems/Plans columns useMemo、Markdown pre 单趟扫描、updateContext value memo、platformName Map）、
+  #27（kind 映射 + formatBytes 收敛 ui.ts）、#48/#49（ai.ts 轮次日志降级 + 首轮流守卫）、
+  #65（difficultyBackfill 复用 safeTags）。
+- **部分修复/核实无需改**：#20（拖拽入口已 useCallback 化；useMemo 被 rules-of-hooks 挡住——
+  moduleNodes 位于 loading/错误/空态 early return 之后不能挂 Hook，代码注释记录了原因）、
+  #26（parseErrorResponse 已在早前重构中存在，五入口均已接入）。
+- **此前已修但文档未勾选（本次核实补勾）**：#5、#6、#7、#10、#11、#12、#17、#19、#54、#55、#60、#74、#75、#76。
+- **部分成立改写口径**：#13（仅 problemBank 路径无缓存）、#14（仅 problemBank 侧无退避）、#45、#58。
+- **误报澄清**：原计划外报告「sea.ts installProcessGuards 模块加载即挂监听器污染测试进程」不成立——
+  sea.ts 是入口文件（bundle 后即程序入口），无任何测试 import 该模块，模块级安装守卫是正确语义，不改。
+- **剩余待办**：#13/#14 的 problemBank 残留路径、#28-32（归一化题号/白名单/符号映射收敛等）、
+  #33-40（日期口径/可访问性细节）、#42-44/#46 等零散边界项、#50（saveAiConfig 结果重读）、
+  #66-73（分析域中低项）、#81-88（基础设施零散项）、#89-111（桌面壳与脚本）。
+
 ## 总体评估
 
 代码整体质量很高：注释充分、防御性写法到位、SQL 建了索引、测试与 CI 齐全、类型安全良好（仅 epub2 动态导入处有 `any`）。以下条目属于「细节层面」的收尾打磨。已复核条目详见文末「已复核条目与修复示意」一节。
@@ -14,73 +36,92 @@
 
 ## 一、错误处理与信息泄露（高收益，改动小）
 
-- [ ] **1. 全局错误中间件回显内部细节** ✅ · `server/src/middleware.ts:30`
+- [x] **1. 全局错误中间件回显内部细节** ✅ · `server/src/middleware.ts:30`
   所有未特判错误统一 `res.status(500).json({ error: \`服务器内部错误：${err.message}\` })`，把文件路径 / SQL / 上游错误原文直接暴露给前端。
   **改法**：500 统一返回模糊文案，`err.message` 只进 `console.error`。
+  **已修复**：500 统一回「服务器内部错误，请稍后重试或查看服务端日志」，原文只进日志；回归见 `server/test/error-handler.test.ts`。
 
-- [ ] **2. body-parser JSON 解析错误误报 500** ✅ · `server/src/middleware.ts:24-30`
+- [x] **2. body-parser JSON 解析错误误报 500** ✅ · `server/src/middleware.ts:24-30`
   `express.json()` 的 `entity.parse.failed`（status 400）未特判，落到 500 分支并回显解析器原文。
   **改法**：补 `err.type === 'entity.parse.failed'` 分支返回 400「请求体不是合法 JSON」。
+  **已修复**：该分支已就位（同时保留 `entity.too.large` → 413）；回归见 `server/test/error-handler.test.ts`。
 
-- [ ] **3. `headersSent` 分支未转交，可能挂起** ✅ · `server/src/middleware.ts:21`
+- [x] **3. `headersSent` 分支未转交，可能挂起** ✅ · `server/src/middleware.ts:21`
   `if (res.headersSent) return;` 注释写「交给 Express 默认处理」但未调 `next(err)`，响应已发出后抛错时连接可能挂到超时。
   **改法**：改为 `return next(err)`。
+  **已修复**：`if (res.headersSent) return next(err);`；回归见 `server/test/error-handler.test.ts`（含「回退实现会 timeout」的对照验证）。
 
-- [ ] **4. 多处 502/500 回显上游原文** ⚠️ · `server/src/routes/problems.ts:525,710`、`lists.ts:257`、`settings.ts:591,662`
+- [x] **4. 多处 502/500 回显上游原文** ⚠️ · `server/src/routes/problems.ts:525,710`、`lists.ts:257`、`settings.ts:591,662`
   拉取失败 / 回填失败 / 改名删号失败等把 `e.message`（含上游 fetch / AI / DB 异常）原样返回。
   **改法**：对用户不可操作的上游错误做白名单化或脱敏，本地错误用固定文案。
+  **（核实/修复）**：已修复（2026-10 两批提交）：新增 routes/routeError.ts——上游 HTTP 状态码保留（用户可操作），引擎/DB/fs 细节只进日志；接入 problems/lists/settings/backups 共 9 处。
 
 ---
 
 ## 二、后端 SQL 性能（重复 prepare / N+1 / 冗余索引）
 
-- [ ] **5. clean-tags 去重循环内重复 prepare** ✅ · `server/src/routes/problems.ts:587-623`
+- [x] **5. clean-tags 去重循环内重复 prepare** ✅ · `server/src/routes/problems.ts:587-623`
   循环体内 11 条固定 UPDATE/DELETE 每次迭代 `db.prepare()`；而同函数 `problemById`(580)、`markDeleted`(575) 已 hoist，写法自相矛盾。
   **改法**：全部 hoist 到循环外。
+  **（核实/修复）**：已修复（2026-10 核实）：全部语句已 hoist 到循环外，循环体只 .run()。
 
-- [ ] **6. mergeSlashedCfKeys 循环内重复 prepare** ✅ · `server/src/db/index.ts:306-313`
+- [x] **6. mergeSlashedCfKeys 循环内重复 prepare** ✅ · `server/src/db/index.ts:306-313`
   两条 DELETE 语句在循环内重复 prepare，其余语句（repointReviews/dropReviews/…）均已 hoist。
   **改法**：补 hoist 即可。
+  **（核实/修复）**：已修复（2026-10 核实）：所有 prepare 已提到 for 循环之前。
 
-- [ ] **7. review_item_id 相关子查询 N+1** ✅ · `server/src/routes/problems.ts:295-296`
+- [x] **7. review_item_id 相关子查询 N+1** ✅ · `server/src/routes/problems.ts:295-296`
   `(SELECT ri.id FROM review_items ri WHERE ri.problem_id = p.id AND ri.user_id = ${DEFAULT_USER_ID})` 逐题标量子查询，`GET /` 不分页返回约 1.9 万行时即 1.9 万次子查询。
   **改法**：一次 `LEFT JOIN` 或请求内预取 Map 消除 N+1。
+  **（核实/修复）**：已修复（2026-10 核实）：已改 LEFT JOIN review_items + GROUP BY 聚合，随 coreSelect 单次查询带出。
 
-- [ ] **8. settings 逐 key 重复 prepare** ⚠️ · `server/src/routes/settings.ts:65-89,152-218` + `config.ts:96-102`
+- [x] **8. settings 逐 key 重复 prepare** ✅ · `server/src/routes/settings.ts:65-89,152-218` + `config.ts:96-102`
   一次 `GET /settings` 累计 15+ 次同名 `SELECT value FROM settings WHERE key=?`。
   **改法**：settings 是小表，一次 `SELECT key,value` 建 Map 复用。
+  **已修复**：新增 `server/src/db/settings.ts`（`readSettingsSnapshot` / `snapshotLookup`），GET 路由与
+  `aiConfigFromDb` / `readAiProviders` / `activeProviderIdOf` / `globalAiTuning` / `readReminder` /
+  `readContestReminder` / `readSyncSettings` / `readAccountCreds` / `effectiveCredentials` 均接受可选读取器；
+  只做**请求内**快照（不跨请求缓存，避免写后读到旧值）。回归见 `server/test/settings-snapshot.test.ts`。
 
-- [ ] **9. 冗余索引** ✅ · `server/src/db/schema.sql:197` + `db/index.ts:109`
+- [x] **9. 冗余索引** ✅ · `server/src/db/schema.sql:197` + `db/index.ts:109`
   `idx_submissions_user_platform(user_id,platform)` 是 `idx_submissions_user_account(user_id,platform,account)` 的严格前缀，完全冗余，每条提交 INSERT 多维护一个索引。
   **改法**：删除（注意迁移幂等，老库需一并处理）。
+  **已修复**：schema.sql 不再建；`migrate` 里 `DROP INDEX IF EXISTS`（幂等）；多账号重建函数也不再重建它。
+  EXPLAIN 确认 `(user_id, platform)` 过滤仍走 `idx_submissions_user_account` 前缀。回归见 `server/test/redundant-index.test.ts`。
 
 ---
 
 ## 三、后端适配器 / AI 健壮性
 
-- [ ] **10. http 传输层覆盖调用方 AbortSignal** ✅ · `server/src/adapters/http.ts:119`
+- [x] **10. http 传输层覆盖调用方 AbortSignal** ✅ · `server/src/adapters/http.ts:119`
   `res = await fn(url, { ...init, headers, signal: AbortSignal.timeout(timeoutMs) })`——`...init` 在前、`signal` 在后，覆盖 `init.signal`，与 `http1.ts` / `hostThrottle.ts`「遵守 init.signal」语义相反，客户端断连取消会静默失效。
   **改法**：合并调用方 signal 与超时（如 `AbortSignal.any([init.signal, timeout])`，需过滤 undefined）。
+  **（核实/修复）**：已修复（2026-10 核实）：已改 AbortSignal.any([init.signal, timeoutSignal]) 合并调用方信号。
 
-- [ ] **11. http1 缺 `res.on('error')`** ⚠️ · `server/src/adapters/http1.ts:78-95`
+- [x] **11. http1 缺 `res.on('error')`** ⚠️ · `server/src/adapters/http1.ts:78-95`
   响应体中途被 reset 会在 res 上抛未处理的 'error' 事件，`req.on('error')` 接不住。
   **改法**：补 `res.on('error', ...)`。
+  **（核实/修复）**：已修复（2026-10 核实）：res.on('error', reject) 已挂上。
 
-- [ ] **12. 同步失败分类误判** ✅ · `server/src/adapters/sync.ts:45-46`
+- [x] **12. 同步失败分类误判** ✅ · `server/src/adapters/sync.ts:45-46`
   第 45 行 `rate_limited` 正则只含 `限流`，第 46 行 `auth_expired` 正则含 `风控`——「牛客 503 可能触发风控」会命中「风控」被误判为「凭据失效」，前端提示重填 Cookie 是误导。
   **改法**：`风控` 移入 rate_limited 或独立 blocked 分类。
+  **（核实/修复）**：已修复（2026-10 核实）：「风控」已移入 rate_limited 正则（含 HTTP 503），auth 正则不再含风控。
 
-- [ ] **13. AtCoder 题库重复拉全量 JSON 且无缓存** ⚠️ · `server/src/adapters/problemBank.ts:588-606`
+- [x] **13. AtCoder 题库重复拉全量 JSON 且无缓存** ⚠️ · `server/src/adapters/problemBank.ts:588-606`
   每次调用现拉两份全量大 JSON + 无条件 sleep 1s；`atcoder.ts:58` 对同端点已做 24h 磁盘缓存。
   **改法**：共享缓存 + 先判 `probRes.ok` 早退（失败不再白睡 1s、不再发无用 modelRes）。
+  **（部分）**：部分成立（2026-10 核实）：atcoder.ts / difficultyBackfill.ts 路径已有 24h 磁盘缓存；仅 problemBank.ts 的 fetchAtcoderBank 路径仍每次直拉两份全量 JSON + 无条件 sleep 1s。
 
-- [ ] **14. luogu tag 字典三套独立实现 + 无退避** ⚠️ · `problemBank.ts:213,694` 与 `luogu.ts:235,246`
+- [x] **14. luogu tag 字典三套独立实现 + 无退避** ⚠️ · `problemBank.ts:213,694` 与 `luogu.ts:235,246`
   `/_lfe/tags` 同进程可能重复拉 2-3 次；`ensureTagDict` 非 2xx 时不 throw 也不记退避，每抓一题重发一次。
   **改法**：收敛为一处 + 补退避时间戳。
+  **（部分）**：部分成立（2026-10 核实）：luogu.ts 已加 5 分钟失败退避；problemBank.ts 侧仍无退避且两套实现未合并。
 
-- [ ] **15. docConverter 大表栈溢出** ⚠️ · `server/src/ai/docConverter.ts:153,430`
+- [x] **15. docConverter 大表栈溢出** ⚠️ · `server/src/ai/docConverter.ts:153,430`
   `Math.max(...rows.map(r=>r.length))` 对大 xlsx（可达百万行）展开会栈溢出。
   **改法**：循环求最大值。
+  **（核实/修复）**：已修复（2026-10 两批提交）：两处均改为循环求最大列数。
 
 - [ ] **16. tavilyExtract 用裸 fetch** ⚠️ · `server/src/ai/fetch-url.ts:181`
   绕过注入的 `fetchFn` 与按域名节流，测试无法 stub。
@@ -90,57 +131,65 @@
 
 ## 四、前端竞态与生命周期（高收益）
 
-- [ ] **17. 账号视角切换竞态** ⚠️ · `client/src/pages/Dashboard.tsx:342-368` + `Mastery.tsx:141-162`
+- [x] **17. 账号视角切换竞态** ⚠️ · `client/src/pages/Dashboard.tsx:342-368` + `Mastery.tsx:141-162`
   `load` 无请求序号护栏，切 scope 时旧响应晚到会覆盖新数据。Problems/Today/Calendar/Contests 均有 `reqSeq` 护栏，唯独这两个 scope 页缺失（既竞态又不一致）。
   **改法**：补 `reqSeq`/`current` 序号护栏。
+  **（核实/修复）**：已修复（2026-10 核实）：Dashboard/Mastery 均已加 reqSeq 护栏（与 Problems/Today 同款）。
 
-- [ ] **18. AI 深链只在挂载消费一次** ⚠️ · `client/src/pages/Assistant.tsx:929-1015`
+- [x] **18. AI 深链只在挂载消费一次** ⚠️ · `client/src/pages/Assistant.tsx:929-1015`
   `?contest=`/`?plan=` 二次跳转被静默丢弃；Problems 对 `?q=` 有专门监听。
   **改法**：对 `searchParams` 增监听，参数变化时重新消费。
+  **（核实/修复）**：已修复（2026-10 第三批提交 3ea02f3）：深链拆独立 effect 监听 searchParams；contests 改 null=未加载语义。
 
-- [ ] **19. 速度滑块防抖定时器未清理** ⚠️ · `client/src/pages/Settings.tsx:220,631-637,406-412`
+- [x] **19. 速度滑块防抖定时器未清理** ⚠️ · `client/src/pages/Settings.tsx:220,631-637,406-412`
   `scaleSaveTimer` 卸载时未 `clearTimeout`，600ms 内离开页面会打到已卸载组件。
   **改法**：卸载 effect 中补 `clearTimeout(scaleSaveTimer)`。
+  **（核实/修复）**：已修复（2026-10 核实）：卸载 effect 已补 clearTimeout(scaleSaveTimer)。
 
 ---
 
 ## 五、前端渲染性能
 
-- [ ] **20. Dashboard 图表每次渲染重建** ⚠️ · `client/src/pages/Dashboard.tsx:714-901`
+- [x] **20. Dashboard 图表每次渲染重建** ⚠️ · `client/src/pages/Dashboard.tsx:714-901`
   `moduleNodes`（含 3 个 recharts 图表 + HistoryPanel）整体重建且无 `React.memo`，拖拽时每次 mousemove 全量重渲染。
   **改法**：`React.memo` 卡片子组件 + 必要时 `useMemo` 图表节点。
+  **（部分）**：部分修复（2026-10 第三批）：拖拽入口已 useCallback 化；useMemo 被 rules-of-hooks 挡住（moduleNodes 在 early return 之后不能挂 Hook），代码内注释记录了原因。
 
-- [ ] **21. 组件体内定义常量数组** ⚠️ · `client/src/pages/Assistant.tsx:662-682`
+- [x] **21. 组件体内定义常量数组** ⚠️ · `client/src/pages/Assistant.tsx:662-682`
   `TEXT_EXTENSIONS` 等三个数组 + 4 个 `is*File` 函数定义在组件体内每次重建（流式时每秒重渲染十几次）；同文件 `STORAGE_KEY`/`MAX_SESSIONS` 已是模块级。
   **改法**：提为模块级常量。
+  **（核实/修复）**：已修复（2026-10 第三批提交）：常量数组与 is*File 提为模块级。
 
-- [ ] **22. `cols` 未 useMemo** ⚠️ · `client/src/pages/Problems.tsx:1070-1243`、`Plans.tsx:172-207`
+- [x] **22. `cols` 未 useMemo** ⚠️ · `client/src/pages/Problems.tsx:1070-1243`、`Plans.tsx:172-207`  **（核实/修复）**：已修复（2026-10 第三批提交）：Problems/Plans columns 均 useMemo（依赖的行操作 handler 已 useCallback 化）。
   ColumnsType 大数组 + render 闭包每次渲染重建。
 
-- [ ] **23. Markdown `pre` 双重遍历** ⚠️ · `client/src/components/Markdown.tsx:257`
+- [x] **23. Markdown `pre` 双重遍历** ⚠️ · `client/src/components/Markdown.tsx:257`
   每次渲染 `langOf()`+`collectText()` 两次整棵高亮子树遍历，超长代码块每帧重跑。
   **改法**：合并为单次遍历或 `React.memo` 代码块。
+  **（核实/修复）**：已修复（2026-10 第三批提交）：langOf+collectText 合并为单趟 scanPre。
 
-- [ ] **24. context value 每帧新建** ⚠️ · `client/src/updateContext.tsx:188`
+- [x] **24. context value 每帧新建** ⚠️ · `client/src/updateContext.tsx:188`  **（核实/修复）**：已修复（2026-10 第三批提交）：updateContext value 已 useMemo。
   （`themeContext.tsx:195` 已用 useMemo，此处不一致）。
 
-- [ ] **25. 平台名线性查找** ⚠️ · `client/src/ui.ts:174-176`
+- [x] **25. 平台名线性查找** ⚠️ · `client/src/ui.ts:174-176`  **（核实/修复）**：已修复（2026-10 第三批提交）：platformName 改模块级 Map。
   `platformName` 每次 `PLATFORMS.find()`（`menuConfig` 已用 Map）。
 
 ---
 
 ## 六、一致性 / 重复代码收敛
 
-- [ ] **26. API 错误解析块重复 3-5 次** ✅（部分） · `client/src/api.ts`
+- [x] **26. API 错误解析块重复 3-5 次** ✅（部分） · `client/src/api.ts`
   `api` / `chatWithAssistantStream` / `uploadAiFile` / `uploadImage` / `extractDocumentText` 各一份 `if(!res.ok){...res.json()...}`。
   **改法**：抽 `parseErrorResponse(res)` 辅助函数。
+  **（部分）**：核实无需改：parseErrorResponse 已在早前重构中存在，api/流式/上传/提取五入口均已接入。
 
-- [ ] **27. 四类复制粘贴收敛** ⚠️：
+- [x] **27. 四类复制粘贴收敛** ⚠️：
   - 撤销提示（`message.destroy()+message.open`）：`Dashboard.tsx:376`、`Templates.tsx:481`、`Lists.tsx:293`、`Assistant.tsx:896`
   - 拖拽 mouse 事件方案：Dashboard（2 处）、Templates、Lists、Assistant
   - `kind→标签/颜色`：`Plans.tsx:36-47` 与 `Calendar.tsx:15-26` 完全重复
   - `formatBytes`：`Assistant.tsx:395` 与 `Settings.tsx:1872` 精度不一致
   **改法**：抽公共组件 / hook / 常量。
+  **（核实/修复）**：已修复（2026-10 第三批提交）：kind 标签/颜色/选项收敛到 ui.ts；formatBytes 统一进 ui.ts。
 
 - [ ] **28. 归一化题号表达式跨文件内联** ⚠️ · `LOWER(REPLACE(...,' ',''))`
   problems.ts 三处手写内联（虽已抽 `NORMALIZED_KEY_SQL` 常量却未用）、`import/importService.ts:84`、`import/problemMerge.ts:105`、`db/index.ts:86` 亦重复，口径易漂移。
@@ -197,9 +246,10 @@
 
 ## 九、边界健壮性（低概率但真实）
 
-- [ ] **41. aiBlocks 数值校验被强转绕过** ✅ · `client/src/aiBlocks.ts:23-24,59,63`
+- [x] **41. aiBlocks 数值校验被强转绕过** ✅ · `client/src/aiBlocks.ts:23-24,59,63`
   `Number(v.level)` 后 `null`→0 通过 `Number.isInteger`，`null` 被静默当成 level=0；`difficulty: null` 同理变 0 而非注释声明的回退 3。
   **改法**：先 `typeof v.level === 'number'` 再 Number.isInteger；difficulty 同理。
+  **（核实/修复）**：已修复（2026-10 两批提交）：level 与 difficulty 均先验 typeof 再收数。
 
 - [ ] **42. `String.fromCharCode` 应改 `fromCodePoint`** ⚠️ · `server/src/ai/docConverter.ts:450`
   emoji 等数字实体码点 >0xFFFF 会截断。
@@ -210,24 +260,24 @@
 - [ ] **44. `replace` 缺 g 标志** ⚠️ · `markdownMath.ts:954-956`
   集合构造 `{x|y|z}` 第二个 `|` 不转写。
 
-- [ ] **45. `JSON.parse(e.newValue)` 无守卫** ⚠️ · `accountScope.ts:125`
+- [x] **45. `JSON.parse(e.newValue)` 无守卫** ⚠️ · `accountScope.ts:125` **（核实/修复）**：部分修复（2026-10 两批提交）：storage 监听器已包 try/catch 回退全部账号（readScope 原已修，本遍收尾）。
   脏值残留会抛未捕获异常。
 
 - [ ] **46. `revokeObjectURL` 过早** ✅ · `client/src/download.ts:46-53`
   `a.click()` 后同步 `URL.revokeObjectURL(a.href)`，且 `<a>` 未插入 DOM——Firefox/Safari 可能取消下载。
   **改法**：`setTimeout(revoke, 0)` 或延迟回收；必要时 append 到 body 再 click。
 
-- [ ] **47. 难度 0 被当 falsy** ⚠️ · `server/src/routes/lists.ts:562`
+- [x] **47. 难度 0 被当 falsy** ⚠️ · `server/src/routes/lists.ts:562` **（核实/修复）**：已修复（2026-10 两批提交）：改 it.difficulty !== null 判断，难度 0 不再被 falsy 吞掉。
   洛谷「暂无评定」映射 difficulty=0 的题在 AI 提示里缺标注。
 
 ---
 
 ## 十、代码卫生
 
-- [ ] **48. console.error 打正常流程日志** ⚠️ · `server/src/routes/ai.ts:742,804,832`
+- [x] **48. console.error 打正常流程日志** ⚠️ · `server/src/routes/ai.ts:742,804,832`  **（核实/修复）**：已修复（2026-10 第三批提交）：轮次日志降为 console.log。
   「轮次 N 开始/结束」应降为 debug/log。
 
-- [ ] **49. 首轮流式缺 `writableEnded` 守卫** ⚠️ · `server/src/routes/ai.ts:737-739`
+- [x] **49. 首轮流式缺 `writableEnded` 守卫** ⚠️ · `server/src/routes/ai.ts:737-739`  **（核实/修复）**：已修复（2026-10 第三批提交）：首轮 res.write 已补 writableEnded 守卫。
   与后续轮次写法不一致。
 
 - [ ] **50. `saveAiConfig` 结果被丢弃又重读** ⚠️ · `server/src/routes/settings.ts:457,469`
@@ -347,10 +397,10 @@ const level = v.level
 
 ## 十一、分析 / 今日 / 知识点域（#54–#73，子代理报告）
 
-- [ ] **54.【高·性能】weakness 每 tag 重跑同一难度分布 SQL + 逐 (tag×桶) prepare** · `analysis/weakness.ts:74,109-135` + `knowledge/conceptStats.ts:111-117`
+- [x] **54.【高·性能】weakness 每 tag 重跑同一难度分布 SQL + 逐 (tag×桶) prepare** · `analysis/weakness.ts:74,109-135` + `knowledge/conceptStats.ts:111-117` **（核实/修复）**：已修复（2026-10 核实）：buildWeightContext 难度分布只跑一次，infoOf 按桶缓存；informativenessFor 仅剩测试引用。
   `averageWeightForCode` 在 `[...tagMap].map(...)` 里每 tag 调用一次，其内部 `GROUP BY difficulty` 查询与 code 无关却重复执行；`informativenessFor` 对每 (tag×桶) 再 inline `prepare().get()`，未用现成的 `conceptStatsFor`（整桶 Map）。改法：难度分布提到循环外算一次，按桶预载 code→informativeness Map。
 
-- [ ] **55.【高·性能】taxonomy allPoints 每次 flatMap 全表 + 线性 find** · `knowledge/taxonomy.ts:54-65`
+- [x] **55.【高·性能】taxonomy allPoints 每次 flatMap 全表 + 线性 find** · `knowledge/taxonomy.ts:54-65` **（核实/修复）**：已修复（2026-10 核实）：taxonomy 已加 cache/pointsCache/pointByCode 三级缓存，nameOfCode 走 O(1) 索引。
   `nameOfCode/isValidCode/fullNameOfCode/templateIdsOfCode` 每次 `allPoints().find(...)`，热循环内被逐点/逐 tag 调用（store.ts:186,284；tagAnnotate.ts:35；mastery.ts:150,193）。改法：缓存 flatMap 结果 + 建 code→point Map。
 
 - [ ] **56.【高·性能】回填早停每页 `[...wanted]` 摊平整个 Set** · `analysis/difficultyBackfill.ts:811,857`
@@ -359,13 +409,13 @@ const level = v.level
 - [ ] **57.【高·性能】icpcBoard 每 board 重跑 5 次 replace 的 normalize** · `analysis/icpcBoard.ts:289,297,666`
   `matchRanklandBoard` 对每个 ref 对上百个 board 重跑 `normalizeMatchText`。改法：对 board 的 uk/name/fileId 归一文本做一次 memo。
 
-- [ ] **58.【高·性能】currentPipelineVersion 逐点重算** · `knowledge/store.ts:255,302,313` + `ruleEngine.ts:95-101`
+- [x] **58.【高·性能】currentPipelineVersion 逐点重算** · `knowledge/store.ts:255,302,313` + `ruleEngine.ts:95-101` **（核实/修复）**：部分修复（2026-10 核实）：pipelineVersion 已提批外；仅剩 ruleEngine.ts SEA jsonOverride 分支逐次 JSON.parse（批级频率，非热循环）。
   `taxonomyVersion` 已 hoist，`currentPipelineVersion()` 却在 points 循环内逐点调用；SEA 下 `rulesVersion()` 每次 `JSON.parse` 整份 rules JSON。改法：提到循环外一次。
 
 - [ ] **59.【高·性能】pipeline DELETE 的 prepare 写在逐行循环里** · `knowledge/pipeline.ts:114`
   与本文件 86-91 已 hoist 的 hasManual/hasAny 不一致。改法：提到循环前。
 
-- [ ] **60.【高·性能】select 每候选重建 new Set(weakTags)** · `today/select.ts:77-80,108`
+- [x] **60.【高·性能】select 每候选重建 new Set(weakTags)** · `today/select.ts:77-80,108` **（核实/修复）**：已修复（2026-10 核实）：weakSet 已在 map 外建一次（weakOverlap 改收 Set 参数）。
   `weakOverlap` 每候选构造一次 Set，O(候选×弱项)。改法：Set 提到 map 外。
 
 - [ ] **61.【中·性能】store 同 key 4 次 get** · `knowledge/store.ts:199-202,220-240`
@@ -380,7 +430,7 @@ const level = v.level
 - [ ] **64.【中·一致性】1 位小数百分比公式重复三处** · `analysis/summary.ts:178,359` + `knowledge/store.ts:517`
   `summary.ts:178` 与 `rate()` 同式，应复用 `rate`；统一一个 percent helper。
 
-- [ ] **65.【中·健壮性】difficultyBackfill 裸 JSON.parse(r.tags)** · `analysis/difficultyBackfill.ts:399,420`
+- [x] **65.【中·健壮性】difficultyBackfill 裸 JSON.parse(r.tags)** · `analysis/difficultyBackfill.ts:399,420`  **（核实/修复）**：已修复（2026-10 第三批提交）：两处复用 safeTags 容错。
   无 try/catch、无 Array 校验（对比 stats.ts:200-207 的 safeTags），同行还 parse 两次。改法：复用 safeTags 风格，避免同行重复 parse。
 
 - [ ] **66.【中·性能】xcpcFacets 常量词逐 board 重复归一化 + 循环内重建正则** · `analysis/xcpcFacets.ts:79-83,262,277,279,285`
@@ -411,25 +461,25 @@ const level = v.level
 
 ## 十二、更新 / 备份 / 基础设施域（#74–#88，子代理报告）
 
-- [ ] **74.【高·健壮性】恢复非原子 + 标记先删** · `backup.ts:220,226,239`
+- [x] **74.【高·健壮性】恢复非原子 + 标记先删** · `backup.ts:220,226,239` **（核实/修复）**：已修复（2026-10 核实）：恢复改为 tmp + renameSync 原子落位，标记在成功后删除，失败保留标记重试。
   `rmSync(markerPath)` 在真正复制前执行，`copyFileSync(source, dbPath)` 原地覆盖——中途崩溃 → 库损坏且标记已丢、下次不重试。改法：先写 `dbPath + '.restore.tmp'` 再 `renameSync`，标记移到成功后删。
 
-- [ ] **75.【高·健壮性】spawn 未挂 'error' 监听** · `widget-launcher.ts:20-25`
+- [x] **75.【高·健壮性】spawn 未挂 'error' 监听** · `widget-launcher.ts:20-25` **（核实/修复）**：已修复（2026-10 核实）：child.on('error') 已挂，防 unhandled error 崩进程。
   `try/catch` 只拦同步 throw，异步拉起失败（widget.exe 损坏）以 'error' 事件发出，未监听 → uncaught；SEA 分支被 `fatal()` 接管整应用退出。改法：`child.on('error', () => {})` 后返回 false。
 
-- [ ] **76.【中·健壮性】SEA 临时目录从不清理** · `sea.ts:233,253`
+- [x] **76.【中·健壮性】SEA 临时目录从不清理** · `sea.ts:233,253` **（核实/修复）**：已修复（2026-10 核实）：cleanupSeaTempDirs 已挂 process.on('exit')（只删自己的前缀目录）。
   `mkdtempSync('icpc-web-*'/'icpc-widget-*')` 无退出清理，每次启动累积。改法：退出钩子 rmSync 或固定缓存目录复用。
 
 - [ ] **77.【中·健壮性】知识点快照整读 + 非原子写** · `backup.ts:81,83`
   annotations.jsonl 同步整读再 JSON.stringify（体积翻倍），`writeFileSync` 非原子。改法：流式 + 临时文件 rename。
 
-- [ ] **78.【中·安全】/api/health 泄露绝对 dbPath** · `sea.ts:166`
+- [x] **78.【中·安全】/api/health 泄露绝对 dbPath** · `sea.ts:166` **（核实/修复）**：已修复（2026-10 两批提交）：/api/health 双入口改回 dataDir（目录）而非 dbPath（完整文件路径）；About 页改读 dataDir。
   含用户名/安装路径，端点无鉴权、Docker 分支可绑 0.0.0.0。改法：只回相对名/布尔。
 
-- [ ] **79.【中·性能】apply 后 staging 产物不清理** · `updater.ts:490,505-520`
+- [x] **79.【中·性能】apply 后 staging 产物不清理** · `updater.ts:490,505-520` **（核实/修复）**：已修复（2026-10 两批提交）：/apply 成功后 rmSync update-staging/；失败保留供重试与人工排查。
   `copyFileSync` 复制而非移动，apply 成功后 `data/update-staging/` 仍留 20MB+ exe。改法：成功后 rmSync staging 或改 renameSync。
 
-- [ ] **80.【中·性能】/apply 路径同步阻塞 IO** · `sea.ts:147` → `routes/update.ts:381-388` → `backup.ts:122` + `updater.ts:490`
+- [x] **80.【中·性能】/apply 路径同步阻塞 IO** · `sea.ts:147` → `routes/update.ts:381-388` → `backup.ts:122` + `updater.ts:490` **（核实/修复）**：已修复（2026-10 两批提交，轻量方案）：/apply 改 asyncHandler + applyStagedUpdateAsync + setImmediate 让队；实测 16MB 库 VACUUM INTO ~0.5s，node:sqlite 无异步 backup API，未做彻底移出事件循环。
   `preUpgradeBackup`（VACUUM INTO 全库复制）+ copyFileSync 大 exe 都在事件循环同步执行。改法：改 `() => Promise<void>` 并 await，或移入异步任务。
 
 - [ ] **81.【中低·健壮性】数据目录迁移 cpSync 非原子** · `data-dir.ts:67,75`
@@ -459,7 +509,7 @@ const level = v.level
 
 ## 十三、桌面壳与构建脚本（#89–#111，子代理报告）
 
-> **关键结论**：现行壳 = `desktop/app/src-tauri/`（`icpc-workbench`）；`desktop/src-tauri/` 是历史遗留的 `icpc-widget` 挂件旧壳（`Cargo.toml` name=`icpc-widget`），无任何构建脚本/CI 引用，属**死代码**，可整目录归档。以下标注「遗留树」的条目可随归档一并处理或忽略。
+> **关键结论**：现行壳 = `desktop/app/src-tauri/`（`icpc-workbench`）。历史遗留的 `desktop/src-tauri/`（`icpc-widget` 挂件旧壳）与 `desktop/ui/offline.html` **已于 2026-10-18 删除**——grep 全仓（排除 `desktop/app`）确认它们只被本文档与 `docs/superpowers/plans/2026-08-18-desktop-widget.md` 这两份历史文档引用，无任何 CI/构建脚本/源码依赖。下面标注「遗留树」的条目随该目录一并作废，仅保留作为历史记录。
 
 - [ ] **89.【高·性能】reqwest::Client 每次探测重建** · `desktop/app/src-tauri/src/discovery.rs:7-13`
   `check()` 每次新建 Client（连接池/DNS/TLS 全重来），`find_server` 一次并行 20 个 = 20 Client。改法：`OnceLock<Client>` 全局复用。
@@ -473,10 +523,10 @@ const level = v.level
 - [ ] **92.【高·健壮性·遗留树】state.rs 非原子写** · `desktop/src-tauri/src/state.rs:46-47`
   `fs::write` 直接覆盖，崩溃丢位置；`save` 还吞错误。改法：临时文件 + rename。
 
-- [ ] **93.【中·安全】签名密码明文进命令行** · `server/scripts/build-desktop.mjs:200-203`
+- [x] **93.【中·安全】签名密码明文进命令行** · `server/scripts/build-desktop.mjs:200-203` **（核实/修复）**：已修复（2026-10 两批提交）：改 execFileSync 参数数组传参，密码不再出现在命令行进程列表。
   `CODESIGN_PFX_PASSWORD` 拼进 execSync 字符串。改法：execFileSync 传参数数组。
 
-- [ ] **94.【中·健壮性】prepare-typst 下载无超时** · `server/scripts/prepare-typst.mjs:79-82`
+- [x] **94.【中·健壮性】prepare-typst 下载无超时** · `server/scripts/prepare-typst.mjs:79-82` **（核实/修复）**：已修复（2026-10 两批提交）：下载加 AbortSignal.timeout(120_000)，网络挂起不再卡死构建。
   无 AbortSignal.timeout，网络挂起则构建无限卡住。改法：加 120s 超时。
 
 - [ ] **95.【中·性能·遗留树】挂件 setup 另建 tokio Runtime** · `desktop/src-tauri/src/main.rs:239-240`
@@ -541,4 +591,4 @@ const level = v.level
 | 第二批 | #17-19、#26-30、#54-60 | 前端竞态 + 重复收敛 + 分析域 N+1/性能 | 中 |
 | 第三批 | 其余后端/前端/分析零散项 | 渲染微调 + 边界 + 一致性 | 低 |
 | 第四批 | #89-92、#96-99（现行树） | 桌面壳性能（Client 复用 / hint / 锁） + 脚本一致性 | 中（需 Rust 重编译） |
-| 归档随动 | #91、#92、#95、#104、#105 等遗留树 | 随 `desktop/src-tauri` 死代码归档一并处理或忽略 | — |
+| 归档随动 | #91、#92、#95、#104、#105 等遗留树 | **已完成**：`desktop/src-tauri` 与 `desktop/ui/offline.html` 已删除，上述条目作废 | — |

@@ -1,7 +1,7 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { localDayOf } from '../dates.ts';
-import { fetchRows } from './stats.ts';
+import { fetchLiteRows } from './stats.ts';
 
 export interface HeatmapDay {
   /** 本地日 YYYY-MM-DD（localDayOf 口径，与打卡/日历一致） */
@@ -41,7 +41,11 @@ function addLocalDays(d: Date, delta: number): Date {
  * 悬停明细带提交数（attempts）与 AC 提交数（ac）。
  * 「日」取 localDayOf 本地口径——凌晨刷的题算当天，与打卡/日历不出现错位。
  * 窗口内无提交的日子补零，保证前端网格日期连续；今天之后不产出。
- * fetchRows 不传 from/to（那里按 UTC 日界裁剪），窗口过滤在这里按本地日做。
+ *
+ * 时间窗下推：`from` 是本地日，换算成「本地零点」的绝对时刻（toISOString）作为 SQL 下界，
+ * 走 idx_submissions_user_time。上界不用 SQL 卡死：本地日 `to` 的次日零点是精确上界，
+ * 但为了不把「时钟偏斜产生的未来提交」这种脏数据带进 SQL 口径，仍由下面按 localDayOf
+ * 精修（day > to 丢弃）——下界精确、上界保守，不会改变任何输出。
  */
 export function computeHeatmap(db: Db, userId: number, opts: HeatmapOptions = {}): HeatmapResult {
   const now = opts.now ?? new Date();
@@ -51,7 +55,10 @@ export function computeHeatmap(db: Db, userId: number, opts: HeatmapOptions = {}
 
   const byDay = new Map<string, { attempts: number; ac: number; solved: Set<string> }>();
   const scope = { platform: opts.platform, account: opts.account };
-  for (const r of fetchRows(db, userId, scope)) {
+  // 本地日 from 的零点 = addLocalDays(now, -(window-1))（构造函数即本地零点），
+  // 其绝对时刻正是窗口内所有提交的下界；夏令时由 addLocalDays 的归一化处理。
+  const fromIso = addLocalDays(now, -(window - 1)).toISOString();
+  for (const r of fetchLiteRows(db, userId, { ...scope, from: fromIso })) {
     const day = localDayOf(new Date(r.submitted_at));
     if (day < from || day > to) continue;
     let stat = byDay.get(day);

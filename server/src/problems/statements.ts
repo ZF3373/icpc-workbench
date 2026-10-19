@@ -3,7 +3,7 @@ import type { Db } from '../db/index.ts';
 import type { PlatformCookies } from '../ai/tools/registry.ts';
 import type { SearchConfig } from '../ai/search.ts';
 import { fetchProblemStatement, statementLooksValid } from '../contests/problemStatements.ts';
-import { problemIdentity, problemIdentitySql } from './identity.ts';
+import { IDENTITY_COLUMN_SQL, problemIdentity, problemIdentitySql } from './identity.ts';
 import { parseProblemListText } from './parseProblemList.ts';
 import { atcoderProblemIdCandidates, splitAtcoderProblemId } from '../adapters/problemKey.ts';
 
@@ -102,7 +102,8 @@ export async function readStatement(db: Db, ref: ProblemRef, opts: StatementOpti
   let row = cached(db, ref);
   if (row && statementLooksValid(row.text) && !needsRefresh(row)) return evidence(ref, row, offset);
   // 有些展示 key 去掉了下划线，优先恢复本地题库里的准确原题号。
-  const native = db.prepare(`SELECT platform, problem_key, url FROM problems p WHERE ${problemIdentitySql('p')} = ? ORDER BY (platform = ?) DESC LIMIT 1`)
+  // 身份走生成列索引（表达式版在 2 万题上是全表重算，实测 8.4ms → 0.006ms）。
+  const native = db.prepare(`SELECT platform, problem_key, url FROM problems p WHERE ${IDENTITY_COLUMN_SQL} = ? ORDER BY (platform = ?) DESC LIMIT 1`)
     .get(problemIdentity(ref), ref.platform) as { platform: string; problem_key: string; url: string | null } | undefined;
   const sourceRef = native ? { platform: native.platform, problemKey: native.problem_key } : ref;
   for (const target of sources(sourceRef, native?.url)) {

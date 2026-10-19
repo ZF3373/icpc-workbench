@@ -4,10 +4,11 @@ import type {
   ContestRatingStatus,
   ContestInfo,
   ParticipatedContest,
+  PlatformId,
 } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
-import { resolveAllContestGroups } from './participated.ts';
+import { PARTICIPATED_PLATFORMS, resolveAllContestGroups } from './participated.ts';
 import type { ParticipationSources } from './participationSources.ts';
 import { readContestProblemSet } from './problemSetCache.ts';
 
@@ -37,11 +38,12 @@ function tagKey(contestKey: string, platform: string, problemKey: string): strin
  * Project only confidently attributed contests into the separate analysis view.
  * Codeforces context is authoritative for virtual runs and practice/upsolve rows;
  * other platforms require a complete, non-approximate contest window.
+ * opts.targetKey：只推导这一场（赛事中心单场弹窗用），key 不在可靠归属集合内时结果为空数组。
  */
 export function deriveContestAnalysis(
   db: Db,
   contests: ParticipatedContest[],
-  opts?: { calendar?: ContestInfo[]; sources?: ParticipationSources['byPlatform'] },
+  opts?: { calendar?: ContestInfo[]; sources?: ParticipationSources['byPlatform']; targetKey?: string },
 ): ContestAnalysisContest[] {
   const storedTags = db.prepare(
     'SELECT contest_key AS contestKey, platform, problem_key AS problemKey, tag FROM contest_analysis_tags WHERE user_id = ?',
@@ -55,8 +57,14 @@ export function deriveContestAnalysis(
   }
 
   const out: ContestAnalysisContest[] = [];
-  const reviewsByKey = new Map(resolveAllContestGroups(db, opts).map(review => [review.contest.key, review]));
+  // targetKey 给定时按平台窄化索引（与 resolveContestGroup 的 targetPlatform 同款），
+  // 单场弹窗不再为一场比赛全量解析所有平台的复盘组
+  const targetPlatform = opts?.targetKey ? /^([a-z]+):/.exec(opts.targetKey)?.[1] as PlatformId | undefined : undefined;
+  const reviewsByKey = new Map(resolveAllContestGroups(db,
+    targetPlatform && PARTICIPATED_PLATFORMS.has(targetPlatform) ? { ...opts, targetPlatform } : opts)
+    .map(review => [review.contest.key, review]));
   for (const contest of contests) {
+    if (opts?.targetKey && contest.key !== opts.targetKey) continue;
     if (!RELIABLE_EVIDENCE.has(contest.evidence)) continue;
     const review = reviewsByKey.get(contest.key);
     if (!review) continue;
@@ -103,8 +111,18 @@ export function deriveContestAnalysis(
       let inContest = false;
       let afterContest = false;
       if (contest.platform === 'codeforces') {
-        inContest = row.context === 'contest' || row.context === 'virtual';
-        afterContest = row.context === 'practice';
+        if (row.context === 'contest' || row.context === 'virtual') {
+          inContest = true;
+        } else if (row.context === 'practice') {
+          afterContest = true;
+        } else if (window) {
+          // 老行兜底（context 为空）：CF 适配器曾读错 participantType 位置（2026-10 修复，
+          // 见 adapters/codeforces.ts contextOf），历史行 context 全空——在语境回填完成前，
+          // 有可信时间窗的场次退回与其他平台相同的时间窗判定，避免「已同步比赛在分析页
+          // 全部显示未尝试」。时间窗口径与 buildContestIndex 的 calendar-window 证据一致。
+          inContest = submittedAt >= window.start && submittedAt < window.end;
+          afterContest = submittedAt >= window.end;
+        }
       } else if (window) {
         inContest = submittedAt >= window.start && submittedAt < window.end;
         afterContest = submittedAt >= window.end;

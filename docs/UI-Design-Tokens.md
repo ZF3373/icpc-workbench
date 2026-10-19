@@ -106,7 +106,7 @@ Markdown 重点着色（AI 回复的扫读锚点，见 `client/src/components/ma
 | 位置 | 原因 |
 |---|---|
 | `ui.ts` 的 `PLATFORM_COLOR` | 各 OJ 品牌色（Codeforces 蓝、洛谷青…） |
-| `ui.ts` 的 `TAG_PALETTE` | 知识点散列色板：同一标签必须跨主题、跨会话永远是同一色 |
+| `ui.ts` 的 `TAG_PALETTE` | 知识点散列色板：同一标签必须跨主题、跨会话永远是同一色。例外：2026-10 全站去紫时把 `#c080ff` 格替换为 `#9fb8d9`，所有标签配色 hash 重排一次（一次性） |
 | `components/ActivityHeatmap.tsx` 的 `light` / `dark` 数组 | GitHub 风格热力图色阶，本身就是按主题两套设计的 |
 | `themeContext.tsx` 的 antd `token` / `components` 配置 | **antd 组件树的 Token 源头**，与 `index.css` 的 CSS 变量一一对应 |
 | `components/markdownDiag.ts` | 文档字符串里的示例代码 |

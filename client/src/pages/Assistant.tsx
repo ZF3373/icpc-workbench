@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Alert, App as AntdApp, Button, Card, Dropdown, Input, Modal, Select, Space, Spin, Tag, Tooltip } from 'antd'
 import type { MenuProps } from 'antd'
 import type { TextAreaRef } from 'antd/es/input/TextArea'
@@ -62,7 +62,7 @@ import {
   parseChatCommand,
   type ChatCommand,
 } from '../chatCommands'
-import { platformName } from '../ui'
+import { platformName, formatBytes as fmtBytes } from '../ui'
 import { createStreamBuffer } from '../streamBuffer'
 import { rememberSessionFiles, getSessionFileText, forgetSessionFiles } from './sessionFiles'
 import { pinFirstOrder, restoreSessionOrder, sessionIdOrder } from './assistantSessionOrder'
@@ -114,6 +114,14 @@ import {
 // ---------- 类型 ----------
 
 interface ChatMsg extends PlanChatTurn {
+  /**
+   * 消息的稳定标识（列表 key 用）。
+   *
+   * 不能用数组下标：对话导航跳转、尤其「再次编辑后重发」截断数组时，
+   * 相邻消息会复用错位的 DOM 与组件状态。历史会话里没有 id 的旧消息在
+   * loadFromStorage 里补发（只在页面加载时生成一次，之后随会话一起持久化）。
+   */
+  id: string
   applied?: boolean
   /** 该消息中已写入模板库的 template-add 草稿下标（按消息内顺序，持久化防重载重复写入） */
   appliedTpl?: number[]
@@ -171,6 +179,50 @@ interface PendingAtt extends ChatFileAttachment {
 const STORAGE_KEY = 'icpc-ai-sessions-v1'
 const MAX_SESSIONS = 50
 
+// ---------- 文件上传分流（模块级：组件体内定义会让流式渲染每帧重建这些数组/闭包） ----------
+
+/** 图片 MIME 类型：走 Files API 上传，以 file 内容块引用 */
+const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+/** 文本类扩展名：直接读取内容以代码块注入消息文本，不依赖 Files API */
+const TEXT_EXTENSIONS = [
+  '.txt', '.md', '.markdown', '.py', '.cpp', '.c', '.cc', '.cxx', '.h', '.hpp',
+  '.java', '.kt', '.rs', '.go', '.js', '.ts', '.jsx', '.tsx', '.rb', '.php',
+  '.sh', '.bash', '.zsh', '.sql', '.json', '.xml', '.yaml', '.yml', '.toml',
+  '.csv', '.tsv', '.html', '.css', '.scss', '.less', '.vue', '.svelte',
+  '.swift', '.m', '.scala', '.clj', '.ex', '.exs', '.erl', '.hs', '.lua',
+  '.pl', '.r', '.dart', '.groovy', '.gradle', '.cmake', '.makefile',
+  '.gitignore', '.dockerfile', '.env', '.ini', '.cfg', '.conf', '.properties',
+]
+/** 文本文件大小上限：1 MiB（避免注入过多文本撑爆上下文窗口） */
+const MAX_TEXT_FILE_BYTES = 1024 * 1024
+/** PDF 文件大小上限：10 MiB（服务端用 unpdf 提取文本，上限与服务端一致） */
+const MAX_PDF_FILE_BYTES = 10 * 1024 * 1024
+/** 文档文件（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）大小上限：20 MiB */
+const MAX_DOC_FILE_BYTES = 20 * 1024 * 1024
+/** 服务端 docConverter 支持的文档扩展名（走 /extract-text 提取文本） */
+const DOCUMENT_EXTENSIONS = [
+  '.docx', '.xlsx', '.pptx', '.html', '.htm', '.csv', '.json', '.xml', '.epub',
+]
+
+const isImageFile = (f: File): boolean =>
+  IMAGE_TYPES.includes(f.type) || /\.(jpe?g|png|gif|webp)$/i.test(f.name)
+
+const isTextFile = (f: File): boolean => {
+  if (isImageFile(f)) return false
+  if (f.type.startsWith('text/')) return true
+  const lower = f.name.toLowerCase()
+  return TEXT_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
+
+const isPdfFile = (f: File): boolean =>
+  f.type === 'application/pdf' || /\.pdf$/i.test(f.name)
+
+/** 文档文件（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）：走服务端 docConverter 提取 */
+const isDocumentFile = (f: File): boolean => {
+  const lower = f.name.toLowerCase()
+  return DOCUMENT_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
+
 function loadFromStorage(): ChatSession[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -185,7 +237,11 @@ function loadFromStorage(): ChatSession[] {
       .map((s) => ({
         id: s.id,
         title: typeof s.title === 'string' ? s.title : '新会话',
-        messages: s.messages,
+        // 旧版本会话没有消息 id：加载时补一次，之后随会话一起落 localStorage。
+        // 只在加载时生成，流式追加/截断都不会再改已有消息的 id。
+        messages: s.messages.map((m) =>
+          m && typeof m === 'object' && typeof m.id === 'string' ? m : { ...m, id: newMsgId() },
+        ),
         planId: typeof s.planId === 'number' ? s.planId : undefined,
         listId: typeof s.listId === 'number' ? s.listId : undefined,
         contestKey: typeof s.contestKey === 'string' && s.contestKey !== '' ? s.contestKey : undefined,
@@ -198,7 +254,7 @@ function loadFromStorage(): ChatSession[] {
   }
 }
 
-function saveToStorage(sessions: ChatSession[]): void {
+function saveToStorageNow(sessions: ChatSession[]): void {
   try {
     const toSave = sessions
       .filter((s) => s.messages.length > 0)
@@ -218,10 +274,52 @@ function saveToStorage(sessions: ChatSession[]): void {
   }
 }
 
+/**
+ * 落盘防抖：流式生成期间 sessions 每 50ms 换一次引用（streamBuffer 攒批），
+ * 同步全量 JSON.stringify 最多 50 个会话会每秒阻塞主线程约 20 次，长对话时
+ * 卡顿比渲染还明显。trailing 500ms 已足够——生成中页面关闭前有 pagehide 兜底落盘。
+ */
+const SAVE_DEBOUNCE_MS = 500
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+function saveToStorage(sessions: ChatSession[]): void {
+  if (saveTimer !== null) clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => {
+    saveTimer = null
+    saveToStorageNow(sessions)
+  }, SAVE_DEBOUNCE_MS)
+}
+
+// 立即落盘挂起的写入（生成收尾 finally 与关页/切后台共用）：
+// 防抖窗口内的最后一批更新不能丢。pagehide 在 bfcache 场景也可靠触发；
+// visibilitychange 兜底移动端与部分嵌入 WebView。
+function flushPendingSave(): void {
+  if (saveTimer === null) return
+  clearTimeout(saveTimer)
+  saveTimer = null
+  saveToStorageNow(chatState.sessions)
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', flushPendingSave)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPendingSave()
+  })
+}
+
 // ---------- 模块级 store ----------
 
 function newSessionId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+}
+
+/**
+ * 消息 id：`crypto.randomUUID` 可用就用它（浏览器与 secure context 下都有），
+ * 否则退化为时间戳 + 随机串。只要求「同一会话内唯一且不再变化」，不做语义。
+ */
+function newMsgId(): string {
+  const c = globalThis.crypto
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID()
+  return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 function createSession(planId?: number, listId?: number, contestKey?: string): ChatSession {
@@ -277,7 +375,18 @@ function getChatSnapshot(): ChatState {
 
 function createNewSession(): void {
   const s = createSession()
-  setChatState((prev) => ({ ...prev, sessions: [s, ...prev.sessions], activeId: s.id, input: '' }))
+  setChatState((prev) => {
+    // 内存数组与落盘口径对齐（saveToStorage 只存前 MAX_SESSIONS 个）：不淘汰的话
+    // 第 51 个以后的旧会话只在内存活着，刷新后静默消失——用户以为删了，其实只是没存。
+    // 置顶会话永远保留（pinned 优先于位置序）。
+    const rest = prev.sessions.filter((x) => x.pinned)
+    const unpinned = prev.sessions.filter((x) => !x.pinned)
+    while (rest.length + unpinned.length >= MAX_SESSIONS) {
+      const victim = unpinned.pop()
+      if (!victim || victim.id === prev.activeId) break
+    }
+    return { ...prev, sessions: [s, ...rest, ...unpinned], activeId: s.id, input: '' }
+  })
 }
 
 function switchToSession(id: string): void {
@@ -383,34 +492,27 @@ interface MsgBlocks {
 }
 
 /**
- * 解析结果按消息对象缓存。
+ * 解析结果在组件内按 m.content 记忆（见 AssistantMessageItem 的 useMemo）。
  *
- * 流式输出时 store 每帧都会更新一次消息数组，map 里每条助手消息都要跑六组 regex
+ * 流式输出时 store 每帧都会更新一次消息数组，每条助手消息都要跑六组 regex
  * （计划修改 / 能力值 / 模板 / 题单 / 训练计划 + 对应的剥离）。历史消息的内容根本
- * 没变，却跟着每帧重扫 —— 消息一多这就是纯粹的白工。消息对象引用不变时用缓存直接
- * 返回（WeakMap，消息被丢弃后自动回收）。
+ * 没变，却跟着每帧重扫 —— 消息一多这就是纯粹的白工。抽成纯函数后由调用方按
+ * 内容 memo：正文没变就直接复用上一次的结果。
  */
-const blockCache = new WeakMap<ChatMsg, { content: string; blocks: MsgBlocks }>()
+function parseMessageBlocks(content: string): MsgBlocks {
+  const modify = extractModifyBlock(content)
+  const abilityUpd = extractAbilityUpdate(content)
+  const tplAdds = extractTemplateAdd(content)
+  const listDraft = extractListCreate(content)
+  const planDraft = extractPlanCreate(content)
 
-function parseMessageBlocks(m: ChatMsg): MsgBlocks {
-  const cached = blockCache.get(m)
-  if (cached && cached.content === m.content) return cached.blocks
-
-  const modify = extractModifyBlock(m.content)
-  const abilityUpd = extractAbilityUpdate(m.content)
-  const tplAdds = extractTemplateAdd(m.content)
-  const listDraft = extractListCreate(m.content)
-  const planDraft = extractPlanCreate(m.content)
-
-  let text = stripModifyBlock(m.content)
+  let text = stripModifyBlock(content)
   if (abilityUpd) text = stripAbilityUpdate(text)
   if (tplAdds.length > 0) text = stripTemplateAdd(text)
   if (listDraft) text = stripListCreate(text)
   if (planDraft) text = stripPlanCreate(text)
 
-  const blocks: MsgBlocks = { modify, abilityUpd, tplAdds, listDraft, planDraft, text }
-  blockCache.set(m, { content: m.content, blocks })
-  return blocks
+  return { modify, abilityUpd, tplAdds, listDraft, planDraft, text }
 }
 
 // ---------- 相对时间 ----------
@@ -423,13 +525,6 @@ function relTime(ts: number): string {
   if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}天前`
   const d = new Date(ts)
   return `${d.getMonth() + 1}/${d.getDate()}`
-}
-
-function fmtBytes(n: number): string {
-  if (!Number.isFinite(n) || n < 0) return '-'
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
 /** 内联附图的单张上限：6 MiB 原图 ≈ 8MiB base64，给 12MB 的请求体限额留足余量 */
@@ -475,6 +570,381 @@ function turnExcerpt(m: ChatMsg): string {
   const att = m.attachments?.[0]?.filename
   return att ? `📎 ${att}` : '（图片提问）'
 }
+
+/** 模板草稿的定位键：消息下标 + 消息内草稿下标（tplTargets / tplWriting 都按它索引） */
+function tplKey(msgIndex: number, draftIndex: number): string {
+  return `${msgIndex}:${draftIndex}`
+}
+
+/**
+ * 该草稿最终写入的目标标签：用户显式选择 > AI 给的 categoryKey（有效时）> 第一个分类。
+ * 用户反馈「无法指定 AI 把模板放到哪个标签下」——选择器与这里的解析共同保证
+ * 用户点名的标签（含自己新建的自建标签）一定被原样写入。
+ *
+ * 消息项展示选择器与写入模板时都要算它，抽成同一份避免两处口径漂移。
+ */
+function draftTargetOf(
+  tplTargets: Record<string, string>,
+  tplCategories: TemplateCategoryOption[],
+  msgIndex: number,
+  draftIndex: number,
+  draft: TemplateAddDraft,
+): string {
+  return resolveTemplateTarget({
+    aiKey: draft.categoryKey,
+    chosen: tplTargets[tplKey(msgIndex, draftIndex)],
+    categories: tplCategories,
+  })
+}
+
+// ---------- 消息列表项 ----------
+//
+// 为什么单独抽成 memo 组件：流式生成期间 streamBuffer 每 50ms 落一次库，
+// messages 数组每帧都是新的，但只有最后一条消息的对象引用会变（见 patchActiveSessionMessages
+// 的追加/替换逻辑）。抽出来后历史消息的 props 全部引用稳定，memo 直接跳过整棵子树 ——
+// 不再重跑 Markdown/KaTeX 解析，也不再重扫 parseMessageBlocks 的六组正则。
+//
+// key 必须用消息自带的 id（见 ChatMsg.id）而不是数组下标：「再次编辑后重发」会截断数组，
+// 用下标做 key 时新消息会复用旧位置上的组件实例，相邻消息的 DOM 状态（详情展开、选区）错位。
+
+/** 消息项需要的交互动作（由 useMessageActions 提供，引用恒定） */
+interface MessageActions {
+  edit(index: number): void
+  applyPlan(raw: string): void
+  confirmAbility(suggestion: { level: number; reason?: string }, raw: string): void
+  setTplTarget(index: number, draftIndex: number, key: string): void
+  confirmTemplate(draft: TemplateAddDraft, index: number, draftIndex: number): void
+  confirmAllTemplates(drafts: TemplateAddDraft[], index: number): void
+  confirmListCreate(draft: ListCreateDraft, index: number): void
+  confirmPlanCreate(draft: PlanCreateDraft, index: number): void
+  notify(kind: 'success' | 'warning', text: string): void
+}
+
+/**
+ * 把动作集合的引用钉住：内部始终转发到本轮渲染的最新实现。
+ *
+ * 列表项被 memo 后只有 props 引用变化才重渲染；若把每次渲染新建的箭头函数直接传下去，
+ * memo 永远失效。这里用 ref 保存最新闭包、动作对象只在挂载时创建一次 ——
+ * 点击时读到的仍是最新的 messages / pendingAtts，不会踩到 memo 跳过后留下的旧闭包。
+ */
+function useMessageActions(handlers: MessageActions): MessageActions {
+  const latest = useRef(handlers)
+  // 每次提交后同步：事件只会在绘制之后触发，读到的必是本轮闭包
+  useLayoutEffect(() => {
+    latest.current = handlers
+  })
+  const [stable] = useState<MessageActions>(() => ({
+    edit: (index) => latest.current.edit(index),
+    applyPlan: (raw) => latest.current.applyPlan(raw),
+    confirmAbility: (suggestion, raw) => latest.current.confirmAbility(suggestion, raw),
+    setTplTarget: (index, draftIndex, key) => latest.current.setTplTarget(index, draftIndex, key),
+    confirmTemplate: (draft, index, draftIndex) => latest.current.confirmTemplate(draft, index, draftIndex),
+    confirmAllTemplates: (drafts, index) => latest.current.confirmAllTemplates(drafts, index),
+    confirmListCreate: (draft, index) => latest.current.confirmListCreate(draft, index),
+    confirmPlanCreate: (draft, index) => latest.current.confirmPlanCreate(draft, index),
+    notify: (kind, text) => latest.current.notify(kind, text),
+  }))
+  return stable
+}
+
+interface UserMessageItemProps {
+  m: ChatMsg
+  index: number
+  /** 对话导航跳转命中的短暂高亮 */
+  flash: boolean
+  actions: MessageActions
+}
+
+/** 用户消息气泡：附件预览 + 正文 + 复制/再次编辑 */
+const UserMessageItem = memo(function UserMessageItem({ m, index, flash, actions }: UserMessageItemProps) {
+  return (
+    <div
+      data-msg-index={index}
+      data-role="user"
+      className={`plan-chat-msg plan-chat-msg-user${flash ? ' is-flash' : ''}`}
+    >
+      {m.attachments && m.attachments.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: m.content ? 6 : 0 }}>
+          {m.attachments.map((a, j) =>
+            a.dataUrl ? (
+              /* 内联图片：气泡内直接预览（刷新后 dataUrl 剥离，退化为标签） */
+              <img
+                key={`${a.fileId}-${j}`}
+                src={a.dataUrl}
+                alt={a.filename || '图片附件'}
+                style={{
+                  maxWidth: 200,
+                  maxHeight: 160,
+                  borderRadius: 8,
+                  border: '1px solid var(--line)',
+                  display: 'block',
+                  objectFit: 'cover',
+                }}
+              />
+            ) : (
+              <Tag key={`${a.fileId}-${j}`} style={{ marginInlineEnd: 0 }}>
+                <PaperClipOutlined /> {a.filename || a.fileId}
+                {a.bytes !== undefined ? `（${fmtBytes(a.bytes)}）` : ''}
+                {a.textContent !== undefined ? ' · 文本' : ''}
+              </Tag>
+            ),
+          )}
+        </div>
+      )}
+      {m.content && <div className="assistant-message-text"><Markdown text={m.content} /></div>}
+      {/* 按钮行对纯附件消息（content 为空）同样渲染：否则粘贴图片直接发送后
+          找不到「再次编辑」入口；「复制」无文本可复制，仅在有内容时出现 */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
+        {m.content && (
+          <Button
+            size="small"
+            type="text"
+            className="msg-copy-btn"
+            icon={<CopyOutlined />}
+            onClick={() => {
+              navigator.clipboard
+                ?.writeText(m.content ?? '')
+                .then(() => actions.notify('success', '已复制'))
+                .catch(() => actions.notify('warning', '复制失败，请手动选择复制'))
+            }}
+          >
+            复制
+          </Button>
+        )}
+        <Button
+          size="small"
+          type="text"
+          className="msg-copy-btn"
+          icon={<EditOutlined />}
+          onClick={() => actions.edit(index)}
+        >
+          再次编辑
+        </Button>
+      </div>
+    </div>
+  )
+})
+
+interface AssistantMessageItemProps {
+  m: ChatMsg
+  index: number
+  /** 本条是最后一条且正在流式输出（Markdown 补全语法、思维链自动展开） */
+  streaming: boolean
+  /** 对话导航跳转命中的短暂高亮 */
+  flash: boolean
+  /** 当前生效能力值：能力块建议值与之相同就不再给「更新」按钮 */
+  abilityEffective: number | undefined
+  /** 「写入模板库」的目标标签候选 */
+  tplCategories: TemplateCategoryOption[]
+  /** 用户为各草稿显式指定的目标标签（key = tplKey(index, draftIndex)） */
+  tplTargets: Record<string, string>
+  /** 正在写入的模板 key 集合 */
+  tplWriting: Set<string>
+  listCreating: boolean
+  planCreating: boolean
+  actions: MessageActions
+}
+
+/** AI 回复气泡：思维链 + Markdown 正文 + 结构化块的操作按钮 + 用量 */
+const AssistantMessageItem = memo(function AssistantMessageItem({
+  m,
+  index,
+  streaming,
+  flash,
+  abilityEffective,
+  tplCategories,
+  tplTargets,
+  tplWriting,
+  listCreating,
+  planCreating,
+  actions,
+}: AssistantMessageItemProps) {
+  // 结构化块解析按正文 memo：只有正在增长的那条会重跑六组正则，
+  // 应用标记 / 用量这类字段变化不必重扫（解析结果只取决于 content）
+  const { modify, abilityUpd, tplAdds, listDraft, planDraft, text } = useMemo(
+    () => parseMessageBlocks(m.content),
+    [m.content],
+  )
+  const hasTpl = tplAdds.length > 0
+  // 旧消息用 m.applied 表示模板已写入（向后兼容：无 appliedTpl 时视为该消息模板均已应用）
+  const appliedTpl =
+    m.applied === true && !m.appliedTpl ? tplAdds.map((_, j) => j) : (m.appliedTpl ?? [])
+  const appliedTplSet = new Set(appliedTpl)
+  const pendingTplCount = tplAdds.length - appliedTpl.length
+  /**
+   * 该草稿最终写入的目标标签：用户显式选择 > AI 给的 categoryKey（有效时）> 第一个分类。
+   * 用户反馈「无法指定 AI 把模板放到哪个标签下」——选择器与这里的解析共同保证
+   * 用户点名的标签（含自己新建的自建标签）一定被原样写入。
+   */
+  const targetOf = (draftIndex: number, draft: TemplateAddDraft): string =>
+    draftTargetOf(tplTargets, tplCategories, index, draftIndex, draft)
+
+  return (
+    <div
+      data-msg-index={index}
+      data-role="assistant"
+      className={`plan-chat-msg plan-chat-msg-assistant${flash ? ' is-flash' : ''}`}
+    >
+      {m.reasoning && (
+        <details
+          className="ai-reasoning"
+          // 思考进行中（本条消息还在推流且正文未开始）自动展开，思维链实时可见；
+          // 正文一开始或流结束后改为非受控，用户可自由开合（issue #27）
+          open={streaming && !text.trim() ? true : undefined}
+          style={{
+            marginBottom: 8,
+            padding: '6px 12px',
+            background: 'var(--overlay-2)',
+            borderRadius: 6,
+            fontSize: 13,
+            color: 'var(--text-2)',
+          }}
+        >
+          <summary style={{ cursor: 'pointer', userSelect: 'none', fontWeight: 500 }}>
+            💭 思考过程
+          </summary>
+          <div className="assistant-message-text assistant-message-reasoning" style={{ marginTop: 6, whiteSpace: 'pre-wrap', opacity: 0.85 }}>
+            {m.reasoning}
+          </div>
+        </details>
+      )}
+      <div className="assistant-message-text">
+        <Markdown text={text} breaks streaming={streaming} />
+      </div>
+      {text.trim() && (
+        <Button
+          size="small"
+          type="text"
+          className="msg-copy-btn"
+          icon={<CopyOutlined />}
+          onClick={() => {
+            navigator.clipboard
+              ?.writeText(text)
+              .then(() => actions.notify('success', '已复制'))
+              .catch(() => actions.notify('warning', '复制失败，请手动选择复制'))
+          }}
+        >
+          复制
+        </Button>
+      )}
+      {(modify || abilityUpd || hasTpl || listDraft || planDraft) && (
+        <Space style={{ marginTop: 8 }} wrap>
+          {modify && (
+            <Button
+              size="small"
+              type="primary"
+              disabled={m.applied}
+              onClick={() => actions.applyPlan(m.content)}
+            >
+              {m.applied ? '已应用' : '应用计划修改'}
+            </Button>
+          )}
+          {abilityUpd &&
+            (abilityUpd.level === abilityEffective ? (
+              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                建议值 {abilityUpd.level} 与当前生效值相同，无需重复更新
+              </span>
+            ) : (
+              <Button
+                size="small"
+                type="primary"
+                ghost
+                disabled={m.applied}
+                onClick={() => actions.confirmAbility(abilityUpd, m.content)}
+              >
+                更新能力值为 {abilityUpd.level}
+              </Button>
+            ))}
+          {hasTpl &&
+            tplAdds.map((draft, j) => {
+              const applied = appliedTplSet.has(j)
+              return (
+                <Space key={j} size={4}>
+                  {/* 目标标签选择器：用户可显式指定放到哪个课程分类/自建标签下
+                      （templateId 草稿是「完善已有内置条目」，不存在选分类的问题） */}
+                  {!draft.templateId && tplCategories.length > 0 && (
+                    <Tooltip title="写入到哪个标签下 —— 含你在「模板库 → 新建标签」里自己建的标签">
+                      <Select
+                        size="small"
+                        style={{ minWidth: 140 }}
+                        value={targetOf(j, draft)}
+                        disabled={applied}
+                        onChange={(key: string) => actions.setTplTarget(index, j, key)}
+                        options={tplCategories.map((c) => ({
+                          value: c.key,
+                          label: templateCategoryLabel(c),
+                        }))}
+                      />
+                    </Tooltip>
+                  )}
+                  <Button
+                    size="small"
+                    type="primary"
+                    ghost
+                    disabled={applied}
+                    loading={tplWriting.has(tplKey(index, j))}
+                    onClick={() => actions.confirmTemplate(draft, index, j)}
+                  >
+                    {applied
+                      ? `✓ 已完善：${draft.name}`
+                      : draft.templateId
+                        ? `完善模板：「${draft.name}」`
+                        : `写入模板库：「${draft.name}」`}
+                  </Button>
+                </Space>
+              )
+            })}
+          {hasTpl && pendingTplCount > 1 && (
+            <Button
+              size="small"
+              type="primary"
+              loading={tplAdds.some(
+                (_, j) => !appliedTplSet.has(j) && tplWriting.has(tplKey(index, j)),
+              )}
+              onClick={() => actions.confirmAllTemplates(tplAdds, index)}
+            >
+              全部写入（{pendingTplCount}）
+            </Button>
+          )}
+          {listDraft && (
+            <Button
+              size="small"
+              type="primary"
+              disabled={m.appliedList}
+              loading={listCreating}
+              onClick={() => actions.confirmListCreate(listDraft, index)}
+            >
+              {m.appliedList ? `✓ 已导入题单：${listDraft.title}` : `导入题单：「${listDraft.title}」`}
+            </Button>
+          )}
+          {planDraft && (
+            <Button
+              size="small"
+              type="primary"
+              disabled={m.appliedPlan}
+              loading={planCreating}
+              onClick={() => actions.confirmPlanCreate(planDraft, index)}
+            >
+              {m.appliedPlan ? `✓ 已生成计划：${planDraft.title}` : `生成训练计划：「${planDraft.title}」`}
+            </Button>
+          )}
+        </Space>
+      )}
+      {m.usage && (
+        <div
+          style={{
+            marginTop: 4,
+            fontSize: 12,
+            color: 'var(--text-3)',
+            textAlign: 'right',
+          }}
+        >
+          📝 输入 {m.usage.prompt_tokens} / 输出 {m.usage.completion_tokens} token
+        </div>
+      )}
+    </div>
+  )
+})
 
 /**
  * 会话排序「撤销」提示的固定 message key：同一 key 会被 antd 替换而非叠加，
@@ -592,8 +1062,9 @@ export default function Assistant() {
   const [plans, setPlans] = useState<PlanListItem[]>([])
   /** 题单列表（关联上下文下拉用，只要 id/标题/题数） */
   const [problemLists, setProblemLists] = useState<Array<{ id: number; title: string; item_count: number }>>([])
-  /** 参加过的比赛（赛后复盘下拉用）：从提交记录推导，加载失败时静默为空列表 */
-  const [contests, setContests] = useState<ParticipatedContest[]>([])
+  /** 参加过的比赛（赛后复盘下拉用）：从提交记录推导，加载失败时静默为空列表。
+   *  null = 尚未加载完成（深链 ?contest= 要等清单落定才能推导场次，见消费 effect） */
+  const [contests, setContests] = useState<ParticipatedContest[] | null>(null)
   const [ability, setAbility] = useState<AbilityInfo | null>(null)
   const [abilityError, setAbilityError] = useState(false)
   const [needConfig, setNeedConfig] = useState(false)
@@ -843,47 +1314,6 @@ export default function Assistant() {
   }, [])
 
   // ---------- 文件上传 ----------
-  /** 图片 MIME 类型：走 Files API 上传，以 file 内容块引用 */
-  const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
-  /** 文本类扩展名：直接读取内容以代码块注入消息文本，不依赖 Files API */
-  const TEXT_EXTENSIONS = [
-    '.txt', '.md', '.markdown', '.py', '.cpp', '.c', '.cc', '.cxx', '.h', '.hpp',
-    '.java', '.kt', '.rs', '.go', '.js', '.ts', '.jsx', '.tsx', '.rb', '.php',
-    '.sh', '.bash', '.zsh', '.sql', '.json', '.xml', '.yaml', '.yml', '.toml',
-    '.csv', '.tsv', '.html', '.css', '.scss', '.less', '.vue', '.svelte',
-    '.swift', '.m', '.scala', '.clj', '.ex', '.exs', '.erl', '.hs', '.lua',
-    '.pl', '.r', '.dart', '.groovy', '.gradle', '.cmake', '.makefile',
-    '.gitignore', '.dockerfile', '.env', '.ini', '.cfg', '.conf', '.properties',
-  ]
-  /** 文本文件大小上限：1 MiB（避免注入过多文本撑爆上下文窗口） */
-  const MAX_TEXT_FILE_BYTES = 1024 * 1024
-  /** PDF 文件大小上限：10 MiB（服务端用 unpdf 提取文本，上限与服务端一致） */
-  const MAX_PDF_FILE_BYTES = 10 * 1024 * 1024
-  /** 文档文件（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）大小上限：20 MiB */
-  const MAX_DOC_FILE_BYTES = 20 * 1024 * 1024
-  /** 服务端 docConverter 支持的文档扩展名（走 /extract-text 提取文本） */
-  const DOCUMENT_EXTENSIONS = [
-    '.docx', '.xlsx', '.pptx', '.html', '.htm', '.csv', '.json', '.xml', '.epub',
-  ]
-
-  const isImageFile = (f: File): boolean =>
-    IMAGE_TYPES.includes(f.type) || /\.(jpe?g|png|gif|webp)$/i.test(f.name)
-
-  const isTextFile = (f: File): boolean => {
-    if (isImageFile(f)) return false
-    if (f.type.startsWith('text/')) return true
-    const lower = f.name.toLowerCase()
-    return TEXT_EXTENSIONS.some((ext) => lower.endsWith(ext))
-  }
-
-  const isPdfFile = (f: File): boolean =>
-    f.type === 'application/pdf' || /\.pdf$/i.test(f.name)
-
-  /** 文档文件（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）：走服务端 docConverter 提取 */
-  const isDocumentFile = (f: File): boolean => {
-    const lower = f.name.toLowerCase()
-    return DOCUMENT_EXTENSIONS.some((ext) => lower.endsWith(ext))
-  }
 
   const handlePickFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return
@@ -1164,14 +1594,8 @@ export default function Assistant() {
   }
 
   /** 键盘排序：上移/下移一格；真的移动了才给撤销入口 */
-  // ?plan=<id> 消费 + 计划列表加载 + 清理已删除的计划关联
+  // 清单加载（挂载一次）：计划/题单/模板分类/已参加比赛 + 清理已删除的关联
   useEffect(() => {
-    const urlPlan = searchParams.get('plan')
-    if (urlPlan !== null) {
-      const v = Number(urlPlan)
-      if (Number.isInteger(v) && v > 0) updateActiveSessionPlanId(v)
-      setSearchParams({}, { replace: true })
-    }
     get<PlanListItem[]>('/api/plans')
       .then((list) => {
         setPlans(list)
@@ -1211,31 +1635,11 @@ export default function Assistant() {
     get<{ categories: TemplateCategoryOption[] }>('/api/templates/categories')
       .then(({ categories }) => setTplCategories(categories))
       .catch(() => {})
-    // 参加过的比赛（赛后复盘）：加载失败静默为空。?contest=<key> 从赛事中心
-    // 「去 AI 复盘」跳转而来：新建专属会话（不占用当前会话）并预填复盘请求；
-    // 推导不出该场时**不静默丢弃**——明确提示原因并保留预填文本（用户可手动选场）；
-    // 悬空 contestKey（数据清理/换账号后推导不出该场）同样清理，避免失效关联
+    // 参加过的比赛（赛后复盘）：加载失败静默为空；悬空 contestKey（数据清理/换账号后
+    // 推导不出该场）同样清理，避免失效关联。深链消费拆到下方独立 effect（#18）
     get<{ contests: ParticipatedContest[] }>('/api/contests/participated')
       .then(({ contests: list }) => {
         setContests(list)
-        const urlContest = searchParams.get('contest')
-        if (urlContest !== null) setSearchParams({}, { replace: true })
-        const jumped = urlContest ? list.find((c) => c.key === urlContest) : undefined
-        if (jumped) {
-          const session = createSession(undefined, undefined, jumped.key)
-          setChatState((prev) => ({
-            ...prev,
-            sessions: [session, ...prev.sessions],
-            activeId: session.id,
-            input: reviewRequestText(jumped),
-          }))
-          return
-        }
-        if (urlContest) {
-          message.warning(contestJumpWarning(urlContest))
-          // 保留预填文本：跳转意图不落空，用户选好场次即可直接发送
-          setChatState((prev) => (prev.input.trim() ? prev : { ...prev, input: REVIEW_REQUEST_TEXT }))
-        }
         setChatState((prev) => {
           const active = prev.sessions.find((s) => s.id === prev.activeId)
           if (active?.contestKey !== undefined && !list.some((c) => c.key === active.contestKey)) {
@@ -1252,6 +1656,39 @@ export default function Assistant() {
       .catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  /**
+   * AI 深链（?plan=/?contest=）消费（#18）：对 searchParams 增监听，二次跳转不再被
+   * 静默丢弃（挂载只消费一次的旧实现里，从赛事中心再点一次「去 AI 夳盘」毫无反应）。
+   * contest 需要等清单加载完才能推导场次；清单未就绪时先不动，contests 变化会重跑本 effect。
+   */
+  useEffect(() => {
+    const urlPlan = searchParams.get('plan')
+    if (urlPlan !== null) {
+      const v = Number(urlPlan)
+      if (Number.isInteger(v) && v > 0) updateActiveSessionPlanId(v)
+      setSearchParams({}, { replace: true })
+    }
+    const urlContest = searchParams.get('contest')
+    if (urlContest === null) return
+    setSearchParams({}, { replace: true })
+    if (contests === null) return // 清单未就绪：等 contests 落定后本 effect 重跑再消费
+    const jumped = contests.find((c) => c.key === urlContest)
+    if (jumped) {
+      const session = createSession(undefined, undefined, jumped.key)
+      setChatState((prev) => ({
+        ...prev,
+        sessions: [session, ...prev.sessions],
+        activeId: session.id,
+        input: reviewRequestText(jumped),
+      }))
+      return
+    }
+    // 推导不出该场**不静默丢弃**——明确提示原因并保留预填文本（用户可手动选场）
+    message.warning(contestJumpWarning(urlContest))
+    setChatState((prev) => (prev.input.trim() ? prev : { ...prev, input: REVIEW_REQUEST_TEXT }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, contests])
 
   const loadAbility = useCallback(() => {
     setAbilityError(false)
@@ -1507,6 +1944,7 @@ export default function Assistant() {
     // 存入会话历史的附件（剥离 textContent 避免 localStorage 爆满；previewUrl 同样不入库）
     const attsForStore = atts.map(({ textContent: _tc, previewUrl: _p, ...rest }) => rest)
     const userMsg: ChatMsg = {
+      id: newMsgId(),
       role: 'user',
       content: text,
       ...(attsForStore.length > 0 ? { attachments: attsForStore } : {}),
@@ -1579,7 +2017,7 @@ export default function Assistant() {
       // 先种一条空 assistant 消息，流式 delta 逐字追加到它
       patchActiveSessionMessages(sessionId, (msgs) => [
         ...msgs,
-        { role: 'assistant', content: '' },
+        { id: newMsgId(), role: 'assistant', content: '' },
       ])
 
       const result = await chatWithAssistantStream(
@@ -1739,7 +2177,7 @@ export default function Assistant() {
           if (last && last.role === 'assistant' && last.content === '') {
             return [...msgs.slice(0, -1), { ...last, content: `⚠️ ${err.message}`, failed: true }]
           }
-          return [...msgs, { role: 'assistant', content: `⚠️ ${err.message}`, failed: true }]
+          return [...msgs, { id: newMsgId(), role: 'assistant', content: `⚠️ ${err.message}`, failed: true }]
         })
       }
     } finally {
@@ -1755,6 +2193,8 @@ export default function Assistant() {
         next.delete(sessionId)
         return { ...prev, sendingIds: next }
       })
+      // 生成收尾（含错误/停止标记）立即落盘：防抖窗口内关页会丢掉收尾状态
+      flushPendingSave()
     }
   }
 
@@ -1805,19 +2245,8 @@ export default function Assistant() {
     }
   }
 
-  const tplKey = (msgIndex: number, draftIndex: number) => `${msgIndex}:${draftIndex}`
-
-  /**
-   * 该草稿最终写入的目标标签：用户显式选择 > AI 给的 categoryKey（有效时）> 第一个分类。
-   * 用户反馈「无法指定 AI 把模板放到哪个标签下」——选择器与这里的解析共同保证
-   * 用户点名的标签（含自己新建的自建标签）一定被原样写入。
-   */
   const templateTargetOf = (msgIndex: number, draftIndex: number, draft: TemplateAddDraft): string =>
-    resolveTemplateTarget({
-      aiKey: draft.categoryKey,
-      chosen: tplTargets[tplKey(msgIndex, draftIndex)],
-      categories: tplCategories,
-    })
+    draftTargetOf(tplTargets, tplCategories, msgIndex, draftIndex, draft)
 
   /** 写入单个模板草稿（不弹 toast，供单条/批量复用），返回是否成功。
    *  有 templateId → 完善已有内置模板（PUT /api/templates/:id/content）；
@@ -1994,6 +2423,26 @@ export default function Assistant() {
     inputRef.current?.focus()
   }
 
+  /**
+   * 消息项的交互动作集合：引用在一次挂载内恒定，列表项 memo 才不会被新建的箭头函数击穿。
+   * 内部转发到本轮渲染的闭包（见 useMessageActions），不会读到过期的 messages。
+   */
+  const messageActions = useMessageActions({
+    edit: editUserMessage,
+    applyPlan: openPlanApply,
+    confirmAbility: (suggestion, raw) => void confirmAbility(suggestion, raw),
+    setTplTarget: (index, draftIndex, key) =>
+      setTplTargets((prev) => ({ ...prev, [tplKey(index, draftIndex)]: key })),
+    confirmTemplate: (draft, index, draftIndex) => void confirmTemplate(draft, index, draftIndex),
+    confirmAllTemplates: (drafts, index) => void confirmAllTemplates(drafts, index),
+    confirmListCreate: (draft, index) => void confirmListCreate(draft, index),
+    confirmPlanCreate: (draft, index) => void confirmPlanCreate(draft, index),
+    notify: (kind, text) => {
+      if (kind === 'success') message.success(text)
+      else message.warning(text)
+    },
+  })
+
   const abilityRatingLine = ratingEvidenceLine(ability?.detail)
 
   return (
@@ -2046,7 +2495,8 @@ export default function Assistant() {
                   onClick={() => switchToSession(s.id)}
                   tabIndex={-1}
                 >
-                  {s.title.trim().slice(0, 1) || '新'}
+                  {/* Array.from 按 Unicode 码点取首字符：slice(0,1) 遇 emoji/代理对会渲染半个乱码 */}
+                  {Array.from(s.title.trim())[0] ?? '新'}
                   {s.streaming && <LoadingOutlined className="mini-rail-stream" />}
                 </button>
               </Tooltip>
@@ -2276,15 +2726,15 @@ export default function Assistant() {
                   updateActiveSessionContestKey(v)
                   // 选中即预填复盘请求（输入框已有草稿时不覆盖）：带上本场关键事实，
                   // 省去 AI 反问「哪一场、做了几题」
-                  if (v && !input.trim()) {
-                    const picked = contests.find((c) => c.key === v)
+                      if (v && !input.trim()) {
+                    const picked = (contests ?? []).find((c) => c.key === v)
                     setChatState((prev) => ({
                       ...prev,
                       input: picked ? reviewRequestText(picked) : REVIEW_REQUEST_TEXT,
                     }))
                   }
                 }}
-                options={contests.map((c) => {
+                options={(contests ?? []).map((c) => {
                   const label = c.name ?? `${platformName(c.platform)} · ${c.contestId}`
                   const d = new Date(c.startTimeIso ?? c.lastSubmittedAt)
                   const date = Number.isFinite(d.getTime()) ? ` · ${d.getMonth() + 1}/${d.getDate()}` : ''
@@ -2328,7 +2778,7 @@ export default function Assistant() {
                 {/* 未调整时 effective 就是计算值，不重复报数；被 AI 调整过才给出计算值与理由 */}
                 {ability.override ? (
                   <div style={{ fontSize: 12, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
-                    <Tag color="purple" style={{ marginInlineEnd: 0 }}>
+                    <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>
                       AI 调整
                     </Tag>
                     <span>
@@ -2425,249 +2875,30 @@ export default function Assistant() {
               </div>
             )}
             {messages.map((m, i) => {
+              // key 用消息自带 id：流式追加只换最后一条的引用，历史消息的 key 与引用都不变；
+              // 「再次编辑后重发」截断数组时，剩下的前缀消息 key 依旧稳定（不会错位复用）。
+              // data-msg-index 仍按数组下标：对话导航跳转与滚动联动都按下标定位。
+              const flash = jumpFlashIdx === i
               if (m.role === 'user') {
                 return (
-                  <div
-                    key={i}
-                    data-msg-index={i}
-                    data-role="user"
-                    className={`plan-chat-msg plan-chat-msg-user${jumpFlashIdx === i ? ' is-flash' : ''}`}
-                  >
-                    {m.attachments && m.attachments.length > 0 && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: m.content ? 6 : 0 }}>
-                        {m.attachments.map((a, j) =>
-                          a.dataUrl ? (
-                            /* 内联图片：气泡内直接预览（刷新后 dataUrl 剥离，退化为标签） */
-                            <img
-                              key={`${a.fileId}-${j}`}
-                              src={a.dataUrl}
-                              alt={a.filename || '图片附件'}
-                              style={{
-                                maxWidth: 200,
-                                maxHeight: 160,
-                                borderRadius: 8,
-                                border: '1px solid var(--line)',
-                                display: 'block',
-                                objectFit: 'cover',
-                              }}
-                            />
-                          ) : (
-                            <Tag key={`${a.fileId}-${j}`} style={{ marginInlineEnd: 0 }}>
-                              <PaperClipOutlined /> {a.filename || a.fileId}
-                              {a.bytes !== undefined ? `（${fmtBytes(a.bytes)}）` : ''}
-                              {a.textContent !== undefined ? ' · 文本' : ''}
-                            </Tag>
-                          ),
-                        )}
-                      </div>
-                    )}
-                    {m.content && <div className="assistant-message-text"><Markdown text={m.content} /></div>}
-                    {/* 按钮行对纯附件消息（content 为空）同样渲染：否则粘贴图片直接发送后
-                        找不到「再次编辑」入口；「复制」无文本可复制，仅在有内容时出现 */}
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
-                      {m.content && (
-                        <Button
-                          size="small"
-                          type="text"
-                          className="msg-copy-btn"
-                          icon={<CopyOutlined />}
-                          onClick={() => {
-                            navigator.clipboard
-                              ?.writeText(m.content ?? '')
-                              .then(() => message.success('已复制'))
-                              .catch(() => message.warning('复制失败，请手动选择复制'))
-                          }}
-                        >
-                          复制
-                        </Button>
-                      )}
-                      <Button
-                        size="small"
-                        type="text"
-                        className="msg-copy-btn"
-                        icon={<EditOutlined />}
-                        onClick={() => editUserMessage(i)}
-                      >
-                        再次编辑
-                      </Button>
-                    </div>
-                  </div>
+                  <UserMessageItem key={m.id} m={m} index={i} flash={flash} actions={messageActions} />
                 )
               }
-              const { modify, abilityUpd, tplAdds, listDraft, planDraft, text } = parseMessageBlocks(m)
-              const hasTpl = tplAdds.length > 0
-              // 旧消息用 m.applied 表示模板已写入（向后兼容：无 appliedTpl 时视为该消息模板均已应用）
-              const appliedTpl =
-                m.applied === true && !m.appliedTpl ? tplAdds.map((_, j) => j) : (m.appliedTpl ?? [])
-              const appliedTplSet = new Set(appliedTpl)
-              const pendingTplCount = tplAdds.length - appliedTpl.length
               return (
-                <div
-                  key={i}
-                  data-msg-index={i}
-                  data-role="assistant"
-                  className={`plan-chat-msg plan-chat-msg-assistant${jumpFlashIdx === i ? ' is-flash' : ''}`}
-                >
-                  {m.reasoning && (
-                    <details
-                      className="ai-reasoning"
-                      // 思考进行中（本条消息还在推流且正文未开始）自动展开，思维链实时可见；
-                      // 正文一开始或流结束后改为非受控，用户可自由开合（issue #27）
-                      open={sending && i === messages.length - 1 && !text.trim() ? true : undefined}
-                      style={{
-                        marginBottom: 8,
-                        padding: '6px 12px',
-                        background: 'var(--overlay-2)',
-                        borderRadius: 6,
-                        fontSize: 13,
-                        color: 'var(--text-2)',
-                      }}
-                    >
-                      <summary style={{ cursor: 'pointer', userSelect: 'none', fontWeight: 500 }}>
-                        💭 思考过程
-                      </summary>
-                      <div className="assistant-message-text assistant-message-reasoning" style={{ marginTop: 6, whiteSpace: 'pre-wrap', opacity: 0.85 }}>
-                        {m.reasoning}
-                      </div>
-                    </details>
-                  )}
-                  <div className="assistant-message-text">
-                    <Markdown text={text} breaks streaming={sending && i === messages.length - 1} />
-                  </div>
-                  {text.trim() && (
-                    <Button
-                      size="small"
-                      type="text"
-                      className="msg-copy-btn"
-                      icon={<CopyOutlined />}
-                      onClick={() => {
-                        navigator.clipboard
-                          ?.writeText(text)
-                          .then(() => message.success('已复制'))
-                          .catch(() => message.warning('复制失败，请手动选择复制'))
-                      }}
-                    >
-                      复制
-                    </Button>
-                  )}
-                  {(modify || abilityUpd || hasTpl || listDraft || planDraft) && (
-                    <Space style={{ marginTop: 8 }} wrap>
-                      {modify && (
-                        <Button
-                          size="small"
-                          type="primary"
-                          disabled={m.applied}
-                          onClick={() => void openPlanApply(m.content)}
-                        >
-                          {m.applied ? '已应用' : '应用计划修改'}
-                        </Button>
-                      )}
-                      {abilityUpd &&
-                        (abilityUpd.level === ability?.effective ? (
-                          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
-                            建议值 {abilityUpd.level} 与当前生效值相同，无需重复更新
-                          </span>
-                        ) : (
-                          <Button
-                            size="small"
-                            type="primary"
-                            ghost
-                            disabled={m.applied}
-                            onClick={() => void confirmAbility(abilityUpd, m.content)}
-                          >
-                            更新能力值为 {abilityUpd.level}
-                          </Button>
-                        ))}
-                      {hasTpl &&
-                        tplAdds.map((draft, j) => {
-                          const applied = appliedTplSet.has(j)
-                          return (
-                            <Space key={j} size={4}>
-                              {/* 目标标签选择器：用户可显式指定放到哪个课程分类/自建标签下
-                                  （templateId 草稿是「完善已有内置条目」，不存在选分类的问题） */}
-                              {!draft.templateId && tplCategories.length > 0 && (
-                                <Tooltip title="写入到哪个标签下 —— 含你在「模板库 → 新建标签」里自己建的标签">
-                                  <Select
-                                    size="small"
-                                    style={{ minWidth: 140 }}
-                                    value={templateTargetOf(i, j, draft)}
-                                    disabled={applied}
-                                    onChange={(key: string) =>
-                                      setTplTargets((prev) => ({ ...prev, [tplKey(i, j)]: key }))
-                                    }
-                                    options={tplCategories.map((c) => ({
-                                      value: c.key,
-                                      label: templateCategoryLabel(c),
-                                    }))}
-                                  />
-                                </Tooltip>
-                              )}
-                              <Button
-                                size="small"
-                                type="primary"
-                                ghost
-                                disabled={applied}
-                                loading={tplWriting.has(tplKey(i, j))}
-                                onClick={() => void confirmTemplate(draft, i, j)}
-                              >
-                                {applied
-                                  ? `✓ 已完善：${draft.name}`
-                                  : draft.templateId
-                                    ? `完善模板：「${draft.name}」`
-                                    : `写入模板库：「${draft.name}」`}
-                              </Button>
-                            </Space>
-                          )
-                        })}
-                      {hasTpl && pendingTplCount > 1 && (
-                        <Button
-                          size="small"
-                          type="primary"
-                          loading={tplAdds.some(
-                            (_, j) => !appliedTplSet.has(j) && tplWriting.has(tplKey(i, j)),
-                          )}
-                          onClick={() => void confirmAllTemplates(tplAdds, i)}
-                        >
-                          全部写入（{pendingTplCount}）
-                        </Button>
-                      )}
-                      {listDraft && (
-                        <Button
-                          size="small"
-                          type="primary"
-                          disabled={m.appliedList}
-                          loading={listCreating}
-                          onClick={() => void confirmListCreate(listDraft, i)}
-                        >
-                          {m.appliedList ? `✓ 已导入题单：${listDraft.title}` : `导入题单：「${listDraft.title}」`}
-                        </Button>
-                      )}
-                      {planDraft && (
-                        <Button
-                          size="small"
-                          type="primary"
-                          disabled={m.appliedPlan}
-                          loading={planCreating}
-                          onClick={() => void confirmPlanCreate(planDraft, i)}
-                        >
-                          {m.appliedPlan ? `✓ 已生成计划：${planDraft.title}` : `生成训练计划：「${planDraft.title}」`}
-                        </Button>
-                      )}
-                    </Space>
-                  )}
-                  {m.usage && (
-                    <div
-                      style={{
-                        marginTop: 4,
-                        fontSize: 12,
-                        color: 'var(--text-3)',
-                        textAlign: 'right',
-                      }}
-                    >
-                      📝 输入 {m.usage.prompt_tokens} / 输出 {m.usage.completion_tokens} token
-                    </div>
-                  )}
-                </div>
+                <AssistantMessageItem
+                  key={m.id}
+                  m={m}
+                  index={i}
+                  streaming={sending && i === messages.length - 1}
+                  flash={flash}
+                  abilityEffective={ability?.effective}
+                  tplCategories={tplCategories}
+                  tplTargets={tplTargets}
+                  tplWriting={tplWriting}
+                  listCreating={listCreating}
+                  planCreating={planCreating}
+                  actions={messageActions}
+                />
               )
             })}
             {sending &&

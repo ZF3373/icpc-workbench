@@ -34,6 +34,7 @@
   --danger-soft: rgba(255, 123, 132, 0.12);
   --violet-soft: rgba(181, 125, 255, 0.13);
   --info-soft: rgba(75, 134, 217, 0.13);
+  --cyan-soft: rgba(69, 213, 229, 0.12);
   /* 图表专用 Token：recharts 把颜色写进 SVG 属性，必须取计算后的具体色值（见 ui.ts useTokenColors） */
   --chart-grid: rgba(255, 255, 255, 0.06);
   --chart-cursor: rgba(134, 168, 255, 0.05);
@@ -133,6 +134,7 @@
   --danger-soft: rgba(229, 80, 90, 0.1);
   --violet-soft: rgba(122, 79, 208, 0.1);
   --info-soft: rgba(47, 111, 181, 0.1);
+  --cyan-soft: rgba(10, 116, 136, 0.1);
   --chart-grid: rgba(0, 0, 0, 0.07);
   --chart-cursor: rgba(107, 142, 239, 0.06);
   --cf-new: #6b7484;
@@ -1028,6 +1030,11 @@ body {
 .stat-icon-violet {
   color: var(--accent-violet);
   background: var(--violet-soft);
+}
+
+.stat-icon-cyan {
+  color: var(--cyan);
+  background: var(--cyan-soft);
 }
 
 /* ============================================================
@@ -2671,6 +2678,13 @@ button.dist-row:hover {
 .contest-progress-note.is-pending { color: var(--amber); }
 .contest-review-action.ant-btn { align-self: flex-start; padding: 0; }
 
+/* 参赛卡底部动作区：「赛事分析」与「去 AI 复盘」并排沉底 */
+.contest-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
 @media (max-width: 640px) {
   .contest-tabs .ant-segmented { min-width: 0; }
   .contest-tabs .ant-segmented-item-label { padding-inline: 6px; }
@@ -2926,7 +2940,7 @@ button.dist-row:hover {
 }
 
 .task-card-review::before {
-  background: var(--violet);
+  background: var(--green);
 }
 
 .task-card-topic::before {
@@ -3053,12 +3067,12 @@ button.dist-row:hover {
 }
 
 .calendar-cell-done {
-  background: rgba(105, 215, 165, 0.07);
+  background: var(--green-soft);
 }
 
 .calendar-cell-done:hover {
-  border-color: rgba(105, 215, 165, 0.4);
-  background: rgba(105, 215, 165, 0.11);
+  border-color: var(--green-line);
+  background: var(--green-soft);
 }
 
 /* 非本月日期弱化 */

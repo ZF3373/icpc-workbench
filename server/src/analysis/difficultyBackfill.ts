@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { PlatformId } from '../../../shared/src/index.ts';
 import { CF_RATING_MAX, CF_RATING_MIN, difficultyFields, type DifficultyScale } from '../../../shared/src/difficulty.ts';
 import type { Db } from '../db/index.ts';
+import { safeTags } from './stats.ts';
 import { atcoderContestPrefix, atcoderProblemIdCandidates, isPlausibleProblemKey } from '../adapters/problemKey.ts';
 import { fetchWithChallenge } from '../adapters/luogu.ts';
 import { parseJisuankeProblemTags } from '../adapters/jisuanke.ts';
@@ -396,7 +397,9 @@ function selectGapRows(db: Db): GapRow[] {
 }
 
 function toBackfillTarget(r: GapRow): BackfillTarget {
-  const tags = JSON.parse(r.tags) as string[];
+  // 库内 tags 是 TEXT：历史行可能有脏值（旧版本写入/手工改库），safeTags 容错回空表，
+  // 裸 parse 会把整轮回填打成 502
+  const tags = safeTags(r.tags);
   const gap: BackfillGap = r.difficulty === null ? 'difficulty' : tags.length === 0 ? 'tags' : 'native';
   return {
     platform: r.platform,
@@ -417,7 +420,7 @@ function toBackfillTarget(r: GapRow): BackfillTarget {
 function openDimensions(r: Pick<GapRow, 'difficulty' | 'native_difficulty' | 'tags'>): GapDimension[] {
   const dims: GapDimension[] = [];
   if (r.difficulty === null || r.native_difficulty === null) dims.push('difficulty');
-  const rowTags = JSON.parse(r.tags) as string[];
+  const rowTags = safeTags(r.tags);
   if (rowTags.length === 0) dims.push('tags');
   return dims;
 }

@@ -73,11 +73,12 @@ function loadKnownSubmissions(
   ids: Set<string>;
   verdicts: Map<string, Verdict>;
   problemKeys: Map<string, string>;
+  missingContext: Set<string>;
   maxSubmittedAt: string | null;
 } {
   const rows = db
     .prepare(
-      `SELECT s.external_id, s.verdict, s.submitted_at, p.problem_key AS problem_key
+      `SELECT s.external_id, s.verdict, s.submitted_at, p.problem_key AS problem_key, s.context
          FROM submissions s JOIN problems p ON p.id = s.problem_id
         WHERE s.user_id = ? AND s.platform = ? AND s.account = ?`,
     )
@@ -86,23 +87,28 @@ function loadKnownSubmissions(
     verdict: Verdict;
     submitted_at: string;
     problem_key: string;
+    context: string | null;
   }>;
   const ids = new Set<string>();
   const verdicts = new Map<string, Verdict>();
   const problemKeys = new Map<string, string>();
+  // context 为空的老行（CF participantType 读错位置的历史 bug 造成）：上游能给出语境时
+  // 重发一次，由写入层 backfillContext 补上（与改判/改题号重发同一机制）
+  const missingContext = new Set<string>();
   let maxSubmittedAt: string | null = null;
   for (const r of rows) {
     if (r.external_id == null) continue;
     ids.add(r.external_id);
     verdicts.set(r.external_id, r.verdict);
     if (r.problem_key != null) problemKeys.set(r.external_id, r.problem_key);
+    if (r.context == null) missingContext.add(r.external_id);
     // Date.parse 比较而非字符串比较：提交时刻虽约定 ISO8601 UTC，但手动导入等路径
     // 可能写入不带毫秒的变体格式，字符串序对毫秒位缺失的写法会判错
     if (maxSubmittedAt === null || Date.parse(r.submitted_at) > Date.parse(maxSubmittedAt)) {
       maxSubmittedAt = r.submitted_at;
     }
   }
-  return { ids, verdicts, problemKeys, maxSubmittedAt };
+  return { ids, verdicts, problemKeys, missingContext, maxSubmittedAt };
 }
 
 /** 读取单次同步上限设置（sync.maxSubmissions），越界回退默认值 */
@@ -407,7 +413,7 @@ async function runSyncPlatform(
       ...(cookie ? { cookie } : {}),
       ...(csrf ? { csrf } : {}),
       ...(ua ? { ua } : {}),
-      ...(knownSubs ? { knownExternalIds: knownSubs.ids, knownVerdicts: knownSubs.verdicts, knownProblemKeys: knownSubs.problemKeys } : {}),
+      ...(knownSubs ? { knownExternalIds: knownSubs.ids, knownVerdicts: knownSubs.verdicts, knownProblemKeys: knownSubs.problemKeys, knownMissingContext: knownSubs.missingContext } : {}),
       maxSubmissions,
       ...(practiceSync !== undefined ? { practiceSync } : {}),
       ...(backfill ? { backfill: true } : {}),

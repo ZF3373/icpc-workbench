@@ -117,37 +117,35 @@ function langFromClassName(className?: string): string {
 }
 
 /**
- * 在 React 子树里找语言标记。
+ * 单趟遍历 React 子树，同时产出「语言标记」与「纯文本」。
+ *
  * 高亮后 `<pre>` 的子节点是带 `hljs-*` span 的 `<code>` 元素，不能拼成纯文本再取，
- * 只能顺着 props 往下找。
+ * 只能顺着 props 往下找。原来 langOf / collectText 各递归一遍——超长代码块（几千行
+ * 高亮 span）每帧两次整树遍历是纯白工，合并为一趟（返回首个命中语言 + 全部文本）。
  */
-function langOf(node: ReactNode): string {
+function scanPre(node: ReactNode, langHit?: string): { lang: string; text: string } {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return { lang: langHit ?? '', text: '' }
+  }
+  if (typeof node === 'string' || typeof node === 'number') {
+    return { lang: langHit ?? '', text: String(node) }
+  }
   if (Array.isArray(node)) {
+    let text = ''
     for (const child of node) {
-      const found = langOf(child)
-      if (found) return found
+      const r = scanPre(child, langHit)
+      langHit = langHit ?? r.lang
+      text += r.text
     }
-    return ''
+    return { lang: langHit ?? '', text }
   }
-  if (node && typeof node === 'object' && 'props' in node) {
+  if (typeof node === 'object' && 'props' in node) {
     const props = (node as MaybeElement).props
-    const className = props?.className
-    const found = langFromClassName(typeof className === 'string' ? className : undefined)
-    return found || langOf(props?.children)
+    const className = typeof props?.className === 'string' ? props.className : undefined
+    const fromClass = langFromClassName(className)
+    return scanPre(props?.children, langHit ?? fromClass)
   }
-  return ''
-}
-
-/**
- * 递归取子树的纯文本（用于复制）。
- * 高亮把代码切成了一堆 span，直接显示用子树本身，复制时必须拼回原始文本。
- */
-function collectText(node: ReactNode): string {
-  if (node === null || node === undefined || typeof node === 'boolean') return ''
-  if (typeof node === 'string' || typeof node === 'number') return String(node)
-  if (Array.isArray(node)) return node.map(collectText).join('')
-  if (typeof node === 'object' && 'props' in node) return collectText((node as MaybeElement).props?.children)
-  return ''
+  return { lang: langHit ?? '', text: '' }
 }
 
 /* ============================ 代码卡 ============================ */
@@ -279,8 +277,11 @@ function MarkdownBody({ text, streaming = false, breaks = false }: MarkdownProps
         components={{
           // 代码块统一走代码卡（header 在 <pre> 之外，所以必须整体替换 <pre>）。
           // 子节点原样透传 —— 里面已经是 rehype-highlight 产出的带色 span，
-          // 拼成纯文本再渲染会把高亮抹掉；复制用的纯文本另外用 collectText 取。
-          pre: ({ children }) => <CodeCard lang={langOf(children)} code={collectText(children)}>{children}</CodeCard>,
+          // 拼成纯文本再渲染会把高亮抹掉；复制用的纯文本与语言标记由 scanPre 单趟取回。
+          pre: ({ children }) => {
+            const { lang, text } = scanPre(children)
+            return <CodeCard lang={lang} code={text}>{children}</CodeCard>
+          },
           // 行内代码走 .markdown-body code 的内联样式，不替换
           // 表格：外层包裹以便窄屏横向滚动，不破坏表格自身布局
           table: ({ children, node: _node, ...rest }) => (

@@ -131,6 +131,34 @@ test('computeMastery：按 tag 聚合、联动课程、0 练习的知识点标�
   assert.ok(filtered.points.every((p) => p.solved >= 5));
 });
 
+test('computeMastery：同题多次提交只计一次通过，近期 AC 按「窗口内是否有 AC」而非最近一次判定', (t) => {
+  const db = createDb(':memory:');
+  t.after(() => db.close());
+  const now = Date.now();
+  const day = 86_400_000;
+  const iso = (offsetMs: number): string => new Date(now - offsetMs).toISOString();
+
+  // 100 天前 AC + 昨天 WA：仍在窗口外 → 不算近期（近期窗口是「56 天内有过 AC」）
+  seedSubmission(db, 'codeforces', '1100A', ['贪心'], 'AC', iso(100 * day));
+  seedSubmission(db, 'codeforces', '1100A', ['贪心'], 'WA', iso(day));
+  // 10 天前 AC + 昨天 WA：窗口内有 AC → 算近期
+  seedSubmission(db, 'codeforces', '1101A', ['贪心'], 'AC', iso(10 * day));
+  seedSubmission(db, 'codeforces', '1101A', ['贪心'], 'WA', iso(day));
+  // 一题反复提交：attempts 计全部、solved 只计 1
+  seedSubmission(db, 'codeforces', '1102A', ['贪心'], 'WA', iso(3 * day));
+  seedSubmission(db, 'codeforces', '1102A', ['贪心'], 'WA', iso(2 * day));
+  seedSubmission(db, 'codeforces', '1102A', ['贪心'], 'AC', iso(day));
+
+  const report = computeMastery(db, 1);
+  const greedy = report.points.find((p) => p.tag === '贪心');
+  assert.ok(greedy);
+  assert.equal(greedy.attempts, 7);
+  assert.equal(greedy.solved, 3);
+  assert.equal(greedy.recentSolved, 2); // 1100A 不计入（AC 在窗口外），1101A / 1102A 计入
+  assert.equal(greedy.acRate, 42.9); // 3 / 7
+  assert.equal(greedy.avgAcRate, 42.9); // 同作用域总体 AC 率 = 同一批按题聚合行之和
+});
+
 test('computeMastery：知识点口径按 code 聚合、templateIds 直达课程、同名 tag 回退合并', (t) => {
   const db = createDb(':memory:');
   t.after(() => db.close());

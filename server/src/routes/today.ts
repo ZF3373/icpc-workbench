@@ -4,7 +4,7 @@ import { DEFAULT_USER_ID } from '../constants.ts';
 import { localToday } from '../dates.ts';
 import { safeTags } from '../analysis/stats.ts';
 import { computeWeakness } from '../analysis/weakness.ts';
-import { knowledgeTagsSql } from '../knowledge/store.ts';
+import { knowledgeTagsCoalesceSql, knowledgeTagsJoinSql, problemKeypointsCte } from '../knowledge/store.ts';
 import {
   SUPPRESSION_TIERS,
   bandRanges,
@@ -16,7 +16,7 @@ import {
 import { computeAbilityDetail, getAbilityOverride } from '../today/ability.ts';
 import { listDueReviewItems } from '../reviews/query.ts';
 import { listTodayTasks } from '../plans/todayTasks.ts';
-import { problemIdentity, problemIdentitySql } from '../problems/identity.ts';
+import { IDENTITY_COLUMN_SQL, problemIdentity } from '../problems/identity.ts';
 import type { TodayBandKey, TodayProblem } from '../../../shared/src/index.ts';
 
 /** 每档默认题量：巩固 2 / 同段 3 / 挑战 1（cf-compass 同段承担主训练量） */
@@ -66,32 +66,41 @@ export function todayRoutes(db: Db): Router {
     const level = override?.level ?? ability.level;
 
     // 2) 候选题：题库中有难度、未 AC 的题（提交记录里 AC 过的排除），
-    //    并带出「上次推荐日期」与「是否已在复习队列」，供选题时的冷却判断使用
+    //    并带出「上次推荐日期」与「是否已在复习队列」，供选题时的冷却判断使用。
+    //    身份一律读 problems.identity 生成列（见 db/index.ts）：原实现每行要算 4 次
+    //    CASE 表达式，三张派生小表也只能靠 SQLite 的 AUTOMATIC 临时索引连接。
     const candidates = db
       .prepare(
-        `WITH solved AS (
-           SELECT ${problemIdentitySql('sp')} AS identity
+        `WITH ${problemKeypointsCte(db)}, solved AS (
+           SELECT sp.identity AS identity
            FROM submissions s JOIN problems sp ON sp.id = s.problem_id
            WHERE s.user_id = ? AND s.verdict = 'AC' GROUP BY identity
          ), queued AS (
-           SELECT ${problemIdentitySql('rp')} AS identity, MIN(ri.id) AS review_item_id
+           SELECT rp.identity AS identity, MIN(ri.id) AS review_item_id
            FROM review_items ri JOIN problems rp ON rp.id = ri.problem_id
            WHERE ri.user_id = ? GROUP BY identity
          ), recommended AS (
-           SELECT ${problemIdentitySql('tp')} AS identity, MAX(tr.recommended_on) AS recommended_on
+           SELECT tp.identity AS identity, MAX(tr.recommended_on) AS recommended_on
            FROM today_recommendations tr JOIN problems tp ON tp.id = tr.problem_id
            WHERE tr.user_id = ? GROUP BY identity
+         ), merged AS (
+           -- 三张派生表按 identity 合并成一张：候选行只做一次 LEFT JOIN、也只建一次临时索引
+           SELECT identity, 1 AS solved, NULL AS review_item_id, NULL AS recommended_on FROM solved
+           UNION ALL SELECT identity, 0, review_item_id, NULL FROM queued
+           UNION ALL SELECT identity, 0, NULL, recommended_on FROM recommended
+         ), agg AS (
+           SELECT identity, MAX(solved) AS solved,
+                  MIN(review_item_id) AS review_item_id, MAX(recommended_on) AS recommended_on
+             FROM merged GROUP BY identity
          )
          SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
-                ${knowledgeTagsSql(db)},
-                queued.review_item_id, recommended.recommended_on,
-                queued.review_item_id IS NOT NULL AS in_review
-           FROM problems p
-           LEFT JOIN solved ON solved.identity = ${problemIdentitySql('p')}
-           LEFT JOIN queued ON queued.identity = ${problemIdentitySql('p')}
-           LEFT JOIN recommended ON recommended.identity = ${problemIdentitySql('p')}
+                ${knowledgeTagsCoalesceSql()},
+                agg.review_item_id, agg.recommended_on,
+                agg.review_item_id IS NOT NULL AS in_review
+           FROM problems p ${knowledgeTagsJoinSql()}
+           LEFT JOIN agg ON agg.identity = ${IDENTITY_COLUMN_SQL}
           WHERE p.difficulty IS NOT NULL
-            AND solved.identity IS NULL
+            AND (agg.solved IS NULL OR agg.solved = 0)
           ORDER BY p.id`,
       )
       .all(DEFAULT_USER_ID, DEFAULT_USER_ID, DEFAULT_USER_ID) as unknown as Array<

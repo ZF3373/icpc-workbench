@@ -120,3 +120,25 @@ test('双入口一致：Host 头校验装在路由之前（否则请求已进路
     );
   }
 });
+
+test('双入口一致：compression 装在路由之前，且 SSE 排除清单存在', () => {
+  // compression 通过 on-headers 在响应头写出时决定是否压缩，挂到路由之后就只对之后
+  // 注册的中间件生效——「装了但没生效」在开发模式下极难察觉（页面照样能开，只是不压缩）。
+  for (const file of ['index.ts', 'sea.ts']) {
+    const src = readFileSync(join(here, '..', 'src', file), 'utf-8');
+    const compressionAt = src.indexOf('app.use(compressionMiddleware())');
+    const firstRouteAt = src.search(/app\.use\(\s*'\/api\//);
+    assert.ok(compressionAt >= 0, `${file} 未装配 compressionMiddleware——远程访问首屏全量传输`);
+    assert.ok(
+      firstRouteAt >= 0 && compressionAt < firstRouteAt,
+      `${file}: compressionMiddleware 必须早于第一个 /api 路由挂载（当前 compressionAt=${compressionAt}, firstRouteAt=${firstRouteAt}）`,
+    );
+  }
+  // SSE 不能被压缩是硬约束（text/event-stream 在 compressible 里是可压缩的，默认 filter 挡不住）
+  const middlewareSrc = readFileSync(join(here, '..', 'src', 'middleware.ts'), 'utf-8');
+  assert.match(
+    middlewareSrc,
+    /SSE_PATHS[\s\S]*'\/api\/ai\/chat'/,
+    'middleware.ts 的 SSE_PATHS 必须包含 /api/ai/chat——漏了它流式回答会被 gzip 攒块',
+  );
+});

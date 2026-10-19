@@ -6,7 +6,7 @@
  *   release/icpc-workbench-<ver>-x64-setup.exe  NSIS 安装程序（含壳 + 核心，中文界面，带卸载器）
  *   release/ 便携版：icpc-workbench.exe + icpc-core.exe + 使用说明.txt（解压即用，免安装）
  */
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -197,8 +197,11 @@ if (!pfxPassword || pfxCandidates.length === 0) {
       path.join(releaseDir, setupExe),
     ];
     for (const f of targets) {
-      execSync(
-        `"${signtool}" sign /fd SHA256 /f "${pfxCandidates[0]}" /p "${pfxPassword}" /t http://timestamp.digicert.com "${f}"`,
+      // 密码走 execFileSync 参数数组而不是拼进命令行字符串：`/p "密码"` 出现在命令行里
+      // 会被同机任何进程通过进程列表（WMIC / ps）看到，参数数组只在内存与子进程 argv 间传递。
+      execFileSync(
+        signtool,
+        ['sign', '/fd', 'SHA256', '/f', pfxCandidates[0], '/p', pfxPassword, '/t', 'http://timestamp.digicert.com', f],
         { stdio: 'inherit' },
       );
     }

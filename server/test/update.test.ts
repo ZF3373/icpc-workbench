@@ -4,9 +4,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { createDb, type Db } from '../src/db/index.ts';
+import { createBackup } from '../src/backup.ts';
 import {
   checkForUpdate,
   compareVersions,
+  applyStagedUpdate,
+  applyStagedUpdateAsync,
   nightlyCommitSha,
   resolveUpdate,
 } from '../src/routes/update.ts';
@@ -318,4 +322,186 @@ test('applyUpdate：替换成功后调度核心自退，消息与 .old 备份齐
   assert.deepEqual(exitCalls, [3000]);
   setUpdatePhaseForTests('idle');
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------- /apply：先校验 staged，再建升级前备份（P2-2 回归） ----------
+
+/**
+ * 造一个「生产布局」的数据目录：data/main.db（备份目录派生为 data/backups）。
+ * 与 index.ts / sea.ts 注入的钩子一致：preUpgradeBackup = () => createBackup(db, 'pre-upgrade')。
+ */
+function openBackupHarness(): { dataDir: string; db: Db; backups: () => string[]; backup: () => void } {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'icpc-apply-order-'));
+  const db = createDb(path.join(dataDir, 'main.db'));
+  const backupDir = path.join(dataDir, 'backups');
+  const backups = (): string[] =>
+    fs.existsSync(backupDir) ? fs.readdirSync(backupDir).filter((f) => f.endsWith('.db')) : [];
+  return {
+    dataDir,
+    db,
+    backups,
+    backup: () => {
+      createBackup(db, 'pre-upgrade');
+    },
+  };
+}
+
+test('applyStagedUpdate：无待更新时不创建升级前备份（备份目录文件数不变）', () => {
+  /**
+   * 原实现在校验 staged 之前就调用 preUpgradeBackup：无待更新时反复点「应用」
+   * 会不断产生 pre-upgrade 备份（同 reason 只留 3 份），把真正的升级前恢复点挤出窗口。
+   */
+  const h = openBackupHarness();
+  const staging = path.join(h.dataDir, 'update-staging');
+  let applied = 0;
+  setUpdatePhaseForTests('idle');
+  try {
+    for (let i = 0; i < 5; i += 1) {
+      const r = applyStagedUpdate(staging, h.backup, () => {
+        applied += 1;
+        return { ok: true };
+      });
+      assert.equal(r.ok, false);
+      assert.match(r.message ?? '', /没有已下载待应用的更新/);
+    }
+    assert.equal(h.backups().length, 0, '无 staged 时不得创建升级前备份（会把真实恢复点挤出窗口）');
+    assert.equal(applied, 0, '校验失败时不得调用 apply');
+  } finally {
+    setUpdatePhaseForTests('idle');
+    h.db.close();
+    fs.rmSync(h.dataDir, { recursive: true, force: true });
+  }
+});
+
+test('applyStagedUpdate：phase=staged 但暂存文件缺失时同样不建备份', () => {
+  // 状态机与实际文件脱节（下载被中途删除 / 手工清理了 staging）：仍属「无更新可应用」
+  const h = openBackupHarness();
+  const staging = path.join(h.dataDir, 'update-staging');
+  fs.mkdirSync(staging, { recursive: true });
+  fs.writeFileSync(path.join(staging, 'icpc-workbench.exe'), 'NEW-SHELL'); // core 缺失
+  setUpdatePhaseForTests('staged');
+  try {
+    const r = applyStagedUpdate(staging, h.backup, () => {
+      throw new Error('校验失败时不应调用 apply');
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.message ?? '', /icpc-core\.exe/);
+    assert.equal(h.backups().length, 0);
+
+    // 补全文件后即可正常应用，且此时才创建备份
+    fs.writeFileSync(path.join(staging, 'icpc-core.exe'), 'NEW-CORE');
+    const ok = applyStagedUpdate(staging, h.backup, (dirArg) => ({
+      ok: true,
+      message: `applied:${path.basename(dirArg)}`,
+    }));
+    assert.equal(ok.ok, true);
+    assert.equal(ok.message, 'applied:update-staging');
+    assert.equal(h.backups().length, 1, '有 staged 时应创建一次升级前备份');
+    assert.match(h.backups()[0]!, /-pre-upgrade\.db$/);
+  } finally {
+    setUpdatePhaseForTests('idle');
+    h.db.close();
+    fs.rmSync(h.dataDir, { recursive: true, force: true });
+  }
+});
+
+test('applyStagedUpdate：有 staged 时按顺序「先备份、再应用」，备份失败不阻塞更新', () => {
+  const h = openBackupHarness();
+  const staging = path.join(h.dataDir, 'update-staging');
+  fs.mkdirSync(staging, { recursive: true });
+  fs.writeFileSync(path.join(staging, 'icpc-workbench.exe'), 'NEW-SHELL');
+  fs.writeFileSync(path.join(staging, 'icpc-core.exe'), 'NEW-CORE');
+  setUpdatePhaseForTests('staged');
+  try {
+    const order: string[] = [];
+    const ok = applyStagedUpdate(
+      staging,
+      () => {
+        order.push('backup');
+        h.backup();
+      },
+      () => {
+        order.push('apply');
+        return { ok: true, message: '更新完成' };
+      },
+    );
+    assert.equal(ok.ok, true);
+    assert.deepEqual(order, ['backup', 'apply'], '升级前备份必须先于文件替换');
+    assert.equal(h.backups().length, 1);
+
+    // 备份失败（磁盘满等）：只记录，不阻塞更新
+    setUpdatePhaseForTests('staged');
+    const r = applyStagedUpdate(
+      staging,
+      () => {
+        throw new Error('磁盘已满');
+      },
+      () => ({ ok: true, message: '更新完成' }),
+    );
+    assert.equal(r.ok, true, '升级前备份失败只记录，不阻塞更新');
+    assert.equal(r.message, '更新完成');
+  } finally {
+    setUpdatePhaseForTests('idle');
+    h.db.close();
+    fs.rmSync(h.dataDir, { recursive: true, force: true });
+  }
+});
+
+test('applyStagedUpdateAsync：异步备份钩子被 await，失败仍不阻塞更新', async () => {
+  /**
+   * /apply 请求路径走 Async 版（优化计划 #80）：preUpgradeBackup 可能返回 Promise
+   * （VACUUM INTO 全库复制），必须等它落定再替换文件；备份 reject 只记录不阻塞。
+   */
+  const h = openBackupHarness();
+  const staging = path.join(h.dataDir, 'update-staging');
+  fs.mkdirSync(staging, { recursive: true });
+  fs.writeFileSync(path.join(staging, 'icpc-workbench.exe'), 'NEW-SHELL');
+  fs.writeFileSync(path.join(staging, 'icpc-core.exe'), 'NEW-CORE');
+  setUpdatePhaseForTests('staged');
+  try {
+    const order: string[] = [];
+    let backupObserved = false;
+    const ok = await applyStagedUpdateAsync(
+      staging,
+      async () => {
+        // 异步钩子：await 一个微任务后再落笔，验证调用方确实等待了 Promise
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        order.push('backup');
+        backupObserved = true;
+      },
+      () => {
+        assert.ok(backupObserved, 'apply 必须在异步备份完成后才被调用');
+        order.push('apply');
+        return { ok: true, message: '更新完成' };
+      },
+    );
+    assert.equal(ok.ok, true);
+    assert.deepEqual(order, ['backup', 'apply'], '异步路径同样保持「先备份、再应用」');
+
+    // 备份 reject（磁盘满等）：只记录，不阻塞更新
+    setUpdatePhaseForTests('staged');
+    const r = await applyStagedUpdateAsync(
+      staging,
+      async () => {
+        throw new Error('磁盘已满');
+      },
+      () => ({ ok: true, message: '更新完成' }),
+    );
+    assert.equal(r.ok, true, '异步升级前备份失败只记录，不阻塞更新');
+    assert.equal(r.message, '更新完成');
+
+    // 无待更新：与同步版一致，不调备份、不调 apply
+    setUpdatePhaseForTests('idle');
+    const none = await applyStagedUpdateAsync(staging, () => {
+      throw new Error('无 staged 时不应调备份');
+    }, () => {
+      throw new Error('无 staged 时不应调 apply');
+    });
+    assert.equal(none.ok, false);
+    assert.match(none.message ?? '', /没有已下载待应用的更新/);
+  } finally {
+    setUpdatePhaseForTests('idle');
+    h.db.close();
+    fs.rmSync(h.dataDir, { recursive: true, force: true });
+  }
 });

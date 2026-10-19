@@ -17,6 +17,9 @@ test/.render-out/
 test/.preview-out/
 test/.preview/
 
+# tsx 在 Windows 上把空 TMPDIR 解析成字面量目录名，落在 client/undefined/temp/tsx-*
+undefined/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

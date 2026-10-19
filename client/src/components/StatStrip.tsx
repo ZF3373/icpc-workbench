@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-export type StatTone = 'blue' | 'green' | 'amber' | 'violet'
+export type StatTone = 'blue' | 'green' | 'amber' | 'violet' | 'cyan'
 
 export interface StatStripItem {
   label: string

@@ -12,20 +12,8 @@ import InlineError from '../components/InlineError'
 import DueReviewList from '../components/DueReviewList'
 import { sortDueItems } from '../reviewDue'
 import { get, post, del } from '../api'
+import { KIND_COLOR, KIND_LABEL } from '../ui'
 import type { DayPlanInfo, DayTask, ReviewCalendarDay, ReviewItem, StreakInfo } from '../types'
-
-const KIND_LABEL: Record<DayTask['kind'], string> = {
-  practice: '练习',
-  review: '回顾',
-  topic: '专题',
-  contest: '模拟赛',
-}
-const KIND_COLOR: Record<DayTask['kind'], string> = {
-  practice: 'geekblue',
-  review: 'purple',
-  topic: 'cyan',
-  contest: 'volcano',
-}
 
 export default function CalendarPage() {
   const { message } = AntdApp.useApp()
@@ -247,7 +235,7 @@ export default function CalendarPage() {
                 </>
               ),
               icon: <TrophyOutlined />,
-              tone: 'violet',
+              tone: 'cyan',
             },
             {
               label: '累计打卡天数',

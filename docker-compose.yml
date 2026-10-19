@@ -20,6 +20,16 @@ services:
       # SEARCH_API_KEY: tvly-xxx
       TZ: Asia/Shanghai
     restart: unless-stopped
+    # 日志轮转：长期运行的容器不轮转会让 json-file 日志无限增长（同步/备份/AI 调用都会打日志），
+    # 最终写满宿主机磁盘。单文件 10 MB × 3 份 = 最多 30 MB，超出后自动滚动丢弃最旧的一份。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # docker stop 的默认宽限期是 10 秒；应用内的优雅退出最多等 5 秒（见 sea.ts 的
+    # installShutdown），留出余量让 SQLite 关库与 WAL checkpoint 走完再 SIGKILL
+    stop_grace_period: 10s
 
 volumes:
   icpc-data:

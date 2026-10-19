@@ -596,6 +596,8 @@ export interface ContestAnalysisContest {
 
 export interface ContestAnalysisResponse {
   contests: ContestAnalysisContest[];
+  /** 该用户全部历史赛时标签（去重，按使用次数降序）——前端选择框的候选来源之一 */
+  usedTags?: string[];
 }
 
 // ---------- 知识点掌握度地图（刷题数据 × 模板课程联动） ----------

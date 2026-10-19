@@ -3,6 +3,7 @@ import type { AiConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
+import { sendRouteError } from './routeError.ts';
 import { AiProvider, describeError, type ChatMessage } from '../ai/provider.ts';
 import { chatWithProblemReading } from '../ai/problem-reading-chat.ts';
 import { prepareStatementEvidence, savedStatementCookies, type ProblemRef } from '../problems/statements.ts';
@@ -324,7 +325,8 @@ export function listsRoutes(
       });
     } catch (e) {
       db.exec('ROLLBACK');
-      return res.status(400).json({ error: `导入失败：${(e as Error).message}` });
+      // 输入校验文案（第 N 行格式）用户可操作；引擎/DB 细节只进日志
+      return sendRouteError(res, 400, e, '导入失败');
     }
   });
 
@@ -393,7 +395,7 @@ export function listsRoutes(
         db.exec('COMMIT');
       } catch (e) {
         db.exec('ROLLBACK');
-        return res.status(400).json({ error: `追加失败：${(e as Error).message}` });
+        return sendRouteError(res, 400, e, '追加失败');
       }
     }
     const totalLines = raw.split(/\r?\n/).filter((l) => l.trim()).length;
@@ -503,7 +505,7 @@ export function listsRoutes(
       res.json({ ok: true });
     } catch (e) {
       db.exec('ROLLBACK');
-      res.status(400).json({ error: `排序失败：${(e as Error).message}` });
+      sendRouteError(res, 400, e, '排序失败');
     }
   });
 
@@ -583,7 +585,7 @@ export function listsRoutes(
     try {
       arr = extractAiJson(raw) as Array<{ i?: unknown; category?: unknown }>;
     } catch (e) {
-      return res.status(502).json({ error: `AI 输出解析失败：${(e as Error).message}` });
+      return sendRouteError(res, 502, e, 'AI 输出解析失败');
     }
     if (!Array.isArray(arr)) return res.status(502).json({ error: 'AI 输出不是 JSON 数组' });
     const upd = db.prepare('UPDATE problem_list_items SET category = ? WHERE id = ?');
@@ -642,7 +644,7 @@ export function listsRoutes(
       .all(DEFAULT_USER_ID, id) as Array<{ id: number; platform: string; problem_key: string; title: string | null; category: string; difficulty: number | null; solved: number }>;
     if (items.length === 0) return res.status(400).json({ error: '题单为空' });
     const lines = items
-      .map((it, i) => `${i + 1}. [${it.category}] ${it.platform}/${it.problem_key}《${it.title ?? ''}》${it.difficulty ? `难度${it.difficulty}` : ''}${it.solved ? '（已AC）' : ''}`)
+      .map((it, i) => `${i + 1}. [${it.category}] ${it.platform}/${it.problem_key}《${it.title ?? ''}》${it.difficulty !== null ? `难度${it.difficulty}` : ''}${it.solved ? '（已AC）' : ''}`)
       .join('\n');
     const weakness = computeWeakness(db, DEFAULT_USER_ID, { minAttempts: 5, topN: 8 });
     const summaryPrompt = renderSummaryForPrompt(buildPracticeSummary(db, DEFAULT_USER_ID));

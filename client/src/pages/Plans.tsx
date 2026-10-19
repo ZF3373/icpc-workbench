@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   App as AntdApp,
   Alert,
@@ -21,6 +21,7 @@ import {
 import { CheckOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import type { ColumnsType } from 'antd/es/table'
+import { KIND_COLOR, KIND_LABEL, KIND_OPTIONS } from '../ui'
 import PageHeader from '../components/PageHeader'
 import PageSkeleton from '../components/PageSkeleton'
 import EmptyState from '../components/EmptyState'
@@ -35,17 +36,9 @@ function sourceTag(s: PlanListItem['source']) {
 }
 
 function kindTag(k: PlanTask['kind']) {
-  const color = { practice: 'geekblue', review: 'purple', topic: 'cyan', contest: 'volcano' }[k]
-  const label = { practice: '练习', review: '回顾', topic: '专题', contest: '模拟赛' }[k]
-  return <Tag color={color}>{label}</Tag>
+  // 标签/配色单一真源在 ui.ts（与 Calendar 共用）
+  return <Tag color={KIND_COLOR[k]}>{KIND_LABEL[k]}</Tag>
 }
-
-const KIND_OPTIONS = [
-  { value: 'practice', label: '练习' },
-  { value: 'review', label: '回顾' },
-  { value: 'topic', label: '专题' },
-  { value: 'contest', label: '模拟赛' },
-]
 
 type PlanGenerationRequest = {
   days: number
@@ -104,7 +97,8 @@ export default function Plans() {
 
   const [detailLoading, setDetailLoading] = useState(false)
 
-  const openDetail = async (id: number) => {
+  // useCallback：cols 的 useMemo 引用它（否则 memo 每帧失效）
+  const openDetail = useCallback(async (id: number) => {
     setDetailLoading(true)
     setDetailOpen(true)
     try {
@@ -116,7 +110,7 @@ export default function Plans() {
     } finally {
       setDetailLoading(false)
     }
-  }
+  }, [message])
 
   const toggleCheckin = async (task: PlanTask) => {
     try {
@@ -131,7 +125,8 @@ export default function Plans() {
     }
   }
 
-  const removePlan = async (id: number) => {
+  // useCallback：cols 的 useMemo 引用它（否则 memo 每帧失效）
+  const removePlan = useCallback(async (id: number) => {
     try {
       await del(`/api/plans/${id}`)
       message.success('计划已删除')
@@ -139,7 +134,7 @@ export default function Plans() {
     } catch (e) {
       message.error((e as Error).message)
     }
-  }
+  }, [load, message])
 
   const openEdit = (t: PlanTask) => {
     setEditing(t)
@@ -208,11 +203,12 @@ export default function Plans() {
     }
   }
 
-  const cols: ColumnsType<PlanListItem> = [
+  // useMemo：196 行的 ColumnsType（含 render 闭包）不必每帧重建
+  const cols = useMemo<ColumnsType<PlanListItem>>(() => [
     {
       title: '计划',
       dataIndex: 'title',
-      render: (v: string, r) => <a onClick={() => openDetail(r.id)}>{v}</a>,
+      render: (v: string, r) => <a onClick={() => void openDetail(r.id)}>{v}</a>,
     },
     {
       title: '来源',
@@ -235,7 +231,7 @@ export default function Plans() {
           description="将删除该计划及其全部任务与打卡记录"
           okText="删除"
           cancelText="取消"
-          onConfirm={() => removePlan(r.id)}
+          onConfirm={() => void removePlan(r.id)}
         >
           <Button size="small" danger type="link">
             删除
@@ -243,7 +239,7 @@ export default function Plans() {
         </Popconfirm>
       ),
     },
-  ]
+  ], [openDetail, removePlan])
 
   // 按日期分组（仅展示排序，不改动数据本身）
   const groups: Array<{ date: string; tasks: PlanTask[] }> = []

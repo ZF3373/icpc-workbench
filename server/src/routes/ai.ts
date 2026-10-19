@@ -1,7 +1,6 @@
 import { Router, raw } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { AiConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
@@ -43,8 +42,7 @@ import {
 } from '../contests/participationSources.ts';
 import { PLATFORMS } from '../../../shared/src/index.ts';
 import type { ContestInfo } from '../../../shared/src/index.ts';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { SERVER_ROOT } from '../server-root.ts';
 
 /** /chat 请求中前端发来的消息轮次（校验前的宽松形态） */
 interface IncomingTurn {
@@ -137,7 +135,7 @@ export function setAssistantPromptTemplate(tpl: string): void {
 export function ASSISTANT_PROMPT_TEMPLATE(): string {
   if (promptOverride !== null) return promptOverride;
   if (promptFromDisk === null) {
-    promptFromDisk = fs.readFileSync(path.join(__dirname, '..', 'ai', 'assistant-prompt.md'), 'utf8');
+    promptFromDisk = fs.readFileSync(path.join(SERVER_ROOT, 'src', 'ai', 'assistant-prompt.md'), 'utf8');
   }
   return promptFromDisk;
 }
@@ -147,7 +145,7 @@ let titlePromptFromDisk: string | null = null;
 
 export function TITLE_PROMPT_TEMPLATE(): string {
   if (titlePromptFromDisk === null) {
-    titlePromptFromDisk = fs.readFileSync(path.join(__dirname, '..', 'ai', 'title-prompt.md'), 'utf8');
+    titlePromptFromDisk = fs.readFileSync(path.join(SERVER_ROOT, 'src', 'ai', 'title-prompt.md'), 'utf8');
   }
   return titlePromptFromDisk;
 }
@@ -788,12 +786,13 @@ export function aiRoutes(
           signal: abortController.signal,
           onFinish: (r, tc) => { finishReason = r; pendingToolCalls = tc; },
           onReasoning: (chunk) => {
-            res.write(`data: ${JSON.stringify({ reasoning: chunk })}\n\n`);
+            // 与后续轮次/降级路径同款守卫：客户端断连后 res.write 会抛 ERR_STREAM_WRITE_AFTER_END
+            if (!res.writableEnded) res.write(`data: ${JSON.stringify({ reasoning: chunk })}\n\n`);
           },
           onUsage: (u) => { usage = u; },
         });
         for await (const delta of stream) {
-          res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+          if (!res.writableEnded) res.write(`data: ${JSON.stringify({ delta })}\n\n`);
         }
       } catch (firstError) {
         if (abortController.signal.aborted || !isDataInspectionFailure(firstError)) throw firstError;
@@ -822,7 +821,8 @@ export function aiRoutes(
       }
 
       // 检测 tool_calls：通过工具注册表统一执行（不再硬编码 web_search 分支）
-      console.error('[AI chat] 第一轮结束, finishReason=', finishReason, 'toolCalls=', pendingToolCalls?.length ?? 0);
+      // 正常流程日志走 console.log（console.error 会污染错误检索/告警统计）
+      console.log('[AI chat] 第一轮结束, finishReason=', finishReason, 'toolCalls=', pendingToolCalls?.length ?? 0);
       if (finishReason === 'tool_calls' && pendingToolCalls && pendingToolCalls.length > 0) {
         // 工具调用往返循环：AI 可能连续多次请求工具（第一轮搜了不够，想再搜一次）
         // 最多循环 MAX_TOOL_ROUNDS 轮防止无限循环；最后一轮强制收尾（见 MAX_TOOL_ROUNDS 注释）
@@ -899,7 +899,7 @@ export function aiRoutes(
           // 最后一轮：注入「直接回答」提示并关闭 DSML 解析 —— 即使模型仍尝试发起
           // 工具调用也只当作噪音过滤（文本部分照常输出），保证一定有一条最终回答流
           const forcedFinal = round === MAX_TOOL_ROUNDS - 1;
-          console.error('[AI chat] 轮次', round + 2, '开始, 消息数=', roundMsgs.length);
+          console.log('[AI chat] 轮次', round + 2, '开始, 消息数=', roundMsgs.length);
           try {
             const streamN = provider.chatStream(
               forcedFinal ? [...roundMsgs, { role: 'user', content: TOOL_ROUND_LIMIT_NOTICE }] : roundMsgs,
@@ -966,7 +966,7 @@ export function aiRoutes(
             break;
           }
 
-          console.error('[AI chat] 轮次', round + 2, '结束, finishReason=', finishReason, 'toolCalls=', nextToolCalls?.length ?? 0);
+          console.log('[AI chat] 轮次', round + 2, '结束, finishReason=', finishReason, 'toolCalls=', nextToolCalls?.length ?? 0);
 
           // 强制收尾轮必然结束（DSML 解析已关，不会再有 tool_calls）
           if (forcedFinal) break;

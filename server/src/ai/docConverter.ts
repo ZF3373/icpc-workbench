@@ -149,8 +149,10 @@ async function convertXlsx(data: Uint8Array): Promise<ConvertResult> {
       continue;
     }
     totalRows += rows.length;
-    // GFM 表格：表头 + 分隔行 + 数据行
-    const colCount = Math.max(...rows.map((r) => r.length));
+    // GFM 表格：表头 + 分隔行 + 数据行。列数用循环求最大：大 xlsx 行数可达百万，
+    // Math.max(...rows.map()) 的展开会超调用栈（优化计划 #15）
+    let colCount = 0;
+    for (const r of rows) if (r.length > colCount) colCount = r.length;
     const header = rows[0].length > 0 ? rows[0] : Array(colCount).fill('');
     parts.push(`| ${header.map((c) => c || '').join(' | ')} |`);
     parts.push(`| ${header.map(() => '---').join(' | ')} |`);
@@ -427,7 +429,9 @@ async function convertEpub(data: Uint8Array): Promise<ConvertResult> {
 
 /** 把二维数组渲染为 GFM Markdown 表格 */
 function rowsToMarkdownTable(rows: string[][]): string {
-  const colCount = Math.max(...rows.map((r) => r.length));
+  // 列数用循环求最大：行数多时 Math.max(...rows.map()) 展开会栈溢出（优化计划 #15）
+  let colCount = 0;
+  for (const r of rows) if (r.length > colCount) colCount = r.length;
   const header = rows[0] ?? [];
   const lines: string[] = [];
   lines.push(`| ${header.map((c) => c || '').join(' | ')} |`);

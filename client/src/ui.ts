@@ -171,8 +171,54 @@ export const PLATFORM_COLOR: Record<PlatformId, string> = {
   qoj: '#b18cff', // QOJ / Universal Cup：暗色底可读的紫罗兰
 }
 
+// id→name 的 O(1) 索引：platformName 在列表渲染等热路径被逐行调用，
+// 每次 PLATFORMS.find 线性扫（menuConfig 同场景已用 Map，此处对齐口径）
+const PLATFORM_NAME_BY_ID = new Map<string, string>(PLATFORMS.map((p) => [p.id as string, p.name]))
+
 export function platformName(id: PlatformId): string {
-  return PLATFORMS.find((p) => p.id === id)?.name ?? id
+  return PLATFORM_NAME_BY_ID.get(id) ?? id
+}
+
+/* ============================================================
+   三·五、训练任务类型（kind）单一真源
+   ============================================================ */
+
+/** 训练任务的四种类型（与 shared 的 TodayPlanTask.kind / types.ts 的 PlanTask.kind 同口径） */
+export type TaskKind = 'practice' | 'review' | 'topic' | 'contest'
+
+/** kind → 中文标签（Plans 的 kindTag 与 Calendar 的 KIND_LABEL 原为两份独立实现） */
+export const KIND_LABEL: Record<TaskKind, string> = {
+  practice: '练习',
+  review: '回顾',
+  topic: '专题',
+  contest: '模拟赛',
+}
+
+/** kind → antd Tag 配色（同上，两份实现已漂移风险高）。回顾用 gold：全站去紫（见 UI 优化方案），四类型蓝/金/青/橙红色环分布均匀 */
+export const KIND_COLOR: Record<TaskKind, string> = {
+  practice: 'geekblue',
+  review: 'gold',
+  topic: 'cyan',
+  contest: 'volcano',
+}
+
+/** 新建计划时的类型下拉选项 */
+export const KIND_OPTIONS: Array<{ value: TaskKind; label: string }> = [
+  { value: 'practice', label: KIND_LABEL.practice },
+  { value: 'review', label: KIND_LABEL.review },
+  { value: 'topic', label: KIND_LABEL.topic },
+  { value: 'contest', label: KIND_LABEL.contest },
+]
+
+/** 字节数的人类可读格式化（Assistant 的 fmtBytes 与 Settings 的 formatBytes 两份实现精度不一） */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  const kb = bytes / 1024
+  if (kb < 1024) return `${kb.toFixed(kb >= 100 ? 0 : 1)} KB`
+  const mb = kb / 1024
+  if (mb < 1024) return `${mb.toFixed(1)} MB`
+  return `${(mb / 1024).toFixed(2)} GB`
 }
 
 /* ============================================================
@@ -314,14 +360,16 @@ export function gapColor(gap: number): string {
    六、知识点标签散列色
    ============================================================ */
 
-/** 标签散列配色：同一标签永远取同一颜色（分类栏圆点标记用）。固定色板，不跟随主题 */
+/** 标签散列配色：同一标签永远取同一颜色（分类栏圆点标记用）。固定色板，不跟随主题。
+ *  含 #9fb8d9（灰蓝）：原 #c080ff 紫在全站去紫时替换（UI 优化方案 §配色收敛），
+ *  所有标签颜色 hash 重排一次是已知取舍 */
 const TAG_PALETTE = [
   '#86a8ff',
   '#69d7a5',
   '#f2c46d',
   '#ff7b84',
   '#45d5e5',
-  '#c080ff',
+  '#9fb8d9',
   '#ffbd61',
   '#58a3ff',
   '#8ee7c0',

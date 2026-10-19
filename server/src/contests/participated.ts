@@ -6,6 +6,7 @@ import type { AuthoritativeContest, ContestProblemRef, ParticipationSources } fr
 import { renderStatementSection } from './problemStatements.ts';
 import { isCfGymContestId } from './problemSetShape.ts';
 import { readContestProblemSet } from './problemSetCache.ts';
+import { splitCodeforcesProblemKey } from '../adapters/problemKey.ts';
 
 /**
  * 赛后复盘：从提交记录推导「参加过的比赛」（只读，不改 schema）。
@@ -89,15 +90,14 @@ export function contestIdOf(platform: PlatformId, problemKey: string, url: strin
   switch (platform) {
     case 'codeforces': {
       // 纯数字题号（如 92101 = 比赛 921 + 题号 01，见 problemKey.ts 的实测记录）：
-      // 贪婪 \d+ 会把比赛号错拆成 9210，先试 url 里的 /contest/N/，再退回「末 2 位是题号」
+      // 贪婪 \d+ 会把比赛号错拆成 9210。拆分规则统一走 adapters/problemKey.ts 的
+      // splitCodeforcesProblemKey（与适配器 problemUrl 同一真源）；有 url 时优先取 url 里的
+      // /contest/N/ 或 /gym/N/，URL 是平台侧的权威归属，能纠正库内任何历史脏键。
       if (/^\d+$/.test(problemKey)) {
-        const fromUrl = url ? /codeforces\.com\/contests?\/(\d+)/.exec(url) : null;
-        if (fromUrl) return fromUrl[1];
-        const m = /^(\d+?)(\d{2})$/.exec(problemKey);
-        return m ? m[1] : null;
+        const fromUrl = url ? /codeforces\.com\/(?:contests?|gym)\/(\d+)/.exec(url) : null;
+        if (fromUrl) return fromUrl[1]!;
       }
-      const m = /^(\d+)(.+)$/.exec(problemKey);
-      return m ? m[1] : null;
+      return splitCodeforcesProblemKey(problemKey)?.contestId ?? null;
     }
     case 'atcoder': {
       const m = url ? /atcoder\.jp\/contests\/([^/]+)\//.exec(url) : null;
@@ -677,7 +677,7 @@ export function resolveContestGroup(
 /** Resolve every review group from one shared submission index (for aggregate views). */
 export function resolveAllContestGroups(
   db: Db,
-  opts?: { calendar?: ContestInfo[]; sources?: ParticipationSources['byPlatform'] },
+  opts?: { calendar?: ContestInfo[]; sources?: ParticipationSources['byPlatform']; targetPlatform?: PlatformId },
 ): ContestReviewData[] {
   const reviews: ContestReviewData[] = [];
   for (const { platform, group } of buildContestIndex(db, opts).values()) {

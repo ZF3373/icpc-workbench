@@ -76,6 +76,11 @@ CREATE TABLE IF NOT EXISTS problems (
   gap_checked_at TEXT,
   UNIQUE (platform, problem_key)
 );
+-- 原题身份生成列 problems.identity（洛谷 CF / AtCoder 镜像归一到同一个 identity）与它的索引
+-- 都由 db/index.ts 的 v0.11 迁移创建：表达式唯一来源是 problems/identity.ts 的
+-- IDENTITY_COLUMN_EXPR，写进 schema.sql 就等于复制一份口径，必然有一天两边不一致。
+-- 必须用 VIRTUAL（SQLite 不允许 ALTER TABLE 追加 STORED 列）。
+-- ⚠️ 注意 PRAGMA table_info 看不到生成列（要用 table_xinfo），迁移判存在性时别用错。
 -- 难度过滤/排序（题库页 ORDER BY difficulty、stats 难度分布）在 2 万题规模上依赖此索引
 CREATE INDEX IF NOT EXISTS idx_problems_difficulty ON problems(difficulty);
 

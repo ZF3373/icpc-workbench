@@ -448,7 +448,9 @@ export default function Problems() {
   }
 
   /** 打开单题知识点校正弹窗：首次加载体系树，再取当前标注预填 */
-  const openKpEditor = async (r: ProblemRow) => {
+  // useCallback：表格 columns（useMemo）引用这些 handler，不稳定的化法会让 memo 失效；
+  // 各 handler 只依赖 loadRef（ref，恒稳定）与 message/modal（antd 实例，稳定）
+  const openKpEditor = useCallback(async (r: ProblemRow) => {
     setKpEditRow(r)
     setKpCodes([])
     try {
@@ -473,7 +475,7 @@ export default function Problems() {
     } catch (e) {
       message.error((e as Error).message)
     }
-  }
+  }, [kpTree, message])
 
   /** 保存人工标注：整题覆盖写 source=manual，重跑管线不覆盖 */
   const saveKp = async () => {
@@ -497,10 +499,10 @@ export default function Problems() {
    * 入口在难度单元格上：上游确实给不出难度的题（负缓存「无官方难度」、洛谷永久未评级、
    * gym 官方 Unrated）永远等不到回填结果，只能由用户自己标定。
    */
-  const openDiffEditor = (r: ProblemRow) => {
+  const openDiffEditor = useCallback((r: ProblemRow) => {
     setDiffEditRow(r)
     setDiffEditValue(r.difficulty)
-  }
+  }, [])
 
   /**
    * 保存/清除手动难度（PATCH /api/problems/:platform/:key/difficulty）。
@@ -760,7 +762,7 @@ export default function Problems() {
    * 不逐题弹提示、不逐题重取列表（批量栏跑完统一汇报一次并刷新一次），失败改为向上抛出，
    * 由批量执行器计数——单条调用（quiet 缺省）行为与改造前完全一致。
    */
-  const markAc = async (r: ProblemRow, quiet = false) => {
+  const markAc = useCallback(async (r: ProblemRow, quiet = false) => {
     try {
       await post('/api/import/manual', {
         platform: r.platform,
@@ -782,10 +784,10 @@ export default function Problems() {
       if (quiet) throw e
       message.error((e as Error).message)
     }
-  }
+  }, [message])
 
   /** 加入复习队列（单条）。`quiet` 同上：批量加入时不逐题提示、不逐题刷新 */
-  const addToReview = async (r: ProblemRow, quiet = false) => {
+  const addToReview = useCallback(async (r: ProblemRow, quiet = false) => {
     try {
       const res = await post<{ alreadyInQueue: boolean; nextDueOn: string }>('/api/reviews', {
         platform: r.platform,
@@ -801,9 +803,9 @@ export default function Problems() {
       if (quiet) throw e
       message.error((e as Error).message)
     }
-  }
+  }, [message])
 
-  const removeFromReview = async (r: ProblemRow) => {
+  const removeFromReview = useCallback(async (r: ProblemRow) => {
     if (r.reviewItemId == null) return
     try {
       await del(`/api/reviews/${r.reviewItemId}`)
@@ -812,11 +814,11 @@ export default function Problems() {
     } catch (e) {
       message.error((e as Error).message)
     }
-  }
+  }, [message])
 
   // 删除题目（issue #27：题库重复题目没有删除入口）。用于清理跨平台镜像/误导入的行；
   // 服务端连带删除该题的提交、复习条目、卡点与知识点标注，此处把代价讲清楚再让用户确认。
-  const removeProblem = (r: ProblemRow) => {
+  const removeProblem = useCallback((r: ProblemRow) => {
     modal.confirm({
       title: `删除题目 ${r.problem_key}？`,
       content: (
@@ -852,7 +854,7 @@ export default function Problems() {
         }
       },
     })
-  }
+  }, [modal, message, reloadFacets, reloadUnfilteredFacets, loadTrash])
 
   // ---------- 批量操作（P3-1） ----------
 
@@ -1089,7 +1091,9 @@ export default function Problems() {
     setSort((prev) => (prev?.field === next?.field && prev?.order === next?.order ? prev : next))
   }
 
-  const cols: ColumnsType<ProblemRow> = [
+  // useMemo：约 200 行的 ColumnsType（含全部 render 闭包与 Dropdown 菜单）不必每帧重建；
+  // 依赖 sort/menuRowId（受控排序与行菜单的展示态）与 5 个 useCallback 化的行操作
+  const cols = useMemo<ColumnsType<ProblemRow>>(() => [
     {
       title: '平台',
       dataIndex: 'platform',
@@ -1284,7 +1288,7 @@ export default function Problems() {
         </Space>
       ),
     },
-  ]
+  ], [sort, menuRowId, message, markAc, addToReview, removeFromReview, removeProblem, openKpEditor, openDiffEditor])
 
   const diffDistMax = Math.max(1, ...diffDist.map((d) => d.count))
   const platMax = Math.max(1, ...platDist.map((d) => d.count))

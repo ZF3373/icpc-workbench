@@ -1,9 +1,11 @@
 import express from 'express';
 import { Router } from 'express';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { SERVER_ROOT } from '../server-root.ts';
 
-let publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+// 锚定 server 根而非模块目录：bundle 到 server/dist/sea.cjs 后，
+// `__dirname/../public` 会指向 server/public（不存在），/widget 整页 404
+let publicDir = path.join(SERVER_ROOT, 'src', 'public');
 
 /**
  * 轻量 Web 挂件：GET /widget 由 Express 直接服务零依赖单页，

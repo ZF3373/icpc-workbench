@@ -467,6 +467,17 @@ export function knowledgeTagsSql(_db: Db): string {
  * 再由调用方 LEFT JOIN —— 避免标量子查询逐行重跑（题库 2 万题时的主要开销）。
  * 来源过滤与标量版严格一致（tag/rule/manual；含 manual 的理由见 knowledgeTagsSql 注释）。
  * 用法：`WITH ${problemKeypointsCte(db)} SELECT ... ${knowledgeTagsCoalesceSql()} FROM problems p ${knowledgeTagsJoinSql()}`
+ *
+ * 适用面（实测，2026-10 真实库 1.9 万题 / 4.8 万标注）：**全表/大面积扫描**才划算
+ * （today 候选这种单次输出 1.8 万行的查询，切到 CTE 后标量标签那一段从约 40ms 降到约 10ms），
+ * 因为 CTE 的固定成本是整张 problem_keypoints 的聚合 + 排序（约 30–65ms）。
+ * 只取几十上百行的投影**不要**切过来：复习列表 3 条 0.04ms→0.07ms、2000 条 11.7ms→13.2ms、
+ * fetchRows 984 行 2.2ms→30ms，都是标量版更快 —— 每行的两次索引点查在命中索引时几乎免费，
+ * 整表聚合反而成了大头。
+ *
+ * ⚠️ tags 的**字节序**依赖聚合的扫描顺序：给 problem_keypoints 加覆盖索引会改变
+ * `json_group_array(name)` 的元素顺序（实测 `["分治","交互"]` → `["交互","分治"]`），
+ * 即使口径相同也会让接口输出变化。要加索引前先用真实库对比 tags 输出。
  */
 export function problemKeypointsCte(_db: Db): string {
   return (
