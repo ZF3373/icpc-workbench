@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Button, Card, Col, Input, Pagination, Row, Segmented, Select, Tag, Tooltip } from 'antd'
-import { ClockCircleOutlined, RedoOutlined, RobotOutlined, SearchOutlined } from '@ant-design/icons'
+import { BarChartOutlined, ClockCircleOutlined, RedoOutlined, RobotOutlined, SearchOutlined } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
 import PageSkeleton from '../components/PageSkeleton'
 import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
+import ContestAnalysisModal from '../components/ContestAnalysisModal'
 import { api } from '../api'
 import { platformName } from '../ui'
 import {
@@ -205,6 +206,9 @@ export default function Contests() {
   const platformOptions = tab === 'participated' ? [...CALENDAR_PLATFORMS, { value: 'qoj', label: 'QOJ' }] : CALENDAR_PLATFORMS
   const reload = () => void load(requestKey, true)
 
+  // 单场赛时分析弹窗：每张参赛卡一个「赛事分析」按钮，一次只开一场
+  const [analysisContest, setAnalysisContest] = useState<ParticipatedContest | null>(null)
+
   return (
     <div className="contests-page" aria-busy={loading}>
       <PageHeader title="赛事中心" description="挑选下一场比赛，回顾参赛表现，跟进补题。" extra={
@@ -271,7 +275,8 @@ export default function Contests() {
             { label: '重新加载', onClick: reload },
           ]} /></Card>
           : tab === 'participated' ? <Row gutter={[16, 16]}>{historyPage.map(c => <Col xs={24} lg={12} xl={8} key={c.key}>
-            <ParticipationCard contest={c} onReview={() => nav(`/ai?contest=${encodeURIComponent(c.key)}`)} />
+            <ParticipationCard contest={c} onReview={() => nav(`/ai?contest=${encodeURIComponent(c.key)}`)}
+              onAnalyze={() => setAnalysisContest(c)} />
           </Col>)}</Row>
             : tab === 'running' ? <Row gutter={[16, 16]}>{items.map(c => <Col xs={24} lg={12} xl={8} key={c.id}>
               <CalendarCard contest={c} mode={tab} />
@@ -282,11 +287,12 @@ export default function Contests() {
               </section>)}
       {ready && total > PAGE_SIZE && <div className="contest-pagination"><Pagination current={page} total={total} pageSize={PAGE_SIZE}
         showSizeChanger={false} showLessItems onChange={value => setView({ page: value })} showTotal={count => `共 ${count} 场`} /></div>}
+      {analysisContest && <ContestAnalysisModal contest={analysisContest} onClose={() => setAnalysisContest(null)} />}
     </div>
   )
 }
 
-function ParticipationCard({ contest: c, onReview }: { contest: ParticipatedContest; onReview: () => void }) {
+function ParticipationCard({ contest: c, onReview, onAnalyze }: { contest: ParticipatedContest; onReview: () => void; onAnalyze: () => void }) {
   const progress = upsolveProgress(c)
   const evidence = EVIDENCE_TAG[c.evidence] ?? { color: 'default', label: '依据待确认', detail: '暂无法识别这条参赛记录的依据。' }
   const ratingStatus = c.ratingStatus ?? (c.source?.ratingChange == null ? 'pending' : 'rated')
@@ -311,7 +317,10 @@ function ParticipationCard({ contest: c, onReview }: { contest: ParticipatedCont
       {progress.status === 'complete' ? '已全部 AC' : progress.status === 'pending' ? `还有 ${progress.remaining} 题待补` : c.acCountIsLowerBound ? '提交明细不全，AC 为已知下限，补题进度待确认' : c.submissionCount === 0 ? '缺少逐条提交，补题进度待确认' : '总题数未同步，补题进度待确认'}
     </div>
     {c.accounts && c.accounts.length > 1 && <div className="contest-footnote">合并账号：{c.accounts.join('、')}；{c.source?.account ? `排名、Rating 与赛中 AC 来自 ${c.source.account}` : '赛中 AC 按账号合并'}。</div>}
-    <Button size="small" type="link" icon={<RobotOutlined />} className="contest-review-action" onClick={onReview}>去 AI 复盘</Button>
+    <div className="contest-card-actions">
+      <Button size="small" type="link" icon={<BarChartOutlined />} className="contest-review-action" onClick={onAnalyze}>赛事分析</Button>
+      <Button size="small" type="link" icon={<RobotOutlined />} className="contest-review-action" onClick={onReview}>去 AI 复盘</Button>
+    </div>
   </Card>
 }
 

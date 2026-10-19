@@ -677,7 +677,7 @@ export function resolveContestGroup(
 /** Resolve every review group from one shared submission index (for aggregate views). */
 export function resolveAllContestGroups(
   db: Db,
-  opts?: { calendar?: ContestInfo[]; sources?: ParticipationSources['byPlatform'] },
+  opts?: { calendar?: ContestInfo[]; sources?: ParticipationSources['byPlatform']; targetPlatform?: PlatformId },
 ): ContestReviewData[] {
   const reviews: ContestReviewData[] = [];
   for (const { platform, group } of buildContestIndex(db, opts).values()) {

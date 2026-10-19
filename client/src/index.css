@@ -2678,6 +2678,13 @@ button.dist-row:hover {
 .contest-progress-note.is-pending { color: var(--amber); }
 .contest-review-action.ant-btn { align-self: flex-start; padding: 0; }
 
+/* 参赛卡底部动作区：「赛事分析」与「去 AI 复盘」并排沉底 */
+.contest-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
 @media (max-width: 640px) {
   .contest-tabs .ant-segmented { min-width: 0; }
   .contest-tabs .ant-segmented-item-label { padding-inline: 6px; }

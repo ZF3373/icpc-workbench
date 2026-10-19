@@ -27,11 +27,17 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     ratingStatus: contestRatingStatus(contest),
   }));
 
-  const currentContestAnalysis = async (): Promise<ContestAnalysisResponse> => {
+  const currentContestAnalysis = async (targetKey?: string): Promise<ContestAnalysisResponse> => {
     const calendar = await calendarCache.load(db);
     const snapshot = readParticipationSnapshot(db);
     const contests = deriveParticipatedContests(db, { calendar, sources: snapshot.byPlatform });
-    return { contests: deriveContestAnalysis(db, contests, { calendar, sources: snapshot.byPlatform }) };
+    return {
+      contests: deriveContestAnalysis(db, contests, { calendar, sources: snapshot.byPlatform, targetKey }),
+      // 标签选择框候选：该用户已用过的赛时标签（多次使用的排前），不掺入题库全局词表
+      usedTags: (db.prepare(`SELECT tag, COUNT(*) AS uses FROM contest_analysis_tags
+        WHERE user_id = ? GROUP BY tag ORDER BY uses DESC, tag COLLATE NOCASE`)
+        .all(DEFAULT_USER_ID) as Array<{ tag: string; uses: number }>).map(row => row.tag),
+    };
   };
 
   const parseTagIdentity = (body: unknown): AnalysisTagIdentity | null => {
@@ -143,8 +149,15 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   }));
 
   // GET /api/contests/analysis: isolated projection over reliably attributed submissions.
-  r.get('/analysis', asyncHandler(async (_req, res) => {
-    res.json(await currentContestAnalysis());
+  // ?contestKey=codeforces:1877 → 只推导这一场（赛事中心单场弹窗）；该场不满足
+  // 可靠归属（证据不足/时间窗缺失）时返回 404，前端据此展示「这场没有可分析数据」。
+  r.get('/analysis', asyncHandler(async (req, res) => {
+    const contestKey = typeof req.query.contestKey === 'string' ? req.query.contestKey : undefined;
+    const analysis = await currentContestAnalysis(contestKey && /^[a-z]+:[\w.-]+$/.test(contestKey) ? contestKey : undefined);
+    if (contestKey && analysis.contests.length === 0) {
+      return res.status(404).json({ error: '这场比赛缺少可靠的赛时数据，无法生成赛时分析。' });
+    }
+    res.json(analysis);
   }));
 
   // PUT /api/contests/analysis/tags: save a user-owned tag for one contest problem.
@@ -156,7 +169,8 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     db.prepare(`INSERT INTO contest_analysis_tags (user_id, contest_key, platform, problem_key, tag)
       VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id, contest_key, platform, problem_key, tag) DO NOTHING`)
       .run(DEFAULT_USER_ID, item.contestKey, item.platform, item.problemKey, item.tag);
-    res.json({ tags: readProblemTags(item) });
+    const { usedTags } = await currentContestAnalysis();
+    res.json({ tags: readProblemTags(item), usedTags: usedTags ?? [] });
   }));
 
   // DELETE /api/contests/analysis/tags: remove only the selected contest-scoped tag.
@@ -166,7 +180,8 @@ export function contestsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     db.prepare(`DELETE FROM contest_analysis_tags
       WHERE user_id = ? AND contest_key = ? AND platform = ? AND problem_key = ? AND tag = ?`)
       .run(DEFAULT_USER_ID, item.contestKey, item.platform, item.problemKey, item.tag);
-    res.json({ tags: readProblemTags(item) });
+    const { usedTags } = await currentContestAnalysis();
+    res.json({ tags: readProblemTags(item), usedTags: usedTags ?? [] });
   }));
 
   return r;

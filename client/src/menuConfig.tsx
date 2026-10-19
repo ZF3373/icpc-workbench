@@ -5,7 +5,6 @@
 import type { ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 import {
-  BarChartOutlined,
   CalendarOutlined,
   CodeOutlined,
   DashboardOutlined,
@@ -40,7 +39,6 @@ export const MENU: MenuMeta[] = [
   { key: '/calendar', icon: <CalendarOutlined />, label: '日历打卡' },
   { key: '/reviews', icon: <ReadOutlined />, label: '复习库' },
   { key: '/contests', icon: <FlagOutlined />, label: '赛事中心' },
-  { key: '/contest-analysis', icon: <BarChartOutlined />, label: '赛时分析' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' },
   { key: '/about', icon: <InfoCircleOutlined />, label: '关于' },
 ]
@@ -61,7 +59,7 @@ export interface MenuGroup {
  * 三组任务流（UI 优化方案 §4.1，含后续调整）：
  * - 训练：今天做什么、怎么学、怎么练 —— 今日训练 / AI 助手 / 模板库 / 训练计划
  * - 题库：找题、整理、练与复习 —— 题目管理 / 题单整理 / 复习库 / 掌握度地图
- * - 赛事：报名参赛 —— 赛事中心
+ * - 赛事：报名参赛 —— 赛事中心（赛时分析已融合进「我参加的」单场弹窗）
  *
  * 与文档表格的两处有意偏差（文档漏了路由，照抄会丢入口）：
  * 1. `/lists`（题单整理）文档未列出，归入「题库」（它就是整理题目的地方）；
@@ -76,7 +74,7 @@ export interface MenuGroup {
 export const MENU_GROUPS: MenuGroup[] = [
   { key: 'training', label: '训练', items: ['/today', '/ai', '/templates', '/plans'] },
   { key: 'bank', label: '题库', items: ['/problems', '/lists', '/reviews', '/mastery'] },
-  { key: 'contest', label: '赛事', items: ['/contests', '/contest-analysis'] },
+  { key: 'contest', label: '赛事', items: ['/contests'] },
 ]
 
 /** 固定项（不在分组内、不可拖拽）：数据概览置顶，日历打卡紧随其下（每日练习入口） */

@@ -15,7 +15,6 @@ const About = lazy(() => import('./pages/About'))
 const Today = lazy(() => import('./pages/Today'))
 const Reviews = lazy(() => import('./pages/Reviews'))
 const Contests = lazy(() => import('./pages/Contests'))
-const ContestAnalysis = lazy(() => import('./pages/ContestAnalysis'))
 const Templates = lazy(() => import('./pages/Templates'))
 const Mastery = lazy(() => import('./pages/Mastery'))
 import PageSkeleton from './components/PageSkeleton'
@@ -143,7 +142,6 @@ export default function App() {
               <Route path="/calendar" element={<CalendarPage />} />
               <Route path="/reviews" element={<Reviews />} />
               <Route path="/contests" element={<Contests />} />
-              <Route path="/contest-analysis" element={<ContestAnalysis />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/about" element={<About />} />
             </Routes>
