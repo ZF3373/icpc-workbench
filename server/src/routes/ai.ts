@@ -13,6 +13,8 @@ import '../ai/search.ts';
 import '../ai/fetch-url.ts';
 // 导入 fetch-editorial.ts 触发 fetch_editorial 工具注册（副作用导入）
 import '../ai/fetch-editorial.ts';
+// 导入 read-template.ts 触发 read_template 工具注册（按需查询模板库内容，副作用导入）
+import '../ai/read-template.ts';
 import '../ai/read-problem.ts';
 import { extractPdfText, truncatePdfText, isPdfContentType, isPdfFilename } from '../ai/pdf.ts';
 import { convertDocument, isDocumentFile } from '../ai/docConverter.ts';
@@ -893,7 +895,7 @@ export function aiRoutes(
             // 因此这里把工具名与关键参数也发出去，前端据此显示「正在检索…」这类进度。
             const query = typeof args.query === 'string' ? args.query : '';
             const detail =
-              typeof args.url === 'string' ? args.url : typeof args.problemKey === 'string' ? `${args.platform ?? ''}/${args.problemKey}` : typeof args.problem === 'string' ? args.problem : '';
+              typeof args.url === 'string' ? args.url : typeof args.problemKey === 'string' ? `${args.platform ?? ''}/${args.problemKey}` : typeof args.problem === 'string' ? args.problem : typeof args.templateId === 'string' ? args.templateId : '';
             if (!res.writableEnded) {
               res.write(`data: ${JSON.stringify({ tool: { name: tc.function.name, detail } })}\n\n`);
               // 兼容既有前端事件（web_search 的检索词）

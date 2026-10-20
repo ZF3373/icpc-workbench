@@ -47,6 +47,7 @@ const TOOL_LABELS: Record<string, string> = {
   fetch_url: '正在读取网页',
   fetch_editorial: '正在查找题解',
   read_problem: '正在读取题面',
+  read_template: '正在查看模板库',
 }
 
 /** 进度文案里附带参数的最大长度（详情可能是长 URL） */
