@@ -3,6 +3,13 @@ import assert from 'node:assert/strict'
 import { getAppZoom, setupAppZoom } from '../src/appZoom'
 import { getZoomPreferences, setZoomPreference, subscribeZoomPreferences } from '../src/zoomPreferences'
 
+class WheelTarget {
+  constructor(private selectors: string[]) {}
+  closest(selector: string) {
+    return this.selectors.includes(selector) ? this : null
+  }
+}
+
 describe('全局缩放快捷键', () => {
   let target: EventTarget
   let styles: Map<string, string>
@@ -14,6 +21,7 @@ describe('全局缩放快捷键', () => {
     storage = new Map()
     target = new EventTarget()
     const globals = {
+      Element: WheelTarget,
       window: {
         addEventListener: (type: string, listener: EventListener, options: boolean | AddEventListenerOptions) =>
           target.addEventListener(type, listener, typeof options === 'boolean' ? { capture: options } : options),
@@ -48,6 +56,41 @@ describe('全局缩放快捷键', () => {
     target.dispatchEvent(event)
     return event
   }
+  function wheel(selectors: string[], deltaY = -100, options: Record<string, unknown> = {}) {
+    const event = new Event('wheel', { cancelable: true })
+    Object.assign(event, { ctrlKey: true, deltaY, ...options })
+    Object.defineProperty(event, 'target', { value: new WheelTarget(selectors) })
+    target.dispatchEvent(event)
+    return event
+  }
+
+  it('仅 AI 助手消息支持滚轮文字缩放，其他页面及非正文区域保持不变', () => {
+    cleanup = setupAppZoom()
+    const message = ['[data-ai-page]', '.assistant-message-text']
+    wheel(message)
+    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 110 })
+    wheel(message, 100)
+    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 100 })
+
+    for (const selectors of [
+      ['.markdown-body'], ['.cm-editor'], ['textarea'], ['.ant-table-wrapper'],
+      ['.ant-card-body'], ['.page-content'], ['.assistant-message-text'],
+      ['[data-ai-page]'],
+      [...message, 'button, [role="button"], .md-code-head'],
+    ]) {
+      assert.equal(wheel(selectors).defaultPrevented, true)
+      assert.deepEqual(getZoomPreferences(), { global: 100, reply: 100 })
+    }
+    assert.equal(wheel(message, -100, { ctrlKey: false }).defaultPrevented, false)
+    assert.equal(wheel(message, -100, { altKey: true }).defaultPrevented, false)
+    assert.equal(wheel(message, 0).defaultPrevented, false)
+    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 100 })
+    key('+')
+    assert.deepEqual(getZoomPreferences(), { global: 110, reply: 100 })
+    cleanup()
+    assert.equal(wheel(message).defaultPrevented, false)
+    assert.deepEqual(getZoomPreferences(), { global: 110, reply: 100 })
+  })
 
   it('主键盘与小键盘加减、恢复默认，并阻止浏览器重复缩放', () => {
     cleanup = setupAppZoom()
