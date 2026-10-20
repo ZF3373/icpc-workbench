@@ -14,16 +14,20 @@ export async function chatWithProblemReading(
   for (let round = 0; round < 4; round++) {
     ctx.signal?.throwIfAborted();
     let calls: ToolCall[] | undefined;
+    // 本轮思维链：DeepSeek 思考模式要求携带 tools 的请求回传前序轮次 reasoning_content，
+    // 否则读题第二轮起 API 返回 400、整次生成失败（issue 50，与流式工具循环同根因）
+    let reasoning = '';
     const final = round === 3;
     const raw = await provider.chat(messages, {
       tools: final ? undefined : [readProblemTool.definition],
       parseDsmlTools: !final, signal: ctx.signal,
       onFinish: (_reason, tc) => { calls = tc; },
+      onReasoning: (chunk) => { reasoning += chunk; },
     });
     ctx.signal?.throwIfAborted();
     if (!calls?.length || final) return raw;
     if (calls.length > 8) throw new Error('单轮读题请求过多');
-    messages.push({ role: 'assistant', content: raw, tool_calls: calls });
+    messages.push({ role: 'assistant', content: raw, tool_calls: calls, ...(reasoning ? { reasoning_content: reasoning } : {}) });
     for (const call of calls) {
       ctx.signal?.throwIfAborted();
       let content: string;

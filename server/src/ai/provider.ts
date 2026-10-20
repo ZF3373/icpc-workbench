@@ -42,6 +42,12 @@ export interface ChatMessage {
   content: string | ChatContentBlock[];
   /** assistant 消息携带的 tool_calls（AI 请求调用工具时填充） */
   tool_calls?: ToolCall[];
+  /**
+   * assistant 消息的思维链（DeepSeek 思考模式 reasoning_content）。
+   * DeepSeek 官方要求：请求携带 tools 时，前序轮次的 reasoning_content 必须完整回传，
+   * 否则 API 返回 400（Thinking Mode 文档）——工具轮次后对话「直接结束」的根因之一。
+   */
+  reasoning_content?: string;
   /** tool 角色消息对应的 tool_call_id（工具执行结果回传时填充） */
   tool_call_id?: string;
 }
@@ -229,31 +235,82 @@ async function fetchWithRetry(
 }
 
 // ---------- DSML 协议标记过滤 ----------
-// DeepSeek 模型调用工具时，内部 DSML 标记（<｜DSML｜tool_calls>…</｜DSML｜tool_calls>）
-// 有时未被 API 层正确解析为结构化 tool_calls，而是作为 content 文本泄漏到流中。
-// 这些标记对用户是噪音，需要实时检测并过滤，同时从中解析出工具调用信息。
-// ｜ 为 U+FF5C 全角竖线，正常文本中几乎不会出现，可作为可靠哨兵。
+// DeepSeek 模型调用工具时，内部 DSML 标记有时未被 API 层正确解析为结构化 tool_calls，
+// 而是作为 content 文本泄漏到流中。这些标记对用户是噪音，需要实时检测并过滤，同时
+// 从中解析出工具调用信息。
+//
+// 实测存在多种方言（issue 50 现场，DS4.1/deepseek-flash）：
+//   单竖线：<｜DSML｜tool_calls>…</｜DSML｜tool_calls>
+//   双竖线：<｜｜DSML｜｜calls>…</｜｜DSML｜｜calls>（外层标签还可能省略 tool_ 前缀，
+//           parameter 标签带 string="true" 类型标注）
+// 竖线是全角 ｜(U+FF5C) 还是 ASCII | 也不稳定。统一定义为：
+//   分隔条 = 一个或多个 [｜|]；标签名 = calls|tool_calls|invoke|parameter。
+// 正常文本中「< + 竖线串 + DSML」几乎不可能出现，可作为可靠哨兵。
 
-const DSML_OPEN = '<｜DSML｜';
-const DSML_TOOL_CALLS_END = '</｜DSML｜tool_calls>';
+/** DSML 分隔条：一个或多个全角 ｜ 或 ASCII |（两种方言实测混用） */
+const DSML_BARS = '[丨|｜]+';
+
+/** 完整 DSML 开标签：<分隔条串>DSML<分隔条串>标签名>（tool_ 前缀可选） */
+const DSML_OPEN_TAG_RE = new RegExp(`<${DSML_BARS}DSML${DSML_BARS}\\s*([a-z_]+)\\s*>`, 'u');
+
+/** 快速判断：文本里是否可能出现 DSML 标记（供非流式路径零成本跳过） */
+const DSML_QUICK_RE = new RegExp(`<${DSML_BARS}DSML`, 'u');
+
+/** 标签名 → 对应的完整闭合标签正则（外层 calls/tool_calls 统一互相认） */
+function dsmlCloseTagRe(name: string): RegExp {
+  if (name === 'calls' || name === 'tool_calls') {
+    return new RegExp(`</${DSML_BARS}DSML${DSML_BARS}\\s*(?:tool_)?calls>`, 'u');
+  }
+  const nameEsc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`</${DSML_BARS}DSML${DSML_BARS}\\s*${nameEsc}>`, 'u');
+}
+
+/** 缓冲区末尾是否挂着「可能补全成 DSML 开标签」的前缀（含 < 本身），返回需暂扣的字符数 */
+const DSML_PARTIAL_TAIL_RE = new RegExp(
+  `<[丨|｜]*(?:D(?:S(?:M(?:L)?)?)?)?[丨|｜]*\\s*[a-z_]*>?$`,
+  'u',
+);
+function dsmlPartialPrefixLen(s: string): number {
+  const m = DSML_PARTIAL_TAIL_RE.exec(s);
+  return m ? m[0].length : 0;
+}
 
 /** 从完整 DSML tool_calls 块中解析出工具调用（name + arguments JSON） */
 function parseDsmlToolCalls(dsml: string): Array<{ name: string; args: string }> {
+  const invokeRe = new RegExp(
+    `<${DSML_BARS}DSML${DSML_BARS}\\s*invoke\\s+name="([^"]*)">([\\s\\S]*?)</${DSML_BARS}DSML${DSML_BARS}\\s*invoke>`,
+    'gu',
+  );
   const results: Array<{ name: string; args: string }> = [];
-  const invokeRe = /<｜DSML｜invoke\s+name="([^"]*)">([\s\S]*?)<\/｜DSML｜invoke>/g;
   let m: RegExpExecArray | null;
   while ((m = invokeRe.exec(dsml)) !== null) {
-    const name = m[1];
-    const body = m[2];
+    const name = m[1]!;
+    const body = m[2]!;
     const params: Record<string, string> = {};
-    const paramRe = /<｜DSML｜parameter\s+name="([^"]*)"(?:\s+[^>]*)?>([\s\S]*?)<\/｜DSML｜parameter>/g;
+    const paramRe = new RegExp(
+      `<${DSML_BARS}DSML${DSML_BARS}\\s*parameter\\s+name="([^"]*)"(?:\\s+[^>]*)?>([\\s\\S]*?)</${DSML_BARS}DSML${DSML_BARS}\\s*parameter>`,
+      'gu',
+    );
     let pm: RegExpExecArray | null;
     while ((pm = paramRe.exec(body)) !== null) {
-      params[pm[1]] = pm[2];
+      params[pm[1]!] = pm[2]!;
     }
     results.push({ name, args: JSON.stringify(params) });
   }
   return results;
+}
+
+/** 剥离文本中所有 DSML 标记：完整块整体移除（连同参数值），残缺/散落标签只移除标记本身，正文保留 */
+function stripDsmlNoise(text: string): string {
+  return text
+    .replace(new RegExp(`<${DSML_BARS}DSML${DSML_BARS}\\s*(?:tool_)?calls>[\\s\\S]*?</${DSML_BARS}DSML${DSML_BARS}\\s*(?:tool_)?calls>`, 'gu'), '')
+    .replace(new RegExp(`<${DSML_BARS}DSML${DSML_BARS}\\s*invoke>[\\s\\S]*?</${DSML_BARS}DSML${DSML_BARS}\\s*invoke>`, 'gu'), '')
+    .replace(new RegExp(`<${DSML_BARS}DSML${DSML_BARS}\\s*parameter[^>]*>[\\s\\S]*?</${DSML_BARS}DSML${DSML_BARS}\\s*parameter>`, 'gu'), '')
+    .replace(new RegExp(`<${DSML_BARS}DSML${DSML_BARS}[^>]*>`, 'gu'), '')
+    .replace(new RegExp(`</${DSML_BARS}DSML${DSML_BARS}[^>]*>`, 'gu'), '')
+    // 流已结束：未闭合的尾标签只可能是 DSML 噪音（上面完整块已移除，这里兜底清残片）
+    .replace(new RegExp(`<${DSML_BARS}DSML${DSML_BARS}[^>]*$`, 'u'), '')
+    .replace(new RegExp(`</${DSML_BARS}DSML${DSML_BARS}[^>]*$`, 'u'), '');
 }
 
 /**
@@ -261,30 +318,14 @@ function parseDsmlToolCalls(dsml: string): Array<{ name: string; args: string }>
  * content 不含 DSML 时原样返回（零开销）。
  */
 function stripDsml(content: string): { clean: string; toolCalls: ToolCall[] } {
-  if (!content.includes('｜DSML｜')) return { clean: content, toolCalls: [] };
+  if (!DSML_QUICK_RE.test(content)) return { clean: content, toolCalls: [] };
   const parsed = parseDsmlToolCalls(content);
   const toolCalls: ToolCall[] = parsed.map((p, i) => ({
     id: `call_dsml_${i}`,
     type: 'function',
     function: { name: p.name, arguments: p.args },
   }));
-  // 移除所有 DSML 块及散落的 DSML 标签
-  const clean = content
-    .replace(/<｜DSML｜tool_calls>[\s\S]*?<\/｜DSML｜tool_calls>/g, '')
-    .replace(/<｜DSML｜[^>]*>/g, '')
-    .replace(/<\/｜DSML｜[^>]*>/g, '')
-    .trim();
-  return { clean, toolCalls };
-}
-
-/** 检查字符串末尾是否是 '<｜DSML｜' 的前缀，返回需暂扣的字符数 */
-function dsmlPartialPrefixLen(s: string): number {
-  const marker = DSML_OPEN;
-  const max = Math.min(s.length, marker.length);
-  for (let i = max; i >= 1; i--) {
-    if (s.endsWith(marker.slice(0, i))) return i;
-  }
-  return 0;
+  return { clean: stripDsmlNoise(content).trim(), toolCalls };
 }
 
 /** Files API 文件对象（OpenAI 兼容格式，purpose 当前固定为 user_data） */
@@ -402,7 +443,13 @@ export class AiProvider {
         finish_reason?: string | null;
       }>;
       usage?: TokenUsage;
+      error?: unknown;
     };
+    // 上游错误体（部分网关 200 + error 而非 4xx）：必须显式抛错。不检查的话
+    // choice 为空、静默当作正常返回，调用方只看到「AI 未返回内容」甚至直接结束。
+    if (data.error !== undefined) {
+      throw new Error(`AI API 返回错误：${JSON.stringify(data.error).slice(0, 200)}`);
+    }
     const choice = data.choices?.[0];
     const rawContent = choice?.message?.content;
     let toolCalls = choice?.message?.tool_calls;
@@ -522,9 +569,13 @@ export class AiProvider {
     /** 按 index 累积 tool_calls 片段（流式 delta 分片到达） */
     const toolCallAccum = new Map<number, { id: string; name: string; args: string }>();
 
-    // DSML 过滤状态：contentBuf 暂存未 yield 的文本，dsmlMode 标记是否在 DSML 块内
+    // DSML 过滤状态：contentBuf 暂存未 yield 的文本，dsmlMode 标记是否在 DSML 块内。
+    // 进入条件放宽为任意完整 DSML 开标签（calls/tool_calls/invoke/parameter）——双竖线
+    // 方言（issue 50）外层包装没写全时，裸 invoke 块同样要被拦下；匹配的闭合标签到达
+    // 才退出缓冲。dsmlCloseRe 记录本块对应的闭合形态。
     let contentBuf = '';
     let dsmlMode = false;
+    let dsmlCloseRe: RegExp | null = null;
     // parseDsmlTools 为 false 时不解析 DSML 标记（二轮流式用，避免 DeepSeek 误触发 tool_calls）
     const enableDsml = opts.parseDsmlTools !== false;
 
@@ -544,7 +595,7 @@ export class AiProvider {
       return false;
     };
 
-    /** 将 DSML tool_calls 块解析为工具调用并写入累积 Map */
+    /** 将 DSML 块解析为工具调用并写入累积 Map */
     const flushDsmlBlock = (block: string): void => {
       const parsed = parseDsmlToolCalls(block);
       for (const p of parsed) {
@@ -560,8 +611,8 @@ export class AiProvider {
      * 残片整体静默丢弃 —— 其中完整的 invoke（模型真实的再次调用意图）凭空消失，
      * 上层工具往返循环不再发生，回复表现为「联网搜索后自动停止在半截」。
      * 这里做两件事：
-     * 1. enableDsml 时解析残片里**完整**的 invoke 块为工具调用（外层 tool_calls
-     *    包装没闭合不影响 invoke 本身完整）；
+     * 1. enableDsml 时解析残片里**完整**的 invoke 块为工具调用（外层包装没闭合
+     *    不影响 invoke 本身完整）；
      * 2. 剥掉所有 DSML 标记与块（含未闭合的尾标签），剩余文本照常 yield ——
      *    绝不静默吞掉可能混在残片里的正文。
      */
@@ -576,47 +627,55 @@ export class AiProvider {
           toolCallAccum.set(idx, { id: `call_dsml_${idx}`, name: p.name, args: p.args });
         }
       }
-      const clean = frag
-        // 完整块连同其内的参数值一并移除
-        .replace(/<｜DSML｜tool_calls>[\s\S]*?<\/｜DSML｜tool_calls>/g, '')
-        .replace(/<｜DSML｜invoke[\s\S]*?<\/｜DSML｜invoke>/g, '')
-        .replace(/<｜DSML｜parameter[\s\S]*?<\/｜DSML｜parameter>/g, '')
-        // 散落的完整标记
-        .replace(/<｜DSML｜[^>]*>/g, '')
-        .replace(/<\/｜DSML｜[^>]*>/g, '')
-        // 流已结束：未闭合的尾标签（opener 之后再无 '>'）只可能是 DSML 噪音
-        .replace(/<｜DSML｜[^>]*$/, '')
-        .replace(/<\/｜DSML｜[^>]*$/, '');
+      const clean = stripDsmlNoise(frag);
       if (clean.trim()) yield clean;
+    }
+
+    /** 流自然结束或收到 [DONE] 时冲刷缓冲：正常路径重跑 processContentBuf 交给其自行判定 */
+    function* flushTail(): Generator<string, void, void> {
+      if (!dsmlMode && contentBuf) {
+        for (const s of processContentBuf()) yield s;
+      }
+      // 冲刷后仍滞留的只可能是被暂扣的「疑似 DSML 开标签前缀」（如孤立 '<'），
+      // 或未闭合 DSML 残片（交给抢救逻辑）——前者此处释放，后者在下方处理
+      if (!dsmlMode && contentBuf) {
+        yield contentBuf;
+        contentBuf = '';
+      }
+      for (const s of salvageDsmlFragment()) yield s;
     }
 
     /** 处理 contentBuf：正常文本 yield，DSML 块缓冲（enableDsml=true 解析为 tool_calls，false 丢弃） */
     const processContentBuf = function* (): Generator<string, void, void> {
       while (contentBuf) {
         if (dsmlMode) {
-          // DSML 模式：寻找闭合标签
-          const endIdx = contentBuf.indexOf(DSML_TOOL_CALLS_END);
-          if (endIdx !== -1) {
+          // DSML 模式：寻找本块对应的闭合标签
+          const closeMatch = dsmlCloseRe ? dsmlCloseRe.exec(contentBuf) : null;
+          if (closeMatch) {
             // enableDsml=true：解析为 tool_calls；false：静默丢弃（不 yield 不解析）
+            const end = closeMatch.index + closeMatch[0].length;
             if (enableDsml) {
-              flushDsmlBlock(contentBuf.slice(0, endIdx + DSML_TOOL_CALLS_END.length));
+              flushDsmlBlock(contentBuf.slice(0, end));
             }
-            contentBuf = contentBuf.slice(endIdx + DSML_TOOL_CALLS_END.length);
+            contentBuf = contentBuf.slice(end);
             dsmlMode = false;
+            dsmlCloseRe = null;
             continue;
           }
           // 闭合标签未到，继续缓冲（不 yield）
           break;
         }
-        // 正常模式：检测 DSML 开标记
-        const dsmlIdx = contentBuf.indexOf(DSML_OPEN);
-        if (dsmlIdx !== -1) {
-          if (dsmlIdx > 0) yield contentBuf.slice(0, dsmlIdx);
-          contentBuf = contentBuf.slice(dsmlIdx);
+        // 正常模式：检测任意完整 DSML 开标签
+        const openMatch = DSML_OPEN_TAG_RE.exec(contentBuf);
+        if (openMatch) {
+          const before = contentBuf.slice(0, openMatch.index);
+          if (before) yield before;
+          contentBuf = contentBuf.slice(openMatch.index + openMatch[0].length);
           dsmlMode = true;
+          dsmlCloseRe = dsmlCloseTagRe(openMatch[1]!);
           continue;
         }
-        // 无 DSML：检查末尾是否有 DSML 开标记的前缀（如孤立 '<'），暂扣以防下一段是 DSML
+        // 无 DSML：检查末尾是否有 DSML 开标签的前缀（如孤立 '<'），暂扣以防下一段是 DSML
         const hold = dsmlPartialPrefixLen(contentBuf);
         if (hold > 0) {
           const yieldLen = contentBuf.length - hold;
@@ -673,12 +732,8 @@ export class AiProvider {
           if (!line.startsWith('data:')) continue;
           const payload = line.slice(5).trim();
           if (payload === '[DONE]') {
-            // 流结束：冲刷剩余的正常文本；未闭合的 DSML 残片先抢救（解析完整
-            // invoke、保留正文）再丢弃纯噪音，绝不静默吞内容
-            if (!dsmlMode && contentBuf) {
-              for (const s of processContentBuf()) yield s;
-            }
-            for (const s of salvageDsmlFragment()) yield s;
+            // 流结束：冲刷剩余文本与 DSML 残片（完整 invoke 照常解析、正文绝不静默吞）
+            for (const s of flushTail()) yield s;
             if (toolCallAccum.size > 0 && finishReason !== 'tool_calls') {
               finishReason = 'tool_calls';
             }
@@ -770,11 +825,8 @@ export class AiProvider {
       // 流结束后移除调用方中断监听（用户点「停止」时 controller 已 abort，这里兜底防泄漏）
       opts.signal?.removeEventListener('abort', onCallerAbort);
     }
-    // 流自然结束（未收到 [DONE]）：同样冲刷剩余文本（含未闭合 DSML 残片抢救）
-    if (!dsmlMode && contentBuf) {
-      for (const s of processContentBuf()) yield s;
-    }
-    for (const s of salvageDsmlFragment()) yield s;
+    // 流自然结束（未收到 [DONE]）：同样冲刷剩余文本（含暂扣前缀与未闭合 DSML 残片抢救）
+    for (const s of flushTail()) yield s;
     if (toolCallAccum.size > 0 && finishReason !== 'tool_calls') {
       finishReason = 'tool_calls';
     }

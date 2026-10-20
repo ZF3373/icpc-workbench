@@ -21,6 +21,11 @@ export function estimateTokens(content: string | ChatContentBlock[]): number {
   return total;
 }
 
+/** 单条消息的 token 估算：content + 思维链（DeepSeek 思考模式下 reasoning_content 会计入请求 token，见 provider.ts ChatMessage 注释） */
+export function estimateMessageTokens(m: ChatMessage): number {
+  return estimateTokens(m.content) + (typeof m.reasoning_content === 'string' ? Math.ceil(m.reasoning_content.length / 2) : 0);
+}
+
 export interface TrimResult {
   /** 裁剪后保留的消息（不含 system，仅 user/assistant 轮次） */
   messages: ChatMessage[];
@@ -54,7 +59,7 @@ export function trimContext(
   let used = 0;
   let keepFrom = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
-    used += estimateTokens(messages[i].content);
+    used += estimateMessageTokens(messages[i]!);
     if (used > budget) {
       keepFrom = i + 1;
       break;

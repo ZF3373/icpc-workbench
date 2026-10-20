@@ -93,6 +93,11 @@ export interface PlanChatTurn {
   content: string
   /** 已上传到 AI 服务 Files API 的文件引用（仅 user 消息；服务端转换为 file 内容块） */
   attachments?: ChatFileAttachment[]
+  /**
+   * assistant 轮次的思维链（DeepSeek reasoning_content）。DeepSeek 思考模式要求
+   * 携带 tools 的请求回传所有前序轮次的思维链，否则触发工具调用后 API 直接 400（issue 50）。
+   */
+  reasoning?: string
 }
 
 /** Files API 文件引用元数据（localStorage 持久化用，不含文件内容） */

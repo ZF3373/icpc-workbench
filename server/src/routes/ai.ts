@@ -48,6 +48,8 @@ import { SERVER_ROOT } from '../server-root.ts';
 interface IncomingTurn {
   role?: unknown;
   content?: unknown;
+  /** assistant 轮次的思维链（DeepSeek reasoning_content，思考模式回传要求见 provider.ts） */
+  reasoning?: unknown;
   /** Files API 上传后的文件引用（仅 user 消息允许） */
   attachments?: unknown;
 }
@@ -414,6 +416,10 @@ export function aiRoutes(
       if (typeof m.content !== 'string') {
         return res.status(400).json({ error: 'messages[].content 必须为字符串' });
       }
+      // reasoning 为可选字符串（assistant 轮次的思维链），上限 512 KiB 防止超大请求
+      if (m.reasoning !== undefined && (typeof m.reasoning !== 'string' || m.reasoning.length > 524288)) {
+        return res.status(400).json({ error: 'messages[].reasoning 需为字符串且不超过 512 KiB（仅 assistant 轮次）' });
+      }
       if (m.attachments !== undefined) {
         if (m.role !== 'user') {
           return res.status(400).json({ error: 'attachments 仅允许出现在 user 消息上' });
@@ -477,7 +483,12 @@ export function aiRoutes(
     // 导致同一会话第二轮起每次调用都失败）。此时只保留文件名占位文本。
     const isFilesApiId = (fileId: string): boolean => fileId.startsWith('file-');
     const normalized: ChatMessage[] = turns.map((m) => {
-      if (m.role !== 'user') return { role: 'assistant', content: m.content as string };
+      if (m.role !== 'user') {
+        // assistant 轮次回传思维链（DeepSeek 思考模式：携带 tools 的请求必须回传，
+        // 否则工具调用后的下一轮 400 —— issue 50）
+        const reasoning = typeof m.reasoning === 'string' && m.reasoning.trim() !== '' ? m.reasoning : undefined;
+        return { role: 'assistant', content: m.content as string, ...(reasoning ? { reasoning_content: reasoning } : {}) };
+      }
       const atts = (Array.isArray(m.attachments) ? m.attachments : []) as IncomingAttachment[];
       if (atts.length === 0) return { role: 'user', content: m.content as string };
 
@@ -786,6 +797,26 @@ export function aiRoutes(
       let pendingToolCalls: ToolCall[] | undefined;
       let usage: TokenUsage | undefined;
 
+      /**
+       * 按轮次累积思维链与正文，供工具往返构造 assistant 消息时回传。
+       *
+       * DeepSeek 思考模式官方要求：请求携带 tools 时，前序轮次的 reasoning_content
+       * 必须完整回传，否则 API 返回 400（Thinking Mode 文档）—— 表现为「一触发
+       * 联网搜索/读题，对话卡住后直接结束」（issue 50）。同理，模型发起工具调用
+       * 同一轮说的话也应按原文回传（旧版硬编码空串，模型丢失自己的陈述上下文）。
+       * 每轮流式开始前重置。
+       */
+      let roundReasoning = '';
+      let roundContent = '';
+      const resetRoundAccum = (): void => { roundReasoning = ''; roundContent = ''; };
+      /** 由本轮累积构造带 tool_calls 的 assistant 消息（DeepSeek 要求整体回传） */
+      const makeAssistantToolMsg = (calls: ToolCall[]): ChatMessage => ({
+        role: 'assistant',
+        content: roundContent,
+        tool_calls: calls,
+        ...(roundReasoning ? { reasoning_content: roundReasoning } : {}),
+      });
+
       // 第一轮流式（可能含 tool_calls / reasoning_content / usage）。
       // 题面证据也在这一轮首次进入上游；若触发内容审查，立即去掉外部资料重试。
       try {
@@ -795,12 +826,14 @@ export function aiRoutes(
           signal: abortController.signal,
           onFinish: (r, tc) => { finishReason = r; pendingToolCalls = tc; },
           onReasoning: (chunk) => {
+            roundReasoning += chunk;
             // 与后续轮次/降级路径同款守卫：客户端断连后 res.write 会抛 ERR_STREAM_WRITE_AFTER_END
             if (!res.writableEnded) res.write(`data: ${JSON.stringify({ reasoning: chunk })}\n\n`);
           },
           onUsage: (u) => { usage = u; },
         });
         for await (const delta of stream) {
+          roundContent += delta;
           emitDelta(delta);
         }
       } catch (firstError) {
@@ -837,7 +870,8 @@ export function aiRoutes(
         // 最多循环 MAX_TOOL_ROUNDS 轮防止无限循环；最后一轮强制收尾（见 MAX_TOOL_ROUNDS 注释）
         let roundMsgs: ChatMessage[] = [
           ...fullMsgs,
-          { role: 'assistant', content: '', tool_calls: pendingToolCalls },
+          // 回传本轮正文 + reasoning_content + tool_calls（DeepSeek 思考模式要求）
+          makeAssistantToolMsg(pendingToolCalls),
         ];
         let currentToolCalls: ToolCall[] | undefined = pendingToolCalls;
 
@@ -905,6 +939,7 @@ export function aiRoutes(
           // 后续流式轮次：解析 DSML（AI 可能再次发起工具调用）
           finishReason = null;
           let nextToolCalls: ToolCall[] | undefined;
+          resetRoundAccum();
           // 最后一轮：注入「直接回答」提示并关闭 DSML 解析 —— 即使模型仍尝试发起
           // 工具调用也只当作噪音过滤（文本部分照常输出），保证一定有一条最终回答流
           const forcedFinal = round === MAX_TOOL_ROUNDS - 1;
@@ -921,12 +956,14 @@ export function aiRoutes(
                 parseDsmlTools: !forcedFinal,
                 onFinish: (r, tc) => { finishReason = r; nextToolCalls = tc; },
                 onReasoning: (chunk) => {
+                  roundReasoning += chunk;
                   if (!res.writableEnded) res.write(`data: ${JSON.stringify({ reasoning: chunk })}\n\n`);
                 },
                 onUsage: (u) => { usage = u; },
               },
             );
             for await (const delta of streamN) {
+              roundContent += delta;
               emitDelta(delta);
             }
           } catch (eN) {
@@ -985,10 +1022,11 @@ export function aiRoutes(
             break;
           }
 
-          // AI 再次发起工具调用：追加 assistant tool_calls 消息，继续循环
+          // AI 再次发起工具调用：追加 assistant tool_calls 消息（含本轮正文与
+          // reasoning_content），继续循环
           roundMsgs = [
             ...roundMsgs,
-            { role: 'assistant', content: '', tool_calls: nextToolCalls },
+            makeAssistantToolMsg(nextToolCalls),
           ];
           currentToolCalls = nextToolCalls;
         }

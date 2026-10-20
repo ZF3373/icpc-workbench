@@ -2022,9 +2022,12 @@ export default function Assistant() {
 
       const result = await chatWithAssistantStream(
         {
-          messages: outgoingMessages.map(({ role, content, attachments }, idx) => ({
+          messages: outgoingMessages.map(({ role, content, reasoning, attachments }, idx) => ({
             role,
             content,
+            // assistant 轮次的思维链回传：DeepSeek 思考模式下带 tools 的请求必须
+            // 完整回传前序 reasoning_content，否则触发工具调用后 API 400（issue 50）
+            ...(role === 'assistant' && reasoning ? { reasoning } : {}),
             // 带附件的消息：最后一条用本轮新附件全文；历史消息从会话缓存回填全文
             // （textContent 已从消息存储剥离，缓存让 AI 在后续轮次仍记得文件内容）
             ...(attachments && attachments.length > 0
