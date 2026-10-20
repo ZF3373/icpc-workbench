@@ -773,6 +773,15 @@ export function aiRoutes(
         ...trimmedMsgs,
       ];
 
+      // 本轮已写给前端的正文累计（[DONE] 前判空用）：finishReason 为 null 且
+      // 一个字都没流出时，说明上游异常静默收流（网关吞流/审查拦截帧被旧版忽略），
+      // 不能让前端收到一个「正常结束的空回复」——issue 36 的「没有输出也不报错」。
+      let emittedChars = 0;
+      const emitDelta = (chunk: string): void => {
+        emittedChars += chunk.length;
+        if (!res.writableEnded) res.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`);
+      };
+
       let finishReason: string | null = null;
       let pendingToolCalls: ToolCall[] | undefined;
       let usage: TokenUsage | undefined;
@@ -792,7 +801,7 @@ export function aiRoutes(
           onUsage: (u) => { usage = u; },
         });
         for await (const delta of stream) {
-          if (!res.writableEnded) res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+          emitDelta(delta);
         }
       } catch (firstError) {
         if (abortController.signal.aborted || !isDataInspectionFailure(firstError)) throw firstError;
@@ -814,7 +823,7 @@ export function aiRoutes(
           },
         );
         for await (const delta of fallback) {
-          if (!res.writableEnded) res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+          emitDelta(delta);
         }
         finishReason ??= 'stop';
         pendingToolCalls = undefined;
@@ -877,7 +886,7 @@ export function aiRoutes(
             }
 
             // 工具元数据（如搜索来源）发给前端展示
-            if (result.metadata && Array.isArray(result.metadata)) {
+            if (result.metadata && Array.isArray(result.metadata) && !res.writableEnded) {
               res.write(`data: ${JSON.stringify({ sources: result.metadata })}\n\n`);
             }
 
@@ -918,7 +927,7 @@ export function aiRoutes(
               },
             );
             for await (const delta of streamN) {
-              if (!res.writableEnded) res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+              emitDelta(delta);
             }
           } catch (eN) {
             // 用户点「停止」触发的中断：交给外层 catch 的 aborted 分支收尾（res.end + return），
@@ -947,7 +956,7 @@ export function aiRoutes(
                   },
                 );
                 for await (const delta of fallback) {
-                  if (!res.writableEnded) res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+                  emitDelta(delta);
                 }
                 // 自定义 provider 可能没有调用 onFinish；降级请求本身不再允许工具。
                 finishReason ??= 'stop';
@@ -993,6 +1002,13 @@ export function aiRoutes(
       if (usage) {
         res.write(`data: ${JSON.stringify({ usage })}\n\n`);
       }
+      // 上游静默收流（一个字都没流出、也没有任何 finish_reason/tool_calls）：
+      // 大概率是网关吞流或异常断流。显式发一个错误事件而不是「正常结束」，
+      // 前端才能给出可感知的失败提示（issue 36 的「没有输出也不报错」）。
+      if (emittedChars === 0 && finishReason === null && !pendingToolCalls?.length) {
+        console.error('[AI chat] 上游静默返回空流（无 delta、无 finish_reason）');
+        res.write(`data: ${JSON.stringify({ error: 'AI 未返回任何内容（上游连接异常中断），请重试或更换模型/服务商' })}\n\n`);
+      }
       res.write('data: [DONE]\n\n');
       res.end();
     } catch (e) {
@@ -1001,7 +1017,9 @@ export function aiRoutes(
         if (!res.writableEnded) res.end();
         return;
       }
-      // 流开始后出错：写一个错误事件让前端感知（headers 已发，不能再 JSON 502）
+      // 流开始后出错：写一个错误事件让前端感知（headers 已发，不能再 JSON 502）。
+      // 万一这里写不出去（连接已半开），错误至少留在服务端日志里可查。
+      console.error('[AI chat] 请求失败:', describeError(e));
       if (!res.writableEnded) {
         res.write(`data: ${JSON.stringify({ error: `AI 调用失败：${describeError(e)}` })}\n\n`);
         res.end();

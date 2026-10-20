@@ -685,19 +685,39 @@ export class AiProvider {
             opts.onFinish?.(finishReason, accumToToolCalls(toolCallAccum));
             return;
           }
+          let parsed: unknown;
           try {
-            const obj = JSON.parse(payload) as {
-              choices?: Array<{
-                delta?: {
-                  content?: string;
-                  reasoning_content?: string;
-                  reasoning?: string;
-                  tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>;
-                };
-                finish_reason?: string | null;
-              }>;
-              usage?: TokenUsage;
-            };
+            parsed = JSON.parse(payload);
+          } catch {
+            // 单帧解析失败跳过（部分实现会发心跳注释行）
+            continue;
+          }
+          const obj = parsed as {
+            choices?: Array<{
+              delta?: {
+                content?: string;
+                reasoning_content?: string;
+                reasoning?: string;
+                tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>;
+              };
+              finish_reason?: string | null;
+            }>;
+            usage?: TokenUsage;
+            error?: { message?: string; code?: string | number } | string;
+          };
+          // 上游在流中途下发错误帧（DeepSeek 审查拦截 data_inspection_failed、
+          // 网关限流 401/429 等都是这种形态）：连接正常关闭、[DONE] 永远不来，
+          // reader.read() 得到一个 done —— 旧版把它当「流自然结束」正常收尾，
+          // 用户看到的是正文停在半截、无任何报错（issue 50「联网搜索后直接结束」）。
+          // 必须在这里识别 error 帧并抛出（⚠ 不能放在上面的 try 里，否则会被
+          // 「单帧解析失败跳过」的 catch 吞回静默），让上层路由把错误写给前端。
+          if (obj.error !== undefined) {
+            const msg = typeof obj.error === 'string'
+              ? obj.error
+              : (obj.error.message ?? JSON.stringify(obj.error));
+            throw new Error(`AI 上游在流中返回错误：${msg}`);
+          }
+          try {
             const choice = obj.choices?.[0];
             const delta = choice?.delta;
             // 推理内容（思维链）：DeepSeek 用 reasoning_content，OpenRouter 风格网关用 reasoning
@@ -740,7 +760,7 @@ export class AiProvider {
               opts.onUsage?.(obj.usage);
             }
           } catch {
-            // 单帧解析失败跳过（部分实现会发心跳注释行）
+            // 单帧处理异常跳过该帧（保持流继续；error 帧已在循环外单独处理）
           }
         }
       }
