@@ -25,6 +25,17 @@ setupExternalLinks()
 const cleanupAppZoom = setupAppZoom()
 if (import.meta.hot) import.meta.hot.dispose(cleanupAppZoom)
 
+/**
+ * GPU 节能：应用不可见（最小化 / 切走窗口 / 切走标签页）时给 <html> 挂
+ * `app-hidden`，CSS 据此把所有 infinite 动画 play-state 置为 paused
+ * （见 index.css 尾部）。动画帧没人看却仍让 WebView 的 GPU 进程满负荷
+ * 重绘 —— 冻结后 GPU 占用立即回落，回前台时自动恢复，视觉无感知。
+ */
+document.documentElement.classList.toggle('app-hidden', document.hidden)
+document.addEventListener('visibilitychange', () => {
+  document.documentElement.classList.toggle('app-hidden', document.hidden)
+})
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ThemeProvider>

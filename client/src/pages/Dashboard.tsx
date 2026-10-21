@@ -963,8 +963,11 @@ export default function Dashboard() {
             <YAxis allowDecimals={false} tick={axisTick} axisLine={false} tickLine={false} />
             <Tooltip {...tooltipStyle} cursor={chartCursor} />
             <Legend {...LEGEND_STYLE} />
-            <Bar dataKey="AC" stackId="a" fill={chartColors.ac} radius={[0, 0, 0, 0]} maxBarSize={34} />
-            <Bar dataKey="未通过" stackId="a" fill={chartColors.failed} radius={[5, 5, 0, 0]} maxBarSize={34} />
+            {/* isAnimationActive={false}：Recharts 的柱体生长动画用 rAF 驱动 SVG 属性插值，
+                每次 load() 刷新都会重播一轮（三张图叠加），期间 GPU 持续重绘。
+                数据概览是「看数」不是「看动效」，直接关掉省一整段合成开销 */}
+            <Bar dataKey="AC" stackId="a" fill={chartColors.ac} radius={[0, 0, 0, 0]} maxBarSize={34} isAnimationActive={false} />
+            <Bar dataKey="未通过" stackId="a" fill={chartColors.failed} radius={[5, 5, 0, 0]} maxBarSize={34} isAnimationActive={false} />
           </BarChart>
         </ResponsiveContainer>
       </ModuleCard>
@@ -1005,7 +1008,7 @@ export default function Dashboard() {
                 }}
                 cursor={chartCursor}
               />
-              <Bar dataKey="gap" radius={[0, 5, 5, 0]} maxBarSize={16}>
+              <Bar dataKey="gap" radius={[0, 5, 5, 0]} maxBarSize={16} isAnimationActive={false}>
                 {weakData.map((d) => (
                   // gapColor() 给的是 var(--*)，Cell 的 fill 走 SVG 表现属性不解析 var()，
                   // 所以按语义色调名换成当前主题的计算值
@@ -1046,8 +1049,8 @@ export default function Dashboard() {
             <YAxis yAxisId="right" orientation="right" domain={[0, 100]} unit="%" tick={axisTick} axisLine={false} tickLine={false} />
             <Tooltip {...tooltipStyle} cursor={chartCursor} />
             <Legend {...LEGEND_STYLE} />
-            <Bar yAxisId="left" dataKey="attempts" name="提交" fill={chartColors.attempts} radius={[5, 5, 0, 0]} maxBarSize={16} />
-            <Bar yAxisId="left" dataKey="AC" name="AC" fill={chartColors.ac} radius={[5, 5, 0, 0]} maxBarSize={16} />
+            <Bar yAxisId="left" dataKey="attempts" name="提交" fill={chartColors.attempts} radius={[5, 5, 0, 0]} maxBarSize={16} isAnimationActive={false} />
+            <Bar yAxisId="left" dataKey="AC" name="AC" fill={chartColors.ac} radius={[5, 5, 0, 0]} maxBarSize={16} isAnimationActive={false} />
             <Area
               yAxisId="right"
               type="monotone"
@@ -1056,6 +1059,7 @@ export default function Dashboard() {
               stroke={chartColors.rate}
               strokeWidth={2}
               fill="url(#rateArea)"
+              isAnimationActive={false}
             />
           </ComposedChart>
         </ResponsiveContainer>

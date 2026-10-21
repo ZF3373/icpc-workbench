@@ -657,15 +657,20 @@ body {
   border-radius: 50%;
   background: var(--green);
   animation: pulseDot 2.4s ease-in-out infinite;
+  /* 节能：应用不在前台时停掉呼吸灯（animation-play-state 由 :root 全局管理，
+     这里只声明 will-change 帮合成器建层；动画只动 opacity，走合成线程不上 GPU 峰值） */
+  will-change: opacity;
 }
 
+/* 呼吸灯只动 opacity：box-shadow 动画每帧都要重算绘制并提交纹理，
+   opacity/transform 由合成器直接插值，帧成本低几个量级 */
 @keyframes pulseDot {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(105, 215, 165, 0.4);
+    opacity: 0.45;
   }
   50% {
-    box-shadow: 0 0 0 4px rgba(105, 215, 165, 0.08);
+    opacity: 1;
   }
 }
 
@@ -868,16 +873,35 @@ body {
    AI 标签流光
    ============================================================ */
 
+/* 流光走伪元素 + transform 平移：渐变背景固定不动，让一个只含渐变的高
+   自身高度条带（200% 宽）在元素内左右滑动。background-position 动画每帧
+   都要重新栅格化整块渐变再提交纹理（GPU 进程持续高占用的元凶之一），
+   transform 平移由合成器插值，帧成本低几个量级，视觉上无差别 */
 @keyframes shimmer {
   0% {
-    background-position: -200% center;
+    transform: translateX(-50%);
   }
   100% {
-    background-position: 200% center;
+    transform: translateX(50%);
   }
 }
 
 .ai-tag-shimmer {
+  position: relative;
+  color: var(--text-on-brand) !important;
+  border: none !important;
+  font-weight: 600;
+  background: var(--brand);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.ai-tag-shimmer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  width: 200%;
   background: linear-gradient(
     90deg,
     var(--brand-strong) 0%,
@@ -886,11 +910,8 @@ body {
     var(--brand) 75%,
     var(--brand-strong) 100%
   );
-  background-size: 200% 100%;
   animation: shimmer 3s linear infinite;
-  color: var(--text-on-brand) !important;
-  border: none !important;
-  font-weight: 600;
+  will-change: transform;
 }
 
 .gradient-progress .ant-progress-bg {
@@ -2887,8 +2908,10 @@ button.dist-row:hover {
   justify-content: space-between;
   margin: 18px 0 8px;
   padding: 7px 12px;
-  background: rgba(24, 27, 34, 0.94);
-  backdrop-filter: blur(4px);
+  /* 用不透明实色替代原先 94% 不透明 + backdrop-filter: blur(4px)：
+     毛玻璃要每帧重采样并高斯模糊底下的内容，计划页滚动时是持续的 GPU 开销，
+     而 94% 不透明底下只剩 6% 内容透出来，模糊几乎不可见 —— 直接铺实色，视觉等效 */
+  background: var(--bg-elevated);
   border: 1px solid var(--line-soft);
   border-radius: 8px;
   font-weight: 600;
@@ -3018,18 +3041,32 @@ button.dist-row:hover {
    签名元素：完成度圆环 —— 弧线绕日期数字转，绿弧即全勤
    ============================================================ */
 
+/* 今天的格子用一层覆盖描边做呼吸提示：只动 opacity（合成器插值）。
+   box-shadow 动画每帧重算阴影并重绘整格 —— 42 个日历格子同屏时
+   就是持续的 GPU 重绘压力，opacity 版视觉等效而开销几乎为零 */
 @keyframes pulseBorder {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(134, 168, 255, 0.4);
+    opacity: 0.35;
   }
   50% {
-    box-shadow: 0 0 0 4px rgba(134, 168, 255, 0.1);
+    opacity: 1;
   }
 }
 
 .calendar-today {
+  animation: none;
+}
+
+.calendar-today::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: calc(var(--radius-sm) + 2px);
+  border: 2px solid rgba(134, 168, 255, 0.55);
+  pointer-events: none;
   animation: pulseBorder 2s ease-in-out infinite;
+  will-change: opacity;
 }
 
 .ant-picker-cell-inner {
@@ -3249,7 +3286,7 @@ button.dist-row:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .calendar-today {
+  .calendar-today::after {
     animation: none;
   }
 
@@ -3376,10 +3413,27 @@ button.dist-row:hover {
   background: var(--blue);
   box-shadow: 0 0 0 2px var(--ring-checking);
   animation: conn-dot-pulse 1s ease-in-out infinite;
+  will-change: opacity;
 }
 @keyframes conn-dot-pulse {
   0%, 100% { opacity: 0.45; }
   50% { opacity: 1; }
+}
+
+/* ============================================================
+   GPU 节能：应用不可见时全局暂停动画
+   ------------------------------------------------------------
+   WebView（Tauri/浏览器）最小化、切到别的窗口或切走标签页时，页面内容
+   不可见但动画仍在跑 —— GPU 进程空转重绘那些没人看的帧。这里在
+   :root 上挂一个开关，配合下面几行 JS（见 main.tsx）在
+   document.visibilitychange 时切换，所有 infinite 动画立即冻结。
+   注意选择器顺序：放在文件尾部保证特异性不够时也能覆盖前面的声明
+   ============================================================ */
+
+html.app-hidden *,
+html.app-hidden *::before,
+html.app-hidden *::after {
+  animation-play-state: paused !important;
 }
 
 .bound-info {
@@ -3431,6 +3485,9 @@ button.dist-row:hover {
   flex: 1;
   overflow-y: auto;
   padding-right: 4px;
+  /* 流式期间每 50ms 一次 scrollTop 赋值：contain 切断布局计算向祖先的传染，
+     浏览器只需重排本滚动容器内部，长会话时布局开销不再随页面复杂度放大 */
+  contain: layout paint;
 }
 
 /* ---------- 右侧对话导航（快速跳转） ---------- */
@@ -3581,6 +3638,8 @@ button.dist-row:hover {
 .plan-chat-msg {
   margin-bottom: 16px;
   max-width: 92%;
+  /* 长会话时视口外的消息与滚动无关：contain 让浏览器跳过它们的重排/重绘参与 */
+  contain: content;
 }
 
 .plan-chat-msg-user {
@@ -4651,6 +4710,32 @@ button.dist-row:hover {
 /* ============================================================
    加载 / 空态 / 局部错误 组件库
    ============================================================ */
+
+/*
+ * 骨架屏波纹改「呼吸」：antd 默认的 wave 是 400% 宽渐变 background-position
+ * 循环动画，每帧重绘整块渐变（首屏几十个骨架元素同屏时 GPU 重绘压力可观）。
+ * 覆盖成静态底色 + opacity 脉冲（合成器插值），加载态语义不变。
+ */
+@keyframes skeleton-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.ant-skeleton .ant-skeleton-element .ant-skeleton-avatar,
+.ant-skeleton .ant-skeleton-element .ant-skeleton-input,
+.ant-skeleton .ant-skeleton-element .ant-skeleton-button,
+.ant-skeleton-content .ant-skeleton-title,
+.ant-skeleton-content .ant-skeleton-paragraph > li {
+  background: var(--surface-3);
+  background-size: auto;
+  animation: skeleton-breathe 1.6s ease-in-out infinite;
+  will-change: opacity;
+}
 
 .page-skeleton-head {
   display: flex;
