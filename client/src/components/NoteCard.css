@@ -1,0 +1,159 @@
+/**
+ * 笔记查看卡片（NoteCardModal / NoteCardButton）样式。
+ *
+ * 字号缩放只作用于 `.note-card-body`（data-note-zoom 所在的可滚动正文区）：
+ * 用 `--note-text-zoom`（由 zoomPreferences.apply 写入 :root，见 components/ZoomControl）
+ * 对 markdown 各层字号做乘法放大。卡片头、meta、操作按钮不在该作用域，
+ * 因此标题和控件不跟着变大 —— 缩放的是「读长笔记」的正文，而不是整张 UI。
+ * 基准字号必须与 index.css 的 .markdown-body 排版保持一致，否则缩放后比例失真。
+ */
+
+/* ---------- 头部：类型标签 + 归属主体 + 右侧工具区（缩放/编辑） ---------- */
+
+.note-card-modal .ant-modal-header { margin-bottom: 0; }
+
+.note-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.note-card-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.note-card-kind {
+  flex-shrink: 0;
+  color: var(--brand);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.note-card-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.note-card-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ---------- 归属补充行 ---------- */
+
+.note-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* ---------- 正文滚动区：唯一参与缩放的区域 ---------- */
+
+.note-card-body {
+  max-height: min(62vh, 640px);
+  overflow: auto;
+  min-width: 0;
+}
+
+/* 任务备注：纯文本，保留换行；不经过 Markdown 渲染 */
+.note-card-plain {
+  margin: 0;
+  white-space: pre-wrap;
+  color: var(--text-2);
+  font-size: calc(13px * var(--note-text-zoom, 1));
+  line-height: 1.7;
+  word-break: break-word;
+}
+
+/* 复习/模板笔记：沿用 .markdown-body 排版，字号按缩放系数放大。
+   基准值对齐 index.css（.markdown-body 13px / h1 17 / h2 15.5 / h3 14 / h4 13 /
+   code+table 12 / pre code 12.5）。 */
+.note-card-body .markdown-body { font-size: calc(13px * var(--note-text-zoom, 1)); }
+.note-card-body .markdown-body h1 { font-size: calc(17px * var(--note-text-zoom, 1)); }
+.note-card-body .markdown-body h2 { font-size: calc(15.5px * var(--note-text-zoom, 1)); }
+.note-card-body .markdown-body h3 { font-size: calc(14px * var(--note-text-zoom, 1)); }
+.note-card-body .markdown-body h4 { font-size: calc(13px * var(--note-text-zoom, 1)); }
+.note-card-body .markdown-body code,
+.note-card-body .markdown-body table { font-size: calc(12px * var(--note-text-zoom, 1)); }
+.note-card-body .markdown-body pre code,
+.note-card-body .md-code-pre code { font-size: calc(12.5px * var(--note-text-zoom, 1)); }
+
+/* 笔记内的图片撑满不超界（与 note-editor-preview 同款描边） */
+.note-card-body img {
+  max-width: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--line-soft);
+}
+
+/* ---------- entry 形态：紧凑入口行 ---------- */
+
+.note-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--brand);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.note-entry:hover { border-color: var(--brand-line); background: var(--brand-soft); }
+.note-entry:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+.note-entry-icon { flex-shrink: 0; }
+.note-entry-label { flex-shrink: 0; font-weight: 500; }
+
+.note-entry-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+/* ---------- text 形态：备注正文本身可点（外观沿用原任务备注样式） ---------- */
+
+.note-text-open {
+  display: block;
+  width: 100%;
+  margin: 6px 0 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  text-align: left;
+  cursor: pointer;
+}
+
+.note-text-open:hover { color: var(--brand); }
+.note-text-open:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }

@@ -9,9 +9,9 @@ import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
 import PlatformTag from '../components/PlatformTag'
 import NoteEditor from '../components/NoteEditor'
-import NotePreview from '../components/NotePreview'
+import NoteCardButton from '../components/NoteCardButton'
 import ReviewHistoryDrawer from '../components/ReviewHistoryDrawer'
-import { difficultyColor } from '../ui'
+import { difficultyColor, platformName } from '../ui'
 import { del, get, patch } from '../api'
 import { useReviewFeedback } from '../useReviewFeedback'
 import { FEEDBACK_META, dueText, filterReviewItems } from '../reviewDue'
@@ -31,8 +31,6 @@ export default function Reviews() {
   const abortRef = useRef<AbortController | null>(null)
   const [editing, setEditing] = useState<ReviewItem | null>(null)
   const [noteDraft, setNoteDraft] = useState('')
-  // 展开的笔记条目 id：状态提升到页面持有，因为「展开/收起」按钮要放在右侧操作列（编辑按钮下方）
-  const [openNoteIds, setOpenNoteIds] = useState<ReadonlySet<number>>(new Set())
 
   const load = useCallback((f: 'due' | 'all') => {
     abortRef.current?.abort()
@@ -45,8 +43,6 @@ export default function Reviews() {
         if (ctrl.signal.aborted) return
         setItems(r)
         setLoadError(null)
-        // 每次重取列表后回到默认收起（列表重挂载，展开状态不跨刷新保留）
-        setOpenNoteIds(new Set())
       })
       // 失败 ≠ 没有数据：接口失败时 items 保持空，旧实现会被下面的空态渲染成
       // 「复习队列还是空的 —— 到题目管理加题」，把一次超时误导成用户自己的问题。
@@ -63,14 +59,6 @@ export default function Reviews() {
     load(filter)
     return () => { abortRef.current?.abort() }
   }, [filter, load])
-
-  const toggleNoteOpen = (id: number) =>
-    setOpenNoteIds((s) => {
-      const next = new Set(s)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
 
   const { feedback, pending } = useReviewFeedback(() => load(filter))
 
@@ -214,13 +202,24 @@ export default function Reviews() {
                       [{item.problemKey}] {item.title}
                     </span>
                   )}
-                  {/* issue #27：折叠时整段隐藏；展开按钮由操作列渲染（编辑按钮下方），进入页面默认收起 */}
+                  {/* 笔记入口：点击弹出笔记查看卡片（仿赛事中心弹窗），卡片内可直接进入编辑 */}
                   {item.note && (
-                    <NotePreview
+                    <NoteCardButton
+                      kind="review"
+                      subject={`[${item.problemKey}] ${item.title}`}
                       text={item.note}
-                      collapseMode="hidden"
-                      expanded={openNoteIds.has(item.id)}
-                      onToggleExpanded={() => toggleNoteOpen(item.id)}
+                      meta={(
+                        <>
+                          <span>{platformName(item.platform)}</span>
+                          <span>{due.text}</span>
+                          <span>间隔 {item.intervalDays} 天 · 第 {item.stage + 1} 档</span>
+                          {item.reviewCount > 0 && <span>已复习 {item.reviewCount} 次</span>}
+                        </>
+                      )}
+                      onEdit={() => {
+                        setEditing(item)
+                        setNoteDraft(item.note ?? '')
+                      }}
                     />
                   )}
                 </div>
@@ -256,16 +255,6 @@ export default function Reviews() {
                       <Button size="small" type="text" danger icon={<DeleteOutlined />} title="移出队列" />
                     </Popconfirm>
                   </Space>
-                  {/* 笔记展开/收起：右对齐到图标按钮下方（编辑按钮正下方，issue #27） */}
-                  {item.note && (
-                    <button
-                      type="button"
-                      className="note-preview-toggle"
-                      onClick={() => toggleNoteOpen(item.id)}
-                    >
-                      {openNoteIds.has(item.id) ? '收起' : '展开'}
-                    </button>
-                  )}
                 </div>
               </Card>
             )

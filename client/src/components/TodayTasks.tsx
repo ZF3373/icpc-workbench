@@ -1,6 +1,7 @@
 import { Button, Card, Space, Tag } from 'antd'
 import { Link } from 'react-router-dom'
 import { CheckOutlined } from '@ant-design/icons'
+import NoteCardButton from './NoteCardButton'
 import type { TodayPlanTask } from '../../../shared/src/index.ts'
 
 const KINDS = [
@@ -86,7 +87,9 @@ export default function TodayTasks({ tasks, busyIds, onToggle, onConfirmAc }: {
                         <div style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 3 }}>
                           {t.plan_title}
                         </div>
-                        {t.note && <p className="task-note">{t.note}</p>}
+                        {/* 备注改为点击弹卡查看：variant="text" 让备注正文本身即入口，
+                            外观沿用原备注样式（12px / 次要色），不挤压列表观感 */}
+                        {t.note && <NoteCardButton kind="task" variant="text" subject={t.title} text={t.note} />}
                       </div>
                       <Button
                         size="small"

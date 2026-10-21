@@ -29,14 +29,29 @@ export function setupAppZoom(): () => void {
 
   let lastReplyWheelTime = -Infinity
   let lastReplyWheelDirection = 0
+  // 笔记卡片与 AI 正文各自记一份去抖状态：两者是不同目标，共用一个游标会让
+  // 「先在卡片里滚、再切到 AI 页滚」的首帧被误判成重复事件而吞掉。
+  let lastNoteWheelTime = -Infinity
+  let lastNoteWheelDirection = 0
   const onWheel = (event: WheelEvent) => {
     if (!event.ctrlKey || event.altKey || event.deltaY === 0) return
     event.preventDefault()
     event.stopPropagation()
     const direction = event.deltaY < 0 ? 1 : -1
-    if (event.target instanceof Element && event.target.closest('[data-ai-page]')) {
+    const target = event.target instanceof Element ? event.target : null
+    // 笔记查看卡片（[data-note-zoom] 只标在正文滚动区上）：卡片头部、meta 与按钮都不参与，
+    // 所以滚轮落在标题栏或控件上时既不缩放也不去动笔记字号。
+    if (target?.closest('[data-note-zoom]')) {
+      if (target.closest('button, [role="button"]')) return
+      if (direction === lastNoteWheelDirection && event.timeStamp - lastNoteWheelTime < 80) return
+      lastNoteWheelDirection = direction
+      lastNoteWheelTime = event.timeStamp
+      setZoomPreference('note', getZoomPreferences().note + direction * ZOOM_STEP)
+      return
+    }
+    if (target?.closest('[data-ai-page]')) {
       // AI 页双方消息正文同步缩放；页头、上下文、能力卡和输入框不参与。
-      if (!event.target.closest('.assistant-message-text') || event.target.closest('button, [role="button"], .md-code-head')) return
+      if (!target.closest('.assistant-message-text') || target.closest('button, [role="button"], .md-code-head')) return
       if (direction === lastReplyWheelDirection && event.timeStamp - lastReplyWheelTime < 80) return
       lastReplyWheelDirection = direction
       lastReplyWheelTime = event.timeStamp

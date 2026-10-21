@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { getAppZoom, setupAppZoom } from '../src/appZoom'
-import { getZoomPreferences, setZoomPreference, subscribeZoomPreferences } from '../src/zoomPreferences'
+import { getZoomPreferences, setZoomPreference, subscribeZoomPreferences, zoomMultipleLabel } from '../src/zoomPreferences'
 
 class WheelTarget {
   constructor(private selectors: string[]) {}
@@ -58,7 +58,11 @@ describe('全局缩放快捷键', () => {
   }
   function wheel(selectors: string[], deltaY = -100, options: Record<string, unknown> = {}) {
     const event = new Event('wheel', { cancelable: true })
-    Object.assign(event, { ctrlKey: true, deltaY, ...options })
+    Object.assign(event, { ctrlKey: true, deltaY })
+    // timeStamp 在 Event 上是只读 getter，insky Object.assign 覆盖不了，需单独 defineProperty
+    const { timeStamp, ...rest } = options
+    Object.assign(event, rest)
+    if (timeStamp !== undefined) Object.defineProperty(event, 'timeStamp', { value: timeStamp })
     Object.defineProperty(event, 'target', { value: new WheelTarget(selectors) })
     target.dispatchEvent(event)
     return event
@@ -68,9 +72,9 @@ describe('全局缩放快捷键', () => {
     cleanup = setupAppZoom()
     const message = ['[data-ai-page]', '.assistant-message-text']
     wheel(message)
-    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 110 })
+    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 110, note: 100 })
     wheel(message, 100)
-    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 100 })
+    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 100, note: 100 })
 
     for (const selectors of [
       ['.markdown-body'], ['.cm-editor'], ['textarea'], ['.ant-table-wrapper'],
@@ -79,17 +83,17 @@ describe('全局缩放快捷键', () => {
       [...message, 'button, [role="button"], .md-code-head'],
     ]) {
       assert.equal(wheel(selectors).defaultPrevented, true)
-      assert.deepEqual(getZoomPreferences(), { global: 100, reply: 100 })
+      assert.deepEqual(getZoomPreferences(), { global: 100, reply: 100, note: 100 })
     }
     assert.equal(wheel(message, -100, { ctrlKey: false }).defaultPrevented, false)
     assert.equal(wheel(message, -100, { altKey: true }).defaultPrevented, false)
     assert.equal(wheel(message, 0).defaultPrevented, false)
-    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 100 })
+    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 100, note: 100 })
     key('+')
-    assert.deepEqual(getZoomPreferences(), { global: 110, reply: 100 })
+    assert.deepEqual(getZoomPreferences(), { global: 110, reply: 100, note: 100 })
     cleanup()
     assert.equal(wheel(message).defaultPrevented, false)
-    assert.deepEqual(getZoomPreferences(), { global: 110, reply: 100 })
+    assert.deepEqual(getZoomPreferences(), { global: 110, reply: 100, note: 100 })
   })
 
   it('主键盘与小键盘加减、恢复默认，并阻止浏览器重复缩放', () => {
@@ -146,7 +150,7 @@ describe('全局缩放快捷键', () => {
   it('回复字号独立保存、限制上下界、可重置；按钮与快捷键共享状态', () => {
     storage.set('icpc-ai-reply-zoom', '120')
     cleanup = setupAppZoom()
-    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 120 })
+    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 120, note: 100 })
     let changes = 0
     const unsubscribe = subscribeZoomPreferences(() => changes++)
     try {
@@ -159,10 +163,60 @@ describe('全局缩放快捷键', () => {
       assert.equal(storage.get('icpc-ai-reply-zoom'), '100')
       setZoomPreference('global', 130)
       key('-')
-      assert.deepEqual(getZoomPreferences(), { global: 120, reply: 100 })
+      assert.deepEqual(getZoomPreferences(), { global: 120, reply: 100, note: 100 })
       assert.equal(changes, 5)
       setZoomPreference('reply', NaN)
       assert.equal(changes, 5)
     } finally { unsubscribe() }
+  })
+
+  it('笔记卡片内滚轮独立缩放 note 字号，与全局/回复互不影响、上下界钳制、可持久化', () => {
+    cleanup = setupAppZoom()
+    const card = ['[data-note-zoom]']
+    wheel(card)
+    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 100, note: 110 })
+    wheel(card, 100)
+    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 100, note: 100 })
+    // 连续上滚放大再下滚缩小：同向事件需错开 timeStamp，否则被 80ms 去抖吞掉
+    wheel(card, -100, { timeStamp: 100 })
+    wheel(card, -100, { timeStamp: 200 })
+    assert.equal(getZoomPreferences().note, 120)
+    wheel(card, 100, { timeStamp: 300 })
+    assert.equal(getZoomPreferences().note, 110)
+    // 把 note 拉满/拉到底，验证上下界（重复滚取整到步长，每次错开 80ms 以上绕过去抖）
+    for (let i = 0; i < 30; i++) wheel(card, -100, { timeStamp: 400 + i * 100 })
+    assert.equal(getZoomPreferences().note, 200)
+    for (let i = 0; i < 30; i++) wheel(card, 100, { timeStamp: 3500 + i * 100 })
+    assert.equal(getZoomPreferences().note, 50)
+    // 笔记在卡片内滚不影响全局与回复字号
+    assert.deepEqual(getZoomPreferences(), { global: 100, reply: 100, note: 50 })
+    assert.equal(styles.get('--note-text-zoom'), '0.5')
+    // 卡片区域之外的 Ctrl+滚轮（如标题栏）不改 note 字号
+    const before = getZoomPreferences().note
+    assert.equal(wheel([], -100).defaultPrevented, true)
+    assert.equal(getZoomPreferences().note, before)
+    assert.equal(wheel(['button, [role="button"]'], -100).defaultPrevented, true)
+    assert.equal(getZoomPreferences().note, before)
+    // 持久化：cleanup 后重新初始化能恢复保存的 note 比例
+    cleanup()
+    storage.set('icpc-note-text-zoom', '150')
+    cleanup = setupAppZoom()
+    assert.equal(getZoomPreferences().note, 150)
+    assert.equal(storage.get('icpc-note-text-zoom'), '150')
+    // 清理后不再响应
+    cleanup()
+    assert.equal(wheel(card, -100).defaultPrevented, false)
+    assert.equal(getZoomPreferences().note, 150)
+  })
+
+  it('zoomMultipleLabel: 各档位倍数文案', () => {
+    assert.equal(zoomMultipleLabel(100), '1×')
+    assert.equal(zoomMultipleLabel(110), '1.1×')
+    assert.equal(zoomMultipleLabel(120), '1.2×')
+    assert.equal(zoomMultipleLabel(50), '0.5×')
+    assert.equal(zoomMultipleLabel(200), '2×')
+    assert.equal(zoomMultipleLabel(1), '0.01×')
+    assert.equal(zoomMultipleLabel(NaN), '1×')
+    assert.equal(zoomMultipleLabel(Infinity), '1×')
   })
 })

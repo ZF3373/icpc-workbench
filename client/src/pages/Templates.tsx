@@ -45,7 +45,7 @@ import InlineError from '../components/InlineError'
 import Markdown from '../components/Markdown'
 import CodeEditor from '../components/CodeEditor'
 import NoteEditor from '../components/NoteEditor'
-import NotePreview from '../components/NotePreview'
+import NoteCardButton from '../components/NoteCardButton'
 import IndentSwitch from '../components/IndentSwitch'
 import { tagColor } from '../ui'
 import { BP, useMediaQuery } from '../useMediaQuery'
@@ -1003,7 +1003,16 @@ export default function Templates() {
                                 </Link>
                               )}
                             </Space>
-                            {t.note && <NotePreview text={t.note} />}
+                            {/* 学习笔记入口：点击弹出笔记卡片（仿赛事中心弹窗），卡片内可直接进入编辑 */}
+                            {t.note && (
+                              <NoteCardButton
+                                kind="template"
+                                subject={t.name}
+                                text={t.note}
+                                meta={<span>{STATUS_META.find(s => s.key === t.status)?.label ?? ''}</span>}
+                                onEdit={() => { setNoteEditing(t); setNoteDraft(t.note ?? '') }}
+                              />
+                            )}
                           </div>
                         </div>
                       )}

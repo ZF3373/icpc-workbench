@@ -3013,12 +3013,6 @@ button.dist-row:hover {
   white-space: nowrap;
 }
 
-.task-note {
-  margin: 6px 0 0;
-  color: var(--text-3);
-  font-size: 12px;
-}
-
 .task-link {
   display: inline-block;
   margin-top: 6px;
@@ -4407,86 +4401,10 @@ html.app-hidden *::after {
 }
 
 /* 预览/卡片里的笔记图片：限制宽度并加淡描边，避免大图撑爆面板 */
-.note-editor-preview img,
-.note-preview-md img {
+.note-editor-preview img {
   max-width: 100%;
   border-radius: 6px;
   border: 1px solid var(--line-soft);
-}
-
-/* ---------- 卡片里的笔记预览（NotePreview）：限高折叠 + 展开/收起 ---------- */
-.note-preview {
-  margin-top: 6px;
-  min-width: 0;
-}
-
-.note-preview-md {
-  max-height: 220px;
-  overflow: hidden;
-  position: relative;
-  font-size: 12.5px;
-}
-
-.note-preview-md .markdown-body {
-  font-size: 12.5px;
-}
-
-.note-preview-md .markdown-body h1 {
-  font-size: 15px;
-}
-
-.note-preview-md .markdown-body h2 {
-  font-size: 14px;
-  margin-top: 14px;
-}
-
-.note-preview-md .markdown-body h3,
-.note-preview-md .markdown-body h4 {
-  font-size: 13px;
-  margin-top: 10px;
-}
-
-.note-preview-md[data-clipped]::after {
-  content: '';
-  position: absolute;
-  inset: auto 0 0;
-  height: 44px;
-  background: linear-gradient(transparent, var(--surface));
-  pointer-events: none;
-}
-
-.note-preview[data-expanded] .note-preview-md {
-  max-height: none;
-}
-
-.note-preview[data-expanded] .note-preview-md[data-clipped]::after {
-  content: none;
-}
-
-.note-preview-toggle {
-  margin-top: 2px;
-  padding: 0;
-  font-size: 12px;
-  color: var(--brand);
-  background: none;
-  border: none;
-  cursor: pointer;
-}
-
-/* hidden 形态（复习库）：折叠时不露出笔记内容，「展开/收起」按钮由操作列渲染 */
-.note-preview--hidden .note-preview-toggle {
-  display: block;
-  margin-left: auto;
-  margin-top: 2px;
-}
-
-/* 操作列里的笔记展开/收起按钮：对齐到编辑图标按钮的正下方——
-   右侧让出「移除按钮 24px + Space 间距 6px」，避免盖在删除按钮下方造成误触 */
-.review-item-actions .note-preview-toggle {
-  display: block;
-  margin-left: auto;
-  margin-right: calc(24px + 6px);
-  margin-top: 2px;
 }
 
 /* ---------- 写题历史面板（issue #19，嵌在数据概览的卡片内） ---------- */

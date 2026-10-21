@@ -26,6 +26,7 @@ import PageHeader from '../components/PageHeader'
 import PageSkeleton from '../components/PageSkeleton'
 import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
+import NoteCardButton from '../components/NoteCardButton'
 import { del, get, patch, post } from '../api'
 import type { GenerateResult, PlanDetail, PlanListItem, PlanTask } from '../types'
 
@@ -357,7 +358,11 @@ export default function Plans() {
                             )}
                             {t.problem_key && <span className="task-key">{t.problem_key}</span>}
                           </Space>
-                          {t.note && <p className="task-note">{t.note}</p>}
+                          {/* 备注改为点击弹卡查看：variant="text" 让备注正文本身即入口，
+                              外观沿用原备注样式（12px / 次要色），不挤压列表观感 */}
+                          {t.note && (
+                            <NoteCardButton kind="task" variant="text" subject={t.title} text={t.note} />
+                          )}
                           {link && (
                             <a className="task-link" href={link} target="_blank" rel="noreferrer">
                               跳转做题 ↗
