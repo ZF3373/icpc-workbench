@@ -404,6 +404,16 @@ async fn supervise(app: tauri::AppHandle) {
 }
 
 fn main() {
+    // GPU 节能：通过 WebView2 附加启动参数减少后台渲染与合成器开销
+    // --disable-background-timer-throttling: 禁后台定时器节流（配合节能）
+    // --disable-renderer-backgrounding: 禁后台渲染器降优先级（保持交互响应）
+    // --enable-gpu-rasterization: 启用 GPU 光栅化（减少 CPU 绘制，降低整体负载）
+    // --disable-features=msWebOOUI: 禁用部分 Web UI 特性减少渲染分支
+    std::env::set_var(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--disable-background-timer-throttling --disable-renderer-backgrounding --enable-gpu-rasterization --disable-features=msWebOOUI",
+    );
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {

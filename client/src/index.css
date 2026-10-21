@@ -264,12 +264,18 @@ body {
 
 .page-content {
   animation: pageFadeIn 0.35s ease-out;
+  /* GPU 节能：容器隔离 layout/paint，重绘时不会向上传染；content-visibility: auto
+     让浏览器/WebView 自动跳过不可见区域的重绘周期 —— 失焦态下大幅减少整层失效 */
+  contain: layout paint;
+  content-visibility: auto;
 }
 
 .content-container {
   max-width: 1440px;
   margin: 0 auto;
   width: 100%;
+  /* GPU 节能：外层容器隔离 layout/paint，避免子元素变化传导到祖先层 */
+  contain: layout paint;
 }
 
 /* 页头 */
@@ -3421,12 +3427,14 @@ button.dist-row:hover {
 }
 
 /* ============================================================
-   GPU 节能：应用不可见时全局暂停动画
+   GPU 节能：应用不可见或失焦时全局暂停动画
    ------------------------------------------------------------
    WebView（Tauri/浏览器）最小化、切到别的窗口或切走标签页时，页面内容
-   不可见但动画仍在跑 —— GPU 进程空转重绘那些没人看的帧。这里在
-   :root 上挂一个开关，配合下面几行 JS（见 main.tsx）在
-   document.visibilitychange 时切换，所有 infinite 动画立即冻结。
+   不可见但动画仍在跑 —— GPU 进程空转重绘那些没人看的帧。窗口失焦但
+   仍在屏幕上时（比如旁边开着编辑器看题）同样如此：document.hidden
+   只在最小化/切标签时为 true，失焦态动画照常跑。这里在 :root 上挂一个
+   开关，配合 main.tsx 在 visibilitychange / blur / focus 时切换，
+   所有 infinite 动画立即冻结。
    注意选择器顺序：放在文件尾部保证特异性不够时也能覆盖前面的声明
    ============================================================ */
 

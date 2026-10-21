@@ -120,6 +120,12 @@ const WORKER_LABEL: &str = "qoj-worker";
 const AGENT_DAEMON_SCRIPT: &str = r#"(function () {
   if (window.__icpcAgent) return;
   window.__icpcAgent = true;
+  // GPU 节能：隐藏窗里对 body 挂 content-visibility + contain，降低不可见区域的绘制压力
+  try {
+    var s = document.createElement('style');
+    s.textContent = 'body { contain: layout paint; content-visibility: auto; }';
+    document.head.appendChild(s);
+  } catch (e0) { /* 旧版 WebView2 不支持 content-visibility，忽略 */ }
   (async function () {
     var PORT = "__PORT__";
     for (;;) {

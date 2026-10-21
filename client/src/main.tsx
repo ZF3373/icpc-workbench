@@ -26,15 +26,37 @@ const cleanupAppZoom = setupAppZoom()
 if (import.meta.hot) import.meta.hot.dispose(cleanupAppZoom)
 
 /**
- * GPU 节能：应用不可见（最小化 / 切走窗口 / 切走标签页）时给 <html> 挂
- * `app-hidden`，CSS 据此把所有 infinite 动画 play-state 置为 paused
- * （见 index.css 尾部）。动画帧没人看却仍让 WebView 的 GPU 进程满负荷
- * 重绘 —— 冻结后 GPU 占用立即回落，回前台时自动恢复，视觉无感知。
+ * GPU 节能：应用不可见（最小化 / 切走标签页）立即冻结动画；窗口失焦但仍在
+ * 屏幕上时**延迟 30 秒**再冻结 —— 给 <html> 挂 `app-hidden`，CSS 据此把所有
+ * infinite 动画 play-state 置为 paused（见 index.css 尾部）。动画帧没人看却仍
+ * 让 WebView 的 GPU 进程满负荷重绘 —— 冻结后 GPU 占用立即回落，回前台自动恢复。
+ *
+ * 失焦延迟而非立即：用户短暂切走（复制代码、查个文档就回来）时界面保持鲜活，
+ * 只有长时离开（在看题/写代码，工作台退居背景）才冻结 —— 实测失焦态 WebView
+ * 3d 引擎有持续底噪。重新聚焦时立即恢复，无感知。
  */
-document.documentElement.classList.toggle('app-hidden', document.hidden)
-document.addEventListener('visibilitychange', () => {
-  document.documentElement.classList.toggle('app-hidden', document.hidden)
-})
+const BLUR_FREEZE_DELAY_MS = 30_000
+let blurFreezeTimer: ReturnType<typeof setTimeout> | null = null
+const setAppHidden = (hidden: boolean) => {
+  document.documentElement.classList.toggle('app-hidden', hidden)
+}
+const syncAppHidden = () => {
+  if (blurFreezeTimer) {
+    clearTimeout(blurFreezeTimer)
+    blurFreezeTimer = null
+  }
+  if (document.hidden) {
+    setAppHidden(true) // 不可见：立即冻结
+  } else if (document.hasFocus()) {
+    setAppHidden(false) // 聚焦：立即恢复
+  } else {
+    blurFreezeTimer = setTimeout(() => setAppHidden(true), BLUR_FREEZE_DELAY_MS) // 失焦：延迟冻结
+  }
+}
+syncAppHidden()
+document.addEventListener('visibilitychange', syncAppHidden)
+window.addEventListener('blur', syncAppHidden)
+window.addEventListener('focus', syncAppHidden)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
