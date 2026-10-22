@@ -918,6 +918,47 @@ test('POST /api/problems/bank: fetches nowcoder bank and persists problems', asy
   }, fetchFn);
 });
 
+test('POST /api/problems/bank: dashoj 增量——首次全量入库并写游标，二次无新增只拉 0 题', async () => {
+  const PAGE = 50;
+  const TOTAL = 120; // ppcount=3
+  const docs = Array.from({ length: TOTAL }, (_, i) => ({
+    docId: i + 1, title: `P${i + 1}`, difficulty: 3, nSubmit: 100, nAccept: 50, tag: [],
+  }));
+  const pages: number[] = [];
+  const fetchFn = router({
+    'dashoj.com/p?': (url) => {
+      const page = Number(/page=(\d+)/.exec(url)?.[1] ?? 1);
+      pages.push(page);
+      return { pcount: TOTAL, ppcount: Math.ceil(TOTAL / PAGE), pdocs: docs.slice((page - 1) * PAGE, page * PAGE) };
+    },
+  });
+  await withServer(async (base) => {
+    const post = () =>
+      fetch(`${base}/bank`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform: 'dashoj' }),
+      }).then((r) => r.json()) as Promise<{ fetched: number; inserted: number; total: number | null }>;
+
+    // 首次：无游标 → 全量扫描入库 120 题，并持久化游标 bank.cursor.dashoj
+    const r1 = await post();
+    assert.equal(r1.fetched, 120);
+    assert.equal(r1.inserted, 120);
+    assert.equal(r1.total, 120);
+
+    // 二次：读到游标、站点无新增 → 增量返回 0 题（只打首页+尾页，不重扫全表、不重复入库）
+    pages.length = 0;
+    const r2 = await post();
+    assert.equal(r2.fetched, 0);
+    assert.equal(r2.inserted, 0);
+    assert.deepEqual(pages, [1, 3]);
+
+    // 库内仍是 120 题（未重复插入）
+    const list = (await (await fetch(`${base}?bank=1&platform=dashoj`)).json()) as unknown[];
+    assert.equal(list.length, 120);
+  }, fetchFn);
+});
+
 test('POST /api/problems/bank: upstream failure returns 502 with message', async () => {
   const fetchFn = router({
     'acm/problem/list': () => ({ status: 403, body: '' }),

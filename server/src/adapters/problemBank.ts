@@ -70,6 +70,18 @@ export interface BankFetchOptions {
   pageDelayMs?: number;
   /** 进度回调（每完成一页触发） */
   onProgress?: (fetched: { platform: PlatformId; count: number; total: number | null }) => void;
+  /**
+   * 增量拉取游标（仅 docId 升序、新题追加在尾部的平台支持，如 DashOJ/Hydro）。
+   * 传入则只抓「docId 大于 cursor.maxDocId」的尾部新题，已有题不重复下载/重写；
+   * 不传 = 全量扫描。拉取结果里的 `cursor` 为本次后的最新游标，供调用方持久化用于下次增量。
+   */
+  incrementalFrom?: BankCursor;
+}
+
+/** 增量游标：docId 升序追加的平台记录「上次已入库的最高 docId」与「当时的题库总数」 */
+export interface BankCursor {
+  maxDocId: number;
+  pcount: number;
 }
 
 /**
@@ -111,6 +123,8 @@ export interface BankFetchResult {
   tagMatched?: number;
   tagWithTags?: number;
   tagSkipped?: number;
+  /** 本次拉取后的最新增量游标（docId 升序平台产出；调用方持久化后下次传回 incrementalFrom） */
+  cursor?: BankCursor;
 }
 
 const LUOGU_API = 'https://www.luogu.com.cn';
@@ -863,43 +877,96 @@ export async function fetchDaimayuanBank(
  * 与代码源同为 Hydro 系、响应结构一致（`{ pcount, ppcount, pdocs }`，实测每页 50、约 41 页 /2034 题）：
  * 难度取 `pdoc.difficulty`（站点手工值，0 = 未设定）优先，否则用 nSubmit/nAccept 按 Hydro
  * difficultyAlgorithm 本地复算（见 hydroDifficulty，与代码源共用）；标签取 `pdoc.tag`。
+ *
+ * **增量拉取**（opts.incrementalFrom）：DashOJ 题目按 docId 升序、新题只追加在尾部，故
+ * 传入上次游标后只需扫尾部若干页即可拿到新增题，已有题不重复下载/重写：
+ * - 先取第 1 页（拿 pcount/ppcount）+ 最后一页（拿当前最高 docId），共 2 次请求即可判定有无新增；
+ * - 尾部最高 docId 与总数都没涨 → 直接返回空（无新增）；
+ * - 有新增 → 按「总数差值」估算尾部页数（ceil(delta/50)+1，含边界冗余）只扫那几页，且只收集
+ *   docId 严格大于游标的题；
+ * - 总数下降（站点删题，结构变化）或缺 ppcount（无法定位尾页）→ 全量重扫兜底。
+ * 返回的 `cursor` 为本次后的最新 (maxDocId, pcount)，供调用方持久化。不传 incrementalFrom = 全量扫描。
  */
 export async function fetchDashojBank(
   fetchFn: HttpInit,
   opts: BankFetchOptions = {},
 ): Promise<BankFetchResult> {
-  // 默认拉全量：DashOJ 题库约 2034 题且持续新增（蓝桥杯/考研真题按 docId 升序排在最后），
-  // 缺省 2000 会漏掉最新的一批。上限给足 20000，实际由 ppcount / 空页终止，不会多打请求。
+  const PAGE = DASHOJ_PER_PAGE; // 50
+  // 全量默认拉全（约 2034 题且持续新增）；增量模式下 max 只作为尾部新增的安全上限。
   const max = opts.max ?? 20000;
   const problems: BankProblem[] = [];
   const seen = new Set<string>();
   const wanted = makeWantedTracker(opts.wantKeys);
-  let total: number | null = null;
-  let wantedDone = false;
 
-  for (let page = 1; page <= 400; page += 1) {
-    const url = `${DASHOJ_BASE}/p?page=${page}`;
-    const res = await asHttpClient(fetchFn).fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        Accept: 'application/json',
-        Referer: `${DASHOJ_BASE}/p`,
-      },
-    });
-    if (!res.ok) {
-      throw new Error(`DashOJ 题库接口 HTTP ${res.status}，请稍后重试`);
-    }
-    const body = (await res.json().catch(() => null)) as
-      | { pcount?: number; ppcount?: number; pdocs?: DmyPdoc[] }
-      | null;
+  const http = asHttpClient(fetchFn);
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    Accept: 'application/json',
+    Referer: `${DASHOJ_BASE}/p`,
+  };
+  type PageBody = { pcount?: number; ppcount?: number; pdocs?: DmyPdoc[] };
+  const getPage = async (page: number): Promise<PageBody> => {
+    const res = await http.fetch(`${DASHOJ_BASE}/p?page=${page}`, { headers });
+    if (!res.ok) throw new Error(`DashOJ 题库接口 HTTP ${res.status}，请稍后重试`);
+    const body = (await res.json().catch(() => null)) as PageBody | null;
     if (body === null) throw new Error('DashOJ 题库接口返回非 JSON（接口变化），请稍后重试');
-    const list = Array.isArray(body.pdocs) ? body.pdocs : [];
-    if (total === null && typeof body.pcount === 'number') total = body.pcount;
+    return body;
+  };
+  const docsOf = (b: PageBody): DmyPdoc[] => (Array.isArray(b.pdocs) ? b.pdocs : []);
+  const maxDocIdOf = (docs: DmyPdoc[]): number =>
+    docs.reduce((m, p) => (typeof p.docId === 'number' && p.docId > m ? p.docId : m), 0);
+
+  // 第 1 页：拿 pcount / ppcount（增量与全量都需要）
+  const first = await getPage(1);
+  const pcount = typeof first.pcount === 'number' ? first.pcount : null;
+  const ppcount = typeof first.ppcount === 'number' && first.ppcount > 0 ? first.ppcount : null;
+  const lastPageNo = ppcount ?? 400; // 无 ppcount 时用硬上限兜底（空页/短页会提前终止）
+
+  const cursorIn = opts.incrementalFrom;
+  let startPage = 1;
+  let onlyAbove = 0; // >0 时只收集 docId 严格大于它的题（增量尾部去重叠）
+  let curMaxDocId = maxDocIdOf(docsOf(first));
+
+  // 增量判定：需要游标 + 能定位尾页（ppcount）；否则退回全量扫描
+  if (cursorIn && cursorIn.maxDocId > 0 && ppcount !== null) {
+    const lastBody = lastPageNo > 1 ? await getPage(lastPageNo) : first;
+    const siteMaxDocId = maxDocIdOf(docsOf(lastBody));
+    const sitePcount = pcount ?? cursorIn.pcount;
+    curMaxDocId = Math.max(curMaxDocId, siteMaxDocId);
+    if (sitePcount < cursorIn.pcount) {
+      // 总数下降 = 站点删题、页码可能位移：全量重扫兜底
+      startPage = 1;
+      onlyAbove = 0;
+    } else if (siteMaxDocId <= cursorIn.maxDocId && sitePcount <= cursorIn.pcount) {
+      // 尾部最高 docId 与总数都没涨 → 无新增（只花了 2 次请求）
+      return {
+        platform: 'dashoj',
+        problems: [],
+        total: sitePcount,
+        cursor: { maxDocId: cursorIn.maxDocId, pcount: sitePcount },
+      };
+    } else {
+      // 尾部有新增：按总数差值估算需扫的尾部页数（+1 页覆盖边界重叠），只收 docId > 游标的题
+      const delta = Math.max(sitePcount - cursorIn.pcount, 1);
+      const tailPages = Math.min(lastPageNo, Math.ceil(delta / PAGE) + 1);
+      startPage = Math.max(1, lastPageNo - tailPages + 1);
+      onlyAbove = cursorIn.maxDocId;
+    }
+  }
+
+  let wantedDone = false;
+  for (let page = startPage; page <= lastPageNo; page += 1) {
+    const body = page === 1 ? first : await getPage(page);
+    const list = docsOf(body);
     if (list.length === 0) break;
+    curMaxDocId = Math.max(curMaxDocId, maxDocIdOf(list));
 
     for (const p of list) {
-      const key = typeof p.docId === 'number' ? String(p.docId) : '';
+      const docId = typeof p.docId === 'number' ? p.docId : Number.NaN;
+      const key = Number.isFinite(docId) ? String(docId) : '';
       if (!key || seen.has(key)) continue;
+      // 增量：边界页与已入库区间重叠，只收比游标更新的题（跳过已知，不重复下载处理）
+      if (onlyAbove > 0 && Number.isFinite(docId) && docId <= onlyAbove) continue;
       seen.add(key);
       const level = hydroDifficulty(p.nSubmit ?? 0, p.nAccept ?? 0, p.difficulty ?? null);
       problems.push({
@@ -917,14 +984,22 @@ export async function fetchDashojBank(
       }
       if (problems.length >= max) break;
     }
-    opts.onProgress?.({ platform: 'dashoj', count: problems.length, total });
+    opts.onProgress?.({ platform: 'dashoj', count: problems.length, total: pcount });
     if (wantedDone) break;
     if (problems.length >= max) break;
-    if (typeof body.ppcount === 'number' && page >= body.ppcount) break;
-    if (list.length < DASHOJ_PER_PAGE) break;
+    if (ppcount !== null && page >= ppcount) break;
+    if (list.length < PAGE) break;
     await sleep(opts.pageDelayMs ?? 400); // 页间限速
   }
-  return { platform: 'dashoj', problems: problems.slice(0, max), total };
+
+  const cursor: BankCursor = {
+    // curMaxDocId 已含「最后一页」的最高 docId（增量分支取了尾页、全量分支扫到尾页），
+    // 即站点当前真实最高 docId。删题全量重扫后它会**下降**到新真值——这是正确的：
+    // 若强行 max 旧游标，删掉最新题后游标会永远停在旧高位，导致此后 docId 未超过它的新题全被漏掉。
+    maxDocId: curMaxDocId,
+    pcount: pcount ?? cursorIn?.pcount ?? 0,
+  };
+  return { platform: 'dashoj', problems: problems.slice(0, max), total: pcount, cursor };
 }
 
 // ---------- 计蒜客 ----------

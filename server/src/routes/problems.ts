@@ -493,7 +493,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   //   默认 ['P']；镜像题用来批量补齐 CF/AtCoder 题面上的中文标签。
   // atcoderTags：用洛谷 AT 镜像题给 AtCoder 题补算法标签（覆盖有限，命中计数随响应回传）。
   r.post('/bank', asyncHandler(async (req, res) => {
-    const { platform, max, luoguMinDifficulty, luoguTypes, atcoderTags } = req.body ?? {};
+    const { platform, max, luoguMinDifficulty, luoguTypes, atcoderTags, full } = req.body ?? {};
     // QOJ 没有公开题库页（站点在 Cloudflare 挑战之后，且平台数据模型里没有难度字段）：
     // 明确拒绝而不是落到默认分支去拉别的平台 —— 否则前端会以为「QOJ 题库已入库」。
     if (platform === 'qoj') {
@@ -559,13 +559,40 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
                 : platform === 'jisuanke'
                   ? fetchJisuankeBank
                   : fetchCodeforcesBank;
+      // 增量游标（docId 升序平台专用，目前仅 DashOJ 的 fetcher 会读取/产出）：
+      // 从 settings 读上次游标传给 fetcher → 只拉尾部新增题；full=true 时跳过游标强制全量重扫。
+      // 其它平台的 fetcher 忽略 incrementalFrom、也不产出 cursor，故此处按平台泛化处理即可。
+      const cursorKey = `bank.cursor.${String(platform)}`;
+      let incrementalFrom: { maxDocId: number; pcount: number } | undefined;
+      if (full !== true) {
+        const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(cursorKey) as
+          | { value: string }
+          | undefined;
+        if (row?.value) {
+          try {
+            const parsed = JSON.parse(row.value) as { maxDocId?: number; pcount?: number };
+            if (typeof parsed.maxDocId === 'number' && parsed.maxDocId > 0) {
+              incrementalFrom = { maxDocId: parsed.maxDocId, pcount: parsed.pcount ?? 0 };
+            }
+          } catch {
+            // 游标损坏 → 忽略，按全量拉取（并在下面用新游标覆盖）
+          }
+        }
+      }
       const result = await fetcher(fetchFn, {
         max: maxN,
+        ...(incrementalFrom ? { incrementalFrom } : {}),
         ...(minDiff !== undefined ? { luoguMinDifficulty: minDiff } : {}),
         ...(types !== undefined ? { luoguTypes: types } : {}),
         ...(atcoderTags === true ? { atcoderTagsFromLuogu: true } : {}),
       });
       const imported = upsertBankProblems(db, result.problems);
+      // 持久化本次游标供下次增量（仅产出 cursor 的平台，如 DashOJ）
+      if (result.cursor) {
+        db.prepare(
+          'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+        ).run(cursorKey, JSON.stringify(result.cursor));
+      }
       res.json({
         ok: true,
         platform,

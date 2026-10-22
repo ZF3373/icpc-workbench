@@ -2132,9 +2132,10 @@ const LUOGU_DIFFICULTY_OPTIONS = [
   { value: 6, label: '省选/NOI- 及以上' },
 ]
 
-/** 平台默认拉取条数：CF / AtCoder 单次 API 调用即可拿全量，LeetCode 全量约 3300 题、代码源约 500 题 */
+/** 平台默认拉取条数：CF / AtCoder 单次 API 调用即可拿全量，LeetCode 全量约 3300 题、代码源约 500 题、
+ *  DashOJ 约 2000+ 题（蓝桥杯/考研真题持续新增，取上限 5000 一次拉全，实际由站点页数终止） */
 function defaultBankMax(p: PlatformId): number {
-  return p === 'codeforces' ? 10000 : p === 'leetcode' ? 3500 : p === 'atcoder' ? 5000 : 1000
+  return p === 'codeforces' ? 10000 : p === 'leetcode' ? 3500 : p === 'atcoder' ? 5000 : p === 'dashoj' ? 5000 : 1000
 }
 
 /** 「拉取题库」页签：从公开题库批量入库，扩充训练计划待选题池（无需账号）。 */
@@ -2200,7 +2201,7 @@ function BankTab({ onDone }: { onDone: () => void }) {
         />
         <InputNumber
           min={50}
-          max={platform === 'codeforces' ? 20000 : platform === 'atcoder' ? 10000 : 5000}
+          max={platform === 'codeforces' ? 20000 : platform === 'atcoder' ? 10000 : platform === 'dashoj' ? 20000 : 5000}
           step={platform === 'codeforces' || platform === 'atcoder' ? 500 : 50}
           value={max}
           onChange={(v) => setMax(v ?? 1000)}
