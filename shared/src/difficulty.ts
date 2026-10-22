@@ -299,6 +299,18 @@ export function parseNativeDifficulty(platform: PlatformId, raw: unknown): Diffi
         native: nativeText,
       };
     }
+    // DashOJ 与代码源同为 Hydro 系、共用 1-10 难度域与映射表（见 HYDRO_LEVEL_TO_RATING）
+    case 'dashoj': {
+      const n = toNumber(raw);
+      if (n === null || n <= 0 || n > 10) return { rating: null, label: null, scale: 'hydro-1-10', native: nativeText };
+      const level = Math.round(n);
+      return {
+        rating: HYDRO_LEVEL_TO_RATING[level] ?? null,
+        label: `${level}/10`,
+        scale: 'hydro-1-10',
+        native: nativeText,
+      };
+    }
     case 'qoj': {
       // QOJ（UOJ 系数据模型）**自身不提供难度字段**；这里只接受由公开榜单推导出的
       // ICPC/CCPC 档位原文（`gold` / `gold:704/2535`，见 ICPC_TIERS 注释）。

@@ -23,7 +23,7 @@ export interface ContestView {
   page: number
 }
 
-const CALENDAR_PLATFORMS = new Set<PlatformId>(['codeforces', 'atcoder', 'luogu', 'nowcoder', 'jisuanke'])
+const CALENDAR_PLATFORMS = new Set<PlatformId>(['codeforces', 'atcoder', 'luogu', 'nowcoder', 'jisuanke', 'dashoj'])
 export function readContestView(params: URLSearchParams): ContestView {
   const rawTab = params.get('tab')
   const tab: ContestTab = rawTab === 'running' || rawTab === 'finished' || rawTab === 'participated' ? rawTab : 'upcoming'

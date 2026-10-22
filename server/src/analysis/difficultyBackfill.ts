@@ -9,6 +9,7 @@ import { fetchWithChallenge } from '../adapters/luogu.ts';
 import { parseJisuankeProblemTags } from '../adapters/jisuanke.ts';
 import {
   fetchDaimayuanBank,
+  fetchDashojBank,
   fetchNowcoderBank,
   LEETCODE_BANK_PAGE,
   LEETCODE_BANK_QUERY,
@@ -219,6 +220,7 @@ const FLOOR_MS = {
   luogu: HOST_MIN_INTERVAL_MS['www.luogu.com.cn'],
   nowcoder: HOST_MIN_INTERVAL_MS['ac.nowcoder.com'],
   daimayuan: HOST_MIN_INTERVAL_MS['bs.daimayuan.top'],
+  dashoj: HOST_MIN_INTERVAL_MS['dashoj.com'],
   leetcode: HOST_MIN_INTERVAL_MS['leetcode.cn'],
   jisuanke: HOST_MIN_INTERVAL_MS['www.jisuanke.com'],
   atcoder: HOST_MIN_INTERVAL_MS['kenkoooo.com'],
@@ -250,6 +252,8 @@ const PLATFORM_LIMITS: Record<PlatformId, { delayMs: number; failLimit: number |
   luogu: { delayMs: FLOOR_MS.luogu, failLimit: 8, maxPerRun: 400 },
   // 代码源：整表 JSON 分页扫描（见 fetchDaimayuanTable）→ 不再逐题请求
   daimayuan: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
+  // DashOJ：同为 Hydro 整表 JSON 分页扫描（见 fetchDashojTable）→ 不逐题请求
+  dashoj: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
   // 整表平台：一次请求就拿到全库元数据，逐题循环只是查内存 → 上限只限制「本次写库量」，
   // 放宽到 20000 让「仅缺原生值」的历史行在一轮内收敛（此前 2000 要连点数次，每点一次都重下整表）
   leetcode: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
@@ -880,6 +884,7 @@ const TABLE_FETCHERS: Partial<Record<PlatformId, (ctx: BackfillCtx) => Promise<M
   jisuanke: fetchJisuankeTable,
   nowcoder: fetchNowcoderTable,
   daimayuan: fetchDaimayuanTable,
+  dashoj: fetchDashojTable,
 };
 
 /**
@@ -954,6 +959,19 @@ async function fetchDaimayuanTable(ctx: BackfillCtx): Promise<Map<string, Proble
   const bank = await fetchDaimayuanBank(ctx.fetchFn, {
     wantKeys: ctx.wanted.get('daimayuan'),
     pageDelayMs: FLOOR_MS.daimayuan,
+    max: 20000,
+  });
+  return bankToTable(bank);
+}
+
+/**
+ * DashOJ（Hydro）：整表 JSON 分页扫描（GET /p?page=N），与代码源同结构、同难度算法。
+ * 复用 fetchDashojBank 的分页扫描，命中库内目标即早停。
+ */
+async function fetchDashojTable(ctx: BackfillCtx): Promise<Map<string, ProblemMeta>> {
+  const bank = await fetchDashojBank(ctx.fetchFn, {
+    wantKeys: ctx.wanted.get('dashoj'),
+    pageDelayMs: FLOOR_MS.dashoj,
     max: 20000,
   });
   return bankToTable(bank);
@@ -1070,6 +1088,8 @@ export async function fetchProblemMeta(
     }
     case 'daimayuan':
       return (await platformTable('daimayuan', ctx)).get(problemKey) ?? null;
+    case 'dashoj':
+      return (await platformTable('dashoj', ctx)).get(problemKey) ?? null;
     case 'qoj': {
       const problemId = qojProblemIdFromKey(problemKey);
       if (problemId === null) return null;
@@ -1347,6 +1367,7 @@ const PLATFORM_ORDER: readonly PlatformId[] = [
   'qoj', // ≈18s：目录 + 榜单；一次点击内就能出结果
   'atcoder', // ≈3s：kenkoooo 两份整表
   'daimayuan', // ≈8s：Hydro 5 页
+  'dashoj', // ≈8s：Hydro 整表分页（约 41 页 /2034 题，命中目标即早停）
   'codeforces', // ≈10s：problemset.problems 一次拉表（写库量大，但一次请求）
   'leetcode', // ≈53s：problemsetQuestionList 分页
   'jisuanke', // ≈276s：题库分页最多 184 页（目标题常年不在题库里 → 常扫满）

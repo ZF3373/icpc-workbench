@@ -169,6 +169,7 @@ export const PLATFORM_COLOR: Record<PlatformId, string> = {
   leetcode: '#ffa116',
   jisuanke: '#7ee0a3', // 计蒜客品牌绿（暗色底可读版）
   qoj: '#b18cff', // QOJ / Universal Cup：暗色底可读的紫罗兰
+  dashoj: '#e879a6', // DashOJ：暗色底可读的玫红（与代码源橙区分）
 }
 
 // id→name 的 O(1) 索引：platformName 在列表渲染等热路径被逐行调用，
@@ -271,7 +272,7 @@ const SCALE_PLATFORM_NAME: Record<string, string> = {
   'luogu-2026-06': '洛谷',
   'jisuanke-level-8': '计蒜客',
   'leetcode-tier': '力扣',
-  'hydro-1-10': '代码源',
+  'hydro-1-10': 'Hydro', // 代码源 / DashOJ 同为 Hydro 系，共用 1-10 站内难度标度
   'atcoder-kenkoooo-irt': 'AtCoder',
   'nowcoder-score': '牛客',
   'icpc-tier': 'ICPC 榜单', // QOJ 题的难度来自 ICPC/CCPC 公开榜单档位（金/银/铜/铁）

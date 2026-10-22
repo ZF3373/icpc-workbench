@@ -22,7 +22,7 @@ import {
   requestBackfillStop,
   setBackfillProgress,
 } from '../analysis/backfillRun.ts';
-import { fetchLuoguBank, fetchNowcoderBank, fetchCodeforcesBank, fetchLeetcodeBank, fetchAtcoderBank, fetchDaimayuanBank, fetchJisuankeBank } from '../adapters/problemBank.ts';
+import { fetchLuoguBank, fetchNowcoderBank, fetchCodeforcesBank, fetchLeetcodeBank, fetchAtcoderBank, fetchDaimayuanBank, fetchDashojBank, fetchJisuankeBank } from '../adapters/problemBank.ts';
 import type { LuoguProblemType } from '../adapters/problemBank.ts';
 import { upsertBankProblems } from '../import/bankService.ts';
 import { problemKeypointsCte, knowledgeTagsJoinSql, knowledgeTagsCoalesceSql, knowledgeTagsExpr, appendAnnotations, effectiveDataDir, tombstoneLine } from '../knowledge/store.ts';
@@ -505,9 +505,9 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       platform !== 'luogu' && platform !== 'nowcoder' &&
       platform !== 'codeforces' && platform !== 'leetcode' &&
       platform !== 'atcoder' && platform !== 'daimayuan' &&
-      platform !== 'jisuanke'
+      platform !== 'jisuanke' && platform !== 'dashoj'
     ) {
-      return res.status(400).json({ error: 'platform 需为 luogu / nowcoder / codeforces / leetcode / atcoder / daimayuan / jisuanke' });
+      return res.status(400).json({ error: 'platform 需为 luogu / nowcoder / codeforces / leetcode / atcoder / daimayuan / jisuanke / dashoj' });
     }
     // luoguTypes 校验：非法类型直接拒绝，不静默回退默认 ['P']
     // （静默回退会让「我要 CF 镜像题」变成一次普通题拉取，调用方无从察觉）
@@ -527,7 +527,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     if (atcoderTags !== undefined && typeof atcoderTags !== 'boolean') {
       return res.status(400).json({ error: 'atcoderTags 需为布尔值' });
     }
-    const maxCap = platform === 'codeforces' ? 20000 : platform === 'atcoder' ? 10000 : 5000;
+    const maxCap = platform === 'codeforces' ? 20000 : platform === 'atcoder' ? 10000 : platform === 'dashoj' ? 20000 : 5000;
     const maxN =
       typeof max === 'number' && Number.isFinite(max)
         ? Math.min(maxCap, Math.max(50, Math.floor(max)))
@@ -535,7 +535,9 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
           ? 20000
           : platform === 'atcoder'
             ? 5000
-            : 2000;
+            : platform === 'dashoj'
+              ? 20000 // DashOJ 题库约 2034 题且持续新增，缺省即拉全量（蓝桥杯/考研真题排在最高 docId）
+              : 2000;
     const minDiff =
       typeof luoguMinDifficulty === 'number' && Number.isFinite(luoguMinDifficulty)
         ? luoguMinDifficulty
@@ -552,9 +554,11 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
                 ? fetchAtcoderBank
             : platform === 'daimayuan'
               ? fetchDaimayuanBank
-              : platform === 'jisuanke'
-                ? fetchJisuankeBank
-                : fetchCodeforcesBank;
+              : platform === 'dashoj'
+                ? fetchDashojBank
+                : platform === 'jisuanke'
+                  ? fetchJisuankeBank
+                  : fetchCodeforcesBank;
       const result = await fetcher(fetchFn, {
         max: maxN,
         ...(minDiff !== undefined ? { luoguMinDifficulty: minDiff } : {}),

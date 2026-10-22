@@ -39,6 +39,7 @@ const PLATFORM_HOST: Record<PlatformId, string> = {
   leetcode: 'leetcode.cn',
   daimayuan: 'bs.daimayuan.top',
   jisuanke: 'www.jisuanke.com',
+  dashoj: 'dashoj.com',
 };
 
 /** 已登记的一次同步（含起算基线，快照时才换算成对外可读字段） */

@@ -43,6 +43,7 @@ const RATING_STATUS_TAG: Record<ContestRatingStatus, { color: string; label: str
 const CALENDAR_PLATFORMS = [
   { value: 'codeforces', label: 'Codeforces' }, { value: 'atcoder', label: 'AtCoder' },
   { value: 'luogu', label: '洛谷' }, { value: 'nowcoder', label: '牛客' }, { value: 'jisuanke', label: '计蒜客' },
+  { value: 'dashoj', label: 'DashOJ' },
 ]
 const PAGE_SIZE = 18
 const PARTICIPATED_CACHE_TTL = 5 * 60_000

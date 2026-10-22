@@ -118,9 +118,11 @@ const NOWCODER_API = 'https://ac.nowcoder.com';
 const CODEFORCES_API = 'https://codeforces.com/api';
 const KENKOOOO_API = 'https://kenkoooo.com/atcoder';
 const DAIMAYUAN_BASE = 'https://bs.daimayuan.top';
+const DASHOJ_BASE = 'https://dashoj.com';
 const LUOGU_PER_PAGE = 50;
 const NOWCODER_PER_PAGE = 50;
 const DAIMAYUAN_PER_PAGE = 100;
+const DASHOJ_PER_PAGE = 50; // DashOJ /p 实测每页 50 条（ppcount=41 / pcount=2034，2026-10-22）
 
 // ---------- 洛谷 ----------
 
@@ -854,6 +856,75 @@ export async function fetchDaimayuanBank(
     await sleep(opts.pageDelayMs ?? 400); // 页间限速
   }
   return { platform: 'daimayuan', problems: problems.slice(0, max), total };
+}
+
+/**
+ * DashOJ 公开题库（Hydro，无需登录）：GET /p?page={n} + `Accept: application/json`。
+ * 与代码源同为 Hydro 系、响应结构一致（`{ pcount, ppcount, pdocs }`，实测每页 50、约 41 页 /2034 题）：
+ * 难度取 `pdoc.difficulty`（站点手工值，0 = 未设定）优先，否则用 nSubmit/nAccept 按 Hydro
+ * difficultyAlgorithm 本地复算（见 hydroDifficulty，与代码源共用）；标签取 `pdoc.tag`。
+ */
+export async function fetchDashojBank(
+  fetchFn: HttpInit,
+  opts: BankFetchOptions = {},
+): Promise<BankFetchResult> {
+  // 默认拉全量：DashOJ 题库约 2034 题且持续新增（蓝桥杯/考研真题按 docId 升序排在最后），
+  // 缺省 2000 会漏掉最新的一批。上限给足 20000，实际由 ppcount / 空页终止，不会多打请求。
+  const max = opts.max ?? 20000;
+  const problems: BankProblem[] = [];
+  const seen = new Set<string>();
+  const wanted = makeWantedTracker(opts.wantKeys);
+  let total: number | null = null;
+  let wantedDone = false;
+
+  for (let page = 1; page <= 400; page += 1) {
+    const url = `${DASHOJ_BASE}/p?page=${page}`;
+    const res = await asHttpClient(fetchFn).fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        Accept: 'application/json',
+        Referer: `${DASHOJ_BASE}/p`,
+      },
+    });
+    if (!res.ok) {
+      throw new Error(`DashOJ 题库接口 HTTP ${res.status}，请稍后重试`);
+    }
+    const body = (await res.json().catch(() => null)) as
+      | { pcount?: number; ppcount?: number; pdocs?: DmyPdoc[] }
+      | null;
+    if (body === null) throw new Error('DashOJ 题库接口返回非 JSON（接口变化），请稍后重试');
+    const list = Array.isArray(body.pdocs) ? body.pdocs : [];
+    if (total === null && typeof body.pcount === 'number') total = body.pcount;
+    if (list.length === 0) break;
+
+    for (const p of list) {
+      const key = typeof p.docId === 'number' ? String(p.docId) : '';
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      const level = hydroDifficulty(p.nSubmit ?? 0, p.nAccept ?? 0, p.difficulty ?? null);
+      problems.push({
+        platform: 'dashoj',
+        problemKey: key,
+        title: (p.title ?? '').trim() || key,
+        // 1-10 档经 shared 表映射为 CF rating（未知 = null）
+        ...bankDifficulty('dashoj', level),
+        url: `${DASHOJ_BASE}/p/${key}`,
+        tags: Array.isArray(p.tag) ? p.tag.map((t) => String(t).trim()).filter(Boolean) : [],
+      });
+      if (wanted.hit(key)) {
+        wantedDone = true;
+        break;
+      }
+      if (problems.length >= max) break;
+    }
+    opts.onProgress?.({ platform: 'dashoj', count: problems.length, total });
+    if (wantedDone) break;
+    if (problems.length >= max) break;
+    if (typeof body.ppcount === 'number' && page >= body.ppcount) break;
+    if (list.length < DASHOJ_PER_PAGE) break;
+    await sleep(opts.pageDelayMs ?? 400); // 页间限速
+  }
+  return { platform: 'dashoj', problems: problems.slice(0, max), total };
 }
 
 // ---------- 计蒜客 ----------

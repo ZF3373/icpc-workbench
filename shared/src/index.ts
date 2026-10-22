@@ -4,7 +4,7 @@
 // 仅类型引用：本模块反向 re-export difficulty.ts，用 import type 避免运行时循环依赖
 import type { DifficultyScale } from './difficulty.ts';
 
-export type PlatformId = 'codeforces' | 'atcoder' | 'luogu' | 'nowcoder' | 'daimayuan' | 'leetcode' | 'jisuanke' | 'qoj';
+export type PlatformId = 'codeforces' | 'atcoder' | 'luogu' | 'nowcoder' | 'daimayuan' | 'leetcode' | 'jisuanke' | 'qoj' | 'dashoj';
 
 export type PlatformSync = 'auto' | 'cookie' | 'manual';
 
@@ -44,6 +44,11 @@ export const PLATFORMS: PlatformMeta[] = [
   // 平台自身**没有难度字段**（difficultyScale 记 none = 同步路径不下发难度）；
   // 库内难度由回填路径用 ICPC/CCPC 公开榜单档位推导，落库标度为 icpc-tier（见 analysis/icpcBoard.ts）
   { id: 'qoj', name: 'QOJ', nameEn: 'QOJ', hasOfficialApi: false, homepage: 'https://qoj.ac', sync: 'cookie', hasBank: false, difficultyScale: 'none', syncSources: ['none'] },
+  // DashOJ（dashoj.com，基于 Hydro OJ 搭建）：与代码源同为 Hydro 系，但**评测记录页对游客开放**
+  //（GET /record?uidOrName={handle}&page={n} + Accept:application/json 匿名即可按用户名过滤），
+  // 故同步无需登录 Cookie（sync=auto，2026-10-22 实测确认）。题库 /p 公开、含 Hydro 1-10 难度字段，
+  // 复用 hydro-1-10 标度（与代码源同源映射表）。
+  { id: 'dashoj', name: 'DashOJ', nameEn: 'DashOJ', hasOfficialApi: false, homepage: 'https://dashoj.com', sync: 'auto', hasBank: true, difficultyScale: 'hydro-1-10', syncSources: ['none'] },
 ];
 
 export function platformMeta(id: PlatformId): PlatformMeta {

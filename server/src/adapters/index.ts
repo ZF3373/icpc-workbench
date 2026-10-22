@@ -1,6 +1,7 @@
 import { createAtcoderAdapter } from './atcoder.ts';
 import { createCodeforcesAdapter } from './codeforces.ts';
 import { createDaimayuanAdapter } from './daimayuan.ts';
+import { createDashojAdapter } from './dashoj.ts';
 import { createJisuankeAdapter } from './jisuanke.ts';
 import { createLeetcodeAdapter } from './leetcode.ts';
 import { createLuoguAdapter } from './luogu.ts';
@@ -32,6 +33,7 @@ export function initAdapters(dataDir?: string): void {
   register(createLuoguAdapter(http));
   register(createNowcoderAdapter(http));
   register(createDaimayuanAdapter(http));
+  register(createDashojAdapter(http));
   register(createLeetcodeAdapter(http));
   register(createJisuankeAdapter(http));
   // QOJ 提交页走 WebView 同源代理（qojAgent.ts）：2026-10 起站点 Cloudflare 把 cf_clearance

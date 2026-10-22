@@ -77,6 +77,7 @@ export const HOST_MIN_INTERVAL_MS: Record<string, number> = {
   'qoj.ac': 2500,
   'leetcode.cn': 1500,
   'bs.daimayuan.top': 1500,
+  'dashoj.com': 1500,
   'www.jisuanke.com': 1500,
   'kenkoooo.com': 2000,
 };
