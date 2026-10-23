@@ -22,9 +22,11 @@ import {
   ArrowDownOutlined,
   ArrowUpOutlined,
   BulbOutlined,
+  ClearOutlined,
   DownloadOutlined,
   DeleteOutlined,
   DownOutlined,
+  EditOutlined,
   ExperimentOutlined,
   HolderOutlined,
   PlusOutlined,
@@ -43,6 +45,7 @@ import InlineError from '../components/InlineError'
 import { del, get, patch, post } from '../api'
 import { difficultyColor } from '../ui'
 import { mergeSuggestedOrder } from '../listOrder'
+import { moveListCard, swapListCard } from '../listCardOrder'
 import { saveTextAsFile } from '../download'
 import { platformMeta } from '../../../shared/src/index.ts'
 
@@ -59,6 +62,8 @@ interface ListItemRow {
   item_count: number
   category_count: number
   solved_count: number
+  /** 卡片展示顺序（服务端 problem_lists.position，GET /api/lists 已按它升序返回） */
+  position: number
 }
 
 interface ListItem {
@@ -467,6 +472,215 @@ export default function Lists() {
     setDragOver({ id: itemId, pos })
   }
 
+  // ---------- 题单卡片排序（P6-3 卡片化的延伸，同样走 mouse 事件 + ref） ----------
+  // 只允许从卡片左上角的手柄发起：卡片本身的点击是「打开详情」，若整卡 mousedown 就能起拖，
+  // 用户每次点卡片都会先进入拖拽态（点开详情变成拖完松手），这是最容易写错的地方。
+  //
+  // 落点语义 = **插位**（与条目拖拽一致）：指针在目标卡片上半区 → 插到目标之前，下半区 → 之后。
+  // 不是互换：互换会让「4 拖到 1 前面」变成「4 和 1 对调」，其余卡片跟着乱。
+  const [dragListId, setDragListId] = useState<number | null>(null)
+  const [dragListOver, setDragListOver] = useState<{ id: number; pos: 'before' | 'after' } | null>(null)
+  const dragListIdRef = useRef<number | null>(null)
+  const dragListOverRef = useRef<{ id: number; pos: 'before' | 'after' } | null>(null)
+  /** 落库时要用「当前」顺序算新顺序，而 mouseup 回调是文档级监听：用 ref 取最新值，不依赖渲染闭包 */
+  const listsRef = useRef<ListItemRow[]>([])
+  /** 释放后短暂高亮的卡片 id（配合 .list-card.is-just-dropped，900ms 后清除） */
+  const [justDroppedListId, setJustDroppedListId] = useState<number | null>(null)
+  const listDropFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  /** 拖拽期间置位：拖完浏览器会补发一次 click，靠它吞掉那次「顺带点开详情」 */
+  const swallowCardClickRef = useRef(false)
+
+  useEffect(() => {
+    listsRef.current = lists
+  }, [lists])
+
+  // 高亮定时器与条目拖拽的同理：卸载后必须清掉，否则往已卸载组件里 setState
+  useEffect(
+    () => () => {
+      if (listDropFlashTimer.current !== null) clearTimeout(listDropFlashTimer.current)
+      listDropFlashTimer.current = null
+    },
+    [],
+  )
+
+  const flashJustDroppedList = (id: number) => {
+    if (listDropFlashTimer.current !== null) clearTimeout(listDropFlashTimer.current)
+    setJustDroppedListId(id)
+    listDropFlashTimer.current = setTimeout(() => {
+      listDropFlashTimer.current = null
+      setJustDroppedListId(null)
+    }, 900)
+  }
+
+  /**
+   * 新顺序落库：先乐观更新（拖完立刻看到结果），失败回滚并提示。
+   * 成功后给 3 秒「撤销」——撤销同样要写回服务端，否则刷新又变回去。
+   */
+  const commitListOrder = useCallback(
+    async (next: ListItemRow[], prev: ListItemRow[]) => {
+      if (next === prev) return
+      setLists(next)
+      try {
+        await post('/api/lists/reorder', { orderedIds: next.map((l) => l.id) })
+        const key = `list-card-reorder-${(msgKeyRef.current += 1)}`
+        message.destroy(key)
+        message.open({
+          key,
+          type: 'success',
+          duration: 3,
+          content: (
+            <span>
+              已调整题单顺序
+              <Button
+                type="link"
+                size="small"
+                icon={<UndoOutlined />}
+                onClick={() => {
+                  message.destroy(key)
+                  setLists(prev)
+                  post('/api/lists/reorder', { orderedIds: prev.map((l) => l.id) })
+                    .then(() => message.info('已恢复排序前的顺序'))
+                    .catch((err) => message.error((err as Error).message))
+                }}
+              >
+                撤销
+              </Button>
+            </span>
+          ),
+        })
+      } catch (e) {
+        message.error((e as Error).message)
+        setLists(prev)
+      }
+    },
+    [message],
+  )
+
+  /** 键盘/触屏路径：与相邻卡片交换一格，落库走同一份 commitListOrder */
+  const moveListCardBy = (id: number, delta: -1 | 1) => {
+    const prev = lists
+    const next = swapListCard(prev, id, delta)
+    if (next === prev) return // 首尾越界：纯函数已判过，这里不重复造请求
+    void commitListOrder(next, prev)
+  }
+
+  const startListDrag = (e: ReactMouseEvent, id: number) => {
+    e.preventDefault() // 避免拖拽时选中标题文字
+    e.stopPropagation() // 手柄上的按下不参与卡片自身的任何交互
+    if (listDropFlashTimer.current !== null) {
+      clearTimeout(listDropFlashTimer.current)
+      listDropFlashTimer.current = null
+    }
+    setJustDroppedListId(null)
+    dragListIdRef.current = id
+    setDragListId(id)
+  }
+
+  // 拖拽期间在 document 上跟踪指针：滑出网格或窗口也能收到 mouseup，不会留下「拖拽中」的僵态。
+  // 落点用 e.target.closest('.list-card') 判定——mousedown 已 preventDefault，浏览器不会启动原生拖拽，
+  // mousemove 的 target 始终是光标下的真实元素。
+  useEffect(() => {
+    if (dragListId === null) return
+    const onMove = (e: MouseEvent) => {
+      const dragId = dragListIdRef.current
+      if (dragId === null) return
+      const card = e.target instanceof Element ? e.target.closest<HTMLElement>('.list-card') : null
+      const targetId = card ? Number(card.dataset.listId) : Number.NaN
+      // 指针在空白处 / 悬停自己被拖的卡片：没有落点（松手即放弃）
+      if (!card || !Number.isInteger(targetId) || targetId === dragId) {
+        if (dragListOverRef.current !== null) {
+          dragListOverRef.current = null
+          setDragListOver(null)
+        }
+        return
+      }
+      const rect = card.getBoundingClientRect()
+      const pos: 'before' | 'after' = e.clientY > rect.top + rect.height / 2 ? 'after' : 'before'
+      if (dragListOverRef.current?.id === targetId && dragListOverRef.current.pos === pos) return
+      dragListOverRef.current = { id: targetId, pos }
+      setDragListOver({ id: targetId, pos })
+    }
+    const onUp = () => {
+      const dragId = dragListIdRef.current
+      const over = dragListOverRef.current
+      dragListIdRef.current = null
+      dragListOverRef.current = null
+      setDragListId(null)
+      setDragListOver(null)
+      if (dragId === null) return
+      // 松手后浏览器紧跟着补发一次 click（同一轮任务里）：手柄起拖、原地松手时这次 click
+      // 会命中卡片本身，不吞掉就会「拖了一下顺便打开详情」。用一个短窗口的标记吞掉它，
+      // 300ms 后自动失效，绝不会误伤下一次真实的点击。
+      swallowCardClickRef.current = true
+      setTimeout(() => {
+        swallowCardClickRef.current = false
+      }, 300)
+      if (over === null || over.id === dragId) return
+      const prev = listsRef.current
+      const next = moveListCard(prev, dragId, over.id, over.pos)
+      if (next === prev) return // 拖回原位：顺序没变就不落库，也不弹撤销
+      flashJustDroppedList(over.id)
+      void commitListOrder(next, prev)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    return () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+  }, [dragListId, commitListOrder])
+
+  // ---------- 重命名题单 ----------
+  const [renameTarget, setRenameTarget] = useState<ListItemRow | null>(null)
+  const [renameTitle, setRenameTitle] = useState('')
+  const [renaming, setRenaming] = useState(false)
+
+  const openRename = (l: ListItemRow) => {
+    setRenameTarget(l)
+    setRenameTitle(l.title)
+  }
+
+  const submitRename = async () => {
+    if (!renameTarget) return
+    const title = renameTitle.trim()
+    // 空标题不发请求：服务端同样 400，前端先拦住可以少一次往返，提示也更直接
+    if (!title) {
+      message.error('题单名称不能为空')
+      return
+    }
+    setRenaming(true)
+    try {
+      await patch<{ ok: boolean; id: number; title: string }>(`/api/lists/${renameTarget.id}`, { title })
+      // 卡片与详情抽屉可能同时显示这份题单，两处都要换掉旧名字
+      setLists((cur) => cur.map((l) => (l.id === renameTarget.id ? { ...l, title } : l)))
+      setDetail((cur) => (cur && cur.id === renameTarget.id ? { ...cur, title } : cur))
+      setRenameTarget(null)
+      message.success('题单名称已更新')
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setRenaming(false)
+    }
+  }
+
+  // ---------- 一键清空题单内题目 ----------
+  const clearListItems = async () => {
+    if (!detail) return
+    setBusy('clear-items')
+    try {
+      const r = await del<{ ok: boolean; removed: number }>(`/api/lists/${detail.id}/items`)
+      message.success(`已清空 ${r.removed} 道题`)
+      // 抽屉内容变空 + 卡片上的题数/分类数/已掌握数同步刷新
+      reloadDetail()
+      load()
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
   // 按分类分组：同分类合并成一组，组序 = 该分类在题单中的首次出现位置，组内保持原顺序。
   // 分类（按题库/AI）只改 category 不动 position——分组视图因此不会打乱导入时的整体先后关系。
   const groups: Array<{ category: string; items: ListItem[] }> = []
@@ -578,7 +792,7 @@ export default function Lists() {
     <div>
       <PageHeader
         title="题单整理"
-        description="导入平台题单（支持洛谷 / Codeforces / AtCoder / 代码源 / 牛客的题号或链接，每行一题），按知识点分类；AI 可读取题单内容结合你的弱项给出练习建议。"
+        description="导入平台题单（支持洛谷 / Codeforces / AtCoder / 代码源 / 牛客的题号或链接，每行一题），按知识点分类；AI 可读取题单内容结合你的弱项给出练习建议。卡片可拖动左上角手柄调整顺序（也可用卡片上的 ↑↓），点 ✎ 可重命名。"
         extra={
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setImportOpen(true)}>
             导入题单
@@ -595,17 +809,34 @@ export default function Lists() {
         // 字段全部来自既有 GET /api/lists（item_count / category_count / solved_count / created_at），未新增请求。
         <Spin spinning={loading}>
           <div className="list-card-grid">
-            {lists.map((l) => {
+            {lists.map((l, index) => {
               const pct = l.item_count > 0 ? Math.round((l.solved_count / l.item_count) * 100) : 0
               const active = detailOpen && detail?.id === l.id
+              const cardClass = [
+                'list-card',
+                'reorder-host',
+                active ? 'is-active' : '',
+                dragListId === l.id ? 'is-dragging' : '',
+                // 落点高亮只给「别的」卡片：被拖的卡片自己永远不是落点
+                dragListOver?.id === l.id && dragListId !== null && dragListId !== l.id ? 'is-drop-target' : '',
+                justDroppedListId === l.id ? 'is-just-dropped' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')
               return (
                 <div
                   key={l.id}
-                  className={`list-card${active ? ' is-active' : ''}`}
+                  className={cardClass}
+                  // 落点判定在 document 的 mousemove 里做，用 data-list-id 取卡片身份比解析 class 稳
+                  data-list-id={l.id}
                   role="button"
                   tabIndex={0}
                   aria-label={`打开题单「${l.title}」详情`}
-                  onClick={() => void openDetail(l.id)}
+                  onClick={() => {
+                    // 拖完松手时浏览器会补发一次 click，不能让它顺手把详情抽屉打开
+                    if (swallowCardClickRef.current) return
+                    void openDetail(l.id)
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault()
@@ -613,6 +844,15 @@ export default function Lists() {
                     }
                   }}
                 >
+                  {/* 拖拽手柄：**只有这里** mousedown 才发起拖拽，卡片其余位置照常点开详情。
+                      键盘用户不依赖拖拽——卡片底部的上移/下移按钮是等价路径。 */}
+                  <span
+                    className="list-card-drag-handle"
+                    onMouseDown={(e) => startListDrag(e, l.id)}
+                    aria-label={`拖动排序「${l.title}」`}
+                  >
+                    <HolderOutlined />
+                  </span>
                   <div className="list-card-title" title={l.title}>
                     {l.title}
                   </div>
@@ -640,13 +880,44 @@ export default function Lists() {
                       <span>粘贴导入</span>
                     )}
                   </div>
-                  {/* 卡内操作：阻止冒泡，避免点删除/详情时又触发一次卡片点击 */}
+                  {/* 卡内操作：阻止冒泡，避免点删除/详情/改名时又触发一次卡片点击 */}
                   <div
-                    style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}
+                    className="list-card-actions"
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
                     role="presentation"
                   >
+                    {/* 键盘/触屏排序：拖拽的无障碍替代，与全站 .reorder-controls 同一套样式 */}
+                    <span className="reorder-controls">
+                      <button
+                        type="button"
+                        className="reorder-btn"
+                        disabled={index === 0}
+                        title={`上移「${l.title}」`}
+                        aria-label={`上移「${l.title}」`}
+                        onClick={() => moveListCardBy(l.id, -1)}
+                      >
+                        <ArrowUpOutlined />
+                      </button>
+                      <button
+                        type="button"
+                        className="reorder-btn"
+                        disabled={index === lists.length - 1}
+                        title={`下移「${l.title}」`}
+                        aria-label={`下移「${l.title}」`}
+                        onClick={() => moveListCardBy(l.id, 1)}
+                      >
+                        <ArrowDownOutlined />
+                      </button>
+                    </span>
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<EditOutlined />}
+                      title={`重命名「${l.title}」`}
+                      aria-label={`重命名「${l.title}」`}
+                      onClick={() => openRename(l)}
+                    />
                     <Button size="small" type="link" onClick={() => void openDetail(l.id)}>
                       详情
                     </Button>
@@ -723,6 +994,25 @@ export default function Lists() {
             <Button size="small" type="primary" ghost icon={<BulbOutlined />} loading={busy === 'ai-suggest'} onClick={() => void runSuggest()}>
               AI 建议
             </Button>
+            {/* 清空题目：题单本身保留（与「删除」严格区分），故用 Popconfirm 二次确认而不是直接删 */}
+            <Popconfirm
+              title={`清空「${detail?.title ?? ''}」的题目？`}
+              description={`将删除该题单内全部 ${detail?.items.length ?? 0} 道题（题单本身保留，可重新导入/添加）`}
+              okText="清空"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => void clearListItems()}
+            >
+              <Button
+                size="small"
+                danger
+                icon={<ClearOutlined />}
+                disabled={!detail?.items.length}
+                loading={busy === 'clear-items'}
+              >
+                清空题目
+              </Button>
+            </Popconfirm>
           </Space>
         }
       >
@@ -768,9 +1058,46 @@ export default function Lists() {
                 ))
               : detail.items.map((it) => renderRow(it))}
             </div>
+            {/* 清空后 / 新建的空题单：给下一步动作，别留一片空白（§6.3 空态约定） */}
+            {detail.items.length === 0 && (
+              <EmptyState
+                compact
+                title="这份题单还没有题目"
+                description="可以用「添加题目」粘贴题号或链接，也可以重新导入一份题单。"
+                action={{
+                  label: '添加题目',
+                  type: 'primary',
+                  icon: <PlusOutlined />,
+                  onClick: () => setAddItemOpen(true),
+                }}
+              />
+            )}
           </>
         )}
       </Drawer>
+
+      <Modal
+        title="重命名题单"
+        open={renameTarget !== null}
+        onCancel={() => setRenameTarget(null)}
+        onOk={() => void submitRename()}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={renaming}
+        // Esc / 点遮罩关闭与「取消」同一语义：输入框内容不落库
+        keyboard
+        width={420}
+      >
+        <Input
+          value={renameTitle}
+          onChange={(e) => setRenameTitle(e.target.value)}
+          onPressEnter={() => void submitRename()}
+          autoFocus
+          maxLength={60}
+          showCount
+          placeholder="如：二分专题 20 题"
+        />
+      </Modal>
 
       <Modal
         title="导入题单"

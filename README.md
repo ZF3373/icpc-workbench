@@ -332,8 +332,11 @@ GET  /api/ai/files/:fileId       # 查询文件元信息
 DELETE /api/ai/files/:fileId     # 删除文件
 GET  /api/ai/ability             # 估算能力值（computed/detail（构成明细，含赛事 rating 锚点与权重）/override/effective）
 POST /api/ai/ability             # 应用 AI 能力值调整（body: { level, reason } 或 { reset: true }）
-GET  /api/lists                  # 题单列表 | POST /api/lists 导入（body: { title, raw, sourceUrl? }）
+GET  /api/lists                  # 题单列表（按 position 升序，卡片可拖拽排序）| POST /api/lists 导入（body: { title, raw, sourceUrl? }）
 GET  /api/lists/:id              # 题单详情（条目含难度/已 AC 状态）
+POST /api/lists/reorder          # 题单卡片排序（body: { orderedIds }：该用户全部题单 id 的完整排列，全量重写 position）
+PATCH /api/lists/:id             # 重命名题单（body: { title }，trim 后 1-60 字）
+DELETE /api/lists/:id/items      # 清空题单内全部题目（题单保留；同事务作废该题单的 AI 建议缓存）
 POST /api/lists/:id/classify     # 按题库 tags 规则分类 | POST /:id/ai-classify AI 分类
 POST /api/lists/:id/ai-suggest   # AI 读取题单内容给练习建议（返回 markdown + order：按建议练习顺序的条目 id，可走 reorder 一键落库）
 PATCH /api/lists/items/:itemId   # 手动改分类（body: { category }）| DELETE 同路径移除条目

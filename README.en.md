@@ -305,8 +305,11 @@ GET  /api/ai/files/:fileId       # Query file metadata
 DELETE /api/ai/files/:fileId     # Delete file
 GET  /api/ai/ability             # Estimated ability level (computed/detail (breakdown incl. contest-center rating anchor & weight)/override/effective)
 POST /api/ai/ability             # Apply AI ability adjustment (body: { level, reason } or { reset: true })
-GET  /api/lists                  # Problem list index | POST /api/lists import (body: { title, raw, sourceUrl? })
+GET  /api/lists                  # Problem list index (ordered by position; cards are drag-sortable) | POST /api/lists import (body: { title, raw, sourceUrl? })
 GET  /api/lists/:id              # List details (items include difficulty/AC status)
+POST /api/lists/reorder          # Reorder list cards (body: { orderedIds }: full permutation of the user's list ids, rewrites position)
+PATCH /api/lists/:id             # Rename list (body: { title }, trimmed, 1-60 chars)
+DELETE /api/lists/:id/items      # Clear all problems in a list (list itself kept; invalidates its cached AI suggestion in the same transaction)
 POST /api/lists/:id/classify     # Classify by problem bank tag rules | POST /:id/ai-classify AI classification
 POST /api/lists/:id/ai-suggest   # AI reads list content for practice suggestions (returns markdown)
 PATCH /api/lists/items/:itemId   # Manually change category (body: { category }) | DELETE same path removes item
