@@ -71,6 +71,15 @@ function migrate(db: Db): void {
   if (!listCols.has('ai_suggestion_at')) db.exec('ALTER TABLE problem_lists ADD COLUMN ai_suggestion_at TEXT');
   // v0.5.6: AI 建议附带的练习顺序（条目 id 的 JSON 数组），供「按建议重排」一键落为题单顺序
   if (!listCols.has('ai_suggestion_order')) db.exec('ALTER TABLE problem_lists ADD COLUMN ai_suggestion_order TEXT');
+  // v0.12: 题单卡片自定义排序 position（0 起，越小越靠前）。老库补列后必须**按升级前的展示顺序回填**，
+  // 否则升级那一刻用户的题单顺序就被打乱了。
+  // 升级前的展示顺序逐字是 `created_at DESC, id DESC`（原 GET /api/lists 的 ORDER BY），
+  // 回填必须与它完全对齐：按 (user_id, created_at DESC, id DESC) 读出来后，每个用户从 0 递增写入。
+  // 幂等：position 列存在即整段跳过（含回填），再次打开同一库不再产生任何变化。
+  if (!listCols.has('position')) {
+    db.exec('ALTER TABLE problem_lists ADD COLUMN position INTEGER NOT NULL DEFAULT 0');
+    backfillListPositions(db);
+  }
   // v0.6: platform_accounts 增加分批同步标记（提交过多时分批拉取防封号；1=仍有更早历史待补全）
   const accountCols = columnsOf('platform_accounts');
   if (!accountCols.has('sync_truncated')) db.exec('ALTER TABLE platform_accounts ADD COLUMN sync_truncated INTEGER NOT NULL DEFAULT 0');
@@ -149,6 +158,42 @@ function migrate(db: Db): void {
   dedupeReviewItems(db);
   // v0.10 数据修复：作废「题号形态不可信」的难度定论（见下）
   invalidateUnreliableGapVerdicts(db);
+}
+
+/**
+ * v0.12 迁移：为老库补上 problem_lists.position 后**按升级前的展示顺序**回填。
+ *
+ * 旧版 GET /api/lists 的排序逐字是 `ORDER BY l.created_at DESC, l.id DESC`，所以回填也必须用
+ * 同一个顺序：`ORDER BY user_id, created_at DESC, id DESC`，每个 user_id 内从 0 开始递增。
+ * 差一个方向（比如 ASC）或漏掉 id 这一层 tie-break，升级瞬间用户看到的题单顺序就会被打乱。
+ *
+ * 只在 ALTER TABLE 补列的那一次调用（migrate 里 position 缺列分支），因此天然幂等；
+ * 整体包在一个事务里：中途失败回滚，不会留下半套 position（补列本身已提交，下次重开时
+ * position 列已存在 → 不再回填，所以这里失败必须让 createDb 抛错，由用户重装/修复而不是静默继续）。
+ */
+function backfillListPositions(db: Db): void {
+  const rows = db
+    .prepare('SELECT id, user_id FROM problem_lists ORDER BY user_id, created_at DESC, id DESC')
+    .all() as unknown as Array<{ id: number; user_id: number }>;
+  if (rows.length === 0) return;
+  const upd = db.prepare('UPDATE problem_lists SET position = ? WHERE id = ?');
+  db.exec('BEGIN');
+  try {
+    let userId: number | null = null;
+    let pos = 0;
+    for (const row of rows) {
+      if (row.user_id !== userId) {
+        userId = row.user_id;
+        pos = 0;
+      }
+      upd.run(pos, row.id);
+      pos += 1;
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
 }
 
 /**

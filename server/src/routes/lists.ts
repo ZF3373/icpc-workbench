@@ -261,10 +261,11 @@ export function listsRoutes(
   }
 
   // GET /api/lists → 题单列表（含题数/分类数）
+  // 顺序由 problem_lists.position 决定（用户可拖拽排序）：position ASC, id ASC 兜底保证稳定。
   r.get('/', (_req, res) => {
     const lists = db
       .prepare(
-        `SELECT l.id, l.title, l.source_url, l.created_at,
+        `SELECT l.id, l.title, l.source_url, l.created_at, l.position,
                 (SELECT COUNT(*) FROM problem_list_items i WHERE i.list_id = l.id) AS item_count,
                 (SELECT COUNT(DISTINCT i.category) FROM problem_list_items i WHERE i.list_id = l.id) AS category_count,
                 (SELECT COUNT(DISTINCT i.id) FROM problem_list_items i
@@ -273,7 +274,7 @@ export function listsRoutes(
                   WHERE i.list_id = l.id) AS solved_count
            FROM problem_lists l
           WHERE l.user_id = ?
-          ORDER BY l.created_at DESC, l.id DESC`,
+          ORDER BY l.position ASC, l.id ASC`,
       )
       .all(DEFAULT_USER_ID, DEFAULT_USER_ID);
     res.json(lists);
@@ -293,7 +294,10 @@ export function listsRoutes(
       return res.status(400).json({ error: '未解析到任何题目：请确认每行包含题号或题目链接' });
     }
     const ins = db.prepare(
-      `INSERT INTO problem_lists (user_id, title, source_url) VALUES (?, ?, ?)`,
+      // position 取「当前用户最小值 - 1」：新导入的题单排在最前（保持「刚导入的在最上面」的既有观感）。
+      // 取值语句与 INSERT 在同一个事务里执行，避免并发导入读到同一个最小值。
+      `INSERT INTO problem_lists (user_id, title, source_url, position)
+       VALUES (?, ?, ?, (SELECT COALESCE(MIN(position), 0) - 1 FROM problem_lists WHERE user_id = ?))`,
     );
     const insItem = db.prepare(
       `INSERT INTO problem_list_items (list_id, platform, problem_key, title, url, category, position)
@@ -301,7 +305,7 @@ export function listsRoutes(
     );
     try {
       db.exec('BEGIN');
-      const listId = Number(ins.run(DEFAULT_USER_ID, title.trim(), typeof sourceUrl === 'string' && sourceUrl.trim() ? sourceUrl.trim() : null).lastInsertRowid);
+      const listId = Number(ins.run(DEFAULT_USER_ID, title.trim(), typeof sourceUrl === 'string' && sourceUrl.trim() ? sourceUrl.trim() : null, DEFAULT_USER_ID).lastInsertRowid);
       // 题库信息与知识点分类一次性批量取回（原为逐题 2 次查询，题单大会明显卡顿）
       const classified = classifyItemsBatch(
         db,
@@ -327,6 +331,35 @@ export function listsRoutes(
       db.exec('ROLLBACK');
       // 输入校验文案（第 N 行格式）用户可操作；引擎/DB 细节只进日志
       return sendRouteError(res, 400, e, '导入失败');
+    }
+  });
+
+  // POST /api/lists/reorder  body: { orderedIds: number[] } → 题单卡片排序（全量重写 position 为 0..n-1）
+  // 必须注册在 '/:id/...' 系列之前：否则 '/reorder' 会被参数路由当成 id（'reorder' 不是整数 → 400）。
+  // 校验口径：orderedIds 去重后必须**恰好**等于该用户全部题单 id 集合——缺一个会让漏掉的题单
+  // 卡在旧 position 上与新顺序交叉；多一个/重复则是客户端状态过期（例如另一处已删了题单）。
+  r.post('/reorder', (req, res) => {
+    const orderedIds = req.body?.orderedIds;
+    if (!Array.isArray(orderedIds) || orderedIds.length === 0 || !orderedIds.every((v: unknown) => Number.isInteger(v))) {
+      return res.status(400).json({ error: 'orderedIds 需恰好包含全部题单 id' });
+    }
+    const lists = db
+      .prepare('SELECT id FROM problem_lists WHERE user_id = ?')
+      .all(DEFAULT_USER_ID) as Array<{ id: number }>;
+    const currentIds = new Set(lists.map((l) => l.id));
+    const ordered = [...new Set(orderedIds as number[])];
+    if (ordered.length !== currentIds.size || !ordered.every((v) => currentIds.has(v))) {
+      return res.status(400).json({ error: 'orderedIds 需恰好包含全部题单 id' });
+    }
+    try {
+      db.exec('BEGIN');
+      const upd = db.prepare('UPDATE problem_lists SET position = ? WHERE id = ? AND user_id = ?');
+      ordered.forEach((listId, idx) => upd.run(idx, listId, DEFAULT_USER_ID));
+      db.exec('COMMIT');
+      res.json({ ok: true });
+    } catch (e) {
+      db.exec('ROLLBACK');
+      sendRouteError(res, 400, e, '排序失败');
     }
   });
 
@@ -462,6 +495,24 @@ export function listsRoutes(
     res.json({ ok: true });
   });
 
+  // PATCH /api/lists/:id  body: { title } → 重命名题单
+  // 注册在 PATCH '/items/:itemId' 之后：两者路径段数不同（'/items/:itemId' 是两段）天然不冲突，
+  // 但把字面量路径放前面更稳妥，避免以后加更多 :id 子路由时踩坑。
+  r.patch('/:id', (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'id 非法' });
+    const { title } = req.body ?? {};
+    if (typeof title !== 'string' || !title.trim() || title.trim().length > 60) {
+      return res.status(400).json({ error: 'title 必填（≤60 字）' });
+    }
+    const clean = title.trim();
+    const result = db
+      .prepare('UPDATE problem_lists SET title = ? WHERE id = ? AND user_id = ?')
+      .run(clean, id, DEFAULT_USER_ID);
+    if (result.changes === 0) return res.status(404).json({ error: '题单不存在' });
+    res.json({ ok: true, id, title: clean });
+  });
+
   // DELETE /api/lists/items/:itemId
   r.delete('/items/:itemId', (req, res) => {
     const itemId = Number(req.params.itemId);
@@ -506,6 +557,40 @@ export function listsRoutes(
     } catch (e) {
       db.exec('ROLLBACK');
       sendRouteError(res, 400, e, '排序失败');
+    }
+  });
+
+  // DELETE /api/lists/:id/items → 清空该题单内的全部题目（题单本身保留）
+  // 路径是三段（'/:id/items'），与两段的 DELETE '/:id'（删题单）天然不冲突：
+  // Express 的 '/:id' 只匹配单段路径，不会抢匹配本路由。注册位置仍放在 '/:id' 之前，读起来更直观。
+  // 同事务内把该题单的 AI 建议缓存（ai_suggestion / ai_suggestion_at / ai_suggestion_order）一并清空：
+  // 缓存正文与顺序列里的条目 id 都是**针对被清空的那批题目**生成的，留着会让界面展示
+  // 「已清空题单的旧建议」，点「按建议重排」还会带着已不存在的 id → 必须一起作废。
+  r.delete('/:id/items', (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'id 非法' });
+    const list = db
+      .prepare('SELECT id FROM problem_lists WHERE id = ? AND user_id = ?')
+      .get(id, DEFAULT_USER_ID);
+    if (!list) return res.status(404).json({ error: '题单不存在' });
+    try {
+      db.exec('BEGIN');
+      const removed = Number(
+        (
+          db.prepare('SELECT COUNT(*) AS c FROM problem_list_items WHERE list_id = ?').get(id) as {
+            c: number;
+          }
+        ).c,
+      );
+      db.prepare('DELETE FROM problem_list_items WHERE list_id = ?').run(id);
+      db.prepare(
+        'UPDATE problem_lists SET ai_suggestion = NULL, ai_suggestion_at = NULL, ai_suggestion_order = NULL WHERE id = ?',
+      ).run(id);
+      db.exec('COMMIT');
+      res.json({ ok: true, removed });
+    } catch (e) {
+      db.exec('ROLLBACK');
+      sendRouteError(res, 400, e, '清空失败');
     }
   });
 

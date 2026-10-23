@@ -355,7 +355,9 @@ CREATE TABLE IF NOT EXISTS problem_lists (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   ai_suggestion  TEXT,
   ai_suggestion_at TEXT,
-  ai_suggestion_order TEXT                         -- AI 建议的练习顺序：problem_list_items.id 的 JSON 数组（null = 未生成/不可用）
+  ai_suggestion_order TEXT,                        -- AI 建议的练习顺序：problem_list_items.id 的 JSON 数组（null = 未生成/不可用）
+  -- 题单卡片的自定义排序（0 起，越小越靠前）：GET /api/lists 按它升序返回，POST /api/lists/reorder 全量重写
+  position   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS problem_list_items (

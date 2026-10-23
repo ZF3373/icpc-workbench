@@ -608,3 +608,200 @@ test('lists: 已解决数按题目去重统计，多次 AC 同一题只算一道
     assert.equal(lists[0]!.solved_count, 1, 'P1001 未 AC；1234A 两次 AC 也只算一道');
   });
 });
+
+// ---------- 题单排序（position）/ 改名 / 清空题目 ----------
+
+/** 导入一个题单并返回它的 id（题单整理相关用例的公共前置） */
+async function importList(base: string, title: string, raw: string): Promise<number> {
+  const res = await fetch(`${base}/`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title, raw }),
+  });
+  assert.equal(res.status, 200);
+  return ((await res.json()) as { id: number }).id;
+}
+
+/** GET /api/lists → [{ id, title, position, item_count }] */
+async function listCards(
+  base: string,
+): Promise<Array<{ id: number; title: string; position: number; item_count: number }>> {
+  return (await (await fetch(`${base}/`)).json()) as Array<{
+    id: number;
+    title: string;
+    position: number;
+    item_count: number;
+  }>;
+}
+
+test('lists: 列表按 position 排序，连续导入的两个题单中新的排在最前', async () => {
+  await withServer(async ({ base }) => {
+    const first = await importList(base, '第一个', 'P1001');
+    const second = await importList(base, '第二个', 'P1002');
+    const third = await importList(base, '第三个', 'P1003');
+
+    const cards = await listCards(base);
+    // 新导入的 position 取「当前最小值 - 1」→ 排在最前，与旧版「刚导入的在最上面」观感一致
+    assert.deepEqual(
+      cards.map((c) => c.title),
+      ['第三个', '第二个', '第一个'],
+    );
+    assert.deepEqual(
+      cards.map((c) => c.id),
+      [third, second, first],
+    );
+    // position 单调递增（严格递增即可：绝对值不重要，只表示先后）
+    assert.ok(cards[0]!.position < cards[1]!.position, `position 应递增：${JSON.stringify(cards)}`);
+    assert.ok(cards[1]!.position < cards[2]!.position, `position 应递增：${JSON.stringify(cards)}`);
+    // 每行都带出 position 字段（前端据此判断是否需要落库）
+    assert.ok(cards.every((c) => typeof c.position === 'number'));
+  });
+});
+
+test('lists: POST /reorder 落库生效，GET 反映新顺序；非法 orderedIds 一律 400', async () => {
+  await withServer(async ({ base, db }) => {
+    const a = await importList(base, 'A', 'P1001');
+    const b = await importList(base, 'B', 'P1002');
+    const c = await importList(base, 'C', 'P1003');
+    assert.deepEqual((await listCards(base)).map((x) => x.title), ['C', 'B', 'A']);
+
+    // 把顺序改成 A, C, B
+    const res = await fetch(`${base}/reorder`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orderedIds: [a, c, b] }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
+    assert.deepEqual((await listCards(base)).map((x) => x.title), ['A', 'C', 'B']);
+    // position 被重写为 0..n-1（不是简单的「交换」：顺序由绝对下标定义）
+    const posById = new Map(
+      (
+        db.prepare('SELECT id, position FROM problem_lists').all() as Array<{
+          id: number;
+          position: number;
+        }>
+      ).map((r) => [r.id, r.position]),
+    );
+    assert.equal(posById.get(a), 0);
+    assert.equal(posById.get(c), 1);
+    assert.equal(posById.get(b), 2);
+
+    const post = async (body: unknown): Promise<number> =>
+      (
+        await fetch(`${base}/reorder`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      ).status;
+
+    assert.equal(await post({ orderedIds: [a, c] }), 400, '缺一个题单 → 400');
+    assert.equal(await post({ orderedIds: [a, c, b, 999999] }), 400, '多一个不存在的 id → 400');
+    assert.equal(await post({ orderedIds: [a, c, c] }), 400, '重复 id（去重后不足全集）→ 400');
+    assert.equal(await post({ orderedIds: [a, c, 1.5] }), 400, '非整数元素 → 400');
+    assert.equal(await post({ orderedIds: [] }), 400, '空数组 → 400');
+    assert.equal(await post({}), 400, '缺 orderedIds → 400');
+    // 校验失败不得改动落库顺序
+    assert.deepEqual((await listCards(base)).map((x) => x.title), ['A', 'C', 'B']);
+  });
+});
+
+test('lists: PATCH /:id 改名（trim 落库、详情同步），空标题 400，不存在 404', async () => {
+  await withServer(async ({ base, db }) => {
+    const id = await importList(base, '原名', 'P1001');
+
+    const res = await fetch(`${base}/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: '  新名字  ' }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, id, title: '新名字' });
+    // 列表与详情都读到新标题（详情页抽屉标题同步）
+    assert.equal((await listCards(base))[0]!.title, '新名字');
+    const detail = (await (await fetch(`${base}/${id}`)).json()) as { title: string };
+    assert.equal(detail.title, '新名字');
+
+    const patch = async (listId: number, body: unknown): Promise<number> =>
+      (
+        await fetch(`${base}/${listId}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      ).status;
+
+    assert.equal(await patch(id, { title: '   ' }), 400, '纯空白 → 400');
+    assert.equal(await patch(id, { title: '' }), 400, '空串 → 400');
+    assert.equal(await patch(id, { title: 'x'.repeat(61) }), 400, '超过 60 字 → 400');
+    assert.equal(await patch(id, {}), 400, '缺 title → 400');
+    assert.equal(await patch(id, { title: 123 }), 400, 'title 非字符串 → 400');
+    assert.equal(await patch(999999, { title: '新名字' }), 404, '题单不存在 → 404');
+    // 失败路径不改标题
+    assert.equal((db.prepare('SELECT title FROM problem_lists WHERE id = ?').get(id) as { title: string }).title, '新名字');
+  });
+});
+
+test('lists: DELETE /:id/items 清空题目并作废 AI 建议缓存，题单本身保留', async () => {
+  await withServer(async ({ base, db }) => {
+    seedProblems(db);
+    const id = await importList(base, '待清空', 'P1001\nCF1234A\nP9999');
+    const itemCount = (
+      db.prepare('SELECT COUNT(*) AS c FROM problem_list_items WHERE list_id = ?').get(id) as { c: number }
+    ).c;
+    assert.equal(itemCount, 3);
+
+    // 先造一条 AI 建议缓存（正文 + 顺序 + 时间），验证清空时一并作废
+    db.prepare(
+      `UPDATE problem_lists
+          SET ai_suggestion = '旧建议正文', ai_suggestion_at = datetime('now'), ai_suggestion_order = '[1,2,3]'
+        WHERE id = ?`,
+    ).run(id);
+
+    const res = await fetch(`${base}/${id}/items`, { method: 'DELETE' });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, removed: 3 });
+    // 题目归零
+    assert.equal(
+      (db.prepare('SELECT COUNT(*) AS c FROM problem_list_items WHERE list_id = ?').get(id) as { c: number }).c,
+      0,
+    );
+    // 题单本身仍在（卡片还在，可重新导入/添加）
+    assert.equal(
+      (db.prepare('SELECT COUNT(*) AS c FROM problem_lists WHERE id = ?').get(id) as { c: number }).c,
+      1,
+    );
+    // AI 建议缓存必须作废：它是对被清空的那批题目生成的，留着会展示旧建议、点重排还会带死 id
+    const row = db
+      .prepare('SELECT ai_suggestion, ai_suggestion_at, ai_suggestion_order FROM problem_lists WHERE id = ?')
+      .get(id) as {
+      ai_suggestion: string | null;
+      ai_suggestion_at: string | null;
+      ai_suggestion_order: string | null;
+    };
+    assert.equal(row.ai_suggestion, null);
+    assert.equal(row.ai_suggestion_at, null);
+    assert.equal(row.ai_suggestion_order, null);
+    // 详情接口返回空 items，卡片题数刷新为 0
+    const detail = (await (await fetch(`${base}/${id}`)).json()) as {
+      items: unknown[];
+      aiSuggestion: string | null;
+      aiSuggestionOrder: number[] | null;
+    };
+    assert.deepEqual(detail.items, []);
+    assert.equal(detail.aiSuggestion, null);
+    assert.equal(detail.aiSuggestionOrder, null);
+    assert.equal((await listCards(base))[0]!.item_count, 0);
+
+    // 再清空一次：0 条（幂等），题单仍在
+    const again = await fetch(`${base}/${id}/items`, { method: 'DELETE' });
+    assert.equal(again.status, 200);
+    assert.deepEqual(await again.json(), { ok: true, removed: 0 });
+
+    // 题单不存在 → 404
+    const missing = await fetch(`${base}/999999/items`, { method: 'DELETE' });
+    assert.equal(missing.status, 404);
+    assert.deepEqual(await missing.json(), { error: '题单不存在' });
+  });
+});

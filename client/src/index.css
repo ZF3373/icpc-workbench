@@ -1272,6 +1272,8 @@ body {
 }
 
 .list-card {
+  /* 定位参照：拖拽手柄按卡片左上角定位，不参与 flex 流（否则卡片高度会多一行） */
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1294,13 +1296,101 @@ body {
   background: var(--brand-soft);
 }
 
+/* 拖拽手柄：命中区就是 24×24 的按钮本体（WCAG 2.2 最小目标尺寸），
+   压在卡片左上角内边距里，不与标题、也不与相邻卡片重叠（无负外边距）。
+   默认半透明——它是「想要时才用」的辅助入口，hover 卡片或聚焦时提亮。 */
+.list-card-drag-handle {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.45;
+  cursor: grab;
+  /* 手柄不该拖出文本选区，也不要抢走卡片的点击语义 */
+  user-select: none;
+  transition: opacity 140ms ease, color 120ms ease, background 120ms ease;
+  /* 手柄与标题、操作行同层，但必须压在卡片背景之上 */
+  z-index: 1;
+}
+
+.list-card:hover .list-card-drag-handle,
+.list-card:focus-within .list-card-drag-handle {
+  opacity: 1;
+}
+
+.list-card-drag-handle:hover,
+.list-card-drag-handle:active {
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.list-card-drag-handle:active {
+  cursor: grabbing;
+}
+
+/* 标题让开手柄的 24px 命中区（8px 左内边距 + 24px + 6px 间隙） */
 .list-card-title {
+  padding-left: 30px;
   color: var(--text);
   font-size: 14px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 卡内操作行：键盘排序控件 + 改名/详情/删除，右对齐 */
+.list-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+/* 全局显形规则是 `.reorder-host:hover > .reorder-controls`（**直接**子元素），
+   而卡片里的排序控件嵌在 .list-card-actions 中，故这里用后代选择器补一条 */
+.list-card:hover .reorder-controls,
+.list-card:focus-within .reorder-controls {
+  opacity: 1;
+}
+
+/* 拖拽中的卡片（半透明，表示「这块内容正被搬走」）与落点卡片（虚线描边 + 品牌软底）。
+   注意 `.list-card:hover` 的特异性同为 (0,2,0)，所以落点规则必须写在它**后面**并带 :hover，
+   否则光标正压在落点卡片上时 hover 背景会盖掉品牌软底，只剩虚线框。 */
+.list-card.is-dragging {
+  opacity: 0.45;
+}
+
+.list-card.is-drop-target,
+.list-card.is-drop-target:hover {
+  border: 1px dashed var(--brand);
+  background: var(--brand-soft);
+  transform: none;
+}
+
+/* 释放后短暂高亮，给「刚刚落在哪」一个明确反馈（900ms，与条目拖拽同款节奏） */
+.list-card.is-just-dropped {
+  animation: list-card-drop-flash 900ms ease-out;
+}
+
+@keyframes list-card-drop-flash {
+  0% {
+    border-color: var(--brand);
+    background: var(--brand-soft);
+    box-shadow: inset 0 0 0 1px var(--brand);
+  }
+  100% {
+    background: var(--surface);
+    box-shadow: none;
+  }
 }
 
 .list-card-meta {
