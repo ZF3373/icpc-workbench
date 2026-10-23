@@ -881,3 +881,8 @@ export {
   type DifficultyScale,
   type DifficultyParse,
 } from './difficulty.ts';
+/** 在 AI 辅导上下文中追加，不作为聊天消息展示。 */
+export interface AiCustomPrompt {
+  title: string;
+  content: string;
+}
