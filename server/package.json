@@ -15,6 +15,7 @@
     "test": "tsx --test test/**/*.test.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "compression": "^1.8.2",
     "epub2": "^3.0.2",
     "exceljs": "^4.4.0",

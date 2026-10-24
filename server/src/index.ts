@@ -33,6 +33,7 @@ import { todayRoutes } from './routes/today.ts';
 import { updateRoutes, APP_VERSION } from './routes/update.ts';
 import { uploadsRoutes } from './routes/uploads.ts';
 import { widgetRoutes } from './routes/widget.ts';
+import { mcpRoutes } from './routes/mcp.ts';
 import { PLATFORMS } from '../../shared/src/index.ts';
 import { initKnowledgeStore, loadAnnotationsIntoDb, purgeAiAnnotations } from './knowledge/store.ts';
 
@@ -105,6 +106,10 @@ app.use('/api/settings/shell-auth', shellAuthRoutes(db));
 app.use('/api/qoj-agent', qojAgentRoutes());
 app.use('/api/backups', backupsRoutes(db));
 app.use('/api/update', updateRoutes(config, () => createBackup(db, 'pre-upgrade')));
+// MCP 端点：外部 agent（Claude Desktop / Cursor / Claude Code 等）经
+// http://127.0.0.1:<port>/mcp 以 MCP 协议操控本软件；工具层是 /api/* 的回环代理（见 src/mcp/）。
+// ⚠ 双入口同步：sea.ts 也挂载了同一行（守卫见 test/dual-entry-api-parity.test.ts）
+app.use('/mcp', mcpRoutes());
 app.use('/widget', widgetRoutes());
 
 app.get('/api/health', (_req, res) => {

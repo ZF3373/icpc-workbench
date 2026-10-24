@@ -50,6 +50,7 @@ import { todayRoutes } from './routes/today.ts';
 import { updateRoutes, APP_VERSION } from './routes/update.ts';
 import { uploadsRoutes } from './routes/uploads.ts';
 import { widgetRoutes, setWidgetPublicDir } from './routes/widget.ts';
+import { mcpRoutes } from './routes/mcp.ts';
 import { setSchemaSql } from './db/index.ts';
 import { setBuiltinBankJson, seedBuiltinBank } from './db/builtinBank.ts';
 import { setPromptTemplate } from './plans/planService.ts';
@@ -196,6 +197,9 @@ export function startServer(
   app.use('/api/qoj-agent', qojAgentRoutes());
   app.use('/api/backups', backupsRoutes(db));
   app.use('/api/update', updateRoutes(config, () => createBackup(db, 'pre-upgrade')));
+  // MCP 端点：外部 agent 经 http://127.0.0.1:<port>/mcp 操控本软件（工具层 = /api/* 回环代理，
+  // 见 src/mcp/）。⚠ 与 index.ts（tsx dev）双入口同步——漏装则桌面版/Docker 上外部 agent 连不上
+  app.use('/mcp', mcpRoutes());
   // widget 静态目录必须先注入再创建 router（express.static 创建时捕获目录值）
   setWidgetPublicDir(resolveWidgetDir());
   app.use('/widget', widgetRoutes());
