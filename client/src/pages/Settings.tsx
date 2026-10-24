@@ -26,6 +26,7 @@ import {
   Switch,
   Tag,
   TimePicker,
+  Tooltip,
   Upload,
   App as AntdApp,
 } from 'antd'
@@ -2060,7 +2061,9 @@ const AiSettingsCard = ({
                       cancelText="取消"
                       onConfirm={() => removeProvider(p.id)}
                     >
-                      <Button size="small" danger icon={<DeleteOutlined />} />
+                      <Tooltip title="删除提供商">
+                        <Button size="small" danger icon={<DeleteOutlined />} aria-label="删除提供商" />
+                      </Tooltip>
                     </Popconfirm>
                   </span>
                 ),
@@ -2246,7 +2249,9 @@ const AiSettingsCard = ({
                               cancelText="取消"
                               onConfirm={() => removeModelEntry(p.id, i)}
                             >
-                              <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                              <Tooltip title="移除模型">
+                                <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label="移除模型" />
+                              </Tooltip>
                             </Popconfirm>
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, paddingLeft: 30, flexWrap: 'wrap' }}>
@@ -3016,7 +3021,9 @@ function BackupCard({ refreshKey = 0 }: { refreshKey?: number }) {
                 cancelText="取消"
                 onConfirm={() => void removeBackup(b)}
               >
-                <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                <Tooltip title="删除备份">
+                  <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label="删除备份" />
+                </Tooltip>
               </Popconfirm>,
             ]}
           >

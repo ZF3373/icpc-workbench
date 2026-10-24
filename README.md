@@ -63,6 +63,7 @@
 - **打卡提醒**：设置页配置每日提醒时间，应用打开期间到点若当天仍有未打卡任务，弹浏览器系统通知 + 页面内通知，点击直达日历；赛前提醒可配置开赛前 N 分钟通知（每场一次，点击直达赛事中心）
 - **软件更新**：双通道检测（正式版 + GitHub 最新提交构建）+ 应用内一键自更新（更新驱动挂在全局 Provider，发起更新后切到别的模块也不会中断下载/替换流程；刷新页面自动恢复更新进度）
 - **Web 挂件**：`http://localhost:3001/widget` 零依赖单页（Express 直接服务），常驻小窗展示当天任务、连续打卡徽标，可直接打卡/跳转做题
+- **MCP 接口（外部 AI Agent 接入）**：内置 MCP 服务器（`http://127.0.0.1:3001/mcp`，Streamable HTTP），Claude Desktop / Cursor / Claude Code 等外部 agent 应用可直连工作台——查统计画像、搜题、管理训练计划与题单、打卡、触发同步、导出汇总，40 个工具与 REST API 一一映射（见「MCP 接口」章节）
 
 ## 技术架构
 
@@ -371,7 +372,55 @@ GET  /api/update/check            # 更新检查（稳定版 + nightly 提交构
 GET  /api/update/progress         # 一键更新下载进度（phase/received/total）
 POST /api/update/download         # 开始下载并 SHA256 校验 | POST /api/update/apply 原位替换
 GET  /widget                      # Web 挂件单页（当天任务 + 打卡）
+POST /mcp                         # MCP 端点（Streamable HTTP，外部 AI Agent 接入，见下节）
 ```
+
+## MCP 接口（外部 AI Agent 接入）
+
+本软件内置一个 MCP（Model Context Protocol）服务器，Claude Desktop、Cursor、Claude Code、Cline 等外部 agent 应用可以直接连接并操作工作台：查统计画像、搜题选题、管理训练计划与题单、打卡、触发同步、导出汇总——全程无需人工点页面。
+
+- **端点**：`http://127.0.0.1:3001/mcp`（Streamable HTTP 传输、无状态；端口随部署而变，桌面版以启动横幅里的端口为准）
+- **工具**：40 个，每个工具即一次对既有 `/api/*` 端点的回环调用，定义见 `server/src/mcp/tools.ts`
+- **接入前提**：工作台处于运行状态（MCP 端点与服务同进程同端口）
+
+### 客户端接入示例
+
+Claude Desktop（`claude_desktop_config.json`）/ Cursor（`.cursor/mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "icpc-workbench": { "url": "http://127.0.0.1:3001/mcp" }
+  }
+}
+```
+
+Claude Code：
+
+```bash
+claude mcp add --transport http icpc-workbench http://127.0.0.1:3001/mcp
+```
+
+### 工具一览
+
+| 分组 | 工具 |
+|---|---|
+| 状态与设置 | `get_app_status` · `get_sync_status` · `get_settings_overview` · `sync_platform` |
+| 统计画像 | `get_stats_overview` · `get_weakness_analysis` · `get_mastery_map` · `get_practice_heatmap` · `get_practice_summary` |
+| 题目与提交 | `search_problems` · `list_submission_history` · `fetch_problem_bank` |
+| 今日训练与计划 | `get_today_training` · `list_plans` · `get_plan` · `import_ai_plan` · `export_plan_package` · `shift_plan` · `update_plan_task` · `delete_plan_task` · `delete_plan` |
+| 题单 | `list_problem_lists` · `get_problem_list` · `import_problem_list` · `add_problems_to_list` · `classify_problem_list` |
+| 打卡 | `get_checkin_calendar` · `checkin_task` · `cancel_checkin` · `auto_checkin_today` |
+| 复习队列 | `list_review_queue` · `add_to_review_queue` · `review_feedback` · `remove_from_review_queue` |
+| 比赛 | `list_contests` · `list_participated_contests` |
+| 模板课程 | `list_templates` |
+| 备份 / 导入导出 | `create_backup` · `export_summary_markdown` · `import_submissions` |
+
+### 安全边界
+
+- MCP 工具能力是 REST API 的**子集**：每个工具只是回环调用一个已有端点，且凭据读写、Cookie / API Key 原文取回、整库下载与恢复点恢复、账号删除等敏感操作**不经 MCP 暴露**
+- 与全站一致只监听 `127.0.0.1`（Docker `HOST=0.0.0.0` 部署时与 REST API 同等暴露，请自行加反向代理与认证）；沿用 Host 头校验（防 DNS rebinding），不加 CORS 头（浏览器恶意页面的跨域 POST 会被 content-type 预检挡住）
+- 同步与拉题库类工具（`sync_platform` / `fetch_problem_bank`）受平台限速影响可能持续数分钟；`get_today_training` 与页面一致有推荐冷却写副作用
 
 ## 测试
 

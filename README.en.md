@@ -53,6 +53,7 @@ A **local web app** that analyzes your competitive programming weaknesses from s
 - **Check-in Reminders**: Configure a daily reminder time in Settings; while the app is open, if there are unchecked tasks for the day at the reminder time, a browser system notification + in-page notification appears—click to jump to the calendar; pre-contest reminders configurable N minutes before start (once per contest, click to jump to Contest Center)
 - **Software Update**: Dual-channel detection (stable release + GitHub latest commit build) + in-app one-click self-update (update driver is on a global Provider; switching modules after initiating an update won't interrupt download/replacement; refreshing the page auto-resumes update progress)
 - **Web Widget**: `http://localhost:3001/widget` is a zero-dependency single page (served directly by Express) for a always-on mini-window showing today's tasks, streak badge, with direct check-in/problem-jump
+- **MCP Interface (External AI Agent Access)**: A built-in MCP server (`http://127.0.0.1:3001/mcp`, Streamable HTTP) lets external agent apps — Claude Desktop, Cursor, Claude Code, etc. — operate the workbench directly: query stats profiles, search problems, manage training plans and problem lists, check in, trigger syncs, export summaries. 40 tools mapped 1:1 onto the REST API (see the "MCP Interface" section)
 
 ## Tech Stack
 
@@ -345,7 +346,55 @@ GET  /api/update/check            # Update check (stable + nightly commit build 
 GET  /api/update/progress         # One-click update download progress (phase/received/total)
 POST /api/update/download         # Start download and SHA256 verify | POST /api/update/apply in-place replace
 GET  /widget                      # Web widget single page (today's tasks + check-in)
+POST /mcp                         # MCP endpoint (Streamable HTTP, external AI agent access, see next section)
 ```
+
+## MCP Interface (External AI Agent Access)
+
+The workbench embeds an MCP (Model Context Protocol) server. External agent applications — Claude Desktop, Cursor, Claude Code, Cline, etc. — can connect and operate the workbench directly: query practice profiles, search and pick problems, manage training plans and problem lists, check in, trigger syncs, export summaries — no manual clicking required.
+
+- **Endpoint**: `http://127.0.0.1:3001/mcp` (Streamable HTTP transport, stateless; the port follows your deployment — for the desktop build use the port shown in the startup banner)
+- **Tools**: 40 in total; each tool is a loopback call to an existing `/api/*` endpoint, defined in `server/src/mcp/tools.ts`
+- **Prerequisite**: the workbench must be running (the MCP endpoint shares the server's process and port)
+
+### Client Configuration Examples
+
+Claude Desktop (`claude_desktop_config.json`) / Cursor (`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "icpc-workbench": { "url": "http://127.0.0.1:3001/mcp" }
+  }
+}
+```
+
+Claude Code:
+
+```bash
+claude mcp add --transport http icpc-workbench http://127.0.0.1:3001/mcp
+```
+
+### Tool Overview
+
+| Group | Tools |
+|---|---|
+| Status & settings | `get_app_status` · `get_sync_status` · `get_settings_overview` · `sync_platform` |
+| Stats profiles | `get_stats_overview` · `get_weakness_analysis` · `get_mastery_map` · `get_practice_heatmap` · `get_practice_summary` |
+| Problems & submissions | `search_problems` · `list_submission_history` · `fetch_problem_bank` |
+| Today & plans | `get_today_training` · `list_plans` · `get_plan` · `import_ai_plan` · `export_plan_package` · `shift_plan` · `update_plan_task` · `delete_plan_task` · `delete_plan` |
+| Problem lists | `list_problem_lists` · `get_problem_list` · `import_problem_list` · `add_problems_to_list` · `classify_problem_list` |
+| Check-ins | `get_checkin_calendar` · `checkin_task` · `cancel_checkin` · `auto_checkin_today` |
+| Review queue | `list_review_queue` · `add_to_review_queue` · `review_feedback` · `remove_from_review_queue` |
+| Contests | `list_contests` · `list_participated_contests` |
+| Templates | `list_templates` |
+| Backup / import & export | `create_backup` · `export_summary_markdown` · `import_submissions` |
+
+### Security Boundary
+
+- MCP tool capabilities are a **subset** of the REST API: every tool is a loopback call to an existing endpoint, and sensitive operations — credential writes, Cookie / API key plaintext retrieval, full-database download and restore-point restore, account deletion — are **never exposed via MCP**
+- Consistent with the whole app, the server listens on `127.0.0.1` only (with Docker `HOST=0.0.0.0` the MCP endpoint is exposed exactly like the REST API — put a reverse proxy with auth in front); the Host header guard (anti DNS-rebinding) applies, and no CORS headers are added (cross-site POSTs from malicious web pages are blocked by the content-type preflight)
+- Sync and bank-fetch tools (`sync_platform` / `fetch_problem_bank`) can take minutes due to upstream rate limits; `get_today_training` has the same recommendation-cooldown write side effect as the web page
 
 ## Testing
 

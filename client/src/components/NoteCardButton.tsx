@@ -9,7 +9,6 @@ import { useState, type ReactNode } from 'react'
 import { ReadOutlined } from '@ant-design/icons'
 import NoteCardModal from './NoteCardModal'
 import { hasNoteText, noteKindLabel, noteSummary, type NoteKind } from '../noteView'
-import './NoteCard.css'
 
 export interface NoteCardButtonProps {
   /** 笔记归属种类 */

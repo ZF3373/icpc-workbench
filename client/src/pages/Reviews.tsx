@@ -252,7 +252,9 @@ export default function Reviews() {
                       }}
                     />
                     <Popconfirm title="移出复习队列？" okText="移除" cancelText="取消" onConfirm={() => remove(item)}>
-                      <Button size="small" type="text" danger icon={<DeleteOutlined />} title="移出队列" />
+                      <Tooltip title="移出队列">
+                        <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label="移出队列" />
+                      </Tooltip>
                     </Popconfirm>
                   </Space>
                 </div>

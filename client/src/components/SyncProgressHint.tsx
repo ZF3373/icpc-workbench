@@ -6,6 +6,7 @@
  * - 不传：显示整体摘要（数据概览的一键同步「第 N/M 个平台」）。
  * 只在真的有同步进行中时渲染（收尾状态由数据概览面板展示）。
  */
+import { Tooltip } from 'antd'
 import type { PlatformId } from '../../../shared/src/index.ts'
 import { useSyncProgress } from '../syncProgressContext'
 import { jobLineText, summaryText } from '../syncProgress'
@@ -21,8 +22,8 @@ export default function SyncProgressHint({ platform }: { platform?: PlatformId }
   if (!text) return null
 
   return (
-    <span style={{ color: 'var(--text-3)', fontSize: 12 }} title="切换页面不会中断同步；请勿关闭应用">
-      {text}
-    </span>
+    <Tooltip title="切换页面不会中断同步；请勿关闭应用">
+      <span style={{ color: 'var(--text-3)', fontSize: 12 }}>{text}</span>
+    </Tooltip>
   )
 }

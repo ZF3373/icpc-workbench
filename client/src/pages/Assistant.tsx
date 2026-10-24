@@ -2546,7 +2546,7 @@ export default function Assistant() {
                       background: isActive ? 'var(--brand-soft)' : 'transparent',
                       opacity: isDragging ? 0.4 : 1,
                       borderTop: isDragOver ? '2px solid var(--brand)' : '2px solid transparent',
-                      transition: 'background 0.15s',
+                      transition: 'background var(--dur-2) var(--ease-standard)',
                       userSelect: dragId !== null ? 'none' : undefined,
                     }}
                     onMouseEnter={(e) => {
@@ -3071,13 +3071,15 @@ export default function Assistant() {
                 void send()
               }}
             />
-            <Button
-              icon={uploadingAtts ? <LoadingOutlined /> : <PaperClipOutlined />}
-              title="附加图片或代码文件（图片走 Files API 上传，文本/代码文件读取内容到输入框）"
-              disabled={uploadingAtts || sending}
-              onClick={() => fileInputRef.current?.click()}
-              tabIndex={-1}
-            />
+            <Tooltip title="附加图片或代码文件（图片走 Files API 上传，文本/代码文件读取内容到输入框）">
+              <Button
+                icon={uploadingAtts ? <LoadingOutlined /> : <PaperClipOutlined />}
+                aria-label="附加图片或代码文件"
+                disabled={uploadingAtts || sending}
+                onClick={() => fileInputRef.current?.click()}
+                tabIndex={-1}
+              />
+            </Tooltip>
             <input
               ref={fileInputRef}
               type="file"
@@ -3094,14 +3096,11 @@ export default function Assistant() {
                     {toolStatus.text}
                   </span>
                 )}
-                <Button
-                  danger
-                  onClick={() => stopSending(activeId)}
-                  title="停止本次生成（已输出的内容会保留）"
-                  tabIndex={-1}
-                >
-                  停止
-                </Button>
+                <Tooltip title="停止本次生成（已输出的内容会保留）">
+                  <Button danger onClick={() => stopSending(activeId)} tabIndex={-1}>
+                    停止
+                  </Button>
+                </Tooltip>
               </>
             ) : (
               <Button

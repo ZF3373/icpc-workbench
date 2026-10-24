@@ -104,6 +104,32 @@
   --overlay-3: rgba(255, 255, 255, 0.06);
   /* 平台色点内描边：暗色底用浅色环把色点从背景里"切"出来（原先亦为自引用，未定义） */
   --marker-ring: rgba(255, 255, 255, 0.16);
+  /* 动效 Token：交互过渡时长三档 + 结构morph一档，亮暗主题共用（时长与主题无关）。
+     档位沿用既有实测值：120 / 140 / 200 / 400ms；原先散落的 130/150/160/450ms
+     归并到最近档（±20ms，不可感知）。关键帧动画时长（骨架呼吸、流光、pageFadeIn）
+     与进度条填充宽度（.ant-progress-bg 的 0.6s，刻意放慢的结构动画）不收编，保留字面量。
+     缓动统一用 material standard 曲线；只调不透明度/颜色的合成器友好过渡同样适用 */
+  --dur-1: 120ms;
+  --dur-2: 140ms;
+  --dur-3: 200ms;
+  --dur-4: 400ms;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  /* Markdown 链接文字专用：亮色下 --brand(#6b8eef) 在 surface 上只有 ~2.7:1，
+     远低于 AA；链接需要比 --brand 更深的一档，且不能复用 --strong-text（语义不同，
+     将来可能分道）。暗色与 --brand 同值（7.4:1），亮色按 surface/surface-2 校准 ≥4.5:1。
+     见 .markdown-body a 与 test/contrastCheck.mjs 的「Markdown 链接」条目 */
+  --link-text: #86a8ff;
+  /* 间距尺度（4px 基准）：新写/改动的样式一律从这里取值，存量不批量迁移
+     （数千处 px 的等值替换 diff 巨大而用户不可见，收益为负；纪律见 docs/UI-优化实施计划.md 阶段4）。
+     20px 等既有偏离值保留字面量并在原地注释，不做强行归档 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
 }
 
 /* 亮色主题变量覆盖 —— 柔和灰蓝调，避免大面积纯白刺眼 */
@@ -169,6 +195,9 @@
      这里给正文重点单独取更深的一档：高亮文字 5.44:1、粗体文字 5.16:1。 */
   --mark-text: #7a4f00;
   --strong-text: #3d5cc8;
+  /* 亮色链接：--brand(#6b8eef) 在 #f6f8fb 上只有 ~2.69:1（AA 要求 4.5:1），
+     取更深一档蓝：surface 上 5.75:1、surface-2 上 5.35:1。与暗色 --link-text 成对声明 */
+  --link-text: #3a5bc0;
   /* 亮色代码配色：相对 --surface-inset(#eaedf3) 校准对比度（正文/主要记号 ≥ 4.5:1） */
   --code-text: #23272f;
   --code-gutter: #98a1b0;
@@ -440,11 +469,11 @@ body {
   background: var(--brand-soft);
 }
 
-/* 显形加 160ms 意图延迟：鼠标快速滑过导航（切页）时箭头来不及出现，
+/* 显形加一档时长（--dur-2）意图延迟：鼠标快速滑过导航（切页）时箭头来不及出现，
    停留（真想排序）才浮现。只作用于 hover 显形；隐藏走基础规则立即消失，
    键盘 Tab 走 :focus-within 显形，同样即时。 */
 .sider-nav-row.reorder-host:hover > .reorder-controls {
-  transition: opacity 140ms ease 160ms;
+  transition: opacity var(--dur-2) var(--ease-standard) var(--dur-2);
 }
 
 .sider-nav-item {
@@ -463,7 +492,7 @@ body {
   font-family: inherit;
   cursor: pointer;
   text-align: left;
-  transition: color 140ms ease, background 140ms ease, opacity 140ms ease;
+  transition: color var(--dur-2) var(--ease-standard), background var(--dur-2) var(--ease-standard), opacity var(--dur-2) var(--ease-standard);
 }
 
 .sider-nav-item .sider-nav-icon {
@@ -580,9 +609,9 @@ body {
   cursor: pointer;
   font-size: 15px;
   transition:
-    color 140ms ease,
-    background 140ms ease,
-    border-color 140ms ease;
+    color var(--dur-2) var(--ease-standard),
+    background var(--dur-2) var(--ease-standard),
+    border-color var(--dur-2) var(--ease-standard);
 }
 
 .sider-footer-toggle:hover {
@@ -607,7 +636,7 @@ body {
   font-family: inherit;
   font-size: 12px;
   cursor: pointer;
-  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+  transition: color var(--dur-2) var(--ease-standard), border-color var(--dur-2) var(--ease-standard), background var(--dur-2) var(--ease-standard);
 }
 
 .sider-footer-search:hover {
@@ -688,9 +717,9 @@ body {
   border: 1px solid var(--line);
   box-shadow: none;
   transition:
-    box-shadow 0.25s ease,
-    transform 0.2s ease,
-    border-color 0.25s ease;
+    box-shadow var(--dur-3) var(--ease-standard),
+    transform var(--dur-3) var(--ease-standard),
+    border-color var(--dur-3) var(--ease-standard);
 }
 
 .ant-card:hover {
@@ -711,7 +740,7 @@ body {
 }
 
 .ant-btn {
-  transition: all 0.2s ease;
+  transition: all var(--dur-3) var(--ease-standard);
 }
 
 .ant-btn-primary:not(:disabled):hover {
@@ -720,7 +749,7 @@ body {
 }
 
 .ant-tag {
-  transition: all 0.2s ease;
+  transition: all var(--dur-3) var(--ease-standard);
 }
 
 .ant-statistic-content-value {
@@ -728,7 +757,7 @@ body {
 }
 
 .ant-progress-bg {
-  transition: width 0.6s ease;
+  transition: width 0.6s var(--ease-standard);
 }
 
 .ant-modal-content {
@@ -736,7 +765,7 @@ body {
 }
 
 .ant-menu-item {
-  transition: all 0.2s ease !important;
+  transition: all var(--dur-3) var(--ease-standard) !important;
 }
 
 /* 表单弹窗内间距微调 */
@@ -780,7 +809,7 @@ body {
   border: 1px solid var(--item-border);
   border-radius: 10px;
   cursor: grab;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  transition: border-color var(--dur-2) var(--ease-standard), box-shadow var(--dur-2) var(--ease-standard), transform var(--dur-2) var(--ease-standard);
 }
 
 .platform-stat-card:hover {
@@ -809,7 +838,7 @@ body {
   color: var(--text-3);
   font-size: 13px;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity var(--dur-2) var(--ease-standard);
 }
 
 .platform-stat-card:hover .platform-drag-handle {
@@ -841,6 +870,7 @@ body {
   cursor: pointer;
   border-radius: 4px;
   text-decoration: none;
+  transition: color var(--dur-2) var(--ease-standard);
 }
 .platform-link:hover {
   color: var(--brand);
@@ -848,7 +878,7 @@ body {
 .platform-link-icon {
   font-size: 11px;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity var(--dur-2) var(--ease-standard);
 }
 .platform-link:hover .platform-link-icon {
   opacity: 0.7;
@@ -1131,7 +1161,7 @@ body {
   text-align: left;
   font-size: 12.5px;
   cursor: pointer;
-  transition: 130ms ease;
+  transition: var(--dur-2) var(--ease-standard);
 }
 
 .taxonomy-item:hover {
@@ -1282,7 +1312,7 @@ body {
   border-radius: var(--radius);
   background: var(--surface);
   cursor: pointer;
-  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+  transition: border-color var(--dur-2) var(--ease-standard), background var(--dur-2) var(--ease-standard), transform var(--dur-2) var(--ease-standard);
 }
 
 .list-card:hover {
@@ -1316,7 +1346,7 @@ body {
   cursor: grab;
   /* 手柄不该拖出文本选区，也不要抢走卡片的点击语义 */
   user-select: none;
-  transition: opacity 140ms ease, color 120ms ease, background 120ms ease;
+  transition: opacity var(--dur-2) var(--ease-standard), color var(--dur-1) var(--ease-standard), background var(--dur-1) var(--ease-standard);
   /* 手柄与标题、操作行同层，但必须压在卡片背景之上 */
   z-index: 1;
 }
@@ -1510,7 +1540,7 @@ body {
   font-weight: 600;
   text-align: left;
   cursor: pointer;
-  transition: color 130ms ease;
+  transition: color var(--dur-2) var(--ease-standard);
 }
 
 .filter-panel__toggle:hover {
@@ -1520,7 +1550,7 @@ body {
 .filter-panel__arrow {
   display: inline-block;
   color: var(--brand-mute);
-  transition: transform 130ms ease;
+  transition: transform var(--dur-2) var(--ease-standard);
 }
 
 .filter-panel.is-open .filter-panel__arrow {
@@ -1608,7 +1638,7 @@ body {
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
-  transition: color 130ms ease;
+  transition: color var(--dur-2) var(--ease-standard);
 }
 
 .status-tabs button:hover {
@@ -1725,7 +1755,7 @@ body {
   color: var(--text-3);
   font-size: 10px;
   cursor: pointer;
-  transition: 130ms ease;
+  transition: var(--dur-2) var(--ease-standard);
 }
 
 .side-panel__toggle:hover {
@@ -1773,6 +1803,7 @@ body {
   grid-template-columns: 74px minmax(0, 1fr) 34px;
   align-items: center;
   gap: 8px;
+  transition: background var(--dur-1) var(--ease-standard);
   font-size: 11px;
   padding: 2px 4px;
   border: none;
@@ -1782,7 +1813,7 @@ body {
   text-align: left;
   cursor: pointer;
   border-radius: 8px;
-  transition: background 120ms ease;
+  transition: background var(--dur-1) var(--ease-standard);
 }
 
 button.dist-row:hover {
@@ -1818,7 +1849,7 @@ button.dist-row:hover {
   display: block;
   height: 100%;
   border-radius: inherit;
-  transition: width 0.4s ease;
+  transition: width var(--dur-4) var(--ease-standard);
 }
 
 .dist-row__count {
@@ -1883,6 +1914,10 @@ button.dist-row:hover {
   font-size: 12px;
   white-space: nowrap;
   cursor: pointer;
+  transition:
+    color var(--dur-2) var(--ease-standard),
+    border-color var(--dur-2) var(--ease-standard),
+    background var(--dur-2) var(--ease-standard);
 }
 .zoom-trigger:hover,
 .zoom-trigger[aria-expanded='true'] { color: var(--brand); border-color: var(--brand-line); background: var(--brand-soft); }
@@ -2098,7 +2133,7 @@ button.dist-row:hover {
 }
 
 .markdown-body a {
-  color: var(--brand);
+  color: var(--link-text);
 }
 
 .markdown-body hr {
@@ -2160,7 +2195,7 @@ button.dist-row:hover {
   font-size: 11px;
   line-height: 18px;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background var(--dur-2) var(--ease-standard), color var(--dur-2) var(--ease-standard);
 }
 
 .md-code-copy:hover {
@@ -2290,7 +2325,7 @@ button.dist-row:hover {
   color: var(--text-3);
   font-size: 11px;
   cursor: pointer;
-  transition: color 0.15s ease;
+  transition: color var(--dur-2) var(--ease-standard);
 }
 
 .md-code-toggle:hover {
@@ -2518,8 +2553,8 @@ button.dist-row:hover {
   border-radius: 7px;
   cursor: pointer;
   transition:
-    background 0.15s ease,
-    color 0.15s ease;
+    background var(--dur-2) var(--ease-standard),
+    color var(--dur-2) var(--ease-standard);
 }
 .indent-switch-option:hover {
   color: var(--text-2);
@@ -2528,7 +2563,7 @@ button.dist-row:hover {
 .indent-switch-option.is-active {
   background: var(--brand);
   color: var(--text-on-brand);
-  box-shadow: 0 1px 4px rgba(134, 168, 255, 0.4);
+  box-shadow: 0 1px 4px var(--brand-line);
 }
 .indent-switch-option.is-active:hover {
   color: var(--text-on-brand);
@@ -2549,6 +2584,7 @@ button.dist-row:hover {
   color: var(--text-2);
   font-size: 12.5px;
   width: fit-content;
+  transition: color var(--dur-2) var(--ease-standard);
 }
 
 .template-example:hover {
@@ -2654,7 +2690,7 @@ button.dist-row:hover {
 
 .today-problem {
   background: var(--surface-2);
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform var(--dur-2) var(--ease-standard), box-shadow var(--dur-2) var(--ease-standard);
 }
 
 .today-problem:hover {
@@ -2682,6 +2718,7 @@ button.dist-row:hover {
   font-size: 13.5px;
   line-height: 1.45;
   word-break: break-word;
+  transition: color var(--dur-2) var(--ease-standard);
 }
 
 .today-problem-title:hover {
@@ -2828,7 +2865,7 @@ button.dist-row:hover {
 .contest-countdown {
   align-self: flex-start;
   padding: 2px 8px;
-  border: 1px solid rgba(134, 168, 255, 0.3);
+  border: 1px solid var(--brand-line);
   border-radius: 7px;
   color: var(--brand);
   background: var(--brand-soft);
@@ -3032,14 +3069,14 @@ button.dist-row:hover {
   overflow: hidden;
   background: var(--surface-2);
   transition:
-    box-shadow 0.2s ease,
-    border-color 0.2s ease,
-    opacity 0.2s ease,
-    transform 0.2s ease;
+    box-shadow var(--dur-3) var(--ease-standard),
+    border-color var(--dur-3) var(--ease-standard),
+    opacity var(--dur-3) var(--ease-standard),
+    transform var(--dur-3) var(--ease-standard);
 }
 
 .task-card:hover {
-  border-color: rgba(134, 168, 255, 0.3);
+  border-color: var(--brand-line);
   transform: translateY(-1px);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14);
 }
@@ -3116,7 +3153,7 @@ button.dist-row:hover {
 }
 
 .task-done:hover {
-  border-color: rgba(105, 215, 165, 0.3);
+  border-color: var(--green-line);
 }
 
 .task-done .task-title {
@@ -3177,9 +3214,9 @@ button.dist-row:hover {
   position: relative;
   border: 1px solid transparent;
   transition:
-    background 0.18s ease,
-    border-color 0.18s ease,
-    transform 0.18s ease;
+    background var(--dur-2) var(--ease-standard),
+    border-color var(--dur-2) var(--ease-standard),
+    transform var(--dur-2) var(--ease-standard);
 }
 
 .calendar-cell:hover {
@@ -3236,7 +3273,7 @@ button.dist-row:hover {
   stroke: var(--brand);
   stroke-width: 2.5;
   stroke-linecap: round;
-  transition: stroke-dasharray 0.45s ease;
+  transition: stroke-dasharray var(--dur-4) var(--ease-standard);
 }
 
 .cell-ring-done {
@@ -3436,7 +3473,7 @@ button.dist-row:hover {
   margin-bottom: 12px;
   background: var(--bg-elevated);
   overflow: hidden;
-  transition: border-color 0.2s ease;
+  transition: border-color var(--dur-3) var(--ease-standard);
 }
 .platform-collapse .ant-collapse-item:last-child {
   margin-bottom: 0;
@@ -3462,7 +3499,7 @@ button.dist-row:hover {
   margin-bottom: 12px;
   background: var(--bg-elevated);
   overflow: hidden;
-  transition: border-color 0.2s ease;
+  transition: border-color var(--dur-3) var(--ease-standard);
 }
 .provider-collapse .ant-collapse-item:last-child {
   margin-bottom: 0;
@@ -3636,7 +3673,7 @@ html.app-hidden *::after {
   color: var(--text-3);
   cursor: pointer;
   font-size: 12px;
-  transition: color 140ms ease, background 140ms ease;
+  transition: color var(--dur-2) var(--ease-standard), background var(--dur-2) var(--ease-standard);
 }
 
 .chat-toc-toggle:hover {
@@ -3664,7 +3701,7 @@ html.app-hidden *::after {
   font-size: 12px;
   text-align: left;
   cursor: pointer;
-  transition: background 140ms ease, color 140ms ease;
+  transition: background var(--dur-2) var(--ease-standard), color var(--dur-2) var(--ease-standard);
 }
 
 .chat-toc-item:hover {
@@ -3756,7 +3793,7 @@ html.app-hidden *::after {
   font-size: 12px;
   color: var(--text-3);
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity var(--dur-2) var(--ease-standard);
   height: 24px;
 }
 .plan-chat-msg:hover .msg-copy-btn {
@@ -3825,7 +3862,7 @@ html.app-hidden *::after {
   font-size: 10px;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 140ms ease;
+  transition: opacity var(--dur-2) var(--ease-standard);
 }
 
 .pending-att-thumb:hover .pending-att-remove,
@@ -3857,9 +3894,9 @@ html.app-hidden *::after {
   font-size: 12px;
   cursor: pointer;
   transition:
-    color 140ms ease,
-    border-color 140ms ease,
-    background 140ms ease;
+    color var(--dur-2) var(--ease-standard),
+    border-color var(--dur-2) var(--ease-standard),
+    background var(--dur-2) var(--ease-standard);
 }
 
 .chat-model-chip:hover {
@@ -3981,7 +4018,7 @@ html.app-hidden *::after {
   flex-shrink: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  transition: width 160ms ease;
+  transition: width var(--dur-2) var(--ease-standard);
 }
 
 /* 侧栏顶部的折叠按钮（样式与全局侧边栏的 sider-footer-toggle 保持一致） */
@@ -4004,9 +4041,9 @@ html.app-hidden *::after {
   cursor: pointer;
   font-size: 14px;
   transition:
-    color 140ms ease,
-    background 140ms ease,
-    border-color 140ms ease;
+    color var(--dur-2) var(--ease-standard),
+    background var(--dur-2) var(--ease-standard),
+    border-color var(--dur-2) var(--ease-standard);
 }
 
 .assistant-side-toggle:hover {
@@ -4082,7 +4119,7 @@ html.app-hidden *::after {
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
-  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+  transition: border-color var(--dur-2) var(--ease-standard), color var(--dur-2) var(--ease-standard), background var(--dur-2) var(--ease-standard);
 }
 
 .mini-rail-avatar:hover,
@@ -4116,7 +4153,7 @@ html.app-hidden *::after {
   color: var(--text-3);
   font-size: 13px;
   cursor: pointer;
-  transition: border-color 140ms ease, color 140ms ease;
+  transition: border-color var(--dur-2) var(--ease-standard), color var(--dur-2) var(--ease-standard);
 }
 
 .mini-rail-new:hover {
@@ -4232,7 +4269,7 @@ html.app-hidden *::after {
   border-radius: 6px;
   color: var(--text-dim);
   cursor: help;
-  transition: color 120ms ease, background 120ms ease;
+  transition: color var(--dur-1) var(--ease-standard), background var(--dur-1) var(--ease-standard);
 }
 
 .ctx-help:hover {
@@ -4279,7 +4316,7 @@ html.app-hidden *::after {
   color: var(--text-2);
   font-size: 12.5px;
   cursor: pointer;
-  transition: color 120ms ease, border-color 120ms ease, background 120ms ease, transform 120ms ease;
+  transition: color var(--dur-1) var(--ease-standard), border-color var(--dur-1) var(--ease-standard), background var(--dur-1) var(--ease-standard), transform var(--dur-1) var(--ease-standard);
 }
 
 .chat-empty-sug:hover {
@@ -4306,7 +4343,7 @@ html.app-hidden *::after {
   font-weight: 600;
   cursor: pointer;
   box-shadow: var(--shadow);
-  transition: background 120ms ease;
+  transition: background var(--dur-1) var(--ease-standard);
 }
 
 .selection-quote-btn:hover {
@@ -4356,6 +4393,7 @@ html.app-hidden *::after {
   gap: 8px;
   padding: 4px 8px;
   border-radius: 8px;
+  transition: background var(--dur-1) var(--ease-standard);
 }
 
 .list-item-row:hover {
@@ -4401,7 +4439,7 @@ html.app-hidden *::after {
   padding: 0;
   color: var(--text-3);
   opacity: 0;
-  transition: opacity 0.15s ease, color 0.15s ease;
+  transition: opacity var(--dur-2) var(--ease-standard), color var(--dur-2) var(--ease-standard);
 }
 
 .list-item-row:hover .reorder-btn,
@@ -4444,6 +4482,7 @@ html.app-hidden *::after {
 .note-editor-toolbar .note-tool-btn {
   padding: 0 7px;
   color: var(--text-2);
+  transition: color var(--dur-2) var(--ease-standard);
 }
 
 .note-editor-toolbar .note-tool-btn:hover {
@@ -4667,7 +4706,7 @@ html.app-hidden *::after {
   gap: 2px;
   flex-shrink: 0;
   opacity: 0;
-  transition: opacity 140ms ease;
+  transition: opacity var(--dur-2) var(--ease-standard);
 }
 
 .reorder-host:hover > .reorder-controls,
@@ -4690,7 +4729,7 @@ html.app-hidden *::after {
   font-size: 11px;
   line-height: 1;
   cursor: pointer;
-  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+  transition: color var(--dur-1) var(--ease-standard), border-color var(--dur-1) var(--ease-standard), background var(--dur-1) var(--ease-standard);
   /* 下面 ::before 的命中区以按钮为参照系 */
   position: relative;
 }
@@ -4721,6 +4760,40 @@ html.app-hidden *::after {
 :focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
+}
+
+/* ============================================================
+   掌握度地图：知识点标签
+   （原先在 App.css，2026-10-24 并入本文件并 Token 化；
+   App.css 里剩下的 .app 规则是死代码——没有任何元素挂 className="app"——一并删除）
+   ============================================================ */
+.mastery-tag {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  background: var(--overlay-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    background var(--dur-3) var(--ease-standard),
+    transform var(--dur-2) var(--ease-standard);
+  font: inherit;
+  color: inherit;
+}
+
+.mastery-tag:hover {
+  background: var(--hover-bg);
+  transform: translateY(-1px);
+}
+
+.mastery-tag-meta {
+  font-size: 12px;
+  color: var(--text-3);
 }
 
 /* ============================================================
@@ -4970,5 +5043,291 @@ html.app-hidden *::after {
 
   .empty-state-actions > .ant-btn {
     width: 100%;
+  }
+}
+
+/* ============================================================
+   笔记查看卡片（NoteCardModal / NoteCardButton）
+   （原 components/NoteCard.css，2026-10-24 迁回本文件收口）
+   ============================================================ */
+
+/*
+ * 字号缩放只作用于 `.note-card-body`（data-note-zoom 所在的可滚动正文区）：
+ * 用 `--note-text-zoom`（由 zoomPreferences.apply 写入 :root，见 components/ZoomControl）
+ * 对 markdown 各层字号做乘法放大。卡片头、meta、操作按钮不在该作用域，
+ * 因此标题和控件不跟着变大 —— 缩放的是「读长笔记」的正文，而不是整张 UI。
+ * 基准字号必须与上面 .markdown-body 的排版保持一致，否则缩放后比例失真。
+ */
+
+.note-card-modal .ant-modal-header { margin-bottom: 0; }
+
+.note-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.note-card-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.note-card-kind {
+  flex-shrink: 0;
+  color: var(--brand);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.note-card-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.note-card-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.note-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) 14px;
+  margin-bottom: var(--space-3);
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.note-card-body {
+  max-height: min(62vh, 640px);
+  overflow: auto;
+  min-width: 0;
+}
+
+/* 任务备注：纯文本，保留换行；不经过 Markdown 渲染 */
+.note-card-plain {
+  margin: 0;
+  white-space: pre-wrap;
+  color: var(--text-2);
+  font-size: calc(13px * var(--note-text-zoom, 1));
+  line-height: 1.7;
+  word-break: break-word;
+}
+
+/* 复习/模板笔记：沿用 .markdown-body 排版，字号按缩放系数放大。
+   基准值对齐上面 .markdown-body（13px / h1 17 / h2 15.5 / h3 14 / h4 13 /
+   code+table 12 / pre code 12.5）。 */
+.note-card-body .markdown-body { font-size: calc(13px * var(--note-text-zoom, 1)); }
+.note-card-body .markdown-body h1 { font-size: calc(17px * var(--note-text-zoom, 1)); }
+.note-card-body .markdown-body h2 { font-size: calc(15.5px * var(--note-text-zoom, 1)); }
+.note-card-body .markdown-body h3 { font-size: calc(14px * var(--note-text-zoom, 1)); }
+.note-card-body .markdown-body h4 { font-size: calc(13px * var(--note-text-zoom, 1)); }
+.note-card-body .markdown-body code,
+.note-card-body .markdown-body table { font-size: calc(12px * var(--note-text-zoom, 1)); }
+.note-card-body .markdown-body pre code,
+.note-card-body .md-code-pre code { font-size: calc(12.5px * var(--note-text-zoom, 1)); }
+
+/* 笔记内的图片撑满不超界（与 note-editor-preview 同款描边） */
+.note-card-body img {
+  max-width: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--line-soft);
+}
+
+/* entry 形态：紧凑入口行 */
+.note-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 6px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--brand);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    color var(--dur-2) var(--ease-standard),
+    border-color var(--dur-2) var(--ease-standard),
+    background var(--dur-2) var(--ease-standard);
+}
+
+.note-entry:hover { border-color: var(--brand-line); background: var(--brand-soft); }
+.note-entry:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+.note-entry-icon { flex-shrink: 0; }
+.note-entry-label { flex-shrink: 0; font-weight: 500; }
+
+.note-entry-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+/* text 形态：备注正文本身可点（外观沿用原任务备注样式） */
+.note-text-open {
+  display: block;
+  width: 100%;
+  margin: 6px 0 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--dur-2) var(--ease-standard);
+}
+
+.note-text-open:hover { color: var(--brand); }
+.note-text-open:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+/* ============================================================
+   赛时分析弹窗（赛事中心「我参加的」入口）
+   （原 components/ContestAnalysis.css，2026-10-24 迁回本文件收口；
+   遗留 600px 断点归并到全站 640 口径，见 docs/responsive-breakpoints.md §4.5）
+   ============================================================ */
+
+.contest-analysis-modal-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contest-analysis-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.contest-analysis-modal-head {
+  padding-top: 2px;
+}
+
+.contest-analysis-modal .ant-empty {
+  margin: var(--space-5) 0;
+}
+
+.contest-analysis-card-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.contest-analysis-card-title a,
+.contest-analysis-card-title > span {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contest-analysis-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) 18px;
+  padding-bottom: 10px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.contest-analysis-problems {
+  border-top: 1px solid var(--line-soft);
+}
+
+.contest-analysis-problem-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.2fr) minmax(180px, 0.9fr) minmax(260px, 1.5fr);
+  align-items: center;
+  gap: var(--space-3);
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.contest-analysis-problem-row:last-child {
+  border-bottom: 0;
+}
+
+.contest-analysis-problem-name,
+.contest-analysis-problem-result {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.contest-analysis-problem-id {
+  color: var(--text-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.contest-analysis-problem-name a,
+.contest-analysis-problem-name > span:last-child {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contest-analysis-problem-result > span {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* 标签选择框：撑满第三列；已选标签多时随内容换行增高 */
+.contest-analysis-tag-select {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .contest-analysis-problem-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .contest-analysis-tag-select {
+    grid-column: 1 / -1;
+  }
+}
+
+/* 原独立文件用 600px；640 与全站手机断点同值，641~640 无行为差异风险，
+   归并后断点总表不再有 600 这个游离值 */
+@media (max-width: 640px) {
+  .contest-analysis-problem-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+  }
+
+  .contest-analysis-tag-select {
+    grid-column: auto;
   }
 }

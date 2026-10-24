@@ -92,10 +92,11 @@ Markdown 重点着色（AI 回复的扫读锚点，见 `client/src/components/ma
 |---|---|---|
 | `--mark-text` | `==高亮==` 的文字色（底色用 `--amber-soft`） | `--amber` 是给图表/角标调的中等琥珀，放到 13px 正文的淡琥珀底上亮色主题只有 **2.05:1**，低于 WCAG AA |
 | `--strong-text` | `**粗体**` 的文字色 | `--brand-text` 亮色下是 `#5a7de0`，在正文底色上只有 **3.38:1**，同样不达标 |
+| `--link-text` | Markdown 链接文字色（`.markdown-body a`） | 亮色 `--brand`(#6b8eef) 在 surface 上只有 **~2.69:1**（2026-10-24 实测修复）；链接取更深一档 `#3a5bc0`（surface 5.74:1 / surface-2 5.35:1），暗色与 `--brand` 同值（7.4:1）。不复用 `--strong-text`：语义不同（链接/强调将来可能分道） |
 
 > 两个 Token 在 `:root`（暗色）与 `[data-theme='light']`（亮色）**成对声明**，
-> 每套主题都按各自底色校准到 ≥ 4.5:1。改动后用 `cd client && npm run check:contrast`
-> 核对（脚本直接读 `index.css` 的 Token 值按 WCAG 公式计算，不依赖浏览器）。
+   每套主题都按各自底色校准到 ≥ 4.5:1。改动后用 `cd client && npm run check:contrast`
+   核对（脚本直接读 `index.css` 的 Token 值按 WCAG 公式计算，不依赖浏览器）。
 
 ---
 
@@ -172,4 +173,57 @@ node .scratch/ui-check12-visual.mjs            # 收口轮：24×24 排序按钮
 > `--overlay-1: var(--overlay-1)` 示例文字（`ui.ts:12`、`index.css:89`），那是说明文字不是真实引用。
 > 另外 `.reorder-controls` 有 `opacity 140ms` 过渡，聚焦后需等过渡结束再读 `getComputedStyle().opacity`；
 > 无头浏览器还须先 `Emulation.setFocusEmulationEnabled`，否则 `:focus-within` 永不匹配。
+
+---
+
+## 5. 动效 Token（2026-10-24 收口）
+
+> 唯一来源：`client/src/index.css` 的 `:root`。**亮暗主题共用**（时长与主题无关），只在 `:root` 声明一次。
+
+| Token | 值 | 用途 |
+|---|---|---|
+| `--dur-1` | `120ms` | 微反馈：纯色/透明度小元素（标签、圆点、文字色） |
+| `--dur-2` | `140ms` | **默认档**：hover / focus / 按钮类常规交互反馈 |
+| `--dur-3` | `200ms` | 大面积表面：卡片阴影/描边、日历格子 |
+| `--dur-4` | `400ms` | 结构性绘制：侧栏宽度 morph、完成度圆环弧线 |
+| `--ease-standard` | `cubic-bezier(0.4, 0, 0.2, 1)` | 全站统一缓动，写入每条 `transition` |
+
+收口纪律（2026-10-24 起）：
+
+- `index.css` 里 `transition` 声明**一律引用 `var(--dur-*)` + `var(--ease-standard)`**，
+  不再写字面量时长。原有散落的 130/150/160/180/250/450ms 已归并到最近档（±50ms 内）。
+- **不收编**的两类（保留字面量）：`@keyframes` 相关的 `animation` 时长（骨架呼吸、
+  流光、`pageFadeIn 0.35s`）；进度条填充宽度 `.ant-progress-bg` 的 `width 0.6s`
+  （刻意放慢的结构动画，归档为有意例外）。
+- 新增交互时按上表选档，拿不准就用 `var(--dur-2) var(--ease-standard)`。
+- `App.css` 已删除：`.app` 规则是死代码（无元素挂 `className="app"`）；
+  `.mastery-tag` 已 Token 化并入 `index.css`（掌握度地图段）。组件样式不允许再开独立 css 文件
+  （`NoteCard.css` / `ContestAnalysis.css` 亦已迁回 `index.css` 末段，独立 css 文件清零）。
+- 同轮清理：4 处硬编码语义边框（`.contest-countdown`、`.task-card:hover`、
+  `.task-done:hover`、`.indent-switch-option.is-active` 阴影）改用 `--brand-line` / `--green-line`
+  （透明度 0.3 → 0.45，hover/激活态反馈略增强，亮色主题自动跟随）。
+
+### 5.1 间距尺度（2026-10-24 新增，仅约束新代码）
+
+`:root` 声明 `--space-1..8`（4 / 8 / 12 / 16 / 24 / 32 / 48 / 64px，4px 基准）。
+**存量 padding/margin 不批量迁移**：数千处等值替换 diff 巨大、无用户可见收益、回归风险为正；
+纪律是「新写/改动的样式从 `--space-*` 取值，原地小改顺手换」。偏离值（如 20px）保留字面量。
+
+### 5.2 交互过渡补口（2026-10-24 hover 审计）
+
+对全站 58 条 `:hover` 规则做了「基规则是否声明 transition」审计（一次性脚本），
+给 7 处 hover 跳变补上了 Token 化过渡：`.platform-link`（color）、`.zoom-trigger`
+（color/border/background）、`.dist-row`（background）、`.list-item-row`（background）、
+`.template-example` / `.today-problem-title` / `.note-tool-btn`（color）。
+**有意不加**的三类：拖拽把手/排序控件的显隐（即时显形是交互设计，侧栏一处带延迟是例外）、
+`::-webkit-scrollbar-thumb`（伪元素过渡支持不稳）、由宿主元素 transition 覆盖的修饰类
+（`.task-done`、`.calendar-cell-done` 等）。
+
+### 5.3 时长防回归脚本
+
+```bash
+cd client && npm run check:durations   # transition 一律 var(--dur-*)，白名单仅 .ant-progress-bg 0.6s
+```
+
+新增/改动过渡若被此脚本拦下，按档位表取 Token，不要加白名单。
 

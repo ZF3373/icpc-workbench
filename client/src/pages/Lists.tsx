@@ -724,10 +724,12 @@ export default function Lists() {
         onMouseMove={(e) => rowDragEnter(e, it.id)}
       >
         <Space size={8} wrap style={{ flex: 1 }}>
-          <span className="list-item-reorder" title="拖拽排序">
-            <span className="drag-handle" onMouseDown={(e) => startDrag(e, it.id)}>
-              <HolderOutlined />
-            </span>
+          <span className="list-item-reorder">
+            <Tooltip title="拖拽排序">
+              <span className="drag-handle" onMouseDown={(e) => startDrag(e, it.id)}>
+                <HolderOutlined />
+              </span>
+            </Tooltip>
             <Tooltip title="上移">
               <Button
                 type="text"
@@ -781,7 +783,9 @@ export default function Lists() {
             options={[...new Set([...groups.map((x) => x.category), '其他'])].map((c) => ({ value: c, label: c }))}
           />
           <Popconfirm title="移除该题" okText="移除" cancelText="取消" onConfirm={() => void removeItem(it.id)}>
-            <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+            <Tooltip title="移除该题">
+              <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label="移除该题" />
+            </Tooltip>
           </Popconfirm>
         </Space>
       </div>

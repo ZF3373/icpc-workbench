@@ -29,7 +29,7 @@ export function subscribeZoomPreferences(listener: () => void): () => void {
 function apply(): void {
   document.documentElement.style.setProperty('--app-zoom', String(snapshot.global / 100))
   document.documentElement.style.setProperty('--ai-reply-text-zoom', String(snapshot.reply / 100))
-  // 笔记字号只作用于笔记卡片正文（见 components/NoteCard.css），
+  // 笔记字号只作用于笔记卡片正文（见 index.css 的 .note-card 段），
   // 卡片标题与按钮不在该变量作用域内，因此不会跟着一起变大。
   document.documentElement.style.setProperty('--note-text-zoom', String(snapshot.note / 100))
   for (const listener of listeners) listener()

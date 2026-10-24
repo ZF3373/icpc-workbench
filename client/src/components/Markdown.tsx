@@ -172,7 +172,8 @@ function CodeCard({ lang, code, children }: { lang: string; code: string; childr
     <div className={`md-code-card${expanded ? ' is-expanded' : ''}`}>
       <div className="md-code-head">
         <span className="md-code-lang">{lang || 'code'}</span>
-        <button type="button" className="md-code-copy" onClick={copy} title="复制代码">
+        {/* 按钮自带可见文字（复制/已复制），自描述，无需 title 提示 */}
+        <button type="button" className="md-code-copy" onClick={copy}>
           {copied ? <CheckOutlined /> : <CopyOutlined />}
           <span>{copied ? '已复制' : '复制'}</span>
         </button>
