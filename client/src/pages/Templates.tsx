@@ -1042,6 +1042,7 @@ export default function Templates() {
         {noteEditing && (
           <NoteEditor
             key={noteEditing.id}
+            readingZoom
             value={noteDraft}
             onChange={setNoteDraft}
             height={420}

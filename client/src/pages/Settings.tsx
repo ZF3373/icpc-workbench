@@ -39,6 +39,7 @@ import { PLATFORMS, cookieFieldsOf } from '../../../shared/src/index.ts'
 import { AI_PROVIDER_PRESETS, AI_PROVIDER_CUSTOM_PRESET, AI_PROVIDERS_MAX, AI_PROVIDER_MODELS_MAX, MODEL_CAPS_AS_OF, guessModelCaps, type AiProviderModelEntry, type AiProviderView, type ModelCaps } from '../../../shared/src/index.ts'
 import { mergePickedModels } from '../aiModelPicker'
 import PageHeader from '../components/PageHeader'
+import AiCustomPromptsCard from '../components/AiCustomPromptsCard'
 import PageSkeleton from '../components/PageSkeleton'
 import InlineError from '../components/InlineError'
 import { saveUrlAsFile } from '../download'
@@ -885,6 +886,7 @@ export default function Settings() {
           ai={data.ai}
           onSave={saveAi}
         />
+        <AiCustomPromptsCard />
       </Col>
       <Col xs={24} lg={12} id="settings-accounts">
         <Card title={<span className="settings-section-title"><UserOutlined />平台账号与适配器</span>} size="small">
