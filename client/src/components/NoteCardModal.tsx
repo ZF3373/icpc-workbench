@@ -1,7 +1,7 @@
 /**
  * 笔记查看卡片弹窗：仿「赛事中心 → 赛事分析」的单场弹窗
  * （antd Modal + footer={null} + width=860），点击后弹出卡片展示笔记全文，
- * 正文支持「笔记文字」字号缩放（见 ZoomControl + NoteCard.css + appZoom 的 [data-note-zoom]）。
+ * 正文支持「笔记文字」字号缩放（见 ZoomControl + index.css 的 .note-card 段 + appZoom 的 [data-note-zoom]）。
  * 复习库 / 模板库 / 计划任务备注共用这同一个卡片，标题带类型区分。
  */
 import type { ReactNode } from 'react'
@@ -10,7 +10,6 @@ import { EditOutlined } from '@ant-design/icons'
 import Markdown from './Markdown'
 import ZoomControl from './ZoomControl'
 import { noteKindLabel, type NoteKind } from '../noteView'
-import './NoteCard.css'
 
 export interface NoteCardModalProps {
   /** 笔记归属：决定类型标签与 Markdown/纯文本渲染 */

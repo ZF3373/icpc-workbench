@@ -86,6 +86,10 @@ const CHECKS = [
   { name: '高亮 ==重点== 文字', fg: 'mark-text', bg: 'amber-soft', base: 'surface-2', min: 4.5 },
   { name: '粗体 **重点** 文字', fg: 'strong-text', bg: null, base: 'surface-2', min: 4.5 },
   { name: '正文（参照基线）', fg: 'text-2', bg: null, base: 'surface-2', min: 4.5 },
+  // Markdown 链接（.markdown-body a → --link-text）：亮色 --brand 只有 ~2.7:1，
+  // 链接必须是独立校准的更深一档；聊天/笔记两种底色都要量
+  { name: 'Markdown 链接', fg: 'link-text', bg: null, base: 'surface-2', min: 4.5 },
+  { name: 'Markdown 链接（surface 底）', fg: 'link-text', bg: null, base: 'surface', min: 4.5 },
   // 高亮还可能落在 surface（页面底）与 surface-inset（代码卡相邻）上，
   // 换底色再量一遍，避免"只在某一个底色上达标"
   { name: '高亮（surface 底）', fg: 'mark-text', bg: 'amber-soft', base: 'surface', min: 4.5 },

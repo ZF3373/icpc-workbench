@@ -15,7 +15,6 @@ import EmptyState from './EmptyState'
 import InlineError from './InlineError'
 import PlatformTag from './PlatformTag'
 import { platformName } from '../ui'
-import './ContestAnalysis.css'
 const PARTICIPATION_LABEL: Record<string, string> = {
   contest: '现场参赛', virtual: '虚拟赛', 'key-pattern': '平台参赛题目',
   'calendar-window': '官方赛程匹配', 'joined-list': '平台参赛记录',
