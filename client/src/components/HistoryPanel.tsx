@@ -211,12 +211,13 @@ export default function HistoryPanel() {
           type="text"
           className="review-added-btn"
           icon={<CheckOutlined />}
+          aria-label="移出复习队列"
           onClick={() => void removeFromReview(r)}
         />
       </Tooltip>
     ) : (
       <Tooltip title="加入复习队列（间隔复习）">
-        <Button size="small" type="text" icon={<ReadOutlined />} onClick={() => void addToReview(r)} />
+        <Button size="small" type="text" icon={<ReadOutlined />} aria-label="加入复习队列" onClick={() => void addToReview(r)} />
       </Tooltip>
     )
 

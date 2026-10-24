@@ -823,15 +823,19 @@ export default function Templates() {
                       extra={
                         <Space size={0}>
                           {!t.custom && (
-                            <Button size="small" type="text" icon={<EditOutlined />} title="写入 / 编辑我的模板" onClick={() => openContentEditor(t)}>
+                            <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openContentEditor(t)}>
                               {hasContent ? '编辑' : '写入'}
                             </Button>
                           )}
                           {t.custom && (
                             <>
-                              <Button size="small" type="text" icon={<EditOutlined />} title="编辑模板" onClick={() => openEdit(t)} />
+                              <Tooltip title="编辑模板">
+                                <Button size="small" type="text" icon={<EditOutlined />} aria-label="编辑模板" onClick={() => openEdit(t)} />
+                              </Tooltip>
                               <Popconfirm title="删除该自建模板？" okText="删除" cancelText="取消" onConfirm={() => removeCustom(t)}>
-                                <Button size="small" type="text" danger icon={<DeleteOutlined />} title="删除模板" />
+                                <Tooltip title="删除模板">
+                                  <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label="删除模板" />
+                                </Tooltip>
                               </Popconfirm>
                             </>
                           )}

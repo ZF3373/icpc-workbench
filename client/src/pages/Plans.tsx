@@ -17,6 +17,7 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
 } from 'antd'
 import { CheckOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -378,7 +379,9 @@ export default function Plans() {
                           >
                             {t.checked ? '已打卡' : '打卡'}
                           </Button>
-                          <Button size="small" type="text" icon={<EditOutlined />} title="编辑任务" onClick={() => openEdit(t)} />
+                          <Tooltip title="编辑任务">
+                            <Button size="small" type="text" icon={<EditOutlined />} aria-label="编辑任务" onClick={() => openEdit(t)} />
+                          </Tooltip>
                           <Popconfirm
                             title="删除任务"
                             description="将删除该任务及其打卡记录"
@@ -386,7 +389,9 @@ export default function Plans() {
                             cancelText="取消"
                             onConfirm={() => removeTask(t)}
                           >
-                            <Button size="small" type="text" danger icon={<DeleteOutlined />} title="删除任务" />
+                            <Tooltip title="删除任务">
+                              <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label="删除任务" />
+                            </Tooltip>
                           </Popconfirm>
                         </div>
                       </div>

@@ -1283,7 +1283,9 @@ export default function Problems() {
               },
             }}
           >
-            <Button size="small" icon={<MoreOutlined />} title="更多操作" aria-label="更多操作" />
+            <Tooltip title="更多操作">
+              <Button size="small" icon={<MoreOutlined />} aria-label="更多操作" />
+            </Tooltip>
           </Dropdown>
         </Space>
       ),
