@@ -56,6 +56,9 @@ function applyTheme(resolved: ResolvedTheme): void {
 
 // ---------- antd 主题配置 ----------
 
+const FONT_FAMILY =
+  "'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei UI', sans-serif"
+
 const sharedTokens = {
   colorPrimary: '#86a8ff',
   colorSuccess: '#69d7a5',
@@ -63,8 +66,7 @@ const sharedTokens = {
   colorError: '#ff7b84',
   colorInfo: '#58a3ff',
   borderRadius: 10,
-  fontFamily:
-    "'Segoe UI Variable Text', 'Segoe UI', 'Inter', system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei UI', sans-serif",
+  fontFamily: FONT_FAMILY,
 }
 
 const darkTheme = {
@@ -123,7 +125,7 @@ const lightTheme = {
     colorPrimary: '#6b8eef',
     colorText: '#23272f',
     colorTextSecondary: '#4a5260',
-    colorTextTertiary: '#8993a2',
+    colorTextTertiary: '#656e7e',
     colorBgBase: '#eef1f6',
     colorBgContainer: '#f6f8fb',
     colorBgElevated: '#fbfcfe',

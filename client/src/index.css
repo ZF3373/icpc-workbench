@@ -49,6 +49,12 @@
   --radius: 14px;
   --radius-sm: 10px;
   --shadow: 0 18px 48px rgba(0, 0, 0, 0.2);
+  --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.04), 0 8px 22px rgba(0, 0, 0, 0.16);
+  --bg-glow-1: rgba(134, 168, 255, 0.1);
+  --bg-glow-2: rgba(69, 213, 229, 0.05);
+  --font:
+    'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'PingFang SC',
+    'Microsoft YaHei UI', sans-serif;
   --sider-bg: #12151a;
   --sider-hover-bg: #20242c;
   --sider-group-title: #6d7684;
@@ -171,6 +177,9 @@
   --cf-master: #9a6a12;
   --cf-gm: #c0392b;
   --shadow: 0 18px 48px rgba(30, 40, 60, 0.1);
+  --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.72), 0 8px 22px rgba(30, 40, 60, 0.07);
+  --bg-glow-1: rgba(107, 142, 239, 0.12);
+  --bg-glow-2: rgba(10, 116, 136, 0.05);
   --sider-bg: #eef1f6;
   --sider-hover-bg: #e3e8ef;
   --sider-group-title: #9ba3b0;
@@ -233,16 +242,12 @@ html {
 
 body {
   margin: 0;
-  font-family:
-    'Segoe UI Variable Text',
-    'Segoe UI',
-    'Inter',
-    system-ui,
-    -apple-system,
-    'PingFang SC',
-    'Microsoft YaHei UI',
-    sans-serif;
-  background: var(--bg);
+  font-family: var(--font);
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(1100px 540px at 0% -12%, var(--bg-glow-1), transparent 58%),
+    radial-gradient(880px 460px at 100% 0%, var(--bg-glow-2), transparent 52%);
+  background-attachment: fixed;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -299,6 +304,11 @@ body {
   content-visibility: auto;
 }
 
+.app-content {
+  padding: 22px 28px 32px;
+  background: transparent;
+}
+
 .content-container {
   max-width: 1440px;
   margin: 0 auto;
@@ -308,20 +318,46 @@ body {
 }
 
 /* 页头 */
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+
+.page-header.has-crumbs {
+  margin-bottom: 16px;
+}
+
+.page-header-copy {
+  min-width: 0;
+}
+
+.page-header-extra {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
 .page-title {
   margin: 0;
-  font-size: 25px;
+  font-size: 26px;
   font-weight: 700;
   line-height: 1.15;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.03em;
   color: var(--text);
 }
 
 .page-description {
-  margin: 5px 0 0;
+  margin: 6px 0 0;
   font-size: 13px;
   color: var(--text-3);
   letter-spacing: 0.01em;
+  max-width: 52em;
 }
 
 /* ============================================================
@@ -348,7 +384,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 18px 16px 14px;
+  padding: 16px 14px 12px;
   white-space: nowrap;
   overflow: hidden;
 }
