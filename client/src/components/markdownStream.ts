@@ -450,7 +450,17 @@ export function repairStreamingMarkdown(text: string): string {
   // 8. 未闭合的 `==高亮==`。必须排在强调之后：`==**重点` 要先补成 `==**重点**`
   //    再补 `==`，否则收尾顺序反了会得到 `==**重点==**`（高亮与加粗互相穿插）。
   //    只看最后一行（配对不跨行），代码区/公式区里的 `==` 是内容不参与。
-  if (needsMarkClose(out, codeOrMathSkip(out))) out += '=='
+  if (needsMarkClose(out, codeOrMathSkip(out))) {
+    // 补几个 `=` 取决于尾部已有的等号串：
+    //   · 没有 `=`：补完整闭合 `==`（`结论是 ==关键` → `==关键==`）；
+    //   · 恰好 1 个：闭合定界符写了一半（`…证明=`），补一个凑成 `==` ——
+    //     补两个会得到三连等号，被 scanMarkDelimiters 按「等号串长度>2」整段跳过，
+    //     开定界符落单，字面 == 反而上屏（正是这一帧暴露的回归）；
+    //   · ≥3 个：等号串本身歧义（Setext 标题/分隔线的中间态），不猜，等下一帧自愈。
+    const run = /={1,}$/.exec(out)?.[0]?.length ?? 0
+    if (run === 0) out += '=='
+    else if (run === 1) out += '='
+  }
 
   return out
 }

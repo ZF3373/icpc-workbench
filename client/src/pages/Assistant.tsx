@@ -88,13 +88,9 @@ import {
   type ChatMsg,
   type ChatSession,
 } from './chatStore'
-import {
-  useMessageActions,
-  UserMessageItem,
-  AssistantMessageItem,
-  tplKey,
-  draftTargetOf,
-} from '../components/assistant/MessageItems'
+import { UserMessageItem, AssistantMessageItem } from '../components/assistant/MessageItems'
+import { tplKey, draftTargetOf } from '../components/assistant/messageBlocks'
+import { useMessageActions } from '../components/assistant/messageActions'
 import {
   aggregateSessionStats,
   contextPercent,

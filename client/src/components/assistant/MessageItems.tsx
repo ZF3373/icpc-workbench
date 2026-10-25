@@ -9,90 +9,16 @@
  * key 必须用消息自带的 id（见 ChatMsg.id）而不是数组下标：「再次编辑后重发」会截断数组，
  * 用下标做 key 时新消息会复用旧位置上的组件实例，相邻消息的 DOM 状态（详情展开、选区）错位。
  */
-import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useMemo } from 'react'
 import { Button, Select, Space, Tag, Tooltip } from 'antd'
 import { CopyOutlined, EditOutlined, PaperClipOutlined } from '@ant-design/icons'
 import Markdown from '../Markdown'
+import { draftTargetOf, parseMessageBlocks, tplKey } from './messageBlocks'
+import type { MessageActions } from './messageActions'
 import { formatBytes as fmtBytes } from '../../ui'
-import { resolveTemplateTarget, templateCategoryLabel, type TemplateCategoryOption } from '../../templateTarget'
-import {
-  extractAbilityUpdate,
-  extractListCreate,
-  extractModifyBlock,
-  extractPlanCreate,
-  extractTemplateAdd,
-  stripAbilityUpdate,
-  stripListCreate,
-  stripModifyBlock,
-  stripPlanCreate,
-  stripTemplateAdd,
-  type ListCreateDraft,
-  type PlanCreateDraft,
-  type TemplateAddDraft,
-} from '../../aiBlocks'
+import { templateCategoryLabel, type TemplateCategoryOption } from '../../templateTarget'
+import type { TemplateAddDraft } from '../../aiBlocks'
 import type { ChatMsg } from '../../pages/chatStore'
-
-// ---------- 消息结构化块解析（带缓存） ----------
-
-export interface MsgBlocks {
-  modify: string | null
-  abilityUpd: { level: number; reason?: string } | null
-  tplAdds: TemplateAddDraft[]
-  listDraft: ListCreateDraft | null
-  planDraft: PlanCreateDraft | null
-  /** 剥掉所有结构化块之后、留给 Markdown 渲染的正文 */
-  text: string
-}
-
-/**
- * 解析结果在组件内按 m.content 记忆（见 AssistantMessageItem 的 useMemo）。
- *
- * 流式输出时 store 每帧都会更新一次消息数组，每条助手消息都要跑六组 regex
- * （计划修改 / 能力值 / 模板 / 题单 / 训练计划 + 对应的剥离）。历史消息的内容根本
- * 没变，却跟着每帧重扫 —— 消息一多这就是纯粹的白工。抽成纯函数后由调用方按
- * 内容 memo：正文没变就直接复用上一次的结果。
- */
-export function parseMessageBlocks(content: string): MsgBlocks {
-  const modify = extractModifyBlock(content)
-  const abilityUpd = extractAbilityUpdate(content)
-  const tplAdds = extractTemplateAdd(content)
-  const listDraft = extractListCreate(content)
-  const planDraft = extractPlanCreate(content)
-
-  let text = stripModifyBlock(content)
-  if (abilityUpd) text = stripAbilityUpdate(text)
-  if (tplAdds.length > 0) text = stripTemplateAdd(text)
-  if (listDraft) text = stripListCreate(text)
-  if (planDraft) text = stripPlanCreate(text)
-
-  return { modify, abilityUpd, tplAdds, listDraft, planDraft, text }
-}
-
-/** 模板草稿的定位键：消息下标 + 消息内草稿下标（tplTargets / tplWriting 都按它索引） */
-export function tplKey(msgIndex: number, draftIndex: number): string {
-  return `${msgIndex}:${draftIndex}`
-}
-
-/**
- * 该草稿最终写入的目标标签：用户显式选择 > AI 给的 categoryKey（有效时）> 第一个分类。
- * 用户反馈「无法指定 AI 把模板放到哪个标签下」——选择器与这里的解析共同保证
- * 用户点名的标签（含自己新建的自建标签）一定被原样写入。
- *
- * 消息项展示选择器与写入模板时都要算它，抽成同一份避免两处口径漂移。
- */
-export function draftTargetOf(
-  tplTargets: Record<string, string>,
-  tplCategories: TemplateCategoryOption[],
-  msgIndex: number,
-  draftIndex: number,
-  draft: TemplateAddDraft,
-): string {
-  return resolveTemplateTarget({
-    aiKey: draft.categoryKey,
-    chosen: tplTargets[tplKey(msgIndex, draftIndex)],
-    categories: tplCategories,
-  })
-}
 
 // ---------- 消息列表项 ----------
 //
@@ -103,46 +29,6 @@ export function draftTargetOf(
 //
 // key 必须用消息自带的 id（见 ChatMsg.id）而不是数组下标：「再次编辑后重发」会截断数组，
 // 用下标做 key 时新消息会复用旧位置上的组件实例，相邻消息的 DOM 状态（详情展开、选区）错位。
-
-/** 消息项需要的交互动作（由 useMessageActions 提供，引用恒定） */
-export interface MessageActions {
-  edit(index: number): void
-  applyPlan(raw: string): void
-  confirmAbility(suggestion: { level: number; reason?: string }, raw: string): void
-  setTplTarget(index: number, draftIndex: number, key: string): void
-  confirmTemplate(draft: TemplateAddDraft, index: number, draftIndex: number): void
-  confirmAllTemplates(drafts: TemplateAddDraft[], index: number): void
-  confirmListCreate(draft: ListCreateDraft, index: number): void
-  confirmPlanCreate(draft: PlanCreateDraft, index: number): void
-  notify(kind: 'success' | 'warning', text: string): void
-}
-
-/**
- * 把动作集合的引用钉住：内部始终转发到本轮渲染的最新实现。
- *
- * 列表项被 memo 后只有 props 引用变化才重渲染；若把每次渲染新建的箭头函数直接传下去，
- * memo 永远失效。这里用 ref 保存最新闭包、动作对象只在挂载时创建一次 ——
- * 点击时读到的仍是最新的 messages / pendingAtts，不会踩到 memo 跳过后留下的旧闭包。
- */
-export function useMessageActions(handlers: MessageActions): MessageActions {
-  const latest = useRef(handlers)
-  // 每次提交后同步：事件只会在绘制之后触发，读到的必是本轮闭包
-  useLayoutEffect(() => {
-    latest.current = handlers
-  })
-  const [stable] = useState<MessageActions>(() => ({
-    edit: (index) => latest.current.edit(index),
-    applyPlan: (raw) => latest.current.applyPlan(raw),
-    confirmAbility: (suggestion, raw) => latest.current.confirmAbility(suggestion, raw),
-    setTplTarget: (index, draftIndex, key) => latest.current.setTplTarget(index, draftIndex, key),
-    confirmTemplate: (draft, index, draftIndex) => latest.current.confirmTemplate(draft, index, draftIndex),
-    confirmAllTemplates: (drafts, index) => latest.current.confirmAllTemplates(drafts, index),
-    confirmListCreate: (draft, index) => latest.current.confirmListCreate(draft, index),
-    confirmPlanCreate: (draft, index) => latest.current.confirmPlanCreate(draft, index),
-    notify: (kind, text) => latest.current.notify(kind, text),
-  }))
-  return stable
-}
 
 export interface UserMessageItemProps {
   m: ChatMsg
