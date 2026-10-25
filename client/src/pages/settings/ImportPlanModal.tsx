@@ -22,7 +22,7 @@ export function ImportPlanModal({ open, onClose }: { open: boolean; onClose: () 
   const [busy, setBusy] = useState(false)
 
   const submit = async () => {
-    const v = (await form.validateFields().catch(() => null)) as unknown as {
+    const v = (await form.validateFields().catch(() => null)) as {
       raw: string
       startDate: Dayjs
       days: number

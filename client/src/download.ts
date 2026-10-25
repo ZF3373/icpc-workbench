@@ -20,7 +20,7 @@ interface MessageLike {
 }
 
 function getPicker(): ShowSaveFilePicker | undefined {
-  return (window as unknown as { showSaveFilePicker?: ShowSaveFilePicker }).showSaveFilePicker
+  return (window as { showSaveFilePicker?: ShowSaveFilePicker }).showSaveFilePicker
 }
 
 /** 优先走原生保存对话框；返回 false 表示当前环境不支持，需降级 */

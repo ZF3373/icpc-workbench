@@ -305,7 +305,7 @@ export default function Lists() {
   }
 
   const submitImport = async () => {
-    const v = (await importForm.validateFields().catch(() => null)) as unknown as {
+    const v = (await importForm.validateFields().catch(() => null)) as {
       title: string
       sourceUrl?: string
       raw: string
@@ -335,7 +335,7 @@ export default function Lists() {
   // 向已有题单追加题目：与导入同格式（每行一题），服务端按身份去重跳过已存在的题
   const submitAddItems = async () => {
     if (!detail) return
-    const v = (await addItemForm.validateFields().catch(() => null)) as unknown as { raw: string } | null
+    const v = (await addItemForm.validateFields().catch(() => null)) as { raw: string } | null
     if (!v) return
     setBusy('add-items')
     try {

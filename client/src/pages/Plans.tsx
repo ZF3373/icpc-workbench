@@ -151,7 +151,7 @@ export default function Plans() {
 
   const submitEdit = async () => {
     if (!editing) return
-    const v = (await editForm.validateFields().catch(() => null)) as unknown as {
+    const v = (await editForm.validateFields().catch(() => null)) as {
       taskDate: Dayjs
       title: string
       kind: PlanTask['kind']
@@ -469,7 +469,7 @@ function GenerateModal({ open, form, onClose, onDone }: { open: boolean; form: R
   const submit = async () => {
     const v = (await form
       .validateFields()
-      .catch(() => null)) as unknown as { days: number; startDate: { format(f: string): string }; dailyTasks?: number; requirements?: string } | null
+      .catch(() => null)) as { days: number; startDate: { format(f: string): string }; dailyTasks?: number; requirements?: string } | null
     if (!v) return
     const request: PlanGenerationRequest = {
       days: v.days,
