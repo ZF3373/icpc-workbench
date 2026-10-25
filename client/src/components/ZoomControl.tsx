@@ -33,7 +33,7 @@ export default function ZoomControl({ kind, compact = false }: { kind: ZoomKind;
           <div className="zoom-panel-hint">
             {MIN_ZOOM}%–{MAX_ZOOM}% ·
             {kind === 'reply' ? 'Ctrl + 滚轮同步调整双方消息'
-              : kind === 'note' ? '在卡片正文上 Ctrl + 滚轮，或点加减按钮'
+              : kind === 'note' ? '在笔记正文或预览上 Ctrl + 滚轮，或点加减按钮'
                 : 'Ctrl + + / -，Ctrl + 0 重置'}
           </div>
         </div>

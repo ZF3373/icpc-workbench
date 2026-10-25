@@ -45,6 +45,7 @@ import {
   setRequestIntervalScale,
 } from '../net/hostThrottle.ts';
 import { chatUrl } from '../ai/provider.ts';
+import { CUSTOM_PROMPTS_KEY, readCustomPrompts } from '../ai/customPrompts.ts';
 
 const DEFAULT_REMINDER_TIME = '20:00';
 
@@ -153,6 +154,21 @@ export function readSyncSettings(db: Db, read?: SettingLookup): {
 
 export function settingsRoutes(db: Db, config: AppConfig): Router {
   const r = Router();
+
+  r.get('/ai/custom-prompts', (_req, res) => res.json(readCustomPrompts(db)));
+  r.post('/ai/custom-prompts', (req, res) => {
+    const prompts: unknown = req.body?.prompts;
+    if (!Array.isArray(prompts) || prompts.length > 50 || prompts.some((p) =>
+      !p || typeof p.title !== 'string' || !p.title.trim() || p.title.length > 100 ||
+      typeof p.content !== 'string' || !p.content.trim() || p.content.length > 20000
+    )) {
+      return res.status(400).json({ error: '最多 50 条提示词，每条标题需为 1–100 字，内容需为 1–20000 字' });
+    }
+    const value = prompts.map((p) => ({ title: p.title.trim(), content: p.content.trim() }));
+    db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+      .run(CUSTOM_PROMPTS_KEY, JSON.stringify(value));
+    res.json(value);
+  });
 
   // GET /api/settings → AI 配置 + 平台账号 + 适配器开关 + Cookie 配置 + 打卡提醒
   r.get('/', (_req, res) => {

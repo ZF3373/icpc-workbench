@@ -22,6 +22,7 @@ import dayjs from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
 import { PLATFORMS, cookieFieldsOf } from '../../../shared/src/index.ts'
 import PageHeader from '../components/PageHeader'
+import AiCustomPromptsCard from '../components/AiCustomPromptsCard'
 import PageSkeleton from '../components/PageSkeleton'
 import InlineError from '../components/InlineError'
 import PlatformTag from '../components/PlatformTag'
@@ -870,6 +871,7 @@ export default function Settings() {
           ai={data.ai}
           onSave={saveAi}
         />
+        <AiCustomPromptsCard />
       </Col>
       <Col xs={24} lg={12} id="settings-accounts">
         <Card title={<span className="settings-section-title"><UserOutlined />平台账号与适配器</span>} size="small">

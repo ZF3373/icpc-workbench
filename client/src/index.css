@@ -5088,7 +5088,7 @@ html.app-hidden *::after {
    ============================================================ */
 
 /*
- * 字号缩放只作用于 `.note-card-body`（data-note-zoom 所在的可滚动正文区）：
+ * 字号缩放只作用于 data-note-zoom 标记的笔记正文与模板学习笔记预览区：
  * 用 `--note-text-zoom`（由 zoomPreferences.apply 写入 :root，见 components/ZoomControl）
  * 对 markdown 各层字号做乘法放大。卡片头、meta、操作按钮不在该作用域，
  * 因此标题和控件不跟着变大 —— 缩放的是「读长笔记」的正文，而不是整张 UI。
@@ -5166,15 +5166,15 @@ html.app-hidden *::after {
 /* 复习/模板笔记：沿用 .markdown-body 排版，字号按缩放系数放大。
    基准值对齐上面 .markdown-body（13px / h1 17 / h2 15.5 / h3 14 / h4 13 /
    code+table 12 / pre code 12.5）。 */
-.note-card-body .markdown-body { font-size: calc(13px * var(--note-text-zoom, 1)); }
-.note-card-body .markdown-body h1 { font-size: calc(17px * var(--note-text-zoom, 1)); }
-.note-card-body .markdown-body h2 { font-size: calc(15.5px * var(--note-text-zoom, 1)); }
-.note-card-body .markdown-body h3 { font-size: calc(14px * var(--note-text-zoom, 1)); }
-.note-card-body .markdown-body h4 { font-size: calc(13px * var(--note-text-zoom, 1)); }
-.note-card-body .markdown-body code,
-.note-card-body .markdown-body table { font-size: calc(12px * var(--note-text-zoom, 1)); }
-.note-card-body .markdown-body pre code,
-.note-card-body .md-code-pre code { font-size: calc(12.5px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .markdown-body { font-size: calc(13px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .markdown-body h1 { font-size: calc(17px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .markdown-body h2 { font-size: calc(15.5px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .markdown-body h3 { font-size: calc(14px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .markdown-body h4 { font-size: calc(13px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .markdown-body code,
+[data-note-zoom] .markdown-body table { font-size: calc(12px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .markdown-body pre code,
+[data-note-zoom] .md-code-pre code { font-size: calc(12.5px * var(--note-text-zoom, 1)); }
 
 /* 笔记内的图片撑满不超界（与 note-editor-preview 同款描边） */
 .note-card-body img {

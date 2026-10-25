@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AiConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
+import { appendCustomPrompts, readCustomPrompts } from '../ai/customPrompts.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { AiProvider, describeError, type ChatContentBlock, type ChatMessage, type ToolCall, type TokenUsage } from '../ai/provider.ts';
@@ -695,6 +696,7 @@ export function aiRoutes(
       // 模板库现有内容摘要：让 AI 知道用户已有哪些模板，避免建议重复、可针对性建议补充
       templateLibrary: buildTemplateLibrarySummary(db),
     });
+    system = appendCustomPrompts(system, readCustomPrompts(db));
     // SSE 流式响应：逐 delta 写给前端，AI 正在生成时用户即可看到内容
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');

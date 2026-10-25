@@ -16,6 +16,7 @@ import { EditorSelection } from '@codemirror/state'
 import { EditorView, keymap } from '@codemirror/view'
 import CodeEditor from './CodeEditor'
 import Markdown from './Markdown'
+import ZoomControl from './ZoomControl'
 import { uploadImage } from '../api'
 
 /**
@@ -40,6 +41,8 @@ interface NoteEditorProps {
   height?: number
   placeholder?: string
   maxLength?: number
+  /** 模板学习笔记的预览区复用笔记阅读字号，不改变编辑器和工具栏。 */
+  readingZoom?: boolean
 }
 
 /** 服务端 /api/uploads 的格式白名单（仅 PNG/JPEG/GIF/WebP） */
@@ -78,7 +81,7 @@ function ToolButton({ title, onClick, children }: { title: string; onClick: () =
   )
 }
 
-export default function NoteEditor({ value, onChange, height = 400, placeholder, maxLength = 20000 }: NoteEditorProps) {
+export default function NoteEditor({ value, onChange, height = 400, placeholder, maxLength = 20000, readingZoom = false }: NoteEditorProps) {
   const { message } = AntdApp.useApp()
   const viewRef = useRef<EditorView | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -292,6 +295,7 @@ export default function NoteEditor({ value, onChange, height = 400, placeholder,
           onChange={onFilesPicked}
         />
         <span className="note-editor-spacer" />
+        {readingZoom && <ZoomControl kind="note" />}
         <Segmented
           size="small"
           value={mode}
@@ -320,13 +324,13 @@ export default function NoteEditor({ value, onChange, height = 400, placeholder,
             />
           </div>
           {mode === 'split' && (
-            <div className="note-editor-preview" style={{ height }}>
+            <div className="note-editor-preview" data-note-zoom={readingZoom ? true : undefined} style={{ height }}>
               <Markdown text={value} />
             </div>
           )}
         </div>
       ) : (
-        <div className="note-editor-preview note-editor-preview-full" style={{ height }}>
+        <div className="note-editor-preview note-editor-preview-full" data-note-zoom={readingZoom ? true : undefined} style={{ height }}>
           <Markdown text={value} />
         </div>
       )}
