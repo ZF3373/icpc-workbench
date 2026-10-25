@@ -70,11 +70,33 @@ test('虚拟赛没有平台成绩行，也能持久缓存总题数与完整题�
     await refreshContestProblemSets(db, deriveParticipatedContests(db), fetchOfficial).settled;
     const [c] = deriveParticipatedContests(db);
     assert.equal(c.totalProblemCount, 3);
+    assert.equal(c.problemCountIsLowerBound, undefined, '题单已知时 problemCount 是权威总题数，不标下界');
     assert.equal(c.source, null, '题单不能伪造平台参赛成绩');
     const review = resolveContestGroup(db, c.key)!;
     assert.equal(review.problemSetKnown, true);
     assert.equal(review.unsubmittedProblems.length, 2);
     assert.equal((db.prepare('SELECT count(*) AS n FROM participated_contests').get() as { n: number }).n, 0);
+  } finally { db.close(); __resetCfProblemsetForTest(); }
+});
+
+test('CF gym 场次题单两条路径都不可得时，problemCount 是已提交题数下界，不冒充全场总题数（issue #53）', async () => {
+  const db = createDb(':memory:');
+  __resetCfProblemsetForTest();
+  try {
+    // gym 虚拟赛：无平台成绩行；problemset.problems 全集不含 gym（contestId≥100000），
+    // contest.standings 对 gym 匿名 401 —— 题单永远拉不到，总题数只能未知
+    const g1 = db.prepare("INSERT INTO problems(platform,problem_key,title) VALUES('codeforces','103456A','G1')").run().lastInsertRowid;
+    const g2 = db.prepare("INSERT INTO problems(platform,problem_key,title) VALUES('codeforces','103456B','G2')").run().lastInsertRowid;
+    for (const [pid, eid] of [[g1, 'gv1'], [g2, 'gv2']] as const) {
+      db.prepare("INSERT INTO submissions(user_id,platform,account,problem_id,external_id,submitted_at,verdict,context) VALUES(1,'codeforces','main',?,?,'2026-10-01T10:00:00.000Z','AC','virtual')").run(pid, eid);
+    }
+    const gym = list(db).find(c => c.platform === 'codeforces')!;
+    assert.equal(gym.contestId, '103456');
+    assert.equal(gym.problemCount, 2, '无题单时 problemCount 退化为已提交题数');
+    assert.equal(gym.totalProblemCount ?? null, null);
+    assert.equal(gym.problemCountIsLowerBound, true, '必须标记为下界，展示层不得写成「共 N 题」');
+    const review = resolveContestGroup(db, gym.key)!;
+    assert.equal(review.problemSetKnown, false);
   } finally { db.close(); __resetCfProblemsetForTest(); }
 });
 

@@ -69,6 +69,12 @@ test('reviewRequestText：零提交场次显式说明「没有同步到提交记
   assert.match(text, /atcoder · abc380/, '无赛名时回退「平台 · 比赛号」')
 })
 
+test('reviewRequestText：题单未知的场次（如 CF gym）不编造分母，如实告知 AI 已提交题数（issue #53）', () => {
+  const text = reviewRequestText(contest({ problemCountIsLowerBound: true }))
+  assert.match(text, /AC 2 题（题单未同步，本地已提交 6 题，全场总题数未知）/)
+  assert.doesNotMatch(text, /AC 2\/6/, '下界口径不能写成「AC x/y」假分母')
+})
+
 test('contestJumpWarning：说明推导失败原因并声明保留预填文本', () => {
   const msg = contestJumpWarning('codeforces:9999')
   assert.match(msg, /codeforces:9999/)

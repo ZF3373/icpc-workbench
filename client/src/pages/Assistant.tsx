@@ -1906,7 +1906,10 @@ export default function Assistant() {
                   const d = new Date(c.startTimeIso ?? c.lastSubmittedAt)
                   const date = Number.isFinite(d.getTime()) ? ` · ${d.getMonth() + 1}/${d.getDate()}` : ''
                   const counts =
-                    c.submissionCount === 0 ? '未同步提交' : `${c.problemCount} 题 AC ${c.acProblemCount}`
+                    c.submissionCount === 0 ? '未同步提交'
+                      // 题单未知的场次（如 CF gym）只有已提交题数可看，不冒充全场总题数
+                      : c.problemCountIsLowerBound ? `已提交 ${c.problemCount} 题 AC ${c.acProblemCount}`
+                        : `${c.problemCount} 题 AC ${c.acProblemCount}`
                   return {
                     value: c.key,
                     label: `${label}（${platformName(c.platform)}${date} · ${counts}）`,

@@ -28,9 +28,14 @@ function contestAcSplit(contest: ParticipatedContest): string {
  * 避免 AI 顺着空数据编出并不存在的提交明细。
  */
 export function reviewRequestText(contest: ParticipatedContest): string {
+  // 题单未知的场次（如 CF gym：题单两条获取路径都拿不到）没有权威总题数，
+  // 「AC x/y」会编造分母——如实告知 AI 已提交题数与题单缺失，避免顺着假分母点评
+  const score = contest.problemCountIsLowerBound
+    ? `AC ${contest.acProblemCount} 题（题单未同步，本地已提交 ${contest.problemCount} 题，全场总题数未知）`
+    : `AC ${contest.acProblemCount}/${contest.problemCount} 题`
   const facts =
     contest.submissionCount > 0
-      ? `本场关键事实：AC ${contest.acProblemCount}/${contest.problemCount} 题${contestAcSplit(contest)}，共 ${contest.submissionCount} 次提交。`
+      ? `本场关键事实：${score}${contestAcSplit(contest)}，共 ${contest.submissionCount} 次提交。`
       : '本场关键事实：我没有同步到该场的提交记录（可能尚未同步该平台，或该场确实一题未交）。'
   return `请复盘这场比赛（${contestLabel(contest)}）：${facts}请结合提交记录点评整体发挥与逐题表现，指出卡点与改进方向，并给出补题建议。`
 }

@@ -144,6 +144,8 @@ export function deriveContestAnalysis(
       contest: { ...contest, ratingStatus: contestRatingStatus(contest) },
       ratingStatus: contestRatingStatus(contest),
       untaggedStuckCount: result.filter(problem => problem.attemptCount > 0 && !problem.contestAccepted && problem.tags.length === 0).length,
+      // 题目集缺失时 problems 只含用户提交过的题——前端据此把「N 题」降级为「已提交题 N」
+      problemSetKnown: review.problemSetKnown || refs !== null,
       problems: result,
     });
   }

@@ -163,7 +163,8 @@ const ContestAnalysisBody = ({ item, usedTags, onAddTag, onRemoveTag }: {
     </div>
     <div className="contest-analysis-card-meta">
       <span>{dateLabel(contest.startTimeIso, contest.timeIsApproximate)}</span>
-      <span>{item.problems.length} 题</span>
+      {/* 题单未知时 problems 只含已提交的题（gym 场次题单拿不到），不能写成「N 题」冒充全场 */}
+      <span>{item.problemSetKnown ? `${item.problems.length} 题` : `已提交题 ${item.problems.length}（题单未同步）`}</span>
       <span>赛时提交题目 {item.problems.filter(problem => problem.attemptCount > 0).length}</span>
       <span>赛时未通过 {stuck.length}</span>
       <span>其中赛后通过 {upsolved.length}</span>

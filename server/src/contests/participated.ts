@@ -492,6 +492,10 @@ function qualifyGroup(platform: PlatformId, g: ContestGroup): ParticipatedContes
     submissionCount: g.rows.length,
     problemCount,
     totalProblemCount: officialProblemCount || null,
+    // 无权威题数来源时（官方题单/平台元数据都拿不到——典型：CF gym 场次
+    // problemset 全集不含 gym、standings 匿名 401），problemCount 退化为本地
+    // 已提交题数，只能当下界展示，不能冒充「全场共 N 题」（issue #53）
+    ...(officialProblemCount === 0 ? { problemCountIsLowerBound: true } : {}),
     acProblemCount,
     ...(missingAcIdentities ? { acCountIsLowerBound: true } : {}),
     inContestAcProblemCount: inContestAc,

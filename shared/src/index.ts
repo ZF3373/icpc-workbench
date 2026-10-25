@@ -549,6 +549,12 @@ export interface ParticipatedContest {
   problemCount: number;
   /** 官方题单或平台元数据给出的全场题数；null = 未获取，独立于账号成绩。 */
   totalProblemCount?: number | null;
+  /**
+   * 无权威题数来源（官方题单/平台元数据都没有，如 CF gym 场次：problemset 全集
+   * 不含 gym、standings 匿名 401）时，problemCount 只是本地已提交题数的下界，
+   * 展示时不能当「全场共 N 题」——必须标注至少/已提交口径。
+   */
+  problemCountIsLowerBound?: boolean;
   /** 当前 AC 的题数（含赛后补题；与赛时口径 inContestAcProblemCount 配对看补题进度） */
   acProblemCount: number;
   /** 缺少平台赛时已 AC 题目的逐条身份，当前 AC 只保证至少这么多，不能精确计算剩余补题数。 */
@@ -597,6 +603,11 @@ export interface ContestAnalysisContest {
   ratingStatus: ContestRatingStatus;
   problems: ContestAnalysisProblem[];
   untaggedStuckCount: number;
+  /**
+   * 题目集（全场题单）是否已知。false = problems 只含用户自己提交过的题，
+   * problems.length 不能当全场题数展示（CF gym 场次题单不可得的降级口径）。
+   */
+  problemSetKnown: boolean;
 }
 
 export interface ContestAnalysisResponse {
