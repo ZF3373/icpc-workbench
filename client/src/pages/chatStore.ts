@@ -6,7 +6,7 @@
  * 直接写 store——不依赖组件是否挂载；多个组件（主页面/输入区/侧栏行）按各自
  * 粒度订阅（视图快照 / input 字符串），见 getChatViewSnapshot 与 getInputSnapshot。
  */
-import type { PlanChatTurn, TokenUsage } from '../api'
+import type { ChatFileAttachment, PlanChatTurn, TokenUsage } from '../api'
 import { readJson, writeJson } from '../persistence.ts'
 import { SpeedTracker } from './assistantStats'
 import { restoreSessionOrder } from './assistantSessionOrder'
@@ -140,6 +140,11 @@ if (typeof window !== 'undefined') {
 }
 
 // ---------- 模块级 store ----------
+
+export interface PendingAtt extends ChatFileAttachment {
+  /** 图片本地预览用的 blob URL：只活在这条消息发出/移除前，绝不进会话存储与请求体 */
+  previewUrl?: string
+}
 
 function newSessionId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
