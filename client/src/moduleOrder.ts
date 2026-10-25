@@ -2,6 +2,7 @@
  * 数据概览模块卡片的拖拽排序：顺序的持久化（localStorage）与恢复纯逻辑。
  * 拖拽交互本身在 Dashboard.tsx（沿用平台小卡片的 mouse 事件方案，兼容 WebView2）。
  */
+import { readJson, writeJson } from './persistence.ts'
 
 export const DEFAULT_MODULE_IDS = [
   'heatmap',
@@ -17,21 +18,11 @@ export type ModuleId = (typeof DEFAULT_MODULE_IDS)[number]
 const STORAGE_KEY = 'icpc-dashboard-module-order-v1'
 
 export function loadModuleOrder(): string[] | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as string[]) : null
-  } catch {
-    // 隐私模式或无 localStorage
-    return null
-  }
+  return readJson<string[]>(STORAGE_KEY)
 }
 
 export function saveModuleOrder(ids: string[]): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(ids))
-  } catch {
-    // 写入失败忽略
-  }
+  writeJson(STORAGE_KEY, ids)
 }
 
 /** 把持久化顺序应用到默认列表：未知/重复 id 丢弃，缺失的按默认序补在末尾；saved 为空返回默认 */

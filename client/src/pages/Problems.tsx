@@ -43,6 +43,8 @@ import { appendSortParams, sortFieldOf, sortFromAntd, sorterOrderOf, sortTooltip
 import { BP, useMediaQuery } from '../useMediaQuery'
 import { codeOptionsFromTags, intentBadgeSummary } from '../intentOptions'
 import { del, get, patch, post, put } from '../api'
+import { readFlag, writeFlag } from '../persistence.ts'
+import { fmtClock } from '../formatTime.ts'
 import {
   progressText,
   resultText,
@@ -210,12 +212,12 @@ export default function Problems() {
   // 「过滤问题」面板：编辑草稿，点「应用」才生效（展开时以已生效条件为初值）
   const [filterOpen, setFilterOpen] = useState(false)
   // 顶部概览条（难度/平台分布）折叠：偏好写入 localStorage，收起后只留一行标签
-  const [distCollapsed, setDistCollapsed] = useState(
-    () => localStorage.getItem('problems.distCollapsed') === '1',
+  const [distCollapsed, setDistCollapsed] = useState(() =>
+    readFlag('problems.distCollapsed'),
   )
   const toggleDistCollapsed = () =>
     setDistCollapsed((c) => {
-      localStorage.setItem('problems.distCollapsed', c ? '0' : '1')
+      writeFlag('problems.distCollapsed', !c)
       return !c
     })
   const [draftTags, setDraftTags] = useState<string[]>([])
@@ -1989,13 +1991,6 @@ interface SyncPlatformStatus {
   } | null
 }
 
-/** 续拉排期时间 → 界面用的 HH:MM（无法解析时原样回显，不显示 Invalid Date） */
-function formatNextRunAt(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
 /** 续拉状态轮询间隔：续拉按平台节奏排期（秒级到分钟级），10 秒粒度足以看到轮次推进，请求极轻 */
 const AUTO_CONTINUE_POLL_MS = 10_000
 
@@ -2103,7 +2098,7 @@ function SyncTab({ onDone, active = true }: { onDone: () => void; active?: boole
                 message={
                   ac.running
                     ? `后台续拉中：第 ${ac.round}/${ac.maxRounds} 轮（正在拉取）`
-                    : `后台续拉中：第 ${ac.round}/${ac.maxRounds} 轮，预计 ${formatNextRunAt(ac.nextAt)} 继续`
+                    : `后台续拉中：第 ${ac.round}/${ac.maxRounds} 轮，预计 ${fmtClock(ac.nextAt)} 继续`
                 }
                 description={`${s.platformName}（${ac.handle}）：单次同步受分批上限截断后由后台自动续拉，可随时停止；停止不影响已导入的数据。`}
                 action={

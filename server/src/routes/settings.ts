@@ -332,7 +332,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     // 注意：必须从**实际保存的头**里提取名字，而不是只看字段定义——QOJ 的 raw「完整 Cookie」
     // 一项就携带 cf_clearance 与 UOJSESSID 等多个名字，只看定义会漏报（表现为界面提示缺项）。
     const saved = rawHandle ? readAccountCreds(db, platform)[rawHandle]?.cookie ?? '' : readCookie();
-    const fields = [...saved.matchAll(/(?:^|;)\s*([A-Za-z0-9_.\-]+)=/g)].map((m) => m[1]);
+    const fields = [...saved.matchAll(/(?:^|;)\s*([A-Za-z0-9_.-]+)=/g)].map((m) => m[1]);
     const uaKey = CREDENTIAL_UA_FIELDS[platform];
     res.json({
       ok: true,
@@ -571,7 +571,8 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     let models: string[] = [];
     try {
       models = (await fetchModelCatalog(cfg.baseURL, cfg.apiKey)).ids;
-    } catch (modelsErr) {
+    } catch {
+      // /models 失败不代表连不上（部分网关不提供该列表）：退回 chat/completions 实测
       try {
         await probeChat(cfg);
         const ms = Date.now() - started;

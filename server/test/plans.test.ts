@@ -17,7 +17,6 @@ import {
   savePlan,
   templatePlan,
   today,
-  type PlanInput,
 } from '../src/plans/planService.ts';
 
 let db: Db;

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createDb, type Db } from '../src/db/index.ts';
+import { createDb } from '../src/db/index.ts';
 import {
   collectStatementTargets,
   fetchProblemStatement,

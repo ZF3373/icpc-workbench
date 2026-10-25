@@ -42,6 +42,7 @@ import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
 import { useSyncProgress } from '../syncProgressContext'
 import { applyModuleOrder, loadModuleOrder, saveModuleOrder, type ModuleId } from '../moduleOrder'
+import { readJson, writeJson } from '../persistence.ts'
 import { TONE_VAR, gapColor, platformName, rateColor, useTokenColors, type TokenName } from '../ui'
 import { get, post } from '../api'
 import type { PlatformId, SyncResult } from '../../../shared/src/index.ts'
@@ -54,19 +55,10 @@ interface SyncAllResponse {
 /** 平台卡片拖拽顺序持久化（localStorage，与侧边栏菜单/模板分类同模式） */
 const PLATFORM_ORDER_KEY = 'icpc-platform-card-order-v1'
 function getPlatformOrder(): string[] | null {
-  try {
-    const raw = localStorage.getItem(PLATFORM_ORDER_KEY)
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
+  return readJson<string[]>(PLATFORM_ORDER_KEY)
 }
 function savePlatformOrder(keys: string[]): void {
-  try {
-    localStorage.setItem(PLATFORM_ORDER_KEY, JSON.stringify(keys))
-  } catch {
-    // 隐私模式写入失败忽略
-  }
+  writeJson(PLATFORM_ORDER_KEY, keys)
 }
 
 /**
@@ -77,20 +69,10 @@ const COLLAPSED_KEY = 'icpc-dashboard-module-collapsed-v1'
 /** 次要模块默认折叠：首屏只留「平台分布 / 难度分布 / 弱项 / 趋势」，历史与热力图按需展开 */
 const COLLAPSED_BY_DEFAULT = new Set<string>(['history', 'heatmap'])
 function loadCollapsedModules(): string[] | null {
-  try {
-    const raw = localStorage.getItem(COLLAPSED_KEY)
-    return raw ? (JSON.parse(raw) as string[]) : null
-  } catch {
-    // 隐私模式或无 localStorage
-    return null
-  }
+  return readJson<string[]>(COLLAPSED_KEY)
 }
 function saveCollapsedModules(ids: string[]): void {
-  try {
-    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(ids))
-  } catch {
-    // 写入失败忽略
-  }
+  writeJson(COLLAPSED_KEY, ids)
 }
 
 /**
@@ -101,20 +83,11 @@ function saveCollapsedModules(ids: string[]): void {
  */
 const SYNC_CHECKED_KEY = 'icpc-dashboard-sync-checked-v1'
 function loadSyncChecked(): Set<string> | null {
-  try {
-    const raw = localStorage.getItem(SYNC_CHECKED_KEY)
-    return raw ? new Set(JSON.parse(raw) as string[]) : null
-  } catch {
-    // 隐私模式或无 localStorage
-    return null
-  }
+  const saved = readJson<string[]>(SYNC_CHECKED_KEY)
+  return saved ? new Set(saved) : null
 }
 function saveSyncChecked(keys: ReadonlySet<string>): void {
-  try {
-    localStorage.setItem(SYNC_CHECKED_KEY, JSON.stringify([...keys]))
-  } catch {
-    // 写入失败忽略
-  }
+  writeJson(SYNC_CHECKED_KEY, [...keys])
 }
 
 /** 模块卡片的可读名：键盘排序/折叠按钮的 aria-label 与 title 用它（例：上移「难度分布」） */

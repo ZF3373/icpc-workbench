@@ -27,7 +27,6 @@ import { computeWeakness } from '../analysis/weakness.ts';
 import { buildPracticeSummary, renderSummaryForPrompt } from '../analysis/summary.ts';
 import { effectiveAbility, renderAbilityEvidence, setAbilityOverride } from '../today/ability.ts';
 import { renderPlanContext, renderTemplate, today } from '../plans/planService.ts';
-import { CURRICULUM } from '../templates/curriculum.ts';
 import { fetchAllContests, selectContests } from '../contests/index.ts';
 import { calendarCache } from '../contests/calendarCache.ts';
 import { renderContestContext, resolveContestGroup } from '../contests/participated.ts';
@@ -35,7 +34,6 @@ import { collectStatementTargets } from '../contests/problemStatements.ts';
 import { linkedStatementRefs, prepareStatementEvidence, savedStatementCookies, type ProblemRef } from '../problems/statements.ts';
 import {
   kickBackgroundRefresh,
-  loadParticipationSources,
   readParticipationSnapshot,
   fetchContestProblemSet,
   problemsAreRich,

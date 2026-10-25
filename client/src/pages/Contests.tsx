@@ -9,6 +9,8 @@ import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
 import ContestAnalysisModal from '../components/ContestAnalysisModal'
 import { api } from '../api'
+import { useDebounced } from '../useDebounced'
+import { fmtDateTime } from '../formatTime.ts'
 import { platformName } from '../ui'
 import {
   contestViewParams, endedAgo, filterParticipated, fmtTimeHm, groupContestsByDay,
@@ -61,8 +63,7 @@ interface ParticipatedResponse {
 let participatedCache: { at: number; data: ParticipatedResponse } | null = null
 
 function fmtStart(iso: string | null): string {
-  if (!iso || !Number.isFinite(Date.parse(iso))) return '时间待定'
-  return new Date(iso).toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+  return fmtDateTime(iso ?? '', '时间待定')
 }
 function fmtDuration(minutes: number): string {
   return minutes >= 60 ? `${Math.floor(minutes / 60)} 小时${minutes % 60 ? ` ${minutes % 60} 分` : ''}` : `${minutes} 分钟`
@@ -99,11 +100,7 @@ export default function Contests() {
   }
   const clearFilters = () => setView({ platform: undefined, query: '', category: '', progress: 'all', evidence: 'all', ratingStatus: 'all', sort: 'date' })
   const hasFilters = !!(platform || query.trim() || category || progress !== 'all' || evidence !== 'all' || ratingStatus !== 'all')
-  const [debouncedQuery, setDebouncedQuery] = useState(query)
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedQuery(query), 250)
-    return () => window.clearTimeout(timer)
-  }, [query])
+  const debouncedQuery = useDebounced(query, 250)
 
   const calendarParams = new URLSearchParams({ type: tab, limit: String(PAGE_SIZE), offset: String((view.page - 1) * PAGE_SIZE) })
   if (platform) calendarParams.set('platform', platform)

@@ -18,6 +18,7 @@ import { FileTextOutlined, CompassOutlined, CodeOutlined, HistoryOutlined } from
 import type { ReactNode } from 'react'
 import { MENU, menuLabel } from '../menuConfig'
 import { useRecentPages } from '../useRecentPages'
+import { useDebounced } from '../useDebounced'
 import { get } from '../api'
 import { platformName } from '../ui'
 import type { PlatformId } from '../../../shared/src/index.ts'
@@ -73,16 +74,6 @@ export interface CommandPaletteProps {
   open: boolean
   onClose: () => void
   onNavigate: (path: string) => void
-}
-
-/** 防抖：题目搜索不要每敲一个字符就打一次服务端 */
-function useDebounced(value: string, delay = 200): string {
-  const [debounced, setDebounced] = useState(value)
-  useEffect(() => {
-    const timer = setTimeout(() => setDebounced(value), delay)
-    return () => clearTimeout(timer)
-  }, [value, delay])
-  return debounced
 }
 
 export default function CommandPalette({ open, onClose, onNavigate }: CommandPaletteProps) {

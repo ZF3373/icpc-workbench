@@ -626,7 +626,7 @@ test('jisuanke: toJisuankeContest normalizes beijing start / seconds duration / 
 });
 
 test('jisuanke: fetchJisuankeContests pages twice, dedupes, caches', async () => {
-  const mk = (id: number, page: number) =>
+  const mk = (id: number, _page: number) =>
     new Response(
       JSON.stringify({ contests: [{ contestId: id, title: `赛${id}`, startTime: '2026-10-01 19:00:00', duration: 10800 }] }),
       { status: 200, headers: { 'content-type': 'application/json' } },

@@ -5,7 +5,6 @@ import express from 'express';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import {
-  agentAlive,
   DEFAULT_AGENT_TIMEOUT_MS,
   fetchPageViaAgent,
   popJob,
@@ -191,7 +190,7 @@ test('qoj 适配器：agent 传输下登录页 → 引导重登（无需 Cookie 
       throw new Error('legacy http 路径不应被走到');
     },
     {
-      fetchPage: async (url) => ({
+      fetchPage: async (_url) => ({
         status: 200,
         body: '<html><body><form action="/login">请登录</form></body></html>',
         finalUrl: 'https://qoj.ac/login',

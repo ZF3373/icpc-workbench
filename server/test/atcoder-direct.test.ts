@@ -92,7 +92,7 @@ test('parseOwnSubmissionsHtml: HTML 实体被正确反解码（&gt; 回归）', 
 
 const PROBLEMS = [{ id: 'abc478_d', contest_id: 'abc478', title: 'Range Set Insertion Query' }];
 
-function rowOf(id: number, user = 'hieZF123', result = 'AC'): string {
+function rowOf(id: number, user = 'hieZF123', _result = 'AC'): string {
   return `<tr>
 <td class="text-center"><time class="submission-time" title="2026-10-06T11:44:02+0900">2026-10-06 11:44:02+0900</time></td>
 <td><a href="/contests/abc478/tasks/abc478_d">D - Range Set Insertion Query</a></td>

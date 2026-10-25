@@ -263,7 +263,7 @@ export function requestRestore(db: Db, file: string, dir?: string): { file: stri
  * 永久性失败（标记非法 / 备份缺失）与恢复成功都清除标记；复制中途失败则保留标记，下次启动重试。
  * 返回已恢复的备份文件名；无标记或恢复未执行时返回 null。
  */
-export function applyPendingRestore(dbPath: string, dataDir?: string): string | null {
+export function applyPendingRestore(dbPath: string, _dataDir?: string): string | null {
   const markerPath = path.join(path.dirname(dbPath), RESTORE_MARKER);
   if (!fs.existsSync(markerPath)) return null;
   let file: string | null = null;

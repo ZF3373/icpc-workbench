@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { PlatformId } from '../../shared/src/index.ts';
 import { PLATFORMS } from '../../shared/src/index.ts';
+import { readJson } from './persistence.ts';
 
 export interface AccountScope {
   platform?: PlatformId;
@@ -96,14 +97,9 @@ export function pickerVisible(rows: Array<{ platform: string; account: string }>
 }
 
 export function readScope(): AccountScope {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return ALL_ACCOUNTS;
-    return normalizeScope(JSON.parse(raw));
-  } catch {
-    // 隐私模式或无 localStorage
-    return ALL_ACCOUNTS;
-  }
+  const raw = readJson<unknown>(STORAGE_KEY);
+  if (raw === null) return ALL_ACCOUNTS; // 隐私模式 / 无 localStorage / 无记录
+  return normalizeScope(raw);
 }
 
 export function writeScope(scope: AccountScope): void {

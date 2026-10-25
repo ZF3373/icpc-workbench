@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { AiProvider, type ChatMessage, type ToolCall, type TokenUsage } from '../src/ai/provider.ts';
+import { AiProvider, type TokenUsage } from '../src/ai/provider.ts';
 import type { AiConfig } from '../src/config.ts';
 
 const CFG: AiConfig = {

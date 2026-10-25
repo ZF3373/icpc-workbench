@@ -43,6 +43,7 @@ import CardSkeleton from '../components/CardSkeleton'
 import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
 import { del, get, patch, post } from '../api'
+import { fmtDateTime } from '../formatTime.ts'
 import { difficultyColor } from '../ui'
 import { mergeSuggestedOrder } from '../listOrder'
 import { moveListCard, swapListCard } from '../listCardOrder'
@@ -1212,7 +1213,7 @@ export default function Lists() {
             )}
             {detail?.aiSuggestionAt && (
               <p style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 12, textAlign: 'right' }}>
-                生成于 {new Date(detail.aiSuggestionAt + 'Z').toLocaleString('zh-CN')}
+                生成于 {fmtDateTime(detail.aiSuggestionAt + 'Z')}
               </p>
             )}
           </>

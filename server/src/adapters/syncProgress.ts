@@ -16,7 +16,6 @@
  */
 import type {
   PlatformId,
-  SyncProgressBatch,
   SyncProgressBatchItem,
   SyncProgressJob,
   SyncProgressSnapshot,

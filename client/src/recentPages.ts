@@ -4,6 +4,7 @@
  * 纯 localStorage + 订阅，无 React 依赖之外的副作用；用 useSyncExternalStore
  * 与侧边栏菜单顺序同款模式（连续调用必须返回稳定引用，否则 React 会判定状态变更 → 死循环）。
  */
+import { readJson, writeJson } from './persistence.ts'
 
 const STORAGE_KEY = 'icpc-recent-pages-v1'
 const CHANGE_EVENT = 'icpc-recent-pages-change'
@@ -13,33 +14,17 @@ export const MAX_RECENT = 6
 
 /** 从 localStorage 读出最近访问的路由列表（新→旧） */
 export function loadRecentPages(): string[] {
-  let raw: string | null = null
-  try {
-    raw = localStorage.getItem(STORAGE_KEY)
-  } catch {
-    // 隐私模式或无 localStorage
-    return []
-  }
-  if (!raw) return []
-  try {
-    const parsed = JSON.parse(raw) as unknown
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((k): k is string => typeof k === 'string').slice(0, MAX_RECENT)
-  } catch {
-    return []
-  }
+  const parsed = readJson<unknown>(STORAGE_KEY)
+  if (!Array.isArray(parsed)) return []
+  return parsed.filter((k): k is string => typeof k === 'string').slice(0, MAX_RECENT)
 }
 
 /** 记一次访问：已在列表里的提到最前，超上限截断，然后广播变更 */
 export function pushRecentPage(key: string): void {
   if (!key) return
   const next = [key, ...loadRecentPages().filter((k) => k !== key)].slice(0, MAX_RECENT)
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-  } catch {
-    // 写不进去只影响下次进来的默认值
-    return
-  }
+  // 写不进去只影响下次进来的默认值；广播照发，订阅方重读快照仍是旧值，无副作用
+  writeJson(STORAGE_KEY, next)
   if (typeof window !== 'undefined') window.dispatchEvent(new Event(CHANGE_EVENT))
 }
 

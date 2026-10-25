@@ -46,8 +46,6 @@ const readContent = (row: ProgressRow): ContentRow => ({
   url: row.url,
 });
 
-const emptyContent = (): ContentRow => ({ code: null, idea: null, complexity: null, url: null });
-
 interface CustomRow {
   id: number;
   category_key: string;

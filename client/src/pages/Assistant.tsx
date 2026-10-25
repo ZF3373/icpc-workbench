@@ -48,6 +48,8 @@ import {
   type PlanChatTurn,
   type TokenUsage,
 } from '../api'
+import { readFlag, readJson, writeFlag, writeJson } from '../persistence.ts'
+import { relTime } from '../formatTime.ts'
 import type { ParticipatedContest, PlanListItem } from '../types'
 import type { AbilityLevelDetail, AiProviderView, ModelCaps } from '../../../shared/src/index.ts'
 import Markdown from '../components/Markdown'
@@ -224,54 +226,45 @@ const isDocumentFile = (f: File): boolean => {
 }
 
 function loadFromStorage(): ChatSession[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return []
-    const data = JSON.parse(raw) as ChatSession[]
-    if (!Array.isArray(data)) return []
-    return data
-      .filter(
-        (s) =>
-          typeof s.id === 'string' && Array.isArray(s.messages) && typeof s.createdAt === 'number',
-      )
-      .map((s) => ({
-        id: s.id,
-        title: typeof s.title === 'string' ? s.title : '新会话',
-        // 旧版本会话没有消息 id：加载时补一次，之后随会话一起落 localStorage。
-        // 只在加载时生成，流式追加/截断都不会再改已有消息的 id。
-        messages: s.messages.map((m) =>
-          m && typeof m === 'object' && typeof m.id === 'string' ? m : { ...m, id: newMsgId() },
-        ),
-        planId: typeof s.planId === 'number' ? s.planId : undefined,
-        listId: typeof s.listId === 'number' ? s.listId : undefined,
-        contestKey: typeof s.contestKey === 'string' && s.contestKey !== '' ? s.contestKey : undefined,
-        createdAt: s.createdAt,
-        updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : s.createdAt,
-        pinned: !!s.pinned,
-      }))
-  } catch {
-    return []
-  }
+  const data = readJson<ChatSession[]>(STORAGE_KEY)
+  if (!Array.isArray(data)) return []
+  return data
+    .filter(
+      (s) =>
+        typeof s.id === 'string' && Array.isArray(s.messages) && typeof s.createdAt === 'number',
+    )
+    .map((s) => ({
+      id: s.id,
+      title: typeof s.title === 'string' ? s.title : '新会话',
+      // 旧版本会话没有消息 id：加载时补一次，之后随会话一起落 localStorage。
+      // 只在加载时生成，流式追加/截断都不会再改已有消息的 id。
+      messages: s.messages.map((m) =>
+        m && typeof m === 'object' && typeof m.id === 'string' ? m : { ...m, id: newMsgId() },
+      ),
+      planId: typeof s.planId === 'number' ? s.planId : undefined,
+      listId: typeof s.listId === 'number' ? s.listId : undefined,
+      contestKey: typeof s.contestKey === 'string' && s.contestKey !== '' ? s.contestKey : undefined,
+      createdAt: s.createdAt,
+      updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : s.createdAt,
+      pinned: !!s.pinned,
+    }))
 }
 
 function saveToStorageNow(sessions: ChatSession[]): void {
-  try {
-    const toSave = sessions
-      .filter((s) => s.messages.length > 0)
-      .slice(0, MAX_SESSIONS)
-      .map((s) => ({
-        ...s,
-        // dataUrl 是内存里的内联图片（base64 动辄数 MB）：只活在本次页面会话，绝不落盘
-        messages: s.messages.map((m) =>
-          m.attachments?.some((a) => a.dataUrl !== undefined)
-            ? { ...m, attachments: m.attachments.map(({ dataUrl: _d, ...rest }) => rest) }
-            : m,
-        ),
-      }))
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave))
-  } catch {
-    /* localStorage 可能不可用或已满，静默忽略 */
-  }
+  const toSave = sessions
+    .filter((s) => s.messages.length > 0)
+    .slice(0, MAX_SESSIONS)
+    .map((s) => ({
+      ...s,
+      // dataUrl 是内存里的内联图片（base64 动辄数 MB）：只活在本次页面会话，绝不落盘
+      messages: s.messages.map((m) =>
+        m.attachments?.some((a) => a.dataUrl !== undefined)
+          ? { ...m, attachments: m.attachments.map(({ dataUrl: _d, ...rest }) => rest) }
+          : m,
+      ),
+    }))
+  // localStorage 可能不可用或已满，静默忽略
+  writeJson(STORAGE_KEY, toSave)
 }
 
 /**
@@ -517,16 +510,6 @@ function parseMessageBlocks(content: string): MsgBlocks {
 
 // ---------- 相对时间 ----------
 
-function relTime(ts: number): string {
-  const diff = Date.now() - ts
-  if (diff < 60_000) return '刚刚'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}分钟前`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}小时前`
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}天前`
-  const d = new Date(ts)
-  return `${d.getMonth() + 1}/${d.getDate()}`
-}
-
 /** 内联附图的单张上限：6 MiB 原图 ≈ 8MiB base64，给 12MB 的请求体限额留足余量 */
 const MAX_INLINE_IMAGE_BYTES = 6 * 1024 * 1024
 
@@ -549,11 +532,7 @@ const SIDE_COLLAPSED_KEY = 'icpc-assistant-side-collapsed'
 const TOC_HIDDEN_KEY = 'icpc-assistant-toc-hidden'
 
 function readTocHidden(): boolean {
-  try {
-    return localStorage.getItem(TOC_HIDDEN_KEY) === '1'
-  } catch {
-    return false
-  }
+  return readFlag(TOC_HIDDEN_KEY)
 }
 
 /**
@@ -953,11 +932,7 @@ const AssistantMessageItem = memo(function AssistantMessageItem({
 const SESSION_ORDER_MSG_KEY = 'assistant-session-order'
 
 function readSideCollapsed(): boolean {
-  try {
-    return localStorage.getItem(SIDE_COLLAPSED_KEY) === '1'
-  } catch {
-    return false
-  }
+  return readFlag(SIDE_COLLAPSED_KEY)
 }
 
 /** 能力值卡片里的 rating 证据行：没有合格锚点、也没有分差趋势时返回 null（不占行） */
@@ -1119,11 +1094,8 @@ export default function Assistant() {
 
   const toggleToc = useCallback(() => {
     setTocHidden((h) => {
-      try {
-        localStorage.setItem(TOC_HIDDEN_KEY, h ? '0' : '1')
-      } catch {
-        /* localStorage 不可用时仅本次会话生效 */
-      }
+      // localStorage 不可用时仅本次会话生效
+      writeFlag(TOC_HIDDEN_KEY, !h)
       return !h
     })
   }, [])
@@ -1304,11 +1276,8 @@ export default function Assistant() {
   /** 折叠/展开左侧栏（fold/unfold 图标与全局侧边栏保持一致） */
   const toggleSideCollapsed = useCallback(() => {
     setSideCollapsed((c) => {
-      try {
-        localStorage.setItem(SIDE_COLLAPSED_KEY, c ? '0' : '1')
-      } catch {
-        /* localStorage 不可用时仅本次会话生效 */
-      }
+      // localStorage 不可用时仅本次会话生效
+      writeFlag(SIDE_COLLAPSED_KEY, !c)
       return !c
     })
   }, [])

@@ -291,6 +291,7 @@ test('docConverter: EPub 提取元数据标题和章节正文', async () => {
  * 也含 `. ]oa,` 这类 ASCII 可打印碎片；后者无法靠字符类识别，只能靠调用前的
  * zip 魔数校验挡住（见 convertEpub），此处校验控制字符这一必要条件。
  */
+// eslint-disable-next-line no-control-regex -- 匹配控制字符正是本断言的目的
 const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
 test('docConverter: 非 zip 内容伪装成 .epub 时给出可读错误', async () => {

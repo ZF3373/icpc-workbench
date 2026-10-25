@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
-import { createDb, type Db } from '../src/db/index.ts';
+import { createDb } from '../src/db/index.ts';
 import { CURRICULUM, TEMPLATE_TOTAL } from '../src/templates/curriculum.ts';
 import { nextTemplate, type ProgressEntry } from '../src/templates/progress.ts';
 import { templatesRoutes } from '../src/routes/templates.ts';

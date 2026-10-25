@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AiProvider, type ChatMessage } from '../src/ai/provider.ts';
+import { AiProvider } from '../src/ai/provider.ts';
 import type { AiConfig } from '../src/config.ts';
 
 // ---------- 测试用 mock fetch：模拟上游 SSE 流 ----------

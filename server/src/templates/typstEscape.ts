@@ -6,6 +6,8 @@ export function typstString(value: string): string {
     .replace(/\r/g, '\\r')
     .replace(/\n/g, '\\n')
     .replace(/\t/g, '\\t')
+    // 匹配控制字符本就是本函数的职责（Typst 字符串不接受裸控制字符）
+    // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, (ch) =>
       `\\u{${ch.charCodeAt(0).toString(16)}}`,
     );

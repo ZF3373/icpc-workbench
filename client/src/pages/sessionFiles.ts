@@ -7,6 +7,7 @@
  * - 总容量有限（默认 256KB 文本），超出按最旧会话优先淘汰（LRU）
  * - 持久化在 localStorage（独立 key），与聊天会话存储解耦
  */
+import { readJson, writeJson } from '../persistence.ts'
 
 const STORAGE_KEY = 'icpc-ai-session-files-v1'
 
@@ -24,31 +25,22 @@ let cache: SessionFiles | null = null
 
 function load(): SessionFiles {
   if (cache) return cache
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    const data = raw ? (JSON.parse(raw) as Record<string, Record<string, string>>) : {}
-    const out: SessionFiles = new Map()
-    for (const [sid, files] of Object.entries(data)) {
-      out.set(sid, new Map(Object.entries(files)))
-    }
-    cache = out
-    return out
-  } catch {
-    cache = new Map()
-    return cache
+  const data = readJson<Record<string, Record<string, string>>>(STORAGE_KEY) ?? {}
+  const out: SessionFiles = new Map()
+  for (const [sid, files] of Object.entries(data)) {
+    out.set(sid, new Map(Object.entries(files)))
   }
+  cache = out
+  return out
 }
 
 function persist(c: SessionFiles): void {
-  try {
-    const obj: Record<string, Record<string, string>> = {}
-    for (const [sid, files] of c) {
-      if (files.size > 0) obj[sid] = Object.fromEntries(files)
-    }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(obj))
-  } catch {
-    /* 存储满：缓存降级为仅内存（本次会话仍有效），不阻断聊天 */
+  const obj: Record<string, Record<string, string>> = {}
+  for (const [sid, files] of c) {
+    if (files.size > 0) obj[sid] = Object.fromEntries(files)
   }
+  // 存储满时缓存降级为仅内存（本次会话仍有效），不阻断聊天
+  writeJson(STORAGE_KEY, obj)
 }
 
 function totalChars(c: SessionFiles): number {

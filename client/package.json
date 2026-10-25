@@ -14,6 +14,7 @@
     "check:render": "node test/renderCheck.mjs",
     "check:contrast": "node test/contrastCheck.mjs",
     "check:durations": "node test/durationCheck.mjs",
+    "check:tokens": "node --experimental-transform-types test/tokenCheck.mjs",
     "preview:markdown": "node test/markdownPreview.mjs",
     "check:gate": "node --experimental-transform-types test/apiGate.check.mjs",
     "preview": "vite preview"

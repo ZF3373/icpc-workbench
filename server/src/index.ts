@@ -9,7 +9,6 @@ import { initAdapters } from './adapters/index.ts';
 import { migratePlatformCookieToAccounts } from './adapters/accountCreds.ts';
 import { configureSyncScheduler } from './adapters/syncScheduler.ts';
 import { setRequestIntervalScale } from './net/hostThrottle.ts';
-import { asyncHandler } from './asyncHandler.ts';
 import { compressionMiddleware, errorHandler, hostGuard, securityHeaders } from './middleware.ts';
 import { backupsRoutes } from './routes/backups.ts';
 import { checkinsRoutes } from './routes/checkins.ts';

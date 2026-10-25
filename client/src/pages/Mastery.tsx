@@ -25,6 +25,7 @@ import AccountScopePicker from '../components/AccountScopePicker'
 import { useAccountScope, withScope } from '../accountScope'
 import { pct } from '../ui'
 import { get } from '../api'
+import { readJson, writeJson } from '../persistence.ts'
 import { MASTERY_LEVEL_LABELS } from '../types'
 import type { MasteryPoint, MasteryReport } from '../types'
 
@@ -77,16 +78,6 @@ const NEWLY_SEEN_KEY = 'mastery-newly-seen'
 // acRate / gap 的单位约定（百分数，非比例，与后端 rate() 同量纲）与格式化统一在
 // client/src/ui.ts 的 pct()：这里不再各留一份实现——历史上正是"各写一份"让设置页把
 // 已经是百分数的 acRate/gap 又乘了一次 100，显示成 1430% / 4330.0%。
-
-/** 读取 localStorage 中的 JSON（不可用时返回 null，调用方静默降级） */
-function readJson<T>(key: string): T | null {
-  try {
-    const raw = localStorage.getItem(key)
-    return raw ? (JSON.parse(raw) as T) : null
-  } catch {
-    return null
-  }
-}
 
 export default function Mastery() {
   // React 19 下 antd 静态 message 静默失效，必须用 App 上下文实例
@@ -184,11 +175,7 @@ export default function Mastery() {
       }
       setNewly(new Set(fresh))
     }
-    try {
-      localStorage.setItem(PREV_LEVELS_KEY, JSON.stringify(cur))
-    } catch {
-      /* 存储不可用时跳过持久化，仅本次会话内生效 */
-    }
+    writeJson(PREV_LEVELS_KEY, cur)
   }, [report])
 
   /** 点开抽屉即视为已知晓该「新达成」 */
@@ -199,14 +186,10 @@ export default function Mastery() {
       next.delete(tag)
       return next
     })
-    try {
-      const seen = new Set(readJson<string[]>(NEWLY_SEEN_KEY) ?? [])
-      seen.add(tag)
-      // 防止 seen 集合无限增长：超过上限时重置（误重置的代价只是多显示一次 🎉）
-      localStorage.setItem(NEWLY_SEEN_KEY, JSON.stringify(seen.size > 500 ? [tag] : [...seen]))
-    } catch {
-      /* 忽略 */
-    }
+    const seen = new Set(readJson<string[]>(NEWLY_SEEN_KEY) ?? [])
+    seen.add(tag)
+    // 防止 seen 集合无限增长：超过上限时重置（误重置的代价只是多显示一次 🎉）
+    writeJson(NEWLY_SEEN_KEY, seen.size > 500 ? [tag] : [...seen])
   }, [])
 
   const points = useMemo(

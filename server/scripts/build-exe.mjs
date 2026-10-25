@@ -20,7 +20,6 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 // TypeScript 源码直接静态导入：本脚本要求 Node 24（CI 与 package.json engines 一致），
 // 该版本默认启用类型擦除，可加载 buildPostjectArgs 供打包与测试共用。

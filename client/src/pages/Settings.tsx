@@ -47,6 +47,7 @@ import { del, get, post } from '../api'
 import { fetchShellAuthStatus, requestShellAuth, waitShellAuthResult, type ShellAuthStatus } from '../shellAuth'
 import { buildCookieItem, extractCookieValue } from '../cookies'
 import { pct, formatBytes } from '../ui'
+import { fmtDateTime } from '../formatTime.ts'
 import { relativeTimeText } from '../syncStatus'
 import { openExternal } from '../externalLinks'
 import { useTheme, type ThemePreference } from '../themeContext'
@@ -2871,7 +2872,7 @@ function BackupCard({ refreshKey = 0 }: { refreshKey?: number }) {
               当前待恢复的是 {pendingFile}，登记本次恢复会覆盖它（重启后只会回滚到下面这个恢复点）。
             </p>
           )}
-          <p>数据库将回滚到 {new Date(b.createdAtMs).toLocaleString()}（{BACKUP_REASON_LABEL[b.reason] ?? b.reason}，{formatBytes(b.size)}）。</p>
+          <p>数据库将回滚到 {fmtDateTime(b.createdAtMs)}（{BACKUP_REASON_LABEL[b.reason] ?? b.reason}，{formatBytes(b.size)}）。</p>
           <p style={{ color: 'var(--red)' }}>备份之后产生的同步、打卡、复习等数据会丢失。恢复在{restartShort}后生效。</p>
           {b.knowledge === false ? (
             <p style={{ color: 'var(--red)' }}>
@@ -3029,7 +3030,7 @@ function BackupCard({ refreshKey = 0 }: { refreshKey?: number }) {
               <Tag>{BACKUP_REASON_LABEL[b.reason] ?? b.reason}</Tag>
               {pendingFile === b.file && <Tag color="warning">重启后恢复</Tag>}
               {b.knowledge === false && <Tag color="warning">不含知识点快照</Tag>}
-              <span style={{ fontSize: 12 }}>{new Date(b.createdAtMs).toLocaleString()}</span>
+              <span style={{ fontSize: 12 }}>{fmtDateTime(b.createdAtMs)}</span>
               <span style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatBytes(b.size)}</span>
             </Space>
           </List.Item>

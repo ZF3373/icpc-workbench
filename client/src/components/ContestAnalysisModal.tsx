@@ -11,6 +11,7 @@ import { Alert, Button, Card, Empty, Modal, Select, Tag, App as AntdApp } from '
 import type { ContestAnalysisContest, ContestAnalysisProblem, PlatformId } from '../../../shared/src/index.ts'
 import { TAG_SYNONYM_GROUPS } from '../../../shared/src/index.ts'
 import { api } from '../api'
+import { fmtDateTimeShort } from '../formatTime.ts'
 import EmptyState from './EmptyState'
 import InlineError from './InlineError'
 import PlatformTag from './PlatformTag'
@@ -44,8 +45,7 @@ const DEFAULT_TAG_OPTIONS: string[] = [
 ]
 
 function dateLabel(iso: string | null, approximate = false): string {
-  if (!iso || !Number.isFinite(Date.parse(iso))) return '时间待确认'
-  const label = new Date(iso).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+  const label = fmtDateTimeShort(iso ?? '', '时间待确认')
   return approximate ? `约 ${label}` : label
 }
 

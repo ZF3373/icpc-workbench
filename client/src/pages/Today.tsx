@@ -21,6 +21,7 @@ import { syncTargets, type TrainingAccount } from '../trainingAccounts'
 import { difficultyColor, tagColor } from '../ui'
 import { sortDueItems } from '../reviewDue'
 import { del, get, post } from '../api'
+import { readJson, writeJson } from '../persistence.ts'
 import type { StreakInfo, TodayPlan, TodayBandKey, TodayProblem } from '../types'
 import type { AbilityLevelDetail, PlatformId, TodayPlanTask } from '../../../shared/src/index.ts'
 
@@ -42,24 +43,16 @@ const localToday = () => {
 }
 
 function readStoredRotate(): number {
-  try {
-    const raw = localStorage.getItem(ROTATE_KEY)
-    if (!raw) return 0
-    const s = JSON.parse(raw) as { date?: unknown; rotate?: unknown }
-    return s.date === localToday() && Number.isInteger(s.rotate) && (s.rotate as number) > 0
-      ? Math.min(500, s.rotate as number) // 与服务端 rotate 上限一致，防止 localStorage 无界增长
-      : 0
-  } catch {
-    return 0
-  }
+  const s = readJson<{ date?: unknown; rotate?: unknown }>(ROTATE_KEY)
+  if (!s) return 0
+  return s.date === localToday() && Number.isInteger(s.rotate) && (s.rotate as number) > 0
+    ? Math.min(500, s.rotate as number) // 与服务端 rotate 上限一致，防止 localStorage 无界增长
+    : 0
 }
 
 function writeStoredRotate(rotate: number): void {
-  try {
-    localStorage.setItem(ROTATE_KEY, JSON.stringify({ date: localToday(), rotate }))
-  } catch {
-    /* 隐私模式下写不了 localStorage，换一批照样能用 */
-  }
+  // 隐私模式下写不了 localStorage，换一批照样能用
+  writeJson(ROTATE_KEY, { date: localToday(), rotate })
 }
 
 /** 能力值构成 tooltip：解题口径 → 赛事 rating 混合 → 目标值，逐项拆开让用户核对 */

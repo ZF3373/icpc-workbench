@@ -133,7 +133,7 @@ function matchKeyToken(token: string): { platform: PlatformId; problemKey: strin
   return null;
 }
 
-const NOISE_RE = /[|·•\-–—\[\](){}]+|\d+[.:、)]?$/g;
+const NOISE_RE = /[|·•\-–—[\](){}]+|\d+[.:、)]?$/g;
 
 /** 清洗标题：去掉编号回显、行首序号、多余分隔符与空白 */
 function cleanTitle(raw: string): string | undefined {

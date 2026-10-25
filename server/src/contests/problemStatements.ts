@@ -1,5 +1,4 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
-import { DEFAULT_USER_ID } from '../constants.ts';
 import type { Db } from '../db/index.ts';
 import { executeFetchUrl, htmlToText, validatePublicFetchUrl } from '../ai/fetch-url.ts';
 import type { SearchConfig } from '../ai/search.ts';

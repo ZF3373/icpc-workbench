@@ -4,7 +4,7 @@ import type {
   Verdict,
 } from '../../../shared/src/index.ts';
 import { difficultyFields } from '../../../shared/src/difficulty.ts';
-import type { FetchOptions, PlatformAdapter } from './types.ts';
+import type { PlatformAdapter } from './types.ts';
 import { pagedFetch } from './pagination.ts';
 import { asHttpClient, type HttpInit } from './http.ts';
 

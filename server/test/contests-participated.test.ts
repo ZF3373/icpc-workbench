@@ -547,7 +547,7 @@ test('renderContestContext：总量预算耗尽也不让后段题只剩空时间
 
 // ---------- 平台参赛记录（权威数据源）合并 ----------
 
-import type { AuthoritativeContest, FetchParticipationOptions } from '../src/contests/participationSources.ts';
+import type { AuthoritativeContest } from '../src/contests/participationSources.ts';
 import {
   FETCH_TIMEOUT_MS,
   LUOGU_PARTICIPATION_TIMEOUT_MS,

@@ -12,6 +12,7 @@
     "pretest": "node scripts/prepare-typst.mjs",
     "bundle": "node scripts/build-server-bundle.mjs",
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
     "test": "tsx --test test/**/*.test.ts"
   },
   "dependencies": {
@@ -32,6 +33,7 @@
     "@types/node": "^24.0.0",
     "@types/turndown": "^5.0.6",
     "esbuild": "0.28.2",
+    "oxlint": "^1.75.0",
     "postject": "1.0.0-alpha.6",
     "tsx": "^4.19.2",
     "typescript": "~6.0.2"

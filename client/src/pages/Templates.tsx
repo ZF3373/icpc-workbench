@@ -52,6 +52,7 @@ import { BP, useMediaQuery } from '../useMediaQuery'
 import { saveUrlAsFile } from '../download'
 import { del, get, patch, post, put } from '../api'
 import { TEMPLATE_EXPORT_OPTIONS, type TemplateExportFormat } from '../templateExport'
+import { readJson, writeJson } from '../persistence.ts'
 import type { TemplateCategoryInfo, TemplateContentInfo, TemplateExampleInfo, TemplateItemInfo, TemplatesResponse, TemplateStatus } from '../types'
 
 const STATUS_META: Array<{ key: TemplateStatus; label: string; icon: typeof CheckCircleOutlined }> = [
@@ -63,19 +64,10 @@ const STATUS_META: Array<{ key: TemplateStatus; label: string; icon: typeof Chec
 /** 分类拖拽顺序持久化（localStorage，与侧边栏菜单同模式） */
 const CAT_ORDER_KEY = 'icpc-cat-order-v1'
 function getCatOrder(): string[] | null {
-  try {
-    const raw = localStorage.getItem(CAT_ORDER_KEY)
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
+  return readJson<string[]>(CAT_ORDER_KEY)
 }
 function saveCatOrder(keys: string[]): void {
-  try {
-    localStorage.setItem(CAT_ORDER_KEY, JSON.stringify(keys))
-  } catch {
-    // 忽略隐私模式
-  }
+  writeJson(CAT_ORDER_KEY, keys)
 }
 
 interface CustomFormValues {

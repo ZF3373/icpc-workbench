@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { ConfigProvider, App as AntdApp, theme as antdTheme } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
+import { TOKEN_PAIRS } from './tokens.ts'
 
 /**
  * 外观主题管理：
@@ -55,16 +56,14 @@ function applyTheme(resolved: ResolvedTheme): void {
 }
 
 // ---------- antd 主题配置 ----------
+// 色值一律取自 tokens.ts 的配对表（与 index.css 同源，check:tokens 守护）；
+// 这里只保留无 CSS 对应物的 antd 专有微调（表格表头、投影等）。
 
 const FONT_FAMILY =
   "'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei UI', sans-serif"
 
+/** 两套主题共用的 antd 基础 Token（主题相关色不进来，各自从配对表取） */
 const sharedTokens = {
-  colorPrimary: '#86a8ff',
-  colorSuccess: '#69d7a5',
-  colorWarning: '#f2c46d',
-  colorError: '#ff7b84',
-  colorInfo: '#58a3ff',
   borderRadius: 10,
   fontFamily: FONT_FAMILY,
 }
@@ -73,23 +72,32 @@ const darkTheme = {
   algorithm: antdTheme.darkAlgorithm,
   token: {
     ...sharedTokens,
-    colorText: '#f5f7fb',
-    colorTextSecondary: '#c4cad4',
-    colorTextTertiary: '#8993a2',
-    colorBgContainer: '#181b22',
-    colorBgElevated: '#1d212a',
-    colorBgLayout: '#111318',
-    colorBorder: '#2a3039',
-    colorBorderSecondary: '#222831',
+    colorPrimary: TOKEN_PAIRS.brand.dark,
+    colorSuccess: TOKEN_PAIRS.green.dark,
+    colorWarning: TOKEN_PAIRS.amber.dark,
+    colorError: TOKEN_PAIRS.red.dark,
+    colorInfo: TOKEN_PAIRS.blue.dark,
+    colorText: TOKEN_PAIRS.text.dark,
+    colorTextSecondary: TOKEN_PAIRS.text2.dark,
+    colorTextTertiary: TOKEN_PAIRS.text3.dark,
+    colorBgContainer: TOKEN_PAIRS.surface.dark,
+    colorBgElevated: TOKEN_PAIRS.surface2.dark,
+    colorBgLayout: TOKEN_PAIRS.bg.dark,
+    colorBorder: TOKEN_PAIRS.line.dark,
+    colorBorderSecondary: TOKEN_PAIRS.lineSoft.dark,
   },
   components: {
-    Layout: { siderBg: '#12151a', headerBg: '#12151a', bodyBg: '#111318' },
+    Layout: {
+      siderBg: TOKEN_PAIRS.siderBg.dark,
+      headerBg: TOKEN_PAIRS.siderBg.dark,
+      bodyBg: TOKEN_PAIRS.bg.dark,
+    },
     Menu: {
       darkItemBg: 'transparent',
-      darkSubMenuItemBg: '#1d212a',
-      darkItemSelectedBg: 'rgba(134, 168, 255, 0.13)',
-      darkItemHoverBg: '#20242c',
-      darkItemSelectedColor: '#86a8ff',
+      darkSubMenuItemBg: TOKEN_PAIRS.surface2.dark,
+      darkItemSelectedBg: TOKEN_PAIRS.brandSoft.dark,
+      darkItemHoverBg: TOKEN_PAIRS.hoverBg.dark,
+      darkItemSelectedColor: TOKEN_PAIRS.brand.dark,
       darkItemColor: '#8b94a3',
       itemBorderRadius: 10,
       itemMarginInline: 10,
@@ -98,7 +106,7 @@ const darkTheme = {
       iconSize: 17,
       activeBarBorderWidth: 0,
     },
-    Card: { colorBgContainer: '#181b22', borderRadiusLG: 14 },
+    Card: { colorBgContainer: TOKEN_PAIRS.surface.dark, borderRadiusLG: 14 },
     Button: {
       borderRadius: 8,
       primaryShadow: '0 6px 18px rgba(58, 76, 128, 0.28)',
@@ -109,32 +117,46 @@ const darkTheme = {
       headerBg: '#1b1f27',
       headerColor: '#929ba9',
       rowHoverBg: '#1d222a',
-      borderColor: '#222831',
+      borderColor: TOKEN_PAIRS.lineSoft.dark,
     },
-    Modal: { contentBg: '#1d212a', headerBg: '#1d212a', borderRadiusLG: 14 },
-    Drawer: { colorBgElevated: '#181b22' },
+    Modal: {
+      contentBg: TOKEN_PAIRS.surface2.dark,
+      headerBg: TOKEN_PAIRS.surface2.dark,
+      borderRadiusLG: 14,
+    },
+    Drawer: { colorBgElevated: TOKEN_PAIRS.surface.dark },
     Tag: { borderRadiusSM: 6 },
   },
 }
 
-// 亮色主题：柔和灰蓝调，避免大面积纯白刺眼
+// 亮色主题：柔和灰蓝调，避免大面积纯白刺眼。
+// 语义色（成功/警告/错误/信息）与 CSS 侧同源——此前 antd 一直是暗色粉彩值，
+// 与已按亮色底校准的 --green/--amber/--red/--blue 漂移（见 tokens.ts 头注）。
 const lightTheme = {
   algorithm: antdTheme.defaultAlgorithm,
   token: {
     ...sharedTokens,
-    colorPrimary: '#6b8eef',
-    colorText: '#23272f',
-    colorTextSecondary: '#4a5260',
-    colorTextTertiary: '#656e7e',
-    colorBgBase: '#eef1f6',
-    colorBgContainer: '#f6f8fb',
+    colorPrimary: TOKEN_PAIRS.brand.light,
+    colorSuccess: TOKEN_PAIRS.green.light,
+    colorWarning: TOKEN_PAIRS.amber.light,
+    colorError: TOKEN_PAIRS.red.light,
+    colorInfo: TOKEN_PAIRS.blue.light,
+    colorText: TOKEN_PAIRS.text.light,
+    colorTextSecondary: TOKEN_PAIRS.text2.light,
+    colorTextTertiary: TOKEN_PAIRS.text3.light,
+    colorBgBase: TOKEN_PAIRS.siderBg.light,
+    colorBgContainer: TOKEN_PAIRS.surface.light,
     colorBgElevated: '#fbfcfe',
-    colorBgLayout: '#e7ebf1',
-    colorBorder: '#d3d9e3',
-    colorBorderSecondary: '#e4e8ef',
+    colorBgLayout: TOKEN_PAIRS.bg.light,
+    colorBorder: TOKEN_PAIRS.line.light,
+    colorBorderSecondary: TOKEN_PAIRS.lineSoft.light,
   },
   components: {
-    Layout: { siderBg: '#eef1f6', headerBg: '#eef1f6', bodyBg: '#e7ebf1' },
+    Layout: {
+      siderBg: TOKEN_PAIRS.siderBg.light,
+      headerBg: TOKEN_PAIRS.siderBg.light,
+      bodyBg: TOKEN_PAIRS.bg.light,
+    },
     Menu: {
       itemBorderRadius: 10,
       itemMarginInline: 10,
@@ -143,7 +165,7 @@ const lightTheme = {
       iconSize: 17,
       activeBarBorderWidth: 0,
     },
-    Card: { colorBgContainer: '#f6f8fb', borderRadiusLG: 14 },
+    Card: { colorBgContainer: TOKEN_PAIRS.surface.light, borderRadiusLG: 14 },
     Button: {
       borderRadius: 8,
       primaryShadow: '0 6px 18px rgba(58, 76, 128, 0.18)',
@@ -151,13 +173,17 @@ const lightTheme = {
       dangerShadow: 'none',
     },
     Table: {
-      headerBg: '#edf0f5',
+      headerBg: TOKEN_PAIRS.surface2.light,
       headerColor: '#6c7585',
-      rowHoverBg: '#e7ebf2',
+      rowHoverBg: TOKEN_PAIRS.hoverBg.light,
       borderColor: '#dde2ea',
     },
-    Modal: { contentBg: '#f6f8fb', headerBg: '#f6f8fb', borderRadiusLG: 14 },
-    Drawer: { colorBgElevated: '#f6f8fb' },
+    Modal: {
+      contentBg: TOKEN_PAIRS.surface.light,
+      headerBg: TOKEN_PAIRS.surface.light,
+      borderRadiusLG: 14,
+    },
+    Drawer: { colorBgElevated: TOKEN_PAIRS.surface.light },
     Tag: { borderRadiusSM: 6 },
   },
 }

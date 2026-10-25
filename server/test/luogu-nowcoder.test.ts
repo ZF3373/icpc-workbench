@@ -673,7 +673,7 @@ test('nowcoder: 整页已知时增量早停（knownExternalIds）', async () => 
   // 首页全为已知提交 → 不再翻更旧的页（增量早停，防全量重扫）
   let pageCalls = 0;
   const fetchFn = router({
-    'practice-coding': (url) => {
+    'practice-coding': (_url) => {
       pageCalls += 1;
       return ncPage([['5001', '10001', 'A+B', '答案正确', 'C++', '2026-08-01 10:00:00']]);
     },

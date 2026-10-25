@@ -24,8 +24,11 @@ jobs:
       - name: Typecheck (server + client)
         run: npm run typecheck
 
-      - name: Lint (client)
+      - name: Lint (client + server)
         run: npm run lint
+
+      - name: Theme token consistency (client)
+        run: npm run check:tokens -w client
 
       - name: Test (server + client)
         run: npm test

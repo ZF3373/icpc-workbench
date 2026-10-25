@@ -1,0 +1,8 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript"],
+  "ignorePatterns": ["dist/", "dist-*/", "node_modules/", "scripts/sea/"],
+  "rules": {
+    "typescript/no-array-delete": "error"
+  }
+}

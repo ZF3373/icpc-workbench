@@ -1,4 +1,3 @@
-import type { AiConfig } from '../config.ts';
 import type { ToolDefinition } from './provider.ts';
 import { registerTool, type ToolResult, type ToolContext, type PlatformCookies } from './tools/registry.ts';
 import type { SearchConfig } from './search.ts';

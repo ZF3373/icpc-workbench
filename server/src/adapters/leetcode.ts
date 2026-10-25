@@ -5,7 +5,7 @@ import type {
 } from '../../../shared/src/index.ts';
 import { difficultyFields, toCfRating } from '../../../shared/src/difficulty.ts';
 import { ManualImportRequiredError } from './types.ts';
-import type { FetchOptions, PlatformAdapter } from './types.ts';
+import type { PlatformAdapter } from './types.ts';
 import { pagedFetch } from './pagination.ts';
 import { asHttpClient, type HttpInit } from './http.ts';
 

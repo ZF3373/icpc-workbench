@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { App as AntdApp } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import { get } from './api'
+import { readJson, writeJson } from './persistence.ts'
 import type { ContestInfo, ContestReminderConfig } from './types'
 
 /** 已提醒的赛事记录 { 赛事 id: 开始时间 ISO }，开始 24h 后清理 */
@@ -11,20 +12,12 @@ const TICK_MS = 60_000
 type FiredMap = Record<string, string>
 
 function loadFired(): FiredMap {
-  try {
-    const raw = localStorage.getItem(FIRED_KEY)
-    return raw ? (JSON.parse(raw) as FiredMap) : {}
-  } catch {
-    return {}
-  }
+  return readJson<FiredMap>(FIRED_KEY) ?? {}
 }
 
 function saveFired(map: FiredMap): void {
-  try {
-    localStorage.setItem(FIRED_KEY, JSON.stringify(map))
-  } catch {
-    /* 存储不可用时仍可提醒，只是会重复弹 */
-  }
+  // 存储不可用时仍可提醒，只是会重复弹
+  writeJson(FIRED_KEY, map)
 }
 
 /**
