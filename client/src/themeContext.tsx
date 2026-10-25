@@ -1,15 +1,8 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ConfigProvider, App as AntdApp, theme as antdTheme } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import { TOKEN_PAIRS } from './tokens.ts'
+import { ThemeContext, type ThemeContextValue, type ThemePreference, type ResolvedTheme } from './themeCore'
 
 /**
  * 外观主题管理：
@@ -19,18 +12,7 @@ import { TOKEN_PAIRS } from './tokens.ts'
  * - 通过 ConfigProvider algorithm 驱动 antd 组件主题切换
  */
 
-export type ThemePreference = 'system' | 'light' | 'dark'
-export type ResolvedTheme = 'light' | 'dark'
-
 const STORAGE_KEY = 'icpc-theme'
-
-interface ThemeContextValue {
-  preference: ThemePreference
-  resolved: ResolvedTheme
-  setPreference: (p: ThemePreference) => void
-}
-
-const ThemeContext = createContext<ThemeContextValue | null>(null)
 
 function getSystemTheme(): ResolvedTheme {
   if (typeof window === 'undefined') return 'dark'
@@ -234,10 +216,4 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       </ConfigProvider>
     </ThemeContext.Provider>
   )
-}
-
-export function useTheme(): ThemeContextValue {
-  const ctx = useContext(ThemeContext)
-  if (!ctx) throw new Error('useTheme 必须在 <ThemeProvider> 内使用')
-  return ctx
 }

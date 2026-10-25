@@ -66,7 +66,7 @@ export default function CalendarPage() {
       .catch(() => {
         if (seq2 === reviewSeq.current) setReviewDays({})
       })
-  }, [])
+  }, [message])
 
   const daySeq = useRef(0)
   const loadDay = useCallback((d: string) => {
@@ -97,7 +97,7 @@ export default function CalendarPage() {
       .catch(() => {
         if (seq === daySeq.current) setReviewItems([])
       })
-  }, [])
+  }, [message])
 
   const loadStreak = useCallback(() => {
     get<StreakInfo>('/api/checkins/streak')

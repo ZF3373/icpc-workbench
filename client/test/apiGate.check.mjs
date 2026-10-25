@@ -64,7 +64,14 @@ function mount(gate) {
   return { run, logs, proxyHits }
 }
 
-const backend = net.createServer((s) => s.end())
+// net.Server 没有 closeAllConnections（那是 http.Server 的）：
+// 代理侧 http agent 的 keep-alive 连接会挂住 server.close，手动跟踪并销毁
+const backendConns = new Set()
+const backend = net.createServer((s) => {
+  backendConns.add(s)
+  s.on('close', () => backendConns.delete(s))
+  s.end()
+})
 
 /* ---------- 1. 后端始终不通：先挂住，到点返回 503 ---------- */
 {
@@ -120,6 +127,9 @@ const backend = net.createServer((s) => s.end())
   check('就绪后：新请求直接放行（不再走挂起路径）', () => {
     assert.equal(after.released, true)
   })
+  // 代理侧的 http agent 默认 keep-alive（Node 19+），连接不断 close 会一直挂到
+  // unsettled top-level await（exit 13，断言全过也报失败）——先显式断干净
+  for (const conn of backendConns) conn.destroy()
   await new Promise((r) => backend.close(r))
 }
 

@@ -10,7 +10,7 @@ import {
 import PageHeader from '../components/PageHeader'
 import { get } from '../api'
 import { openExternal } from '../externalLinks'
-import { useSoftwareUpdate } from '../updateContext'
+import { useSoftwareUpdate } from '../updateCore'
 
 const GITHUB_REPO_URL = 'https://github.com/ZF3373/icpc-workbench'
 

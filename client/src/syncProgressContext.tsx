@@ -9,43 +9,19 @@
  * - 有同步进行中：1 秒一次（心跳要跟得上，用户盯着看）；
  * - 空闲：10 秒一次的哨兵轮询（覆盖服务端后台续拉、别的页面发起的同步）。
  */
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { SyncProgressSnapshot } from '../../shared/src/index.ts'
 import { get } from './api'
 import { hasRunningProgress } from './syncProgress'
+import {
+  PROGRESS_POLL_IDLE_MS,
+  PROGRESS_POLL_RUNNING_MS,
+  SyncProgressCtx as Ctx,
+  type SyncProgressApi,
+} from './syncProgressCore'
 import type { SyncPlatformStatusView } from './syncStatus'
 
 const EMPTY: SyncProgressSnapshot = { jobs: [], batch: null }
-
-/** 进行中的轮询间隔（心跳粒度） */
-export const PROGRESS_POLL_RUNNING_MS = 1_000
-/** 空闲哨兵轮询间隔（发现「别处发起的同步 / 后台续拉」的最大延迟） */
-export const PROGRESS_POLL_IDLE_MS = 10_000
-
-export interface SyncProgressApi {
-  snapshot: SyncProgressSnapshot
-  /** 各平台最近一次同步（空闲时供「同步状态」卡与「上次同步结果」抽屉使用） */
-  statuses: SyncPlatformStatusView[]
-  /** 是否仍有同步在进行（面板/悬浮卡据此渲染，轮询据此加速） */
-  running: boolean
-  /** 立即拉一次（刚点下同步时调用，避免等一个轮询周期才出现进度） */
-  refresh: () => void
-}
-
-const Ctx = createContext<SyncProgressApi>({
-  snapshot: EMPTY,
-  statuses: [],
-  running: false,
-  refresh: () => {},
-})
 
 export function SyncProgressProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<SyncProgressSnapshot>(EMPTY)
@@ -89,8 +65,4 @@ export function SyncProgressProvider({ children }: { children: ReactNode }) {
     [snapshot, statuses, running, refresh],
   )
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
-}
-
-export function useSyncProgress(): SyncProgressApi {
-  return useContext(Ctx)
 }

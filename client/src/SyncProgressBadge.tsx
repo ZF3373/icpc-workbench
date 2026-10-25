@@ -10,7 +10,7 @@
 import { useState } from 'react'
 import { Card, Space, Tag, Tooltip, Typography } from 'antd'
 import { DownOutlined, LoadingOutlined, UpOutlined } from '@ant-design/icons'
-import { useSyncProgress } from './syncProgressContext'
+import { useSyncProgress } from './syncProgressCore'
 import { elapsedText, heartbeatText, heartbeatTone, jobLineText, modeText, summaryText } from './syncProgress'
 import { platformName } from './ui'
 

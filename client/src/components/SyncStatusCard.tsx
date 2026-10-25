@@ -9,7 +9,7 @@
 import { useState } from 'react'
 import { Card, Space, Tooltip, Typography } from 'antd'
 import { DownOutlined, HistoryOutlined, UpOutlined } from '@ant-design/icons'
-import { useSyncProgress } from '../syncProgressContext'
+import { useSyncProgress } from '../syncProgressCore'
 import { summaryText, wrapUpVisible } from '../syncProgress'
 import { lastSyncSummary } from '../syncStatus'
 import { IdlePlatformRows, RunningRows } from './SyncProgressRows'

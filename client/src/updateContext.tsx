@@ -1,15 +1,7 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { App as AntdApp } from 'antd'
 import { get, post } from './api'
+import { UpdateContext, type UpdateContextValue } from './updateCore'
 import type { UpdateInfo, UpdateProgress } from './types'
 
 /**
@@ -21,20 +13,6 @@ import type { UpdateInfo, UpdateProgress } from './types'
  * Provider 不会卸载，轮询继续推进、/apply 仍会被调用，更新不会被中断。
  * 同时应用启动时同步一次后端进度，让「更新中刷新页面」也能恢复驱动到完成。
  */
-interface UpdateContextValue {
-  info: UpdateInfo | null
-  checking: boolean
-  check: () => Promise<UpdateInfo | null>
-  phase: UpdateProgress['phase']
-  percent: number
-  busy: boolean
-  result: { ok: boolean; text: string } | null
-  /** channel 缺省时使用检查结果的推荐通道（顶部横幅的一键更新走推荐通道） */
-  runUpdate: (channel?: 'stable' | 'commit') => Promise<void>
-  hasUpdate: boolean
-}
-
-const UpdateContext = createContext<UpdateContextValue | null>(null)
 
 export function UpdateProvider({ children }: { children: ReactNode }) {
   const { message } = AntdApp.useApp()
@@ -193,10 +171,4 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   )
 
   return <UpdateContext.Provider value={value}>{children}</UpdateContext.Provider>
-}
-
-export function useSoftwareUpdate(): UpdateContextValue {
-  const ctx = useContext(UpdateContext)
-  if (!ctx) throw new Error('useSoftwareUpdate 必须在 <UpdateProvider> 内使用')
-  return ctx
 }

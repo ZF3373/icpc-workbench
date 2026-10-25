@@ -177,7 +177,7 @@ export default function Templates() {
         message.error(e.message)
       })
       .finally(() => setLoading(false))
-  }, [])
+  }, [message])
 
   useEffect(() => {
     load()

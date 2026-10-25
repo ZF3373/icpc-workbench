@@ -6,7 +6,7 @@
  * 平台、阶段、已用时、该站点请求数、最后一次请求距今；没有百分比。
  */
 import { Empty, Space, Tag, Typography } from 'antd'
-import { useSyncProgress } from '../syncProgressContext'
+import { useSyncProgress } from '../syncProgressCore'
 import { batchRows, batchStateText, elapsedText, heartbeatTone, jobLineText, modeText, phaseText, type BatchRowState } from '../syncProgress'
 import { healthColor, healthText, platformRunLine } from '../syncStatus'
 import { platformName } from '../ui'

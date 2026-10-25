@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Popconfirm, Space } from 'antd'
 import { openExternal } from './externalLinks'
-import { useSoftwareUpdate } from './updateContext'
+import { useSoftwareUpdate } from './updateCore'
 import { nextUpdateCheckAt, shouldCheckUpdate } from './updateThrottle'
 
 const LAST_CHECK_KEY = 'update.lastCheckAt'

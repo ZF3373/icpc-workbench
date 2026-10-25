@@ -8,7 +8,7 @@
  */
 import { Tooltip } from 'antd'
 import type { PlatformId } from '../../../shared/src/index.ts'
-import { useSyncProgress } from '../syncProgressContext'
+import { useSyncProgress } from '../syncProgressCore'
 import { jobLineText, summaryText } from '../syncProgress'
 
 export default function SyncProgressHint({ platform }: { platform?: PlatformId }) {

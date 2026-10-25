@@ -13,7 +13,7 @@ import dayjs from 'dayjs'
 import { get } from '../api'
 import type { AccountScope } from '../accountScope'
 import { withScope } from '../accountScope'
-import { useTheme } from '../themeContext'
+import { useTheme } from '../themeCore'
 import type { HeatmapResult } from '../types'
 import { buildHeatmapGrid, levelFor, solveLevelThresholds, type HeatmapCell } from '../heatmapGrid'
 

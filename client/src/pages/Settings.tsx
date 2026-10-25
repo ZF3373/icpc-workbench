@@ -31,7 +31,7 @@ import { fetchShellAuthStatus, requestShellAuth, waitShellAuthResult, type Shell
 import { buildCookieItem, extractCookieValue } from '../cookies'
 import { relativeTimeText } from '../syncStatus'
 import { openExternal } from '../externalLinks'
-import { useTheme, type ThemePreference } from '../themeContext'
+import { useTheme, type ThemePreference } from '../themeCore'
 import type { ContestReminderConfig, ReminderConfig } from '../types'
 import { AiSettingsCard, type AiSettingsCardHandle, type SettingsAiData } from './settings/AiSettingsCard'
 import { ImportPlanModal } from './settings/ImportPlanModal'

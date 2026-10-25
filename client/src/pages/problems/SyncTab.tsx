@@ -7,7 +7,7 @@ import SyncProgressHint from '../../components/SyncProgressHint'
 import SyncHistoryDrawer from '../../components/SyncHistoryDrawer'
 import { get, post } from '../../api'
 import { platformName } from '../../ui'
-import { useSyncProgress } from '../../syncProgressContext'
+import { useSyncProgress } from '../../syncProgressCore'
 import { fmtClock } from '../../formatTime.ts'
 
 interface SyncPlatformStatus {
