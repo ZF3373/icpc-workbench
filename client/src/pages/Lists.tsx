@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import {
   Alert,
@@ -91,6 +91,135 @@ interface ListDetail {
   aiSuggestionOrder: number[] | null
   items: ListItem[]
 }
+
+/** ListRow 的 props：全部为可浅比较的原始值/稳定引用，memo 才能命中 */
+interface ListRowProps {
+  it: ListItem
+  /** 全局 position 首位/末位（跨分组）：上移/下移按钮据此禁用 */
+  isFirst: boolean
+  isLast: boolean
+  isDragging: boolean
+  isDropTarget: boolean
+  isJustDropped: boolean
+  categoryOptions: string[]
+  onDragHandleDown: (e: ReactMouseEvent, id: number) => void
+  onRowDragEnter: (e: ReactMouseEvent, id: number) => void
+  onMove: (id: number, delta: -1 | 1) => void
+  onChangeCategory: (id: number, category: string) => void
+  onRemove: (id: number) => void
+}
+
+/**
+ * 题单详情的单行题目（分组视图与顺序视图共用）。
+ * memo 化的动机：题单可到几百题，弹窗开关、重命名输入等任意父级状态变化
+ * 都会让内联 renderRow 全量重建所有行；拆成组件后仅 props 变化的行重渲染
+ * （拖拽时通常只有拖动行与落点行两个）。行为与原内联实现逐项一致。
+ */
+const ListRow = memo(function ListRow({
+  it,
+  isFirst,
+  isLast,
+  isDragging,
+  isDropTarget,
+  isJustDropped,
+  categoryOptions,
+  onDragHandleDown,
+  onRowDragEnter,
+  onMove,
+  onChangeCategory,
+  onRemove,
+}: ListRowProps) {
+  const link = it.url
+  // 无题名（或历史数据里解析残留的 "https://" 假题名）时直接显示题号，
+  // 此时旁边不再重复展示小字题号
+  const rawTitle = it.title?.trim()
+  const hasTitle = !!rawTitle && !/^https?:\/\//i.test(rawTitle)
+  const name = hasTitle ? rawTitle : it.problem_key
+  const rowClass = [
+    'list-item-row',
+    isDragging ? 'is-dragging' : '',
+    isDropTarget ? 'is-drop-target' : '',
+    isJustDropped ? 'is-just-dropped' : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+  return (
+    <div
+      className={rowClass}
+      // 行内不再写临时高亮：拖拽态交给上面的 class（.is-dragging 也是 opacity，
+      // 所以拖起时让出内联 opacity，否则已 AC 行的 0.55 会盖掉 .is-dragging）
+      style={isDragging ? undefined : { opacity: it.solved ? 0.55 : 1 }}
+      onMouseEnter={(e) => onRowDragEnter(e, it.id)}
+      onMouseMove={(e) => onRowDragEnter(e, it.id)}
+    >
+      <Space size={8} wrap style={{ flex: 1 }}>
+        <span className="list-item-reorder">
+          <Tooltip title="拖拽排序">
+            <span className="drag-handle" onMouseDown={(e) => onDragHandleDown(e, it.id)}>
+              <HolderOutlined />
+            </span>
+          </Tooltip>
+          <Tooltip title="上移">
+            <Button
+              type="text"
+              size="small"
+              className="reorder-btn"
+              icon={<ArrowUpOutlined />}
+              disabled={isFirst}
+              onClick={() => onMove(it.id, -1)}
+              aria-label="上移该题"
+            />
+          </Tooltip>
+          <Tooltip title="下移">
+            <Button
+              type="text"
+              size="small"
+              className="reorder-btn"
+              icon={<ArrowDownOutlined />}
+              disabled={isLast}
+              onClick={() => onMove(it.id, 1)}
+              aria-label="下移该题"
+            />
+          </Tooltip>
+        </span>
+        <PlatformTag id={it.platform as PlatformId} />
+        {link ? (
+          <a href={link} target="_blank" rel="noreferrer">
+            <b>{name}</b>
+          </a>
+        ) : (
+          <b>{name}</b>
+        )}
+        {hasTitle && rawTitle !== it.problem_key && (
+          <span className="mono" style={{ fontSize: 12, color: 'var(--text-3)' }}>
+            {it.problem_key}
+          </span>
+        )}
+        {it.difficulty !== null && (
+          <span className="mono" style={{ fontSize: 12, color: difficultyColor(it.difficulty) }}>
+            {it.difficulty}
+          </span>
+        )}
+        {it.solved && <Tag color="success">已AC</Tag>}
+      </Space>
+      <Space size={4}>
+        <Select
+          size="small"
+          style={{ minWidth: 110 }}
+          value={it.category}
+          showSearch
+          onChange={(v) => onChangeCategory(it.id, v)}
+          options={categoryOptions.map((c) => ({ value: c, label: c }))}
+        />
+        <Popconfirm title="移除该题" okText="移除" cancelText="取消" onConfirm={() => onRemove(it.id)}>
+          <Tooltip title="移除该题">
+            <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label="移除该题" />
+          </Tooltip>
+        </Popconfirm>
+      </Space>
+    </div>
+  )
+})
 
 export default function Lists() {
   // React 19 下 antd 静态 message 静默失效，必须用 App 上下文实例
@@ -452,7 +581,7 @@ export default function Lists() {
     return () => document.removeEventListener('mouseup', onUp)
   }, [dragItemId, applyReorder])
 
-  const startDrag = (e: ReactMouseEvent, itemId: number) => {
+  const startDrag = useCallback((e: ReactMouseEvent, itemId: number) => {
     e.preventDefault() // 阻止默认行为避免拖拽时选中文本
     if (dropFlashTimer.current !== null) {
       clearTimeout(dropFlashTimer.current)
@@ -461,17 +590,17 @@ export default function Lists() {
     setJustDroppedId(null)
     dragIdRef.current = itemId
     setDragItemId(itemId)
-  }
+  }, [])
 
   // 落点上下半区在进入行与行内移动时都要更新：长行里指针从下半滑到上半不会重新触发 enter
-  const rowDragEnter = (e: ReactMouseEvent, itemId: number) => {
+  const rowDragEnter = useCallback((e: ReactMouseEvent, itemId: number) => {
     if (dragIdRef.current === null || dragIdRef.current === itemId) return
     const rect = e.currentTarget.getBoundingClientRect()
     const pos: 'before' | 'after' = e.clientY > rect.top + rect.height / 2 ? 'after' : 'before'
     if (dragOverRef.current?.id === itemId && dragOverRef.current?.pos === pos) return
     dragOverRef.current = { id: itemId, pos }
     setDragOver({ id: itemId, pos })
-  }
+  }, [])
 
   // ---------- 题单卡片排序（P6-3 卡片化的延伸，同样走 mouse 事件 + ref） ----------
   // 只允许从卡片左上角的手柄发起：卡片本身的点击是「打开详情」，若整卡 mousedown 就能起拖，
@@ -684,112 +813,64 @@ export default function Lists() {
 
   // 按分类分组：同分类合并成一组，组序 = 该分类在题单中的首次出现位置，组内保持原顺序。
   // 分类（按题库/AI）只改 category 不动 position——分组视图因此不会打乱导入时的整体先后关系。
-  const groups: Array<{ category: string; items: ListItem[] }> = []
-  if (detail) {
+  const groups = useMemo(() => {
+    const out: Array<{ category: string; items: ListItem[] }> = []
+    if (!detail) return out
     const byCategory = new Map<string, ListItem[]>()
     for (const it of detail.items) {
       const arr = byCategory.get(it.category)
       if (arr) arr.push(it)
       else byCategory.set(it.category, [it])
     }
-    for (const [category, items] of byCategory) groups.push({ category, items })
-  }
+    for (const [category, items] of byCategory) out.push({ category, items })
+    return out
+  }, [detail])
+
+  /** 分类下拉的选项（行组件 memo 化：选项数组必须跨渲染稳定） */
+  const categoryOptions = useMemo(
+    () => [...new Set([...groups.map((x) => x.category), '其他'])],
+    [groups],
+  )
+
+  /** 各题在全局 position 序中的下标：上移/下移按钮的首末位禁用据此判定（分组视图同样用全局序） */
+  const posOf = useMemo(() => {
+    const m = new Map<number, number>()
+    detail?.items.forEach((i, idx) => m.set(i.id, idx))
+    return m
+  }, [detail])
+
+  /**
+   * 行级动作的稳定引用：ListRow memo 化后，props 里的回调必须跨渲染不变才能命中缓存，
+   * 而 changeCategory/removeItem 依赖每次渲染都重建的闭包（reloadDetail → openDetail）。
+   * 实现本体挂在 ref 上每轮刷新，转发函数永远不变。
+   */
+  const rowActionsRef = useRef({ changeCategory, removeItem })
+  rowActionsRef.current = { changeCategory, removeItem }
+  const onRowChangeCategory = useCallback(
+    (id: number, category: string) => void rowActionsRef.current.changeCategory(id, category),
+    [],
+  )
+  const onRowRemove = useCallback((id: number) => void rowActionsRef.current.removeItem(id), [])
 
   /** 单行渲染：分组视图与顺序视图共用（拖拽/上下移/改分类在两个视图下行为一致） */
   const renderRow = (it: ListItem) => {
-    const link = it.url
-    // 无题名（或历史数据里解析残留的 "https://" 假题名）时直接显示题号，
-    // 此时旁边不再重复展示小字题号
-    const rawTitle = it.title?.trim()
-    const hasTitle = !!rawTitle && !/^https?:\/\//i.test(rawTitle)
-    const name = hasTitle ? rawTitle : it.problem_key
-    const isDragging = dragItemId === it.id
-    const isDropTarget = dragOver?.id === it.id && dragItemId !== null && dragItemId !== it.id
-    const isJustDropped = justDroppedId === it.id
-    const rowClass = [
-      'list-item-row',
-      isDragging ? 'is-dragging' : '',
-      isDropTarget ? 'is-drop-target' : '',
-      isJustDropped ? 'is-just-dropped' : '',
-    ]
-      .filter(Boolean)
-      .join(' ')
+    const total = detail?.items.length ?? 0
     return (
-      <div
+      <ListRow
         key={it.id}
-        className={rowClass}
-        // 行内不再写临时高亮：拖拽态交给上面的 class（.is-dragging 也是 opacity，
-        // 所以拖起时让出内联 opacity，否则已 AC 行的 0.55 会盖掉 .is-dragging）
-        style={isDragging ? undefined : { opacity: it.solved ? 0.55 : 1 }}
-        onMouseEnter={(e) => rowDragEnter(e, it.id)}
-        onMouseMove={(e) => rowDragEnter(e, it.id)}
-      >
-        <Space size={8} wrap style={{ flex: 1 }}>
-          <span className="list-item-reorder">
-            <Tooltip title="拖拽排序">
-              <span className="drag-handle" onMouseDown={(e) => startDrag(e, it.id)}>
-                <HolderOutlined />
-              </span>
-            </Tooltip>
-            <Tooltip title="上移">
-              <Button
-                type="text"
-                size="small"
-                className="reorder-btn"
-                icon={<ArrowUpOutlined />}
-                disabled={detail?.items.findIndex((i) => i.id === it.id) === 0}
-                onClick={() => void moveItemBy(it.id, -1)}
-                aria-label="上移该题"
-              />
-            </Tooltip>
-            <Tooltip title="下移">
-              <Button
-                type="text"
-                size="small"
-                className="reorder-btn"
-                icon={<ArrowDownOutlined />}
-                disabled={detail?.items.findIndex((i) => i.id === it.id) === (detail?.items.length ?? 0) - 1}
-                onClick={() => void moveItemBy(it.id, 1)}
-                aria-label="下移该题"
-              />
-            </Tooltip>
-          </span>
-          <PlatformTag id={it.platform as PlatformId} />
-          {link ? (
-            <a href={link} target="_blank" rel="noreferrer">
-              <b>{name}</b>
-            </a>
-          ) : (
-            <b>{name}</b>
-          )}
-          {hasTitle && rawTitle !== it.problem_key && (
-            <span className="mono" style={{ fontSize: 12, color: 'var(--text-3)' }}>
-              {it.problem_key}
-            </span>
-          )}
-          {it.difficulty !== null && (
-            <span className="mono" style={{ fontSize: 12, color: difficultyColor(it.difficulty) }}>
-              {it.difficulty}
-            </span>
-          )}
-          {it.solved && <Tag color="success">已AC</Tag>}
-        </Space>
-        <Space size={4}>
-          <Select
-            size="small"
-            style={{ minWidth: 110 }}
-            value={it.category}
-            showSearch
-            onChange={(v) => void changeCategory(it.id, v)}
-            options={[...new Set([...groups.map((x) => x.category), '其他'])].map((c) => ({ value: c, label: c }))}
-          />
-          <Popconfirm title="移除该题" okText="移除" cancelText="取消" onConfirm={() => void removeItem(it.id)}>
-            <Tooltip title="移除该题">
-              <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label="移除该题" />
-            </Tooltip>
-          </Popconfirm>
-        </Space>
-      </div>
+        it={it}
+        isFirst={posOf.get(it.id) === 0}
+        isLast={posOf.get(it.id) === total - 1}
+        isDragging={dragItemId === it.id}
+        isDropTarget={dragOver?.id === it.id && dragItemId !== null && dragItemId !== it.id}
+        isJustDropped={justDroppedId === it.id}
+        categoryOptions={categoryOptions}
+        onDragHandleDown={startDrag}
+        onRowDragEnter={rowDragEnter}
+        onMove={moveItemBy}
+        onChangeCategory={onRowChangeCategory}
+        onRemove={onRowRemove}
+      />
     )
   }
 

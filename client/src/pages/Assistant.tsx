@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type RefObject } from 'react'
 import { Alert, App as AntdApp, Button, Card, Dropdown, Input, Modal, Select, Space, Spin, Tag, Tooltip } from 'antd'
 import type { MenuProps } from 'antd'
 import type { TextAreaRef } from 'antd/es/input/TextArea'
@@ -339,6 +339,18 @@ function initChatState(): ChatState {
 let chatState: ChatState = initChatState()
 const chatListeners = new Set<() => void>()
 
+/**
+ * 主页面订阅的视图快照（不含 input）：input 是高频瞬态（每击键一变），主页面这棵
+ * 大组件树不该跟着它重渲染——sessions/activeId/sendingIds 引用都没变时视图快照
+ * 对象保持不变，useSyncExternalStore 即判定「无变化」。input 的渲染收敛在 Composer
+ * 组件内（按 input 字符串单独订阅）；事件处理器要读当前输入直接读 chatState.input。
+ */
+let chatView: Readonly<Omit<ChatState, 'input'>> = {
+  sessions: chatState.sessions,
+  activeId: chatState.activeId,
+  sendingIds: chatState.sendingIds,
+}
+
 /** 进行中的会话 → AbortController，用于停止生成（非 React 状态，不触发渲染） */
 const sessionAbortControllers = new Map<string, AbortController>()
 
@@ -350,6 +362,17 @@ function setChatState(updater: (prev: ChatState) => ChatState): void {
   chatState = updater(chatState)
   // 仅在 sessions 引用变化时写 localStorage（input/sendingIds 变化不触发写入）
   if (chatState.sessions !== prev.sessions) saveToStorage(chatState.sessions)
+  if (
+    chatState.sessions !== prev.sessions ||
+    chatState.activeId !== prev.activeId ||
+    chatState.sendingIds !== prev.sendingIds
+  ) {
+    chatView = {
+      sessions: chatState.sessions,
+      activeId: chatState.activeId,
+      sendingIds: chatState.sendingIds,
+    }
+  }
   chatListeners.forEach((l) => l())
 }
 
@@ -360,8 +383,14 @@ function subscribeChat(listener: () => void): () => void {
   }
 }
 
-function getChatSnapshot(): ChatState {
-  return chatState
+/** 主页面用：不含 input 的视图快照（引用稳定，见 chatView 的注释） */
+function getChatViewSnapshot() {
+  return chatView
+}
+
+/** 输入框（Composer）用：字符串本身值稳定，相同内容不会误判为变化 */
+function getInputSnapshot(): string {
+  return chatState.input
 }
 
 // ---------- 会话操作 ----------
@@ -956,12 +985,363 @@ function ratingEvidenceLine(detail?: AbilityLevelDetail): string | null {
 
 // ---------- 组件 ----------
 
+/** Composer 的 props：input 之外的全部依赖（input 由组件自己按字符串粒度订阅 store） */
+interface ComposerProps {
+  sending: boolean
+  /** 正文输出完但 AI 仍在跑工具时的进度文案（不属于当前会话则不传） */
+  toolStatusText?: string
+  pendingAtts: PendingAtt[]
+  uploadingAtts: boolean
+  inputRef: RefObject<TextAreaRef | null>
+  fileInputRef: RefObject<HTMLInputElement | null>
+  onPaste: (e: React.ClipboardEvent) => void
+  onPickFiles: (files: FileList | null) => void | Promise<void>
+  onSend: () => void
+  onStop: () => void
+  onRemovePendingAtt: (index: number) => void
+  runCommand: (cmd: ChatCommand) => void
+}
+
+/**
+ * 输入区：文本框 + `/` 快捷指令候选 + 待发附件预览 + 附加/发送/停止按钮。
+ * 单独成组件的原因（性能）：击键只更新 store 的 input 字段，主页面订阅的是不含
+ * input 的视图快照（见 chatView），因此每次击键只有这里重渲染，而不是整页。
+ */
+function Composer({
+  sending,
+  toolStatusText,
+  pendingAtts,
+  uploadingAtts,
+  inputRef,
+  fileInputRef,
+  onPaste,
+  onPickFiles,
+  onSend,
+  onStop,
+  onRemovePendingAtt,
+  runCommand,
+}: ComposerProps) {
+  const input = useSyncExternalStore(subscribeChat, getInputSnapshot)
+  /**
+   * `/` 快捷指令（P3-5）：输入框以 `/` 开头时在它上方浮出候选，↑↓ 选择、Enter 执行、Esc 忽略。
+   * 菜单只在「确实是命令」时出现 —— 解析不出来就照常当普通消息发出去，绝不静默吞掉输入。
+   */
+  const cmdCandidates = useMemo(() => matchChatCommands(input), [input])
+  const [cmdIndex, setCmdIndex] = useState(0)
+  const [cmdDismissed, setCmdDismissed] = useState(false)
+  const cmdMenuOpen = cmdCandidates.length > 0 && !cmdDismissed
+  // 候选变了就把高亮收回范围，避免停在一个已经不存在的项上
+  useEffect(() => {
+    setCmdIndex((i) => (i < cmdCandidates.length ? i : 0))
+  }, [cmdCandidates.length])
+  // 输入不再是命令态时，重新允许弹出菜单（Esc 只忽略当前这一次）
+  useEffect(() => {
+    if (cmdCandidates.length === 0) setCmdDismissed(false)
+  }, [cmdCandidates.length])
+  return (
+    <div className="plan-chat-input" style={{ position: 'relative' }}>
+      {/* `/` 快捷指令候选（P3-5）：浮在输入框上方，不挤压消息区高度 */}
+      {cmdMenuOpen && (
+        <div className="chat-cmd-menu" role="listbox" aria-label="快捷指令">
+          {cmdCandidates.map((c, i) => (
+            <button
+              key={c.name}
+              type="button"
+              role="option"
+              aria-selected={i === cmdIndex}
+              className={`chat-cmd-item${i === cmdIndex ? ' is-active' : ''}`}
+              onMouseEnter={() => setCmdIndex(i)}
+              // mousedown 而不是 click：click 之前输入框会先失焦，菜单已经被关掉
+              onMouseDown={(e) => {
+                e.preventDefault()
+                runCommand(c)
+              }}
+            >
+              <span className="chat-cmd-name">
+                /{c.name}
+                {c.arg ? <span className="chat-cmd-arg"> {c.arg}</span> : null}
+              </span>
+              <span className="chat-cmd-hint">{c.hint}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {pendingAtts.length > 0 && (
+        <div style={{ flexBasis: '100%', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {pendingAtts.map((a, i) =>
+            a.previewUrl ? (
+              /* 图片附件：缩略图预览（对齐主流聊天产品的粘贴样式），悬停出移除钮 */
+              <div key={`${a.fileId}-${i}`} className="pending-att-thumb">
+                <img src={a.previewUrl} alt={a.filename || '图片附件'} />
+                <button
+                  type="button"
+                  className="pending-att-remove"
+                  aria-label={`移除图片 ${a.filename || ''}`}
+                  title={a.filename || '图片附件'}
+                  onClick={() => onRemovePendingAtt(i)}
+                >
+                  <CloseOutlined />
+                </button>
+              </div>
+            ) : (
+              <Tag
+                key={`${a.fileId}-${i}`}
+                closable
+                onClose={() => onRemovePendingAtt(i)}
+              >
+                <PaperClipOutlined /> {a.filename || a.fileId}
+                {a.bytes !== undefined ? `（${fmtBytes(a.bytes)}）` : ''}
+                {a.textContent !== undefined ? ' · 文本' : ''}
+              </Tag>
+            ),
+          )}
+        </div>
+      )}
+      <Input.TextArea
+        ref={inputRef}
+        value={input}
+        onChange={(e) => setChatState((prev) => ({ ...prev, input: e.target.value }))}
+        placeholder="向 AI 教练提问…（可粘贴截图/代码，拖入或附加图片/代码文件；输入 / 查看快捷指令）Enter 发送，Shift+Enter 换行"
+        onPaste={onPaste}
+        autoSize={{ minRows: 1, maxRows: 6 }}
+        onKeyDown={(e) => {
+          // 菜单打开时先吃掉方向键/Enter/Esc，避免同时触发「发送」
+          if (!cmdMenuOpen) return
+          if (e.key === 'ArrowDown') {
+            e.preventDefault()
+            setCmdIndex((i) => (i + 1) % cmdCandidates.length)
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault()
+            setCmdIndex((i) => (i - 1 + cmdCandidates.length) % cmdCandidates.length)
+          } else if (e.key === 'Escape') {
+            e.preventDefault()
+            setCmdDismissed(true)
+          }
+        }}
+        onPressEnter={(e) => {
+          if (e.shiftKey) return
+          e.preventDefault()
+          if (cmdMenuOpen) {
+            runCommand(cmdCandidates[cmdIndex])
+            return
+          }
+          onSend()
+        }}
+      />
+      <Tooltip title="附加图片或代码文件（图片走 Files API 上传，文本/代码文件读取内容到输入框）">
+        <Button
+          icon={uploadingAtts ? <LoadingOutlined /> : <PaperClipOutlined />}
+          aria-label="附加图片或代码文件"
+          disabled={uploadingAtts || sending}
+          onClick={() => fileInputRef.current?.click()}
+          tabIndex={-1}
+        />
+      </Tooltip>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.xlsx,.pptx,.html,.htm,.csv,.json,.xml,.epub,.txt,.md,.py,.cpp,.c,.cc,.cxx,.h,.hpp,.java,.kt,.rs,.go,.js,.ts,.jsx,.tsx,.rb,.php,.sh,.bash,.zsh,.sql,.yaml,.yml,.toml,.tsv,.css,.scss,.less,.vue,.svelte,.swift,.m,.scala,.clj,.ex,.exs,.erl,.hs,.lua,.pl,.r,.dart,.groovy,.gradle,.cmake,.ini,.cfg,.conf,.properties"
+        hidden
+        onChange={(e) => void onPickFiles(e.target.files)}
+      />
+      {sending ? (
+        <>
+          {/* 正文输出完但 AI 还在跑工具（检索/抓网页）时，说明为什么按钮仍是「停止」 */}
+          {toolStatusText && (
+            <span style={{ fontSize: 12, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
+              {toolStatusText}
+            </span>
+          )}
+          <Tooltip title="停止本次生成（已输出的内容会保留）">
+            <Button danger onClick={onStop} tabIndex={-1}>
+              停止
+            </Button>
+          </Tooltip>
+        </>
+      ) : (
+        <Button
+          type="primary"
+          icon={<SendOutlined />}
+          disabled={(!input.trim() && pendingAtts.length === 0) || uploadingAtts}
+          onClick={() => onSend()}
+          tabIndex={-1}
+        />
+      )}
+    </div>
+  )
+}
+
+/** SessionRow 的 props：除会话对象外全部为浅可比较值，memo 才能命中 */
+interface SessionRowProps {
+  s: ChatSession
+  isActive: boolean
+  isDragging: boolean
+  isDragOver: boolean
+  /** 任意行正在被拖拽（行间互斥样式与 userSelect 用） */
+  anyDragging: boolean
+  renaming: boolean
+  sending: boolean
+  onActivate: (id: string) => void
+  onHandleDown: (id: string) => void
+  onEnter: (e: ReactMouseEvent<HTMLDivElement>, id: string, isActive: boolean) => void
+  onLeave: (e: ReactMouseEvent<HTMLDivElement>, isActive: boolean) => void
+  onDrop: (id: string) => void
+  onRename: (id: string, title: string) => void
+  onStartRename: (id: string) => void
+  onCancelRename: () => void
+  onPin: (id: string) => void
+  onDelete: (id: string) => void
+}
+
+/**
+ * 会话记录侧栏的单行。memo 化的动机：流式生成期间 store 的 sessions 每次攒批
+ * 都换引用，但只有正在生成的那个会话对象在变——其余几十行会话的 props 完全相同，
+ * memo 后它们全部跳过重渲染（此前每 50ms 全列表重建一次）。
+ */
+const SessionRow = memo(function SessionRow({
+  s,
+  isActive,
+  isDragging,
+  isDragOver,
+  anyDragging,
+  renaming,
+  sending,
+  onActivate,
+  onHandleDown,
+  onEnter,
+  onLeave,
+  onDrop,
+  onRename,
+  onStartRename,
+  onCancelRename,
+  onPin,
+  onDelete,
+}: SessionRowProps) {
+  return (
+    <div
+      className="reorder-host"
+      onClick={() => onActivate(s.id)}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 4,
+        padding: '6px 8px',
+        borderRadius: 8,
+        cursor: 'pointer',
+        marginBottom: 2,
+        background: isActive ? 'var(--brand-soft)' : 'transparent',
+        opacity: isDragging ? 0.4 : 1,
+        borderTop: isDragOver ? '2px solid var(--brand)' : '2px solid transparent',
+        transition: 'background var(--dur-2) var(--ease-standard)',
+        userSelect: anyDragging ? 'none' : undefined,
+      }}
+      onMouseEnter={(e) => onEnter(e, s.id, isActive)}
+      onMouseLeave={(e) => onLeave(e, isActive)}
+      onMouseUp={() => onDrop(s.id)}
+    >
+      <HolderOutlined
+        style={{ fontSize: 12, color: 'var(--text-dim)', flexShrink: 0, cursor: 'grab' }}
+        onMouseDown={(e) => {
+          // 在手柄上按下鼠标：启动拖拽（阻止默认行为避免选中文本）
+          e.stopPropagation()
+          e.preventDefault()
+          onHandleDown(s.id)
+        }}
+      />
+      {/* 行内只留拖拽手柄 + ⋯ 菜单：↑↓ 排序与拖拽功能重复，重命名/置顶/删除
+          是低频操作，收进菜单把宽度还给标题。⋯ 是真实按钮，键盘和触屏都够得着。 */}
+      <div style={{ flex: 1, minWidth: 0 }} onDoubleClick={() => onStartRename(s.id)}>
+        {renaming ? (
+          <Input
+            size="small"
+            autoFocus
+            defaultValue={s.title}
+            onClick={(e) => e.stopPropagation()}
+            onPressEnter={(e) => {
+              onRename(s.id, (e.target as HTMLInputElement).value)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') onCancelRename()
+            }}
+            onBlur={(e) => {
+              onRename(s.id, e.target.value)
+            }}
+            style={{ fontSize: 13, height: 24 }}
+          />
+        ) : (
+          <>
+            {/* 双击重命名的提示：原生 title 悬停约 1 秒才出、无样式、键盘聚焦也不显示；
+                换成 Tooltip 后与行内「⋯ → 重命名」的入口保持同一套提示形态
+                （键盘用户的主路径是 ⋯ 菜单，这里是鼠标路径的提示） */}
+            <Tooltip title="双击重命名">
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: isActive ? 600 : 400,
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  color: s.pinned ? 'var(--amber)' : undefined,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
+              >
+                {sending && (
+                  <LoadingOutlined style={{ fontSize: 11, color: 'var(--brand)', flexShrink: 0 }} />
+                )}
+                {s.pinned && (
+                  <PushpinFilled style={{ fontSize: 11, color: 'var(--amber)', flexShrink: 0 }} />
+                )}
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title || '新会话'}</span>
+              </div>
+            </Tooltip>
+            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{relTime(s.updatedAt)}</div>
+          </>
+        )}
+      </div>
+      <Dropdown
+        trigger={['click']}
+        placement="bottomRight"
+        menu={{
+          items: [
+            { key: 'rename', icon: <EditOutlined />, label: '重命名' },
+            {
+              key: 'pin',
+              icon: s.pinned ? <PushpinFilled /> : <PushpinOutlined />,
+              label: s.pinned ? '取消置顶' : '置顶',
+            },
+            { type: 'divider' },
+            { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true },
+          ],
+          onClick: ({ key, domEvent }) => {
+            domEvent.stopPropagation() // 不能顺带切换会话
+            if (key === 'rename') onStartRename(s.id)
+            else if (key === 'pin') onPin(s.id)
+            else if (key === 'delete') onDelete(s.id)
+          },
+        }}
+      >
+        <Button
+          size="small"
+          type="text"
+          icon={<MoreOutlined />}
+          aria-label={`会话操作：「${s.title || '新会话'}」`}
+          onClick={(e) => e.stopPropagation()}
+          style={{ flexShrink: 0, padding: '0 4px' }}
+        />
+      </Dropdown>
+    </div>
+  )
+})
+
 export default function Assistant() {
   const { message, modal } = AntdApp.useApp()
   const nav = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const chat = useSyncExternalStore(subscribeChat, getChatSnapshot)
-  const { sessions, activeId, input, sendingIds } = chat
+  const chat = useSyncExternalStore(subscribeChat, getChatViewSnapshot)
+  const { sessions, activeId, sendingIds } = chat
   const activeSession = sessions.find((s) => s.id === activeId)
   const messages = activeSession?.messages ?? []
   const planId = activeSession?.planId
@@ -984,25 +1364,13 @@ export default function Assistant() {
   )
 
   /**
-   * `/` 快捷指令（P3-5）：输入框以 `/` 开头时在它上方浮出候选，↑↓ 选择、Enter 执行、Esc 忽略。
-   * 菜单只在「确实是命令」时出现 —— 解析不出来就照常当普通消息发出去，绝不静默吞掉输入。
+   * `/` 快捷指令的候选/高亮/忽略状态已随输入区一起移入 Composer：
+   * 它们完全由 input 派生，留在主页面会让每次击键都唤醒整页。
    */
-  const cmdCandidates = useMemo(() => matchChatCommands(input), [input])
-  const [cmdIndex, setCmdIndex] = useState(0)
-  const [cmdDismissed, setCmdDismissed] = useState(false)
-  const cmdMenuOpen = cmdCandidates.length > 0 && !cmdDismissed
-  // 候选变了就把高亮收回范围，避免停在一个已经不存在的项上
-  useEffect(() => {
-    setCmdIndex((i) => (i < cmdCandidates.length ? i : 0))
-  }, [cmdCandidates.length])
-  // 输入不再是命令态时，重新允许弹出菜单（Esc 只忽略当前这一次）
-  useEffect(() => {
-    if (cmdCandidates.length === 0) setCmdDismissed(false)
-  }, [cmdCandidates.length])
 
   /** 执行一条指令；需要参数却没给时只补全命令名，等用户填完再按 Enter */
   const runChatCommand = (cmd: ChatCommand) => {
-    const parsed = parseChatCommand(input)
+    const parsed = parseChatCommand(chatState.input)
     const arg = parsed?.command.name === cmd.name ? parsed.arg : ''
     if (!commandReady(cmd, arg)) {
       setChatState((prev) => ({ ...prev, input: commandPrompt(cmd) }))
@@ -1562,6 +1930,53 @@ export default function Assistant() {
     })
   }
 
+  /**
+   * 会话行的稳定回调：SessionRow memo 化后 props 必须跨渲染不变。会话操作本体
+   * （switchToSession/renameSession 等）是模块级函数天然稳定；依赖组件闭包的
+   * confirmDeleteSession（modal 实例）与 showSessionUndo（message 实例）挂 ref 转发。
+   */
+  const rowActionsRef = useRef({ confirmDeleteSession, showSessionUndo })
+  rowActionsRef.current = { confirmDeleteSession, showSessionUndo }
+  const onRowActivate = useCallback((id: string) => switchToSession(id), [])
+  const onRowHandleDown = useCallback((id: string) => {
+    dragIdRef.current = id
+    setDragId(id)
+  }, [])
+  const onRowEnter = useCallback(
+    (e: ReactMouseEvent<HTMLDivElement>, id: string, isActive: boolean) => {
+      // 拖拽中：标记当前行为放置目标；否则普通 hover
+      if (dragIdRef.current !== null && dragIdRef.current !== id) {
+        setDragOverId(id)
+      } else if (!isActive && dragIdRef.current !== id) {
+        e.currentTarget.style.background = 'var(--overlay-2)'
+      }
+    },
+    [],
+  )
+  const onRowLeave = useCallback((e: ReactMouseEvent<HTMLDivElement>, isActive: boolean) => {
+    if (dragIdRef.current !== null) return
+    if (!isActive) e.currentTarget.style.background = 'transparent'
+  }, [])
+  const onRowDrop = useCallback((id: string) => {
+    // 拖拽中松手在此行：执行排序（并留一条撤销入口）
+    if (dragIdRef.current !== null && dragIdRef.current !== id) {
+      const before = sessionIdOrder(chatState.sessions)
+      reorderSessions(dragIdRef.current, id)
+      rowActionsRef.current.showSessionUndo(before)
+    }
+    dragIdRef.current = null
+    setDragId(null)
+    setDragOverId(null)
+  }, [])
+  const onRowRename = useCallback((id: string, title: string) => {
+    renameSession(id, title)
+    setRenamingId(null)
+  }, [])
+  const onRowStartRename = useCallback((id: string) => setRenamingId(id), [])
+  const onRowCancelRename = useCallback(() => setRenamingId(null), [])
+  const onRowPin = useCallback((id: string) => toggleSessionPin(id), [])
+  const onRowDelete = useCallback((id: string) => rowActionsRef.current.confirmDeleteSession(id), [])
+
   /** 键盘排序：上移/下移一格；真的移动了才给撤销入口 */
   // 清单加载（挂载一次）：计划/题单/模板分类/已参加比赛 + 清理已删除的关联
   useEffect(() => {
@@ -1897,7 +2312,8 @@ export default function Assistant() {
   }, [messages, sending, scheduleSpy, activeId])
 
   const send = async () => {
-    const text = input.trim()
+    // 输入框在 Composer 里按 input 单独订阅；发送是事件时序，直接读 store 当前值
+    const text = chatState.input.trim()
     const atts = pendingAtts
     if ((!text && atts.length === 0) || sendingIds.has(activeId)) return
     // 发新消息时恢复自动滚动到底部
@@ -2495,151 +2911,28 @@ export default function Assistant() {
             }
           >
             <div style={{ maxHeight: 280, overflowY: 'auto', margin: '0 -4px' }}>
-              {orderedSessions.map((s) => {
-                const isActive = s.id === activeId
-                const isDragging = dragId === s.id
-                const isDragOver = dragOverId === s.id && dragId !== null && dragId !== s.id
-                return (
-                  <div
-                    key={s.id}
-                    className="reorder-host"
-                    onClick={() => switchToSession(s.id)}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 4,
-                      padding: '6px 8px',
-                      borderRadius: 8,
-                      cursor: 'pointer',
-                      marginBottom: 2,
-                      background: isActive ? 'var(--brand-soft)' : 'transparent',
-                      opacity: isDragging ? 0.4 : 1,
-                      borderTop: isDragOver ? '2px solid var(--brand)' : '2px solid transparent',
-                      transition: 'background var(--dur-2) var(--ease-standard)',
-                      userSelect: dragId !== null ? 'none' : undefined,
-                    }}
-                    onMouseEnter={(e) => {
-                      // 拖拽中：标记当前行为放置目标；否则普通 hover
-                      if (dragIdRef.current !== null && dragIdRef.current !== s.id) {
-                        setDragOverId(s.id)
-                      } else if (!isActive && !isDragging) {
-                        e.currentTarget.style.background = 'var(--overlay-2)'
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (dragIdRef.current !== null) return
-                      if (!isActive) e.currentTarget.style.background = 'transparent'
-                    }}
-                    onMouseUp={() => {
-                      // 拖拽中松手在此行：执行排序（并留一条撤销入口）
-                      if (dragIdRef.current !== null && dragIdRef.current !== s.id) {
-                        const before = sessionIdOrder(sessions)
-                        reorderSessions(dragIdRef.current, s.id)
-                        showSessionUndo(before)
-                      }
-                      dragIdRef.current = null
-                      setDragId(null)
-                      setDragOverId(null)
-                    }}
-                  >
-                    <HolderOutlined
-                      style={{ fontSize: 12, color: 'var(--text-dim)', flexShrink: 0, cursor: 'grab' }}
-                      onMouseDown={(e) => {
-                        // 在手柄上按下鼠标：启动拖拽（阻止默认行为避免选中文本）
-                        e.stopPropagation()
-                        e.preventDefault()
-                        dragIdRef.current = s.id
-                        setDragId(s.id)
-                      }}
-                    />
-                    {/* 行内只留拖拽手柄 + ⋯ 菜单：↑↓ 排序与拖拽功能重复，重命名/置顶/删除
-                        是低频操作，收进菜单把宽度还给标题。⋯ 是真实按钮，键盘和触屏都够得着。 */}
-                    <div style={{ flex: 1, minWidth: 0 }} onDoubleClick={() => setRenamingId(s.id)}>
-                      {renamingId === s.id ? (
-                        <Input
-                          size="small"
-                          autoFocus
-                          defaultValue={s.title}
-                          onClick={(e) => e.stopPropagation()}
-                          onPressEnter={(e) => {
-                            renameSession(s.id, (e.target as HTMLInputElement).value)
-                            setRenamingId(null)
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Escape') setRenamingId(null)
-                          }}
-                          onBlur={(e) => {
-                            renameSession(s.id, e.target.value)
-                            setRenamingId(null)
-                          }}
-                          style={{ fontSize: 13, height: 24 }}
-                        />
-                      ) : (
-                        <>
-                          {/* 双击重命名的提示：原生 title 悬停约 1 秒才出、无样式、键盘聚焦也不显示；
-                              换成 Tooltip 后与行内「⋯ → 重命名」的入口保持同一套提示形态
-                              （键盘用户的主路径是 ⋯ 菜单，这里是鼠标路径的提示） */}
-                          <Tooltip title="双击重命名">
-                            <div
-                              style={{
-                                fontSize: 13,
-                                fontWeight: isActive ? 600 : 400,
-                                whiteSpace: 'nowrap',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                color: s.pinned ? 'var(--amber)' : undefined,
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 4,
-                              }}
-                            >
-                              {sendingIds.has(s.id) && (
-                                <LoadingOutlined style={{ fontSize: 11, color: 'var(--brand)', flexShrink: 0 }} />
-                              )}
-                              {s.pinned && (
-                                <PushpinFilled style={{ fontSize: 11, color: 'var(--amber)', flexShrink: 0 }} />
-                              )}
-                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title || '新会话'}</span>
-                            </div>
-                          </Tooltip>
-                          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{relTime(s.updatedAt)}</div>
-                        </>
-                      )}
-                    </div>
-                    <Dropdown
-                      trigger={['click']}
-                      placement="bottomRight"
-                      menu={{
-                        items: [
-                          { key: 'rename', icon: <EditOutlined />, label: '重命名' },
-                          {
-                            key: 'pin',
-                            icon: s.pinned ? <PushpinFilled /> : <PushpinOutlined />,
-                            label: s.pinned ? '取消置顶' : '置顶',
-                          },
-                          { type: 'divider' },
-                          { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true },
-                        ],
-                        onClick: ({ key, domEvent }) => {
-                          domEvent.stopPropagation() // 不能顺带切换会话
-                          if (key === 'rename') setRenamingId(s.id)
-                          else if (key === 'pin') toggleSessionPin(s.id)
-                          else if (key === 'delete') confirmDeleteSession(s.id)
-                        },
-                      }}
-                    >
-                      <Button
-                        size="small"
-                        type="text"
-                        icon={<MoreOutlined />}
-                        aria-label={`会话操作：「${s.title || '新会话'}」`}
-                        onClick={(e) => e.stopPropagation()}
-                        style={{ flexShrink: 0, padding: '0 4px' }}
-                      />
-                    </Dropdown>
-                  </div>
-                )
-              })}
+              {orderedSessions.map((s) => (
+                <SessionRow
+                  key={s.id}
+                  s={s}
+                  isActive={s.id === activeId}
+                  isDragging={dragId === s.id}
+                  isDragOver={dragOverId === s.id && dragId !== null && dragId !== s.id}
+                  anyDragging={dragId !== null}
+                  renaming={renamingId === s.id}
+                  sending={sendingIds.has(s.id)}
+                  onActivate={onRowActivate}
+                  onHandleDown={onRowHandleDown}
+                  onEnter={onRowEnter}
+                  onLeave={onRowLeave}
+                  onDrop={onRowDrop}
+                  onRename={onRowRename}
+                  onStartRename={onRowStartRename}
+                  onCancelRename={onRowCancelRename}
+                  onPin={onRowPin}
+                  onDelete={onRowDelete}
+                />
+              ))}
             </div>
           </Card>
 
@@ -2698,7 +2991,7 @@ export default function Assistant() {
                   updateActiveSessionContestKey(v)
                   // 选中即预填复盘请求（输入框已有草稿时不覆盖）：带上本场关键事实，
                   // 省去 AI 反问「哪一场、做了几题」
-                      if (v && !input.trim()) {
+                  if (v && !chatState.input.trim()) {
                     const picked = (contests ?? []).find((c) => c.key === v)
                     setChatState((prev) => ({
                       ...prev,
@@ -2951,136 +3244,20 @@ export default function Assistant() {
               </Dropdown>
             </div>
           )}
-          <div className="plan-chat-input" style={{ position: 'relative' }}>
-            {/* `/` 快捷指令候选（P3-5）：浮在输入框上方，不挤压消息区高度 */}
-            {cmdMenuOpen && (
-              <div className="chat-cmd-menu" role="listbox" aria-label="快捷指令">
-                {cmdCandidates.map((c, i) => (
-                  <button
-                    key={c.name}
-                    type="button"
-                    role="option"
-                    aria-selected={i === cmdIndex}
-                    className={`chat-cmd-item${i === cmdIndex ? ' is-active' : ''}`}
-                    onMouseEnter={() => setCmdIndex(i)}
-                    // mousedown 而不是 click：click 之前输入框会先失焦，菜单已经被关掉
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      runChatCommand(c)
-                    }}
-                  >
-                    <span className="chat-cmd-name">
-                      /{c.name}
-                      {c.arg ? <span className="chat-cmd-arg"> {c.arg}</span> : null}
-                    </span>
-                    <span className="chat-cmd-hint">{c.hint}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-            {pendingAtts.length > 0 && (
-              <div style={{ flexBasis: '100%', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {pendingAtts.map((a, i) =>
-                  a.previewUrl ? (
-                    /* 图片附件：缩略图预览（对齐主流聊天产品的粘贴样式），悬停出移除钮 */
-                    <div key={`${a.fileId}-${i}`} className="pending-att-thumb">
-                      <img src={a.previewUrl} alt={a.filename || '图片附件'} />
-                      <button
-                        type="button"
-                        className="pending-att-remove"
-                        aria-label={`移除图片 ${a.filename || ''}`}
-                        title={a.filename || '图片附件'}
-                        onClick={() => removePendingAtt(i)}
-                      >
-                        <CloseOutlined />
-                      </button>
-                    </div>
-                  ) : (
-                    <Tag
-                      key={`${a.fileId}-${i}`}
-                      closable
-                      onClose={() => removePendingAtt(i)}
-                    >
-                      <PaperClipOutlined /> {a.filename || a.fileId}
-                      {a.bytes !== undefined ? `（${fmtBytes(a.bytes)}）` : ''}
-                      {a.textContent !== undefined ? ' · 文本' : ''}
-                    </Tag>
-                  ),
-                )}
-              </div>
-            )}
-            <Input.TextArea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setChatState((prev) => ({ ...prev, input: e.target.value }))}
-              placeholder="向 AI 教练提问…（可粘贴截图/代码，拖入或附加图片/代码文件；输入 / 查看快捷指令）Enter 发送，Shift+Enter 换行"
-              onPaste={handlePasteUpload}
-              autoSize={{ minRows: 1, maxRows: 6 }}
-              onKeyDown={(e) => {
-                // 菜单打开时先吃掉方向键/Enter/Esc，避免同时触发「发送」
-                if (!cmdMenuOpen) return
-                if (e.key === 'ArrowDown') {
-                  e.preventDefault()
-                  setCmdIndex((i) => (i + 1) % cmdCandidates.length)
-                } else if (e.key === 'ArrowUp') {
-                  e.preventDefault()
-                  setCmdIndex((i) => (i - 1 + cmdCandidates.length) % cmdCandidates.length)
-                } else if (e.key === 'Escape') {
-                  e.preventDefault()
-                  setCmdDismissed(true)
-                }
-              }}
-              onPressEnter={(e) => {
-                if (e.shiftKey) return
-                e.preventDefault()
-                if (cmdMenuOpen) {
-                  runChatCommand(cmdCandidates[cmdIndex])
-                  return
-                }
-                void send()
-              }}
-            />
-            <Tooltip title="附加图片或代码文件（图片走 Files API 上传，文本/代码文件读取内容到输入框）">
-              <Button
-                icon={uploadingAtts ? <LoadingOutlined /> : <PaperClipOutlined />}
-                aria-label="附加图片或代码文件"
-                disabled={uploadingAtts || sending}
-                onClick={() => fileInputRef.current?.click()}
-                tabIndex={-1}
-              />
-            </Tooltip>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept="image/jpeg,image/png,image/gif,image/webp,.pdf,.docx,.xlsx,.pptx,.html,.htm,.csv,.json,.xml,.epub,.txt,.md,.py,.cpp,.c,.cc,.cxx,.h,.hpp,.java,.kt,.rs,.go,.js,.ts,.jsx,.tsx,.rb,.php,.sh,.bash,.zsh,.sql,.yaml,.yml,.toml,.tsv,.css,.scss,.less,.vue,.svelte,.swift,.m,.scala,.clj,.ex,.exs,.erl,.hs,.lua,.pl,.r,.dart,.groovy,.gradle,.cmake,.ini,.cfg,.conf,.properties"
-              hidden
-              onChange={(e) => void handlePickFiles(e.target.files)}
-            />
-            {sending ? (
-              <>
-                {/* 正文输出完但 AI 还在跑工具（检索/抓网页）时，说明为什么按钮仍是「停止」 */}
-                {toolStatus?.sessionId === activeId && (
-                  <span style={{ fontSize: 12, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
-                    {toolStatus.text}
-                  </span>
-                )}
-                <Tooltip title="停止本次生成（已输出的内容会保留）">
-                  <Button danger onClick={() => stopSending(activeId)} tabIndex={-1}>
-                    停止
-                  </Button>
-                </Tooltip>
-              </>
-            ) : (
-              <Button
-                type="primary"
-                icon={<SendOutlined />}
-                disabled={(!input.trim() && pendingAtts.length === 0) || uploadingAtts}
-                onClick={() => void send()}
-                tabIndex={-1}
-              />
-            )}
-          </div>
+          <Composer
+            sending={sending}
+            toolStatusText={toolStatus?.sessionId === activeId ? toolStatus.text : undefined}
+            pendingAtts={pendingAtts}
+            uploadingAtts={uploadingAtts}
+            inputRef={inputRef}
+            fileInputRef={fileInputRef}
+            onPaste={handlePasteUpload}
+            onPickFiles={handlePickFiles}
+            onSend={() => void send()}
+            onStop={() => stopSending(activeId)}
+            onRemovePendingAtt={removePendingAtt}
+            runCommand={runChatCommand}
+          />
           {(messages.length > 0 || sending) && (
             /* 会话状态栏（对齐 ZCode）：轮数/消息 · tok/s · 累计 token/缓存命中 · 上下文占用 */
             <div className="chat-statusbar">
