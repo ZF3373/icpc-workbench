@@ -244,9 +244,10 @@ test('chat: user attachments converted to file content blocks before text', asyn
 
     assert.equal(captured.length, 1);
     const msgs = captured[0]!;
-    // 第 1 条：file 块在前、文本块在后
+    // 第 1 条：file 块在前、文本块在后。
+    // file 块只带 file_id：file_id 引用并存 filename 会被严格实现（DeepSeek 官方）400 拒绝（issue #55）
     assert.deepEqual(msgs[0]!.content, [
-      { type: 'file', file_id: 'file-api-1', filename: '题面.png' },
+      { type: 'file', file_id: 'file-api-1' },
       { type: 'text', text: '这是什么题？' },
     ]);
     // 第 2 条：assistant 保持纯文本

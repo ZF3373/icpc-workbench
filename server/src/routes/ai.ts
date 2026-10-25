@@ -516,12 +516,9 @@ export function aiRoutes(
             textParts.push(`\n\n**${filename ?? fileId}**\n\`\`\`${ext}\n${a.textContent}\n\`\`\``);
           }
         } else if (isFilesApiId(fileId)) {
-          // 图片附件：file 内容块引用（仅 Files API 上传的真实 file-api-… id）
-          fileBlocks.push({
-            type: 'file',
-            file_id: fileId,
-            ...(filename ? { filename } : {}),
-          });
+          // 图片附件：file 内容块引用（仅 Files API 上传的真实 file-api-… id）。
+          // 只带 file_id 不带 filename：严格实现（DeepSeek 官方等）对两者并存直接 400
+          fileBlocks.push({ type: 'file', file_id: fileId });
         } else {
           // 本地文本附件的历史消息（textContent 已剥离）：无法重建内容，
           // 注入文件名占位符保持轮次结构，让 AI 知道用户当时附过什么文件

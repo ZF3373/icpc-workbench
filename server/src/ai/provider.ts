@@ -31,10 +31,12 @@ export interface ToolDefinition {
 /**
  * user 消息的多模态内容块（OpenAI 兼容格式）。
  * file 块引用 Files API 上传得到的 file_id（形如 file-api-...）。
+ * 严格实现的 OpenAI 兼容接口（如 DeepSeek 官方）要求 file_id 引用时不得携带 filename，
+ * 两者并存直接 400——文件名留在 UI 层展示，不进请求体。
  */
 export type ChatContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'file'; file_id: string; filename?: string }
+  | { type: 'file'; file_id: string }
   | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'original' | 'auto' } };
 
 export interface ChatMessage {
