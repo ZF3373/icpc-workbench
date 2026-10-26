@@ -8,8 +8,9 @@ import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { AiProvider, describeError, type ChatContentBlock, type ChatMessage, type ToolCall, type TokenUsage } from '../ai/provider.ts';
 import { estimateTokens, trimContext, summarizeContext, SUMMARIZE_THRESHOLD } from '../ai/context.ts';
-// 导入 search.ts 触发 web_search 工具注册（副作用导入，不需要直接使用导出）
+// 导入 search.ts 触发 web_search 工具注册（副作用）；pickSearchConfig 供题面证据链复用搜索渠道配置
 import '../ai/search.ts';
+import { pickSearchConfig } from '../ai/search.ts';
 // 导入 fetch-url.ts 触发 fetch_url 工具注册（副作用导入）
 import '../ai/fetch-url.ts';
 // 导入 fetch-editorial.ts 触发 fetch_editorial 工具注册（副作用导入）
@@ -722,7 +723,7 @@ export function aiRoutes(
         res.write(`data: ${JSON.stringify({ tool: { name: 'read_problem', detail: '准备关联题目的题面证据' } })}\n\n`);
         const statements = await prepareStatementEvidence(db, statementRefs, {
           fetchFn: opts.fetchStatementFn, cookies: savedStatementCookies(db), signal: abortController.signal,
-          searchConfig: { searchEngine: aiCfg.searchEngine, searchApiKey: aiCfg.searchApiKey },
+          searchConfig: pickSearchConfig(aiCfg),
         });
         system += `\n\n${statements}`;
       }

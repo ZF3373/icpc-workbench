@@ -14,18 +14,16 @@ import assert from 'node:assert/strict';
 import { executeWebSearch, formatSearchResults } from '../src/ai/search.ts';
 
 test('未配置搜索密钥：返回带原因的 error，而非静默空结果', async () => {
-  const out = await executeWebSearch('最近比赛', { searchApiKey: '' });
+  const out = await executeWebSearch('最近比赛', {});
   assert.equal(out.results.length, 0);
-  assert.match(out.error ?? '', /未配置.*密钥/);
+  assert.match(out.error ?? '', /未配置任何联网搜索渠道/);
 });
 
-test('搜索请求异常：error 带异常信息，让模型可降级回答', async () => {
-  // Node fetch 对非法协议直接抛 TypeError，模拟网络层失败
+test('搜索请求异常：error 带异常信息，让模型可降级回答', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => { throw new TypeError('fetch failed'); });
   const out = await executeWebSearch('test', { searchApiKey: 'k', searchEngine: 'tavily' });
-  // 无真实网络环境下该请求可能成功也可能失败；断言只约束「失败时 error 必在」
-  if (out.results.length === 0) {
-    assert.ok(out.error, '失败时必须给出 error 原因');
-  }
+  assert.deepEqual(out.results, []);
+  assert.match(out.error ?? '', /fetch failed/);
 });
 
 test('HTTP 非 200（密钥无效/配额尽）：error 带状态码与提示', async () => {

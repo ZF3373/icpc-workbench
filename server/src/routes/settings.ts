@@ -8,6 +8,10 @@ import {
   cookieFieldValue,
   cookieOnlyFieldsOf,
   mergeCookieFields,
+  isSearchEngineId,
+  normalizeEngineKeys,
+  SEARCH_ENGINE_IDS,
+  type SearchProvidersConfig,
 } from '../../../shared/src/index.ts';
 import {
   aiConfigFromDb,
@@ -15,6 +19,8 @@ import {
   readAiProviders,
   activeProviderIdOf,
   saveAiProviders,
+  readSearchProvidersConfig,
+  saveSearchProvidersConfig,
   globalAiTuning,
   type AiConfig,
   type AppConfig,
@@ -444,7 +450,9 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
 
   // POST /api/settings/ai
   // body: { enabled?, timeoutMs?, maxTokens?, contextWindow?, searchEngine?, searchApiKey?,
-  //         providers?: [{ id, name, baseURL, model, apiKey? }], activeProviderId? }
+  //         providers?: [{ id, name, baseURL, model, apiKey? }], activeProviderId?,
+  //         searchProviders?: { order: SearchEngineId[], keys?: Record<SearchEngineId, string | string[]> } }
+  // searchProviders：order 是启用顺序；keys 按引擎合并，缺省保留、显式空清除，移出 order 不删 Key。
   // providers 传了就整表覆盖保存（多提供商，空数组 = 400 而非半保存）；其中 apiKey 字段
   // **缺省 = 保持该 id 已存密钥**、空串/非空 = 清空/覆盖（与旧版单密钥「留空保持不变」同款
   // 语义——前端不回传密钥原文，未改动的密钥必须靠缺省语义保住，否则每次保存都会抹掉已有密钥）。
@@ -457,6 +465,7 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
   // （无则自动从遗留键迁移，见 readAiProviders），写入侧沿用只会造成两套存储口径漂移。
   r.post('/ai', (req, res) => {
     const b = req.body ?? {};
+    let providerDrafts: AiProviderConfig[] | undefined;
     if (Array.isArray(b.providers)) {
       if (b.providers.length === 0) {
         // 显式 400：saveAiProviders 会抛错（→ 500 且同请求的全局项一并丢失），
@@ -505,12 +514,40 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       if (drafts.length === 0) {
         return res.status(400).json({ error: '至少需要保留一个有效的提供商（每条需含 id/name/http(s) Base URL）' });
       }
-      saveAiProviders(
-        db,
-        drafts,
-        // 缺省 = 保持已存活跃项（旧客户端/脚本不传该字段时不该被静默切回首项）
-        typeof b.activeProviderId === 'string' ? b.activeProviderId.trim() : undefined,
-      );    }
+      providerDrafts = drafts;
+    }
+    let searchDraft: SearchProvidersConfig | undefined;
+    if (b.searchProviders !== undefined) {
+      const payload = b.searchProviders;
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+        !Array.isArray(payload.order) || !payload.order.every(isSearchEngineId)) {
+        return res.status(400).json({ error: 'searchProviders.order 需为已知搜索引擎 id 数组' });
+      }
+      const keysPatch: SearchProvidersConfig['keys'] = {};
+      if (payload.keys !== undefined) {
+        if (!payload.keys || typeof payload.keys !== 'object' || Array.isArray(payload.keys)) {
+          return res.status(400).json({ error: 'searchProviders.keys 需为按引擎存放密钥的对象' });
+        }
+        for (const [engine, input] of Object.entries(payload.keys)) {
+          if (!isSearchEngineId(engine)) {
+            return res.status(400).json({ error: `未知搜索引擎: ${engine}` });
+          }
+          if (typeof input !== 'string' && !(Array.isArray(input) && input.every((k) => typeof k === 'string'))) {
+            return res.status(400).json({ error: `搜索引擎 ${engine} 的 Key 需为字符串或字符串数组` });
+          }
+          keysPatch[engine] = normalizeEngineKeys(input);
+        }
+      }
+      searchDraft = {
+        order: [...new Set<SearchProvidersConfig['order'][number]>(payload.order)],
+        keys: { ...readSearchProvidersConfig(db, config)?.keys, ...keysPatch },
+      };
+    }
+    // 所有输入先校验，避免非法搜索配置导致同请求的模型提供商被半保存。
+    if (providerDrafts) {
+      saveAiProviders(db, providerDrafts, typeof b.activeProviderId === 'string' ? b.activeProviderId.trim() : undefined);
+    }
+    if (searchDraft) saveSearchProvidersConfig(db, searchDraft);
     saveAiConfig(db, config, {
       enabled: typeof b.enabled === 'boolean' ? b.enabled : undefined,
       ...(typeof b.timeoutMs === 'number' && b.timeoutMs > 0 ? { timeoutMs: b.timeoutMs } : {}),
@@ -548,14 +585,20 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
     res.json({ ok: true, activeProviderId: id, model: nextModel });
   });
 
-  // POST /api/settings/ai/reveal  body: { providerId } | { target: 'searchApiKey' }
+  // POST /api/settings/ai/reveal  body: { providerId } | { target: 'searchApiKey' } | { target: 'searchProviderKeys', engine }
   // 点眼睛按需取回**单个**密钥原文（与 /cookies/reveal 同款口径：GET 只回打码版，只有用户
   // 显式要求看某一项时才下发裸值，缩小原文暴露面）。
   // 提供商密钥取该提供商已存的原文——环境变量 AI_API_KEY 从不落库，取不到就回空串，
   // 前端据此提示，避免把 env 密钥填进输入框、随下一次保存写进 settings。
   // 搜索密钥取运行时生效值（env / config.json / DB 任一来源），与界面「已配置 xxx」同一口径。
   r.post('/ai/reveal', (req, res) => {
-    const body = (req.body ?? {}) as { providerId?: unknown; target?: unknown };
+    const body = (req.body ?? {}) as { providerId?: unknown; target?: unknown; engine?: unknown };
+    if (body.target === 'searchProviderKeys') {
+      if (!isSearchEngineId(body.engine)) {
+        return res.status(400).json({ error: 'engine 需为已知搜索引擎 id' });
+      }
+      return res.json({ value: (readSearchProvidersConfig(db, config)?.keys[body.engine] ?? []).join('\n') });
+    }
     if (body.target === 'searchApiKey') {
       return res.json({ value: aiConfigFromDb(db, config).searchApiKey ?? '' });
     }
@@ -924,11 +967,19 @@ function aiSettingsView(db: Db, config: AppConfig, read?: SettingLookup): { ai: 
   const savedAi = aiConfigFromDb(db, config, read);
   const providers = readAiProviders(db, config, read);
   const global = globalAiTuning(db, config, read);
+  const search = readSearchProvidersConfig(db, config, read);
   return {
     ai: {
       ...savedAi,
       apiKey: '',
       searchApiKey: '',
+      // 运行时渠道含原文密钥，禁止随 savedAi 展开下发；界面仅使用打码视图。
+      searchProviders: undefined,
+      searchOrder: search?.order ?? [],
+      searchKeyStats: SEARCH_ENGINE_IDS.flatMap((engine) => {
+        const keys = search?.keys[engine] ?? [];
+        return keys.length ? [{ engine, keysMasked: keys.map(maskSecret) }] : [];
+      }),
       apiKeyMasked: maskSecret(savedAi.apiKey),
       searchApiKeyMasked: maskSecret(savedAi.searchApiKey),
       hasApiKey: Boolean(savedAi.apiKey),

@@ -1,5 +1,6 @@
 import { registerTool, type AiTool } from './tools/registry.ts';
 import { readStatement } from '../problems/statements.ts';
+import { pickSearchConfig } from './search.ts';
 
 export const readProblemTool: AiTool = {
   definition: { type: 'function', function: {
@@ -17,7 +18,7 @@ export const readProblemTool: AiTool = {
     }
     const result = await readStatement(ctx.db, { platform: args.platform, problemKey: args.problemKey }, {
       ...ctx,
-      searchConfig: { searchEngine: ctx.cfg.searchEngine, searchApiKey: ctx.cfg.searchApiKey },
+      searchConfig: pickSearchConfig(ctx.cfg),
     }, Number(args.offset ?? 0));
     return { content: JSON.stringify(result) };
   },

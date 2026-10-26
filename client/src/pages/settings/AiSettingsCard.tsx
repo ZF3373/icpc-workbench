@@ -37,6 +37,8 @@ import {
   AI_PROVIDERS_MAX,
   MODEL_CAPS_AS_OF,
   guessModelCaps,
+  SEARCH_ENGINES,
+  searchEngineMeta,
   type AiProviderModelEntry,
   type AiProviderView,
   type ModelCaps,
@@ -54,12 +56,10 @@ export interface SettingsAiData {
   timeoutMs?: number
   maxTokens?: number
   contextWindow?: number
-  searchEngine?: 'tavily' | 'brave'
-  searchApiKey?: string
+  searchOrder?: string[]
+  searchKeyStats?: Array<{ engine: string; keysMasked: string[] }>
   hasApiKey?: boolean
-  hasSearchApiKey?: boolean
   apiKeyMasked?: string
-  searchApiKeyMasked?: string
   /** 环境变量 AI_API_KEY 生效中（全局运行时覆盖，不落库） */
   apiKeyFromEnv?: boolean
   /** 多提供商：当前活跃提供商 id（旧版服务端无此字段） */
@@ -104,7 +104,7 @@ function NumberUnitInput({
  * 拆出来后实例与卡片同生共死，告警根治。
  *
  * 结构（多提供商改造后）：
- * - 全局项走 antd Form（启用开关 / 对话参数 / 联网搜索），`validateFields` 校验；
+ * - 全局项走 antd Form（启用开关 / 对话参数），`validateFields` 校验；
  * - 提供商列表走卡片内部 React 状态（每家：预设 / API 密钥 / API 地址 / 默认模型），
  *   因为「N 个提供商 × 动态增删」塞进一份 Form 会把字段路径搞得很脆，手写状态反而直观；
  * - 对外通过 ref 暴露 `collectSavePayload`：一次「保存 AI 配置」把全局项 + 提供商列表
@@ -144,8 +144,6 @@ type ProviderDraft = {
 type AiFormValues = {
   enabled: boolean
   timeoutMs: number
-  searchEngine: 'tavily' | 'brave'
-  searchApiKey: string
 }
 
 export type AiSettingsCardHandle = {
@@ -237,6 +235,11 @@ export const AiSettingsCard = ({
   const [testingBy, setTestingBy] = useState<Record<string, boolean>>({})
   const [testResultBy, setTestResultBy] = useState<Record<string, { ok: boolean; message: string } | undefined>>({})
   const [fetchingBy, setFetchingBy] = useState<Record<string, boolean>>({})
+  const [searchOrder, setSearchOrder] = useState<string[]>([])
+  const [searchKeysDraft, setSearchKeysDraft] = useState<Record<string, string>>({})
+  const [searchClearDraft, setSearchClearDraft] = useState<Set<string>>(() => new Set())
+  const [searchKeyStats, setSearchKeyStats] = useState<Record<string, string[]>>({})
+  const searchOrderDirtyRef = useRef(false)
 
   const storedIds = new Set((ai.providers ?? []).map((p) => p.id))
 
@@ -256,13 +259,16 @@ export const AiSettingsCard = ({
   useEffect(() => {
     const serverList = ai.providers ?? []
     const serverIds = new Set(serverList.map((p) => p.id))
+    setSearchKeyStats(Object.fromEntries((ai.searchKeyStats ?? []).map((s) => [s.engine, s.keysMasked])))
+    // 无关设置保存也会刷新 ai；启停与排序草稿必须等本次保存成功后才能重新对齐。
+    if (!searchOrderDirtyRef.current) {
+      setSearchOrder((ai.searchOrder ?? []).filter((id) => searchEngineMeta(id)))
+    }
     if (!syncedOnce.current) {
       syncedOnce.current = true
       form.setFieldsValue({
         enabled: ai.enabled,
         timeoutMs: ai.timeoutMs ? ai.timeoutMs / 1000 : 120,
-        searchEngine: ai.searchEngine ?? 'tavily',
-        searchApiKey: '',
       })
       setProviders(serverList.map(draftOf))
       setActiveId(ai.activeProviderId || serverList[0]?.id || '')
@@ -376,18 +382,41 @@ export const AiSettingsCard = ({
     }
   }
 
-  /** 搜索密钥同款按需回显（值存在 antd Form 里，取回后写回字段） */
-  const revealSearchApiKey = async () => {
+  const patchSearchKeys = (engine: string, value: string) => {
+    setSearchKeysDraft((draft) => ({ ...draft, [engine]: value }))
+    setSearchClearDraft((cleared) => {
+      const next = new Set(cleared)
+      next.delete(engine)
+      return next
+    })
+  }
+
+  const revealSearchKeys = async (engine: string) => {
     try {
-      const r = await post<{ value: string }>('/api/settings/ai/reveal', { target: 'searchApiKey' })
+      const r = await post<{ value: string }>('/api/settings/ai/reveal', { target: 'searchProviderKeys', engine })
       if (r.value) {
-        form.setFieldsValue({ searchApiKey: r.value })
+        patchSearchKeys(engine, r.value)
         return
       }
       message.info('还没有可显示的搜索密钥')
     } catch (e) {
       message.error((e as Error).message)
     }
+  }
+
+  const changeSearchOrder = (update: (order: string[]) => string[]) => {
+    searchOrderDirtyRef.current = true
+    setSearchOrder(update)
+  }
+
+  const moveSearchEngine = (index: number, direction: -1 | 1) => {
+    changeSearchOrder((order) => {
+      const next = [...order]
+      const target = index + direction
+      if (target < 0 || target >= next.length) return order
+      ;[next[index], next[target]] = [next[target]!, next[index]!]
+      return next
+    })
   }
 
   /**
@@ -705,13 +734,16 @@ export const AiSettingsCard = ({
           return null
         }
       }
-      const { timeoutMs, searchApiKey, ...rest } = globals
+      const { timeoutMs, ...rest } = globals
       return {
         ...rest,
-        // 搜索密钥与提供商密钥同款语义：**留空 = 不下发**（服务端保持已存值）。
-        // 恒发空串会让服务端把已配置的联网搜索密钥清空（本框是密码框，界面写着
-        // 「留空保持不变」，且没有任何「清空」操作）。
-        ...(searchApiKey && searchApiKey.trim() !== '' ? { searchApiKey } : {}),
+        searchProviders: {
+          order: searchOrder,
+          keys: {
+            ...Object.fromEntries(Object.entries(searchKeysDraft).filter(([, value]) => value.trim() !== '')),
+            ...Object.fromEntries([...searchClearDraft].map((engine) => [engine, ''])),
+          },
+        },
         // apiKey 只在本次输入了新值时下发：缺省 = 服务端保持该提供商已存密钥；
         // maxTokens/contextWindow 显式下发（null = 清除该提供商的单独设置，回退全局默认）；
         // 模型目录总是全量下发（空数组 = 明确清空目录），id 为空的半填行丢弃
@@ -741,8 +773,11 @@ export const AiSettingsCard = ({
       // 只清「本次新输入」的密钥（非空草稿）：它们已随保存提交，留在输入框里既无意义
       // 又让用户分不清「已存」还是「未存」。全局 load() 不再整体重建草稿，清空必须就地做
       setProviders((ps) => ps.map((p) => (p.apiKey.trim() !== '' ? { ...p, apiKey: '' } : p)))
+      setSearchKeysDraft({})
+      setSearchClearDraft(new Set())
+      searchOrderDirtyRef.current = false
     },
-  }), [form, providers, activeId, message])
+  }), [form, providers, activeId, message, searchOrder, searchKeysDraft, searchClearDraft])
 
   // 勾选弹窗的可见候选：按搜索词过滤（id 子串、忽略大小写）
   const pickerQueryNorm = pickerQuery.trim().toLowerCase()
@@ -1088,37 +1123,87 @@ export const AiSettingsCard = ({
           <NumberUnitInput min={30} max={600} step={30} unit="秒" />
         </Form.Item>
         <div style={{ borderTop: '1px solid var(--line)', margin: '12px 0', paddingTop: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>联网搜索（可选）</div>
           <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 8px' }}>
-            联网搜索（可选）：填入搜索 API Key 后，AI 可主动查询最新赛事与文档（Tavily / Brave 均有免费额度，需模型支持 function calling）。还没有 Key？前往{' '}
-            <a onClick={() => openExternal('https://tavily.com')}>Tavily ↗</a>
-            {' '}或{' '}
-            <a onClick={() => openExternal('https://brave.com/search/api/')}>Brave ↗</a>
-            {' '}注册。
+            启用多个引擎后按顺序尝试，失败或额度用尽自动切换；同一引擎可每行填写一个 Key，按序轮换。
+            带「抓取」标记的引擎也可读取网页正文。需模型支持工具调用，改动点「保存 AI 配置」生效。
           </p>
+          <div style={{ fontSize: 13, fontWeight: 600, margin: '12px 0 8px' }}>已启用引擎（顺序即 fallback 顺序）</div>
+          {searchOrder.length === 0 && (
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 8 }}>尚未启用引擎，可从下方选择。</div>
+          )}
+          {searchOrder.map((engine, index) => {
+            const meta = searchEngineMeta(engine)
+            if (!meta) return null
+            const masked = searchKeyStats[engine] ?? []
+            const clearing = searchClearDraft.has(engine)
+            const noun = meta.keyIsUrl ? '实例地址' : 'Key'
+            const placeholder = clearing
+              ? `保存后清除已存${noun}；输入新值可取消清除`
+              : masked.length > 0
+                ? `已存 ${masked.length} 个${noun}（${masked.join('、')}）· 留空保持不变；每行一个${noun}可填多个轮换`
+                : meta.keyIsUrl
+                  ? '填写 SearXNG 实例地址，如 https://search.example.com；每行一个'
+                  : meta.allowsKeyless
+                    ? '可留空匿名使用；每行一个 Key，最多 20 个'
+                    : '每行一个 Key，最多 20 个；未填 Key 的引擎不会参与搜索'
+            return (
+              <div key={engine} style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 10, marginBottom: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                  <Space.Compact>
+                    <Button size="small" aria-label={`上移 ${meta.label}`} disabled={index === 0} onClick={() => moveSearchEngine(index, -1)}>↑</Button>
+                    <Button size="small" aria-label={`下移 ${meta.label}`} disabled={index === searchOrder.length - 1} onClick={() => moveSearchEngine(index, 1)}>↓</Button>
+                  </Space.Compact>
+                  <Tooltip title={meta.quota}><span style={{ fontWeight: 600 }}>{meta.label}</span></Tooltip>
+                  <span><Tag>搜索</Tag>{meta.supportsFetch && <Tag color="blue">抓取</Tag>}</span>
+                  {clearing && <Tag color="warning">待清除{noun}</Tag>}
+                  <Button
+                    size="small" type="text" danger style={{ marginLeft: 'auto' }}
+                    aria-label={`移除 ${meta.label}`}
+                    title="停用引擎，保留已存 Key，再次启用免重填"
+                    onClick={() => changeSearchOrder((order) => order.filter((id) => id !== engine))}
+                  >移除</Button>
+                </div>
+                <Input.TextArea
+                  aria-label={`${meta.label} ${noun}`}
+                  autoSize={{ minRows: 1, maxRows: 3 }}
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={searchKeysDraft[engine] ?? ''}
+                  onChange={(e) => patchSearchKeys(engine, e.target.value)}
+                  placeholder={placeholder}
+                />
+                <Space wrap size="small" style={{ marginTop: 4 }}>
+                  <Button size="small" type="link" disabled={masked.length === 0} onClick={() => void revealSearchKeys(engine)}>
+                    回显已存{noun}
+                  </Button>
+                  <Popconfirm
+                    title={`清除 ${meta.label} 已存的全部${noun}？`}
+                    description="点「保存 AI 配置」后生效。"
+                    okText="清除" cancelText="取消"
+                    onConfirm={() => {
+                      setSearchKeysDraft((draft) => ({ ...draft, [engine]: '' }))
+                      setSearchClearDraft((cleared) => new Set([...cleared, engine]))
+                    }}
+                  >
+                    <Button size="small" type="link" danger disabled={clearing || masked.length === 0}>清除已存{noun}</Button>
+                  </Popconfirm>
+                  {clearing && <Button size="small" type="link" onClick={() => patchSearchKeys(engine, '')}>取消清除</Button>}
+                </Space>
+              </div>
+            )
+          })}
+          <div style={{ fontSize: 13, fontWeight: 600, margin: '12px 0 4px' }}>其他可用引擎</div>
+          {SEARCH_ENGINES.filter((meta) => !searchOrder.includes(meta.id)).map((meta) => (
+            <div key={meta.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 0', borderBottom: '1px solid var(--line-soft)' }}>
+              <span style={{ fontWeight: 500 }}>{meta.label}</span>
+              <span><Tag>搜索</Tag>{meta.supportsFetch && <Tag color="blue">抓取</Tag>}</span>
+              <span style={{ fontSize: 12, color: 'var(--text-3)', flex: 1, minWidth: 160 }}>{meta.quota}</span>
+              {meta.registerUrl && <Button size="small" type="link" onClick={() => openExternal(meta.registerUrl!)}>{meta.keyIsUrl ? '部署文档' : '注册 / 获取 Key'} ↗</Button>}
+              <Button size="small" aria-label={`启用 ${meta.label}`} onClick={() => changeSearchOrder((order) => order.includes(meta.id) ? order : [...order, meta.id])}>启用</Button>
+            </div>
+          ))}
         </div>
-          <Form.Item name="searchEngine" label="搜索引擎" style={{ marginBottom: 12 }}>
-            <Select
-              options={[
-                { value: 'tavily', label: 'Tavily（AI 友好，免费 1000 次/月）' },
-                { value: 'brave', label: 'Brave Search（免费 2000 次/月）' },
-              ]}
-            />
-          </Form.Item>
-        <Form.Item name="searchApiKey" label="搜索 API Key" tooltip="Tavily：api.tavily.com 注册获取；Brave：api.search.brave.com 注册获取。留空则不启用联网搜索。">
-          <Input.Password
-            visibilityToggle={{
-              onVisibleChange: (v) => {
-                const cur = form.getFieldValue('searchApiKey')
-                if (v && (typeof cur === 'string' ? cur.trim() : '') === '') void revealSearchApiKey()
-              },
-            }}
-            placeholder={
-              ai.hasSearchApiKey
-                ? `已配置 ${ai.searchApiKeyMasked || '••••••••'} · 留空保持不变，粘贴新值可覆盖`
-                : '留空则不启用联网搜索'
-            }
-          />
-        </Form.Item>
         <Space wrap>
           <Button type="primary" onClick={onSave}>
             保存 AI 配置

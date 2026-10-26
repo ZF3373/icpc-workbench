@@ -71,6 +71,50 @@ async function withServer(fn: (db: Db, base: string) => Promise<void>): Promise<
   }
 }
 
+test('搜索渠道保存、移除后保留 Key、缺省保持、显式清除与按需回显', async () => {
+  await withServer(async (db, base) => {
+    const save = async (searchProviders: unknown) => {
+      const res = await fetch(`${base}/ai`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ searchProviders }) });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.doesNotMatch(JSON.stringify(body), /secret-one|secret-two|brave-secret/);
+      assert.equal(body.searchProviders, undefined, '运行时渠道含原文，不得展开到响应');
+      return body;
+    };
+    const first = await save({ order: ['tavily', 'brave'], keys: { tavily: ' secret-one \nsecret-two\nsecret-one', brave: ['brave-secret'] } });
+    assert.deepEqual(first.searchOrder, ['tavily', 'brave']);
+    assert.deepEqual(first.searchKeyStats, [
+      { engine: 'tavily', keysMasked: ['••••••••', '••••••••'] },
+      { engine: 'brave', keysMasked: ['brav••••••cret'] },
+    ]);
+    const second = await save({ order: ['brave'] });
+    assert.equal(second.searchKeyStats.find((s: { engine: string }) => s.engine === 'tavily').keysMasked.length, 2);
+    const reveal = await fetch(`${base}/ai/reveal`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target: 'searchProviderKeys', engine: 'tavily' }) });
+    assert.deepEqual(await reveal.json(), { value: 'secret-one\nsecret-two' });
+    await save({ order: ['tavily', 'brave'], keys: { tavily: '' } });
+    const stored = JSON.parse((db.prepare("SELECT value FROM settings WHERE key = 'ai.searchProviders'").get() as { value: string }).value);
+    assert.deepEqual(stored, { order: ['tavily', 'brave'], keys: { tavily: [], brave: ['brave-secret'] } });
+    const view = await (await fetch(base)).json();
+    assert.deepEqual(view.ai.searchKeyStats, [{ engine: 'brave', keysMasked: ['brav••••••cret'] }]);
+    assert.doesNotMatch(JSON.stringify(view), /secret-one|secret-two|brave-secret/);
+    assert.equal(view.ai.searchProviders, undefined);
+  });
+});
+
+test('非法搜索渠道返回 400，整次请求不写入已验证的模型提供商', async () => {
+  await withServer(async (db, base) => {
+    for (const searchProviders of [null, [], {}, { order: 'tavily' }, { order: ['unknown'] }, { order: [], keys: [] }, { order: [], keys: { unknown: 'key' } }, { order: [], keys: { tavily: 42 } }, { order: [], keys: { tavily: ['key', null] } }]) {
+      const res = await fetch(`${base}/ai`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        enabled: true, providers: [{ id: 'new', name: 'New', baseURL: 'https://example.com', model: 'm' }], searchProviders,
+      }) });
+      assert.equal(res.status, 400, JSON.stringify(searchProviders));
+      assert.equal(db.prepare("SELECT value FROM settings WHERE key IN ('ai.providers', 'ai.searchProviders', 'ai.enabled')").get(), undefined);
+    }
+    const res = await fetch(`${base}/ai/reveal`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target: 'searchProviderKeys', engine: 'unknown' }) });
+    assert.equal(res.status, 400);
+  });
+});
+
 test('POST /ai/models returns sorted deduped ids and forwards api key', async () => {
   const upstream = await startUpstream({ withModels: true, requireKey: 'secret' });
   await withServer(async (_db, base) => {

@@ -1,6 +1,17 @@
 import type { ToolDefinition } from './provider.ts';
 import { registerTool, type ToolResult, type ToolContext, type PlatformCookies } from './tools/registry.ts';
 import type { SearchConfig } from './search.ts';
+import { resolveSearchProviders } from './search.ts';
+import {
+  ATTEMPT_TIMEOUT_MS,
+  benchEngineKey,
+  buildAttempts,
+  describeEngineFailure,
+  isRetryableEngineError,
+  maskKey,
+  type EngineFetchResult,
+  type SearchEngineAdapter,
+} from './search-engines.ts';
 import { extractPdfText, truncatePdfText, isPdfContentType } from './pdf.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
 import dns from 'node:dns/promises';
@@ -148,7 +159,8 @@ export function validatePublicFetchUrl(raw: string): string | null {
 }
 
 /**
- * 执行网址读取：主路径 Tavily Extract（能处理 JS 渲染页面），失败或未配置时走兜底直接 fetch。
+ * 执行网址读取：主路径为**抓取引擎链**（按启用顺序逐个尝试支持抓取的渠道，如 Tavily
+ * Extract 能处理 JS 渲染页面），失败或未配置时走兜底直接 fetch。
  * 失败不抛错（对齐 web_search），返回 content 为空 + error 说明。
  * cookies 可选：对已配置 Cookie 的平台（如洛谷）携带认证信息以读取需登录的页面。
  */
@@ -160,18 +172,34 @@ export async function executeFetchUrl(
 ): Promise<FetchResult> {
   const invalid = validatePublicFetchUrl(url);
   if (invalid) return { content: '', title: url, error: invalid };
-  const engine = cfg.searchEngine ?? 'tavily';
-  const apiKey = cfg.searchApiKey?.trim();
 
-  // 主路径：Tavily Extract API（仅 tavily 引擎 + 有 key 时）
-  if (engine === 'tavily' && apiKey) {
-    const r = await tavilyExtract(url, apiKey);
-    if (r.content.trim()) return r;
-    // Extract 偶发 5xx/429 或网络抖动时，立刻重试一次；否则题面抓取会被
-    // 下游题面服务的 5 分钟退避放大成整场比赛缺题。鉴权/参数错误不重试。
-    if (isRetryableTavilyError(r.error)) {
-      const retry = await tavilyExtract(url, apiKey);
-      if (retry.content.trim()) return retry;
+  // 引擎链主路径：瞬时失败原地重试一次后仍败，才换下一个引擎。链上全部失败不报错——
+  // 交给兜底直接抓取，其错误信息以 directFetch 为准（对可达站点它几乎总能给出明确原因）。
+  for (const { engine, key } of buildAttempts(resolveSearchProviders(cfg), 'fetch')) {
+    const fetchEngine = engine.fetch?.bind(engine);
+    if (!fetchEngine) continue;
+    try {
+      const r = await attemptEngineFetch(fetchEngine, key, url);
+      const content = sanitizeFetchedText(r.content, url);
+      if (content.trim()) {
+        return { content: truncate(content), title: r.title || url };
+      }
+    } catch (e) {
+      benchEngineKey(engine, key, e, 'fetch');
+      console.error(`[fetch_url] ${engine.label}（Key ${maskKey(key)}）抓取失败:`, describeEngineFailure(e, key));
+      // Extract 偶发 5xx/429 或网络抖动时，立刻重试一次；否则题面抓取会被下游题面服务的
+      // 5 分钟退避放大成整场比赛缺题。鉴权/参数/配额错误不重试，直接换下一个引擎。
+      if (!isRetryableEngineError(e)) continue;
+      try {
+        const retry = await attemptEngineFetch(fetchEngine, key, url);
+        const content = sanitizeFetchedText(retry.content, url);
+        if (content.trim()) {
+          return { content: truncate(content), title: retry.title || url };
+        }
+      } catch (retryError) {
+        benchEngineKey(engine, key, retryError, 'fetch');
+        console.error(`[fetch_url] ${engine.label}（Key ${maskKey(key)}）重试失败:`, describeEngineFailure(retryError, key));
+      }
     }
   }
 
@@ -180,46 +208,12 @@ export async function executeFetchUrl(
   return r;
 }
 
-function isRetryableTavilyError(error: string | undefined): boolean {
-  return Boolean(error && /Tavily Extract HTTP (?:408|425|429|5\d{2})|Tavily Extract 请求失败|Tavily Extract 返回空内容/i.test(error));
-}
-
-/** Tavily Extract API：读取指定 URL 正文，返回 markdown 格式内容。能处理 JS 渲染页面。 */
-async function tavilyExtract(url: string, apiKey: string): Promise<FetchResult> {
-  try {
-    const res = await fetch('https://api.tavily.com/extract', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        urls: [url],
-        extract_depth: 'basic',
-        format: 'markdown',
-        include_images: false,
-      }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) return { content: '', title: url, error: `Tavily Extract HTTP ${res.status}` };
-    const data = (await res.json()) as {
-      results?: Array<{ url?: string; raw_content?: string }>;
-      failed_results?: Array<{ url?: string; error?: string }>;
-    };
-    const first = data.results?.[0];
-    if (first?.raw_content && first.raw_content.trim()) {
-      // markdown 内容首行 # 标题可作为页面标题
-      const titleMatch = first.raw_content.match(/^#\s+(.+)$/m);
-      return {
-        content: truncate(sanitizeFetchedText(first.raw_content, url)),
-        title: titleMatch ? titleMatch[1].trim() : url,
-      };
-    }
-    const failErr = data.failed_results?.[0]?.error;
-    return { content: '', title: url, error: failErr ?? 'Tavily Extract 返回空内容' };
-  } catch (e) {
-    return { content: '', title: url, error: `Tavily Extract 请求失败：${(e as Error).message}` };
-  }
+function attemptEngineFetch(
+  fetchEngine: NonNullable<SearchEngineAdapter['fetch']>,
+  key: string,
+  url: string,
+): Promise<EngineFetchResult> {
+  return fetchEngine(url, key, AbortSignal.timeout(ATTEMPT_TIMEOUT_MS.fetch));
 }
 
 /** 主机名 → 平台 id 映射：用于匹配已保存的平台 Cookie */

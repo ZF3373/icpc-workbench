@@ -1,7 +1,7 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
 import { executeFetchUrl, htmlToText, validatePublicFetchUrl } from '../ai/fetch-url.ts';
-import type { SearchConfig } from '../ai/search.ts';
+import { hasSearchChannel, type SearchConfig } from '../ai/search.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
 import type { ContestReviewData } from './participated.ts';
 
@@ -371,7 +371,7 @@ export async function fetchProblemStatement(
   // 抓回来一律过 statementLooksValid —— 权限墙/挑战页/导航噪声不落库，
   // 所以"尽力试一次"没有副作用（最坏就是又一条「未取到题面」）。
   const support = statementSupport(platform);
-  const hasSearchKey = Boolean(searchConfig?.searchApiKey?.trim());
+  const hasSearchKey = hasSearchChannel(searchConfig);
   if (support !== 'ok' && support !== 'gated' && !cookie?.trim() && !hasSearchKey) return null;
 
   const cacheKey = `${platform}:${problemKey}`;

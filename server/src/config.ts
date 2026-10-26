@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AiProviderConfig } from '../../shared/src/index.ts';
-import { AI_PROVIDERS_MAX, AI_PROVIDER_MODELS_MAX } from '../../shared/src/index.ts';
+import type { AiProviderConfig, SearchProvidersConfig } from '../../shared/src/index.ts';
+import { AI_PROVIDERS_MAX, AI_PROVIDER_MODELS_MAX, parseSearchProvidersConfig } from '../../shared/src/index.ts';
+import type { SearchProviderEntry } from './ai/search-engines.ts';
 import type { Db } from './db/index.ts';
 import type { SettingLookup } from './db/settings.ts';
 import { SERVER_ROOT } from './server-root.ts';
@@ -26,6 +27,8 @@ export interface AiConfig {
   searchEngine?: 'tavily' | 'brave';
   /** 搜索 API Key，留空则不启用联网搜索（AI 回复不含外部信息） */
   searchApiKey?: string;
+  /** 来自 ai.searchProviders 的 order × keys；遗留单引擎字段保留兼容未迁移配置。 */
+  searchProviders?: SearchProviderEntry[];
 }
 
 export interface AppConfig {
@@ -107,6 +110,16 @@ function settingsGetter(db: Db, read?: SettingLookup): SettingLookup {
     const row = getStmt.get(key) as { value: string } | undefined;
     return row?.value;
   };
+}
+
+export function readSearchProvidersConfig(db: Db, _cfg: AppConfig, read?: SettingLookup): SearchProvidersConfig | undefined {
+  return parseSearchProvidersConfig(settingsGetter(db, read)('ai.searchProviders'));
+}
+
+export function saveSearchProvidersConfig(db: Db, blob: SearchProvidersConfig): void {
+  db.prepare(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+  ).run('ai.searchProviders', JSON.stringify(blob));
 }
 
 /**
@@ -293,6 +306,7 @@ export function aiConfigFromDb(db: Db, cfg: AppConfig, read?: SettingLookup): Ai
     ? searchEngineRaw
     : cfg.ai.searchEngine;
   const searchApiKey = (process.env.SEARCH_API_KEY ?? get('ai.searchApiKey') ?? cfg.ai.searchApiKey)?.trim();
+  const spBlob = parseSearchProvidersConfig(get('ai.searchProviders'));
   return {
     enabled: enabledRaw !== undefined ? enabledRaw === 'true' : cfg.ai.enabled,
     // trim：用户粘贴 baseURL/apiKey 时常带首尾空格/换行，会导致 URL 解析失败或鉴权头异常
@@ -306,6 +320,9 @@ export function aiConfigFromDb(db: Db, cfg: AppConfig, read?: SettingLookup): Ai
       ? { contextWindow: (entry?.contextWindow ?? active.contextWindow ?? global.contextWindow)! } : {}),
     ...(searchEngine ? { searchEngine } : {}),
     ...(searchApiKey ? { searchApiKey } : {}),
+    ...(spBlob !== undefined ? {
+      searchProviders: spBlob.order.map((engine) => ({ engine, keys: spBlob.keys[engine] ?? [] })),
+    } : {}),
   };
 }
 

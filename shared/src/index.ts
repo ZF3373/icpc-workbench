@@ -870,6 +870,21 @@ export {
   type ModelCaps,
 } from './aiProviders.ts';
 
+// ---------- 联网搜索引擎注册表（多渠道 fallback，见 searchEngines.ts 头注） ----------
+
+export {
+  SEARCH_ENGINE_IDS,
+  SEARCH_ENGINES,
+  searchEngineMeta,
+  isSearchEngineId,
+  normalizeEngineKeys,
+  parseSearchProvidersConfig,
+  type SearchEngineId,
+  type SearchEngineMeta,
+  type SearchEngineChannelView,
+  type SearchProvidersConfig,
+} from './searchEngines.ts';
+
 // ---------- 平台难度 → CF rating 统一标尺（唯一真源） ----------
 
 export {
