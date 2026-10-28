@@ -2489,19 +2489,6 @@ button.dist-row:hover {
   min-width: 120px;
 }
 
-.template-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.template-meta-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
 .template-chip {
   padding: 1px 8px;
   border: 1px solid var(--line);
@@ -2511,37 +2498,6 @@ button.dist-row:hover {
   font-size: 11px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-}
-
-.template-section .section-label {
-  padding: 0 0 4px;
-  height: auto;
-}
-
-.template-text {
-  margin: 0;
-  color: var(--text-2);
-  font-size: 13px;
-  line-height: 1.65;
-}
-
-.template-pitfall {
-  color: var(--pitfall);
-}
-
-.template-code {
-  font-variant-ligatures: none; /* 关闭 Cascadia Code 连字：!= 不得显示成 ≠ */
-  font-feature-settings: 'calt' 0, 'liga' 0;
-  margin: 0;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface-inset);
-  color: var(--text-2);
-  font-size: 12.5px;
-  line-height: 1.6;
-  overflow-x: auto;
-  tab-size: 4;
 }
 
 .code-editor {
@@ -2627,30 +2583,9 @@ button.dist-row:hover {
   color: var(--brand);
 }
 
-.template-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 2px;
-  border-top: 1px solid var(--line-soft);
-  margin-top: 2px;
-  padding-top: 12px;
-}
-
 .template-review-hint {
   color: var(--green);
   font-size: 12px;
-}
-
-.template-empty-content {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 14px;
-  border: 1px dashed var(--line);
-  border-radius: 10px;
-  background: var(--overlay-1);
 }
 
 .template-example-row {
@@ -2675,6 +2610,574 @@ button.dist-row:hover {
 .template-brief-ac {
   color: var(--green);
   border-color: rgba(105, 215, 165, 0.45);
+}
+
+/* ---------- 模板正文：阅读卡片与写作实时预览共用的连续排版 ---------- */
+
+.template-card {
+  cursor: pointer;
+}
+
+.template-card .today-problem-title:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.template-doc {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.template-doc-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.template-doc-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.template-doc-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.template-doc-status {
+  margin-inline-end: 0;
+  color: var(--text-2);
+  border-color: var(--line);
+  background: var(--surface-2);
+}
+
+.template-doc-tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.template-doc-tags .ant-tag {
+  margin-inline-end: 0;
+}
+
+.template-doc-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.template-doc-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 24px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.template-doc-label > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.template-doc-count {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.template-doc-outline {
+  padding: 12px 14px 13px;
+  border: 1px solid var(--line-soft);
+  border-left: 2px solid var(--brand-line);
+  border-radius: 0 10px 10px 0;
+  background: linear-gradient(90deg, var(--brand-soft), transparent 72%);
+}
+
+.template-doc-outline .template-doc-label {
+  min-height: 0;
+  color: var(--brand);
+}
+
+.template-doc-outline-text {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.72;
+}
+
+.template-doc-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-bottom: 2px;
+}
+
+.template-doc-prose {
+  min-width: 0;
+}
+
+.template-doc-prose > .markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.template-doc .code-editor {
+  background: var(--surface-inset);
+}
+
+.template-doc-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--overlay-1);
+  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+/* ---------- 模板阅读卡片 ---------- */
+
+.template-viewer-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  padding-right: 26px;
+}
+
+.template-viewer-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.template-viewer-kicker {
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.template-viewer-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.template-viewer-tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex: none;
+}
+
+.template-viewer-tags .ant-tag {
+  margin-inline-end: 0;
+}
+
+.template-viewer-body {
+  max-height: min(calc(var(--app-viewport-height) - 218px), 760px);
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-width: thin;
+}
+
+.template-viewer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.template-viewer-examples,
+.template-viewer-note {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.template-viewer-empty-line {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.template-viewer-note-body {
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--overlay-1);
+}
+
+/* ---------- 模板全屏写作（三栏：说明 / 实时渲染 / 代码） ---------- */
+
+.template-writer-title {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+  padding-right: 24px;
+}
+
+.template-writer-kicker {
+  flex: none;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.template-writer-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 15.5px;
+  font-weight: 650;
+}
+
+.template-writer-outline-label {
+  margin-right: 8px;
+  color: var(--brand);
+  font-weight: 600;
+}
+
+.template-writer-outline-brief {
+  margin-top: 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--brand-line);
+}
+
+.template-writer-hint {
+  margin: 12px 0 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.template-writer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* 普通尺寸下表单比一屏高：正文自己滚，页脚按钮始终留在视口内 */
+.template-writer-modal:not(.is-fullscreen) .ant-modal-body {
+  max-height: calc(var(--app-viewport-height) - 250px);
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+}
+
+/* 全屏时 Modal 自身变成工作台：header / body / footer 三段固定，只有中间三栏吃满高度 */
+.template-writer-modal.is-fullscreen {
+  top: 0 !important;
+  width: var(--app-viewport-width) !important;
+  max-width: var(--app-viewport-width) !important;
+  margin: 0 !important;
+  padding-bottom: 0;
+  height: var(--app-viewport-height);
+}
+
+.template-writer-modal.is-fullscreen .ant-modal-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 14px 18px;
+  border-radius: 0;
+}
+
+/* antd 在 .ant-modal 与 .ant-modal-content 之间还有一层无类名的焦点容器；
+   它默认 auto 高度会把 100% 截断，必须一起撑满 */
+.template-writer-modal.is-fullscreen > div {
+  height: 100%;
+}
+
+.template-writer-modal.is-fullscreen .ant-modal-header {
+  flex: none;
+  margin-bottom: 10px;
+}
+
+.template-writer-modal.is-fullscreen .ant-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.template-writer-modal.is-fullscreen .ant-modal-footer {
+  flex: none;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.template-writer.is-fullscreen {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+}
+
+.template-writer-strip {
+  flex: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(340px, 1fr);
+  gap: 14px;
+  align-items: start;
+  padding: 9px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.template-writer-outline {
+  margin: 0;
+  max-height: 46px;
+  overflow: auto;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.55;
+  scrollbar-width: thin;
+}
+
+.template-writer-outline .template-writer-outline-label {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+
+.template-writer-fields {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.template-writer-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.template-writer-field > span {
+  flex: none;
+}
+
+.template-writer-field .ant-input {
+  min-width: 0;
+}
+
+.template-writer-field.is-wide {
+  flex: 1;
+}
+
+.template-writer-grid {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.template-writer-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.template-writer-pane.is-preview {
+  border-color: var(--brand-line);
+  box-shadow: inset 0 1px 0 rgba(134, 168, 255, 0.08);
+}
+
+.template-writer-pane-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-2);
+}
+
+.template-writer-pane-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.template-writer-pane-title::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+
+.template-writer-pane.is-preview .template-writer-pane-title::before {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-soft);
+}
+
+.template-writer-pane-meta {
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.template-writer-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--green);
+  font-size: 10.5px;
+}
+
+.template-writer-live i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-soft);
+  animation: template-live-pulse 2.4s var(--ease-standard) infinite;
+}
+
+@keyframes template-live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.template-writer-pane-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--surface-inset);
+}
+
+.template-writer-pane-body .code-editor {
+  height: 100%;
+  border: none;
+  border-radius: 0;
+}
+
+.template-writer-preview-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px 26px;
+  scrollbar-width: thin;
+}
+
+.template-writer-preview-scroll .template-doc-title {
+  font-size: 18px;
+}
+
+.template-writer-preview-scroll .template-doc-outline {
+  background: linear-gradient(90deg, var(--brand-soft), transparent 80%);
+}
+
+/* fill 编辑器：父级已有确定高度时撑满，滚动交给 .cm-scroller */
+.code-editor-fill {
+  height: 100%;
+}
+
+.code-editor-fill > div,
+.code-editor-fill .cm-editor {
+  height: 100%;
+}
+
+@media (max-width: 1180px) {
+  .template-writer-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .template-writer-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 920px) {
+  .template-writer-grid {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+
+  .template-writer-pane {
+    min-height: 300px;
+  }
+
+  .template-writer-preview-scroll {
+    max-height: 56vh;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .template-writer-live i {
+    animation: none;
+  }
 }
 
 /* ============================================================

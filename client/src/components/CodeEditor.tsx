@@ -16,8 +16,10 @@ interface CodeEditorProps {
   value?: string
   onChange?: (value: string) => void
   language: CodeEditorLanguage
-  /** 固定高度（px） */
+  /** 固定高度（px）；fill=true 时忽略，改为撑满父容器 */
   height?: number
+  /** 撑满父容器高度（模板全屏编辑的三栏布局用），父元素需有确定高度 */
+  fill?: boolean
   placeholder?: string
   maxLength?: number
   /** 只读模式：隐藏光标、禁用编辑，用于代码展示 */
@@ -80,6 +82,7 @@ export default function CodeEditor({
   onChange,
   language,
   height = 200,
+  fill = false,
   placeholder,
   maxLength,
   readOnly = false,
@@ -113,10 +116,10 @@ export default function CodeEditor({
     [language, indentSize, readOnly, extraExtensions],
   )
   return (
-    <div className="code-editor">
+    <div className={`code-editor${fill ? ' code-editor-fill' : ''}`}>
       <CodeMirror
         value={value ?? ''}
-        height={`${height}px`}
+        height={fill ? '100%' : `${height}px`}
         theme={appTheme}
         extensions={extensions}
         onCreateEditor={(view) => onCreateEditor?.(view)}

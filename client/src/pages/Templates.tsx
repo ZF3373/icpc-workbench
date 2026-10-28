@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
@@ -21,10 +21,13 @@ import {
   BookOutlined,
   CheckCircleOutlined,
   CodeOutlined,
+  CompressOutlined,
   DeleteOutlined,
   DownloadOutlined,
   DownOutlined,
   EditOutlined,
+  ExpandOutlined,
+  EyeOutlined,
   FieldTimeOutlined,
   FileMarkdownOutlined,
   FilePdfOutlined,
@@ -44,6 +47,7 @@ import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
 import Markdown from '../components/Markdown'
 import CodeEditor from '../components/CodeEditor'
+import TemplateDocument from '../components/TemplateDocument'
 import NoteEditor from '../components/NoteEditor'
 import NoteCardButton from '../components/NoteCardButton'
 import IndentSwitch from '../components/IndentSwitch'
@@ -53,6 +57,7 @@ import { saveUrlAsFile } from '../download'
 import { del, get, patch, post, put } from '../api'
 import { TEMPLATE_EXPORT_OPTIONS, type TemplateExportFormat } from '../templateExport'
 import { readJson, writeJson } from '../persistence.ts'
+import { readTemplateViewState, writeTemplateViewState } from '../templateView.ts'
 import type { TemplateCategoryInfo, TemplateContentInfo, TemplateExampleInfo, TemplateItemInfo, TemplatesResponse, TemplateStatus } from '../types'
 
 const STATUS_META: Array<{ key: TemplateStatus; label: string; icon: typeof CheckCircleOutlined }> = [
@@ -122,8 +127,11 @@ export default function Templates() {
   const [loading, setLoading] = useState(true)
   /** 首屏取数失败原因：与「模板库本来就是空的」严格区分（失败给 InlineError，空给 EmptyState） */
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [activeCat, setActiveCat] = useState<string>()
-  const [expanded, setExpanded] = useState<string>()
+  /** 上次离开模板库时的分类与滚动位置（只在挂载时读一次，之后由 scroll/view 快照跟上） */
+  const [savedView] = useState(readTemplateViewState)
+  const [activeCat, setActiveCat] = useState<string | undefined>(() => savedView?.categoryKey ?? undefined)
+  /** 当前正在阅读的模板：弹窗展示渲染后的连续正文（点击卡片打开） */
+  const [viewingId, setViewingId] = useState<string>()
   const [noteDraft, setNoteDraft] = useState('')
   const [noteEditing, setNoteEditing] = useState<TemplateItemInfo | null>(null)
   const [customOpen, setCustomOpen] = useState(false)
@@ -132,6 +140,7 @@ export default function Templates() {
   const [categoryOpen, setCategoryOpen] = useState(false)
   const [categoryForm] = Form.useForm<CategoryFormValues>()
   const [contentEditing, setContentEditing] = useState<TemplateItemInfo | null>(null)
+  const [writerFullscreen, setWriterFullscreen] = useState(false)
   const [examplesEditing, setExamplesEditing] = useState<TemplateItemInfo | null>(null)
   const [exampleRaw, setExampleRaw] = useState('')
   const [contentDraft, setContentDraft] = useState<TemplateContentInfo>({ code: '', idea: '', complexity: '', url: '' })
@@ -147,6 +156,26 @@ export default function Templates() {
   const [searchParams] = useSearchParams()
   /** ≤920px：课程分类改为顶部 Select（§5.5 / P3-2），与 Problems 的分类栏同一套策略 */
   const narrowTaxonomy = useMediaQuery(BP.narrowTaxonomy)
+  /** 视图快照：分类、滚动位置；用 ref 是为了滚动事件与卸载清理都能读到最新值 */
+  const viewSnapshotRef = useRef<{ categoryKey: string | null; scrollTop: number }>({
+    categoryKey: savedView?.categoryKey ?? null,
+    scrollTop: savedView?.scrollTop ?? 0,
+  })
+  const scrollRestoredRef = useRef(false)
+
+  const persistView = useCallback(() => {
+    writeTemplateViewState({ ...viewSnapshotRef.current })
+  }, [])
+
+  /** 立即滚到指定位置并同步快照：全局 html 有 scroll-behavior:smooth，不能让恢复过程慢滚 */
+  const setPageScroll = useCallback((top: number) => {
+    const root = document.documentElement
+    const previousBehavior = root.style.scrollBehavior
+    root.style.scrollBehavior = 'auto'
+    window.scrollTo(0, Math.max(0, top))
+    root.style.scrollBehavior = previousBehavior
+    viewSnapshotRef.current.scrollTop = Math.max(0, Math.round(window.scrollY))
+  }, [])
 
   /** 按 localStorage 持久化顺序重排分类，新增的分类追加到末尾 */
   const sortedCategories = useMemo(() => {
@@ -183,10 +212,54 @@ export default function Templates() {
     load()
   }, [load])
 
-  // 首次加载后默认选中第一个分类
+  // 首次加载后选中上次的分类；分类被删除 / 本地快照失效时回退到第一个分类
   useEffect(() => {
-    if (!activeCat && data?.categories.length) setActiveCat(data.categories[0].key)
-  }, [data, activeCat])
+    if (!data?.categories.length) return
+    if (activeCat && data.categories.some((c) => c.key === activeCat)) return
+    // 快照里的分类已经不存在了：保留它的滚动位置没有意义，从新分类顶部开始
+    setPageScroll(0)
+    setActiveCat(data.categories[0].key)
+  }, [data, activeCat, setPageScroll])
+
+  // 分类变化即落盘：滚动位置由 scroll 快照提供，因此这里不需要读 window.scrollY
+  useEffect(() => {
+    viewSnapshotRef.current.categoryKey = activeCat ?? null
+    persistView()
+  }, [activeCat, persistView])
+
+  // 滚动位置节流落盘；页面卸载 / 切到后台时立即补一次，覆盖 Ctrl+滚轮缩放后直接切页的情况
+  useEffect(() => {
+    let timer: number | undefined
+    const captureScroll = () => {
+      viewSnapshotRef.current.scrollTop = Math.max(0, Math.round(window.scrollY))
+    }
+    const onScroll = () => {
+      captureScroll()
+      if (timer !== undefined) return
+      timer = window.setTimeout(() => {
+        timer = undefined
+        persistView()
+      }, 250)
+    }
+    const flush = () => {
+      captureScroll()
+      persistView()
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flush()
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      if (timer !== undefined) window.clearTimeout(timer)
+      // 卸载时不要重新读 window.scrollY：路由切换后的新页面可能已把滚动重置到顶部
+      persistView()
+    }
+  }, [persistView])
 
   /**
    * 全局命令面板的深链：`/templates?q=<模板名>`。
@@ -197,6 +270,22 @@ export default function Templates() {
    * 组件不会重挂载，只跑一次的写法会在第二次跳转时静默失效。
    */
   const urlQ = searchParams.get('q') ?? ''
+
+  /**
+   * 恢复上次退出时的页面位置。
+   *
+   * 必须等 data + 分类都就绪后再滚：数据未回来时列表还是骨架屏，浏览器会把过大的
+   * scrollTop 夹到 0；分类快照失效时也不能滚，否则会在回退到第一个分类的过程中先跳一下。
+   * 带 `?q=` 时是命令面板的显式深链，优先级高于上次位置，不恢复。
+   */
+  useLayoutEffect(() => {
+    if (scrollRestoredRef.current) return
+    if (!data?.categories.length || !activeCat) return
+    if (!data.categories.some((c) => c.key === activeCat)) return
+    scrollRestoredRef.current = true
+    if (urlQ || viewSnapshotRef.current.scrollTop <= 0) return
+    setPageScroll(viewSnapshotRef.current.scrollTop)
+  }, [data, activeCat, urlQ, setPageScroll])
   const deepLinkAppliedRef = useRef<string | null>(null)
   useEffect(() => {
     if (!urlQ || !data?.categories.length) return
@@ -208,12 +297,14 @@ export default function Templates() {
         cat.templates.find((t) => t.name.toLowerCase() === wanted) ??
         cat.templates.find((t) => t.name.toLowerCase().includes(wanted))
       if (hit) {
+        // 显式深链是一次新的定位：不要沿用旧分类的滚动位置，下次正常进入从本次分类顶部开始
+        setPageScroll(0)
         setActiveCat(cat.key)
-        setExpanded(hit.id)
+        setViewingId(hit.id)
         return
       }
     }
-  }, [data, urlQ])
+  }, [data, urlQ, setPageScroll])
 
   const setStatus = async (t: TemplateItemInfo, status: TemplateStatus) => {
     try {
@@ -242,8 +333,9 @@ export default function Templates() {
     for (const cat of data.categories) {
       const found = cat.templates.find((t) => t.id === data.next!.id)
       if (found) {
+        setPageScroll(0)
         setActiveCat(cat.key)
-        setExpanded(found.id)
+        setViewingId(found.id)
         return
       }
     }
@@ -526,8 +618,15 @@ export default function Templates() {
   // ---------- 内置条目：写入自己的模板内容 ----------
 
   const openContentEditor = (t: TemplateItemInfo) => {
+    setViewingId(undefined)
+    setWriterFullscreen(false)
     setContentEditing(t)
     setContentDraft({ ...(contentOf(t) as Required<TemplateContentInfo>) })
+  }
+
+  const closeContentEditor = () => {
+    setContentEditing(null)
+    setWriterFullscreen(false)
   }
 
   const submitContent = async () => {
@@ -540,7 +639,9 @@ export default function Templates() {
         url: contentDraft.url ?? '',
       })
       message.success(`「${contentEditing.name}」的模板已保存`)
-      setContentEditing(null)
+      const savedId = contentEditing.id
+      closeContentEditor()
+      setViewingId(savedId)
       load()
     } catch (e) {
       message.error((e as Error).message)
@@ -548,6 +649,16 @@ export default function Templates() {
   }
 
   const cat = useMemo(() => data?.categories.find((c) => c.key === activeCat), [data, activeCat])
+
+  /** 阅读弹窗按 id 派生：保存状态 / 例题同步后 load() 会换 data 引用，弹窗内容随之更新 */
+  const viewingTemplate = useMemo(() => {
+    if (!viewingId) return null
+    for (const category of data?.categories ?? []) {
+      const hit = category.templates.find((t) => t.id === viewingId)
+      if (hit) return hit
+    }
+    return null
+  }, [data, viewingId])
 
   // 首屏骨架屏占住「统计带 → 分类导航 → 条目列表」的真实结构，避免整页 Spin 的布局跳动
   if (loading && !data) return <PageSkeleton stats={false} blocks={3} blockHeight={220} />
@@ -659,7 +770,7 @@ export default function Templates() {
             value={activeCat}
             onChange={(v: string) => {
               setActiveCat(v)
-              setExpanded(undefined)
+              setViewingId(undefined)
             }}
             options={sortedCategories.map((c) => {
               const mastered = c.templates.filter((t) => t.status === 'mastered').length
@@ -690,7 +801,7 @@ export default function Templates() {
                       className={`taxonomy-item${activeCat === c.key ? ' is-active' : ''}${isDragging ? ' is-dragging' : ''}${dropTarget && dragOverCat?.pos === 'before' ? ' is-drag-over-before' : ''}${dropTarget && dragOverCat?.pos === 'after' ? ' is-drag-over-after' : ''}`}
                       onClick={() => {
                         setActiveCat(c.key)
-                        setExpanded(undefined)
+                        setViewingId(undefined)
                       }}
                       onMouseDown={(e) => handleCatMouseDown(e, c.key)}
                       onMouseEnter={(e) => handleCatMouseEnter(e, c.key)}
@@ -773,7 +884,6 @@ export default function Templates() {
                 </Card>
               ) : (
                 cat.templates.map((t, idx) => {
-                  const open = expanded === t.id
                   const acCount = t.examples.filter((ex) => ex.ac).length
                   const content = contentOf(t)
                   const hasContent = !!(content.code?.trim() || content.idea?.trim())
@@ -781,8 +891,14 @@ export default function Templates() {
                     <Card
                       key={t.id}
                       size="small"
+                      hoverable
                       className={`template-card${t.status === 'mastered' ? ' template-mastered' : ''}`}
                       style={{ marginBottom: 10 }}
+                      onClick={(e) => {
+                        // 卡片整体可点开阅读卡片；标题栏里的按钮 / 链接保持自己的动作
+                        if ((e.target as HTMLElement).closest('button, a, input, .ant-popconfirm')) return
+                        setViewingId(t.id)
+                      }}
                       title={
                         <span className="today-problem-head">
                           <span className="mono template-ordinal">{String(idx + 1).padStart(2, '0')}</span>
@@ -790,8 +906,13 @@ export default function Templates() {
                             className="today-problem-title"
                             role="button"
                             tabIndex={0}
-                            onClick={() => setExpanded(open ? undefined : t.id)}
-                            onKeyDown={(e) => e.key === 'Enter' && setExpanded(open ? undefined : t.id)}
+                            onClick={() => setViewingId(t.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault()
+                                setViewingId(t.id)
+                              }
+                            }}
                           >
                             {t.name}
                           </span>
@@ -813,7 +934,7 @@ export default function Templates() {
                         </span>
                       }
                       extra={
-                        <Space size={0}>
+                        <Space size={0} onClick={(e) => e.stopPropagation()}>
                           {!t.custom && (
                             <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openContentEditor(t)}>
                               {hasContent ? '编辑' : '写入'}
@@ -831,187 +952,28 @@ export default function Templates() {
                               </Popconfirm>
                             </>
                           )}
-                          <Button size="small" type="text" onClick={() => setExpanded(open ? undefined : t.id)}>
-                            {open ? '收起' : '展开'}
+                          <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => setViewingId(t.id)}>
+                            查看
                           </Button>
                         </Space>
                       }
                     >
-                      {!open ? (
-                        <div className="template-brief">
-                          {t.tags.slice(0, 4).map((tag) => (
-                            <Tag key={tag} color={tagColor(tag)}>
-                              {tag}
-                            </Tag>
-                          ))}
-                          {t.examples.length > 0 && (
-                            <Tag className={acCount > 0 ? 'template-brief-ac' : undefined}>
-                              例题 {acCount > 0 ? `${acCount}/${t.examples.length} AC` : t.examples.length}
-                            </Tag>
-                          )}
-                          {!t.custom && !hasContent && <Tag color="warning">待写入</Tag>}
-                          <span className="template-brief-text">
-                            {(t.custom ? t.idea : (t.outline ?? '')).slice(0, 70)}…
-                          </span>
-                        </div>
-                      ) : (
-                        <div className="template-detail">
-                          {!t.custom && (
-                            <div className="template-section">
-                              <div className="section-label">大纲要点</div>
-                              <p className="template-text">{t.outline}</p>
-                            </div>
-                          )}
-
-                          {hasContent ? (
-                            <>
-                              <div className="template-meta-row">
-                                {content.complexity && <span className="template-chip">{content.complexity}</span>}
-                                {content.url && (
-                                  <a href={content.url} target="_blank" rel="noreferrer" className="template-example">
-                                    <LinkOutlined /> {t.custom ? '模板出处' : '我的参考链接'} ↗
-                                  </a>
-                                )}
-                              </div>
-
-                              {content.idea && (
-                                <div className="template-section">
-                                  <div className="section-label">{t.custom ? '思路与备注' : '我的思路'}</div>
-                                  <Markdown text={content.idea} breaks />
-                                </div>
-                              )}
-
-                              {content.code && (
-                                <div className="template-section">
-                                  <div className="section-label">
-                                    {t.custom ? '模板代码' : '我的模板'}
-                                    <Button
-                                      size="small"
-                                      type="text"
-                                      onClick={() => {
-                                        navigator.clipboard
-                                          ?.writeText(content.code!)
-                                          .then(() => message.success('代码已复制'))
-                                          .catch(() => message.warning('复制失败，请手动选择复制'))
-                                      }}
-                                    >
-                                      复制
-                                    </Button>
-                                  </div>
-                                  <CodeEditor
-                                    language="cpp"
-                                    readOnly
-                                    height={Math.min(480, Math.max(120, content.code.split('\n').length * 20))}
-                                    value={content.code}
-                                  />
-                                </div>
-                              )}
-                            </>
-                          ) : (
-                            !t.custom && (
-                              <div className="template-empty-content">
-                                <p className="template-text">这个模板位还没写入内容 —— 模板由你自己写才有用。</p>
-                                <Button type="primary" icon={<EditOutlined />} onClick={() => openContentEditor(t)}>
-                                  写入我的模板
-                                </Button>
-                              </div>
-                            )
-                          )}
-
-                          <div className="template-section">
-                            <div
-                              className="section-label"
-                              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
-                            >
-                              <span>例题实战（点击做题，入库后自动追踪 AC）</span>
-                              <Space size={4}>
-                                <Button size="small" type="text" icon={<PlusOutlined />} onClick={() => { setExamplesEditing(t); setExampleRaw('') }}>
-                                  添加例题
-                                </Button>
-                                <Tooltip title="拉取例题平台的最新提交，自动刷新 AC 状态">
-                                  <Button
-                                    size="small"
-                                    type="text"
-                                    icon={<SyncOutlined />}
-                                    loading={syncingId === t.id}
-                                    disabled={t.examples.length === 0}
-                                    onClick={() => syncExamples(t)}
-                                  >
-                                    同步 AC
-                                  </Button>
-                                </Tooltip>
-                              </Space>
-                            </div>
-                            {t.examples.length > 0 && <div className="template-examples">
-                              {t.examples.map((ex, index) => (
-                                <div className="template-example-row" key={`${ex.platform}-${ex.key}`}>
-                                  {ex.url ? (
-                                    <a href={ex.url} target="_blank" rel="noreferrer" className="template-example">
-                                      <LinkOutlined /> [{ex.key}] {ex.title} ↗
-                                    </a>
-                                  ) : <span className="template-example">[{ex.key}] {ex.title}</span>}
-                                  {ex.ac ? (
-                                    <Tag color="success" className="dot-tag">已 AC</Tag>
-                                  ) : ex.inBank ? (
-                                    <Link to="/problems">
-                                      <Tag color="processing" className="dot-tag template-example-action">已入库 · 未 AC</Tag>
-                                    </Link>
-                                  ) : (
-                                    <Button size="small" type="text" icon={<ImportOutlined />} onClick={() => collectExample(t, ex)}>
-                                      入库
-                                    </Button>
-                                  )}
-                                  <Popconfirm title={`从「${t.name}」移除这道例题？`} onConfirm={() => void removeExample(t, index)} okText="移除" cancelText="取消">
-                                    <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label={`移除例题 ${ex.key}`} />
-                                  </Popconfirm>
-                                </div>
-                              ))}
-                            </div>}
-                          </div>
-
-                          <div className="template-actions">
-                            <Space size={8} wrap>
-                              {STATUS_META.map((s) => (
-                                <Button
-                                  key={s.key}
-                                  size="small"
-                                  type={t.status === s.key ? 'primary' : 'default'}
-                                  icon={<s.icon />}
-                                  onClick={() => setStatus(t, s.key)}
-                                >
-                                  {s.label}
-                                </Button>
-                              ))}
-                              <Button
-                                size="small"
-                                type="text"
-                                icon={<EditOutlined />}
-                                onClick={() => {
-                                  setNoteEditing(t)
-                                  setNoteDraft(t.note ?? '')
-                                }}
-                              >
-                                {t.note ? '改笔记' : '记笔记'}
-                              </Button>
-                              {t.status === 'mastered' && (
-                                <Link to="/reviews" className="template-review-hint">
-                                  <BookOutlined /> 到复习库保持手感 →
-                                </Link>
-                              )}
-                            </Space>
-                            {/* 学习笔记入口：点击弹出笔记卡片（仿赛事中心弹窗），卡片内可直接进入编辑 */}
-                            {t.note && (
-                              <NoteCardButton
-                                kind="template"
-                                subject={t.name}
-                                text={t.note}
-                                meta={<span>{STATUS_META.find(s => s.key === t.status)?.label ?? ''}</span>}
-                                onEdit={() => { setNoteEditing(t); setNoteDraft(t.note ?? '') }}
-                              />
-                            )}
-                          </div>
-                        </div>
-                      )}
+                      <div className="template-brief">
+                        {t.tags.slice(0, 4).map((tag) => (
+                          <Tag key={tag} color={tagColor(tag)}>
+                            {tag}
+                          </Tag>
+                        ))}
+                        {t.examples.length > 0 && (
+                          <Tag className={acCount > 0 ? 'template-brief-ac' : undefined}>
+                            例题 {acCount > 0 ? `${acCount}/${t.examples.length} AC` : t.examples.length}
+                          </Tag>
+                        )}
+                        {!t.custom && !hasContent && <Tag color="warning">待写入</Tag>}
+                        <span className="template-brief-text">
+                          {(t.custom ? t.idea : (t.outline ?? '')).slice(0, 70)}…
+                        </span>
+                      </div>
                     </Card>
                   )
                 })
@@ -1020,6 +982,192 @@ export default function Templates() {
           )}
         </section>
       </div>
+
+      {/* 模板阅读弹窗：点击卡片直接看渲染后的正文，整篇上下连续滚动 */}
+      <Modal
+        open={viewingTemplate !== null}
+        onCancel={() => setViewingId(undefined)}
+        width={920}
+        className="template-viewer-modal"
+        destroyOnHidden
+        title={
+          viewingTemplate && (
+            <div className="template-viewer-head">
+              <div className="template-viewer-heading">
+                <span className="template-viewer-kicker">模板 · {templateTierLabel(viewingTemplate.difficulty)}</span>
+                <span className="template-viewer-name">{viewingTemplate.name}</span>
+              </div>
+              <div className="template-viewer-tags">
+                {viewingTemplate.custom && <Tag color="geekblue">自建</Tag>}
+                {viewingTemplate.tags.slice(0, 4).map((tag) => (
+                  <Tag key={tag} color={tagColor(tag)}>
+                    {tag}
+                  </Tag>
+                ))}
+              </div>
+            </div>
+          )
+        }
+        footer={
+          viewingTemplate && (
+            <div className="template-viewer-footer">
+              <Space size={8} wrap>
+                {STATUS_META.map((s) => (
+                  <Button
+                    key={s.key}
+                    size="small"
+                    type={viewingTemplate.status === s.key ? 'primary' : 'default'}
+                    icon={<s.icon />}
+                    onClick={() => setStatus(viewingTemplate, s.key)}
+                  >
+                    {s.label}
+                  </Button>
+                ))}
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<EditOutlined />}
+                  onClick={() => {
+                    setNoteEditing(viewingTemplate)
+                    setNoteDraft(viewingTemplate.note ?? '')
+                  }}
+                >
+                  {viewingTemplate.note ? '改笔记' : '记笔记'}
+                </Button>
+                {viewingTemplate.status === 'mastered' && (
+                  <Link to="/reviews" className="template-review-hint">
+                    <BookOutlined /> 到复习库保持手感 →
+                  </Link>
+                )}
+              </Space>
+              <Space size={8}>
+                {!viewingTemplate.custom ? (
+                  <Button
+                    icon={<EditOutlined />}
+                    onClick={() => openContentEditor(viewingTemplate)}
+                  >
+                    {contentOf(viewingTemplate).code?.trim() || contentOf(viewingTemplate).idea?.trim() ? '编辑我的模板' : '写入我的模板'}
+                  </Button>
+                ) : (
+                  <Button
+                    icon={<EditOutlined />}
+                    onClick={() => {
+                      setViewingId(undefined)
+                      openEdit(viewingTemplate)
+                    }}
+                  >
+                    编辑模板
+                  </Button>
+                )}
+                <Button type="primary" onClick={() => setViewingId(undefined)}>
+                  关闭
+                </Button>
+              </Space>
+            </div>
+          )
+        }
+      >
+        {viewingTemplate && (
+          <div className="template-viewer-body">
+            <TemplateDocument
+              name={viewingTemplate.name}
+              custom={viewingTemplate.custom}
+              tags={viewingTemplate.tags}
+              difficulty={viewingTemplate.difficulty}
+              status={viewingTemplate.status}
+              outline={viewingTemplate.outline}
+              content={contentOf(viewingTemplate)}
+              showHead={false}
+            />
+
+            <section className="template-viewer-examples">
+              <div className="template-doc-label">
+                <span>例题实战（点击做题，入库后自动追踪 AC）</span>
+                <Space size={4}>
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<PlusOutlined />}
+                    onClick={() => {
+                      setExamplesEditing(viewingTemplate)
+                      setExampleRaw('')
+                    }}
+                  >
+                    添加例题
+                  </Button>
+                  <Tooltip title="拉取例题平台的最新提交，自动刷新 AC 状态">
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<SyncOutlined />}
+                      loading={syncingId === viewingTemplate.id}
+                      disabled={viewingTemplate.examples.length === 0}
+                      onClick={() => syncExamples(viewingTemplate)}
+                    >
+                      同步 AC
+                    </Button>
+                  </Tooltip>
+                </Space>
+              </div>
+              {viewingTemplate.examples.length > 0 ? (
+                <div className="template-examples">
+                  {viewingTemplate.examples.map((ex, index) => (
+                    <div className="template-example-row" key={`${ex.platform}-${ex.key}`}>
+                      {ex.url ? (
+                        <a href={ex.url} target="_blank" rel="noreferrer" className="template-example">
+                          <LinkOutlined /> [{ex.key}] {ex.title} ↗
+                        </a>
+                      ) : (
+                        <span className="template-example">[{ex.key}] {ex.title}</span>
+                      )}
+                      {ex.ac ? (
+                        <Tag color="success" className="dot-tag">已 AC</Tag>
+                      ) : ex.inBank ? (
+                        <Link to="/problems">
+                          <Tag color="processing" className="dot-tag template-example-action">已入库 · 未 AC</Tag>
+                        </Link>
+                      ) : (
+                        <Button size="small" type="text" icon={<ImportOutlined />} onClick={() => collectExample(viewingTemplate, ex)}>
+                          入库
+                        </Button>
+                      )}
+                      <Popconfirm
+                        title={`从「${viewingTemplate.name}」移除这道例题？`}
+                        onConfirm={() => void removeExample(viewingTemplate, index)}
+                        okText="移除"
+                        cancelText="取消"
+                      >
+                        <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label={`移除例题 ${ex.key}`} />
+                      </Popconfirm>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="template-viewer-empty-line">还没有例题，可以先添加一道正在练的题。</p>
+              )}
+            </section>
+
+            {viewingTemplate.note && (
+              <div className="template-viewer-note">
+                <div className="template-doc-label">学习笔记</div>
+                <div className="template-viewer-note-body" data-note-zoom>
+                  <Markdown text={viewingTemplate.note} />
+                </div>
+                <NoteCardButton
+                  kind="template"
+                  subject={viewingTemplate.name}
+                  text={viewingTemplate.note}
+                  meta={<span>{STATUS_META.find((s) => s.key === viewingTemplate.status)?.label ?? ''}</span>}
+                  onEdit={() => {
+                    setNoteEditing(viewingTemplate)
+                    setNoteDraft(viewingTemplate.note ?? '')
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
 
       {/* 学习笔记弹窗：与复习笔记同款编辑器（Markdown 工具栏 + 粘贴图片 + 预览） */}
       <Modal
@@ -1139,62 +1287,182 @@ export default function Templates() {
           </Form.Item>
         </Form>
       </Modal>
-      {/* 内置条目：写入我的模板内容弹窗 */}
+      {/* 内置条目：写入我的模板内容弹窗（可全屏为三栏实时预览） */}
       <Modal
-        title={`写入我的模板 · ${contentEditing?.name ?? ''}`}
+        title={
+          <div className="template-writer-title">
+            <span className="template-writer-kicker">{writerFullscreen ? '沉浸写作' : '写入我的模板'}</span>
+            <span className="template-writer-name">{contentEditing?.name ?? ''}</span>
+          </div>
+        }
         open={contentEditing !== null}
-        onCancel={() => setContentEditing(null)}
-        onOk={submitContent}
-        okText="保存"
-        cancelText="取消"
-        width={720}
+        onCancel={closeContentEditor}
+        width={writerFullscreen ? 'var(--app-viewport-width)' : 760}
+        className={`template-writer-modal${writerFullscreen ? ' is-fullscreen' : ''}`}
+        destroyOnHidden
+        footer={
+          <div className="template-writer-footer">
+            <Button
+              type="text"
+              icon={writerFullscreen ? <CompressOutlined /> : <ExpandOutlined />}
+              onClick={() => setWriterFullscreen((v) => !v)}
+              aria-pressed={writerFullscreen}
+            >
+              {writerFullscreen ? '退出全屏' : '全屏编辑'}
+            </Button>
+            <Space size={8}>
+              <Button onClick={closeContentEditor}>取消</Button>
+              <Button type="primary" onClick={submitContent}>保存</Button>
+            </Space>
+          </div>
+        }
       >
         {contentEditing && (
-          <>
-            <p className="band-desc" style={{ marginTop: 0 }}>
-              大纲要点：{contentEditing.outline}
-            </p>
-            <Form layout="vertical">
-              <Form.Item label="我的思路（什么时候用 / 关键观察）" style={{ marginBottom: 12 }}>
-                <CodeEditor
-                  language="markdown"
-                  height={140}
-                  maxLength={5000}
-                  value={contentDraft.idea ?? ''}
-                  onChange={(v) => setContentDraft((d) => ({ ...d, idea: v }))}
-                  placeholder="用自己的话写下来，Markdown 语法（列表 / 表格 / 代码块）——复习时只看这一段……"
-                />
-              </Form.Item>
-              <Form.Item label="模板代码" style={{ marginBottom: 12 }}>
-                <CodeEditor
-                  language="cpp"
-                  height={320}
-                  maxLength={20000}
-                  value={contentDraft.code ?? ''}
-                  onChange={(v) => setContentDraft((d) => ({ ...d, code: v }))}
-                  placeholder="粘贴 / 编写你的 C++ 模板……（语法高亮，支持 Tab 缩进）"
-                />
-              </Form.Item>
-              <Space size={12} style={{ display: 'flex' }}>
-                <Form.Item label="复杂度" style={{ marginBottom: 0, width: 200 }}>
-                  <Input
-                    value={contentDraft.complexity ?? ''}
-                    onChange={(e) => setContentDraft((d) => ({ ...d, complexity: e.target.value }))}
-                    placeholder="O(n log n)"
-                    maxLength={200}
-                  />
-                </Form.Item>
-                <Form.Item label="参考链接" style={{ marginBottom: 0, flex: 1, minWidth: 260 }}>
-                  <Input
-                    value={contentDraft.url ?? ''}
-                    onChange={(e) => setContentDraft((d) => ({ ...d, url: e.target.value }))}
-                    placeholder="https://...（题解 / 笔记）"
-                    maxLength={500}
-                  />
-                </Form.Item>
-              </Space>
-            </Form>
-          </>
+          <div className={`template-writer${writerFullscreen ? ' is-fullscreen' : ''}`}>
+            {writerFullscreen ? (
+              <>
+                <div className="template-writer-strip">
+                  <p className="template-writer-outline">
+                    <span className="template-writer-outline-label">大纲要点</span>
+                    {contentEditing.outline}
+                  </p>
+                  <div className="template-writer-fields">
+                    <label className="template-writer-field">
+                      <span>复杂度</span>
+                      <Input
+                        size="small"
+                        value={contentDraft.complexity ?? ''}
+                        onChange={(e) => setContentDraft((d) => ({ ...d, complexity: e.target.value }))}
+                        placeholder="O(n log n)"
+                        maxLength={200}
+                      />
+                    </label>
+                    <label className="template-writer-field is-wide">
+                      <span>参考链接</span>
+                      <Input
+                        size="small"
+                        value={contentDraft.url ?? ''}
+                        onChange={(e) => setContentDraft((d) => ({ ...d, url: e.target.value }))}
+                        placeholder="https://...（题解 / 笔记）"
+                        maxLength={500}
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="template-writer-grid">
+                  <section className="template-writer-pane" aria-label="Markdown 说明写入区">
+                    <div className="template-writer-pane-head">
+                      <span className="template-writer-pane-title">
+                        <span className="template-writer-pane-index">01</span>
+                        MD 说明
+                      </span>
+                      <span className="template-writer-pane-meta">{(contentDraft.idea ?? '').length} 字</span>
+                    </div>
+                    <div className="template-writer-pane-body">
+                      <CodeEditor
+                        fill
+                        language="markdown"
+                        maxLength={5000}
+                        value={contentDraft.idea ?? ''}
+                        onChange={(v) => setContentDraft((d) => ({ ...d, idea: v }))}
+                        placeholder="写清楚什么时候用、关键观察、边界条件……（Markdown：列表 / 表格 / 代码块）"
+                      />
+                    </div>
+                  </section>
+
+                  <section className="template-writer-pane is-preview" aria-label="模板实时渲染预览">
+                    <div className="template-writer-pane-head">
+                      <span className="template-writer-pane-title">
+                        <span className="template-writer-pane-index">02</span>
+                        实时预览
+                      </span>
+                      <span className="template-writer-live"><i aria-hidden />跟随改动</span>
+                    </div>
+                    <div className="template-writer-preview-scroll">
+                      <TemplateDocument
+                        name={contentEditing.name}
+                        tags={contentEditing.tags}
+                        difficulty={contentEditing.difficulty}
+                        content={contentDraft}
+                        preview
+                      />
+                    </div>
+                  </section>
+
+                  <section className="template-writer-pane" aria-label="模板代码写入区">
+                    <div className="template-writer-pane-head">
+                      <span className="template-writer-pane-title">
+                        <span className="template-writer-pane-index">03</span>
+                        C++ 代码
+                      </span>
+                      <span className="template-writer-pane-meta">
+                        {(contentDraft.code ?? '').split('\n').length} 行
+                      </span>
+                    </div>
+                    <div className="template-writer-pane-body">
+                      <CodeEditor
+                        fill
+                        language="cpp"
+                        maxLength={20000}
+                        value={contentDraft.code ?? ''}
+                        onChange={(v) => setContentDraft((d) => ({ ...d, code: v }))}
+                        placeholder="粘贴 / 编写你的 C++ 模板……（语法高亮，支持 Tab 缩进）"
+                      />
+                    </div>
+                  </section>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="band-desc template-writer-outline-brief">
+                  <span className="template-writer-outline-label">大纲要点</span>
+                  {contentEditing.outline}
+                </p>
+                <Form layout="vertical">
+                  <Form.Item label="我的思路（什么时候用 / 关键观察）" style={{ marginBottom: 12 }}>
+                    <CodeEditor
+                      language="markdown"
+                      height={140}
+                      maxLength={5000}
+                      value={contentDraft.idea ?? ''}
+                      onChange={(v) => setContentDraft((d) => ({ ...d, idea: v }))}
+                      placeholder="用自己的话写下来，Markdown 语法（列表 / 表格 / 代码块）——复习时只看这一段……"
+                    />
+                  </Form.Item>
+                  <Form.Item label="模板代码" style={{ marginBottom: 12 }}>
+                    <CodeEditor
+                      language="cpp"
+                      height={320}
+                      maxLength={20000}
+                      value={contentDraft.code ?? ''}
+                      onChange={(v) => setContentDraft((d) => ({ ...d, code: v }))}
+                      placeholder="粘贴 / 编写你的 C++ 模板……（语法高亮，支持 Tab 缩进）"
+                    />
+                  </Form.Item>
+                  <Space size={12} style={{ display: 'flex' }}>
+                    <Form.Item label="复杂度" style={{ marginBottom: 0, width: 200 }}>
+                      <Input
+                        value={contentDraft.complexity ?? ''}
+                        onChange={(e) => setContentDraft((d) => ({ ...d, complexity: e.target.value }))}
+                        placeholder="O(n log n)"
+                        maxLength={200}
+                      />
+                    </Form.Item>
+                    <Form.Item label="参考链接" style={{ marginBottom: 0, flex: 1, minWidth: 260 }}>
+                      <Input
+                        value={contentDraft.url ?? ''}
+                        onChange={(e) => setContentDraft((d) => ({ ...d, url: e.target.value }))}
+                        placeholder="https://...（题解 / 笔记）"
+                        maxLength={500}
+                      />
+                    </Form.Item>
+                  </Space>
+                </Form>
+                <p className="template-writer-hint">打开「全屏编辑」后是三栏布局：左边写说明、中间实时渲染、右边写代码。</p>
+              </>
+            )}
+          </div>
         )}
       </Modal>
     </div>
