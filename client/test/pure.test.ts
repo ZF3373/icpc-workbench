@@ -241,6 +241,286 @@ describe('aiBlocks.ts template-add', () => {
     assert.equal(extractTemplateAdd(variant).length, 1)
     assert.equal(stripTemplateAdd(variant), '前文\n\n后文') // 块剥离后两端换行保留，Markdown 渲染时折叠
   })
+
+  /**
+   * 回归：`idea` 里再写一段 ```cpp 围栏时，旧的懒匹配正则会在内层 ``` 处收尾，
+   * JSON 被截成半截 → 解析失败 → 块退化成正文里点不动的代码卡。
+   * 闭合围栏按 Markdown 语义必须独占一行，内层 ```cpp 不是闭合围栏。
+   */
+  it('keeps parsing when the JSON contains a nested ```cpp fence', async () => {
+    const { extractTemplateAdd, stripTemplateAdd } = await import('../src/aiBlocks.ts')
+    const nested = [
+      '说明正文',
+      '```template-add',
+      '{',
+      '  "categoryKey": "graph",',
+      '  "templateId": "graph-dijkstra",',
+      '  "name": "堆优化 Dijkstra",',
+      '  "difficulty": 3,',
+      '  "tags": ["图论", "最短路"],',
+      '  "code": "void dij(int s) {}",',
+      '  "idea": "## 适用\\n\\n```cpp\\nfor (int i = 1; i <= n; i++) {\\n  relax(i);\\n}\\n```\\n",',
+      '  "complexity": "O((n+m) log m)",',
+      '  "url": "https://www.luogu.com.cn/problem/P4779"',
+      '}',
+      '```',
+    ].join('\n')
+
+    const drafts = extractTemplateAdd(nested)
+    assert.equal(drafts.length, 1)
+    assert.equal(drafts[0]!.name, '堆优化 Dijkstra')
+    assert.equal(drafts[0]!.templateId, 'graph-dijkstra')
+    assert.match(drafts[0]!.idea ?? '', /```cpp/)
+    // 整块（含内层围栏）都被剥离，正文不留残余
+    assert.equal(stripTemplateAdd(nested), '说明正文')
+  })
+
+  it('accepts ~~~ fences, 4+ backtick fences and upper-case block names', async () => {
+    const { extractTemplateAdd, stripTemplateAdd } = await import('../src/aiBlocks.ts')
+    const body = '{"name":"A*","categoryKey":"search"}'
+    const variants = [
+      `前\n~~~template-add\n${body}\n~~~\n后`,
+      `前\n\`\`\`\`template-add\n${body}\n\`\`\`\`\n后`,
+      `前\n\`\`\`TEMPLATE-ADD\n${body}\n\`\`\`\n后`,
+      `前\n\`\`\`Template-Add\n${body}\n\`\`\`\n后`,
+    ]
+    for (const v of variants) {
+      assert.equal(extractTemplateAdd(v).length, 1, `应能解析：${JSON.stringify(v.slice(0, 20))}`)
+      assert.equal(stripTemplateAdd(v), '前\n\n后')
+    }
+  })
+
+  it('repairs raw newlines and trailing commas inside the JSON', async () => {
+    const { extractTemplateAdd } = await import('../src/aiBlocks.ts')
+    const rawNewlines = [
+      '```template-add',
+      '{',
+      '  "categoryKey": "dp",',
+      '  "name": "区间 DP",',
+      '  "code": "#include <bits/stdc++.h>',
+      'int main() {',
+      '  return 0;',
+      '}",',
+      '  "idea": "转移：dp[i][j]",',
+      '  "difficulty": 3,',
+      '}',
+      '```',
+    ].join('\n')
+
+    const drafts = extractTemplateAdd(rawNewlines)
+    assert.equal(drafts.length, 1)
+    assert.equal(drafts[0]!.name, '区间 DP')
+    assert.match(drafts[0]!.code, /int main\(\) \{/)
+    assert.match(drafts[0]!.code, /\n/) // 裸换行按真换行还原
+  })
+
+  it('recovers code containing unescaped double quotes', async () => {
+    const { extractTemplateAdd } = await import('../src/aiBlocks.ts')
+    const sloppy = [
+      '```template-add',
+      '{',
+      '  "categoryKey": "basic",',
+      '  "name": "读入输出",',
+      '  "difficulty": 1,',
+      '  "tags": ["输入输出"],',
+      '  "code": "printf("%d\\n", x);",',
+      '  "idea": "用 printf 输出",',
+      '}',
+      '```',
+    ].join('\n')
+
+    const drafts = extractTemplateAdd(sloppy)
+    assert.equal(drafts.length, 1)
+    assert.equal(drafts[0]!.name, '读入输出')
+    assert.equal(drafts[0]!.code, 'printf("%d\n", x);')
+    assert.equal(drafts[0]!.idea, '用 printf 输出')
+  })
+
+  it('does not corrupt string content that looks like a trailing comma', async () => {
+    const { extractTemplateAdd } = await import('../src/aiBlocks.ts')
+    // code 里有裸换行 → 走「修补后 JSON」这条路；idea 里的 `, ]` 不能被当成尾逗号删掉
+    const text = [
+      '```template-add',
+      '{',
+      '  "name": "边界写法",',
+      '  "code": "int a;',
+      'int b;",',
+      '  "idea": "看到 a, ] 这种写法时别慌",',
+      '}',
+      '```',
+    ].join('\n')
+
+    const drafts = extractTemplateAdd(text)
+    assert.equal(drafts.length, 1)
+    assert.equal(drafts[0]!.idea, '看到 a, ] 这种写法时别慌')
+    assert.match(drafts[0]!.code, /int a;\nint b;/)
+  })
+
+  it('tolerates CRLF output and JSON written on the fence line', async () => {
+    const { extractTemplateAdd, stripTemplateAdd } = await import('../src/aiBlocks.ts')
+    const crlf = '前\r\n```template-add\r\n{"name":"T","categoryKey":"ds"}\r\n```\r\n后'
+    assert.equal(extractTemplateAdd(crlf).length, 1)
+    assert.equal(extractTemplateAdd(crlf)[0]!.name, 'T')
+    assert.equal(stripTemplateAdd(crlf).replace(/\r/g, ''), '前\n\n后')
+
+    const inline = '前\n```template-add {"name":"T2","categoryKey":"ds"}\n```\n后'
+    assert.equal(extractTemplateAdd(inline)[0]!.name, 'T2')
+    assert.equal(stripTemplateAdd(inline), '前\n\n后')
+  })
+
+  it('does not fabricate a draft from a truncated block, but keeps its text', async () => {
+    const { extractTemplateAdd } = await import('../src/aiBlocks.ts')
+    const { parseMessageBlocks } = await import('../src/components/assistant/messageBlocks.ts')
+    const truncated = [
+      '说明正文',
+      '```template-add',
+      '{',
+      '  "name": "堆优化 Dijkstra",',
+      '  "code": "void dij(int s) {',
+      '    // 输出到此被 token 上限截断',
+    ].join('\n')
+
+    assert.deepEqual(extractTemplateAdd(truncated), [])
+    // 解析不了就别静默删掉：正文里保留原文，用户还能看到/复制
+    const { text, issues } = parseMessageBlocks(truncated)
+    assert.match(text, /template-add/)
+    assert.equal(issues.length, 1) // 用来提示「为什么没有写入按钮」
+    assert.equal(issues[0]!.name, 'template-add')
+    assert.match(issues[0]!.reason, /没有闭合|截断/)
+  })
+
+  it('keeps an unparseable block visible while valid siblings still get buttons', async () => {
+    const { parseMessageBlocks } = await import('../src/components/assistant/messageBlocks.ts')
+    const mixed = [
+      '```template-add',
+      '{ this is not json }',
+      '```',
+      '```template-add',
+      '{"name":"有效模板","categoryKey":"search"}',
+      '```',
+      '结尾',
+    ].join('\n')
+
+    const { tplAdds, text } = parseMessageBlocks(mixed)
+    assert.equal(tplAdds.length, 1)
+    assert.equal(tplAdds[0]!.name, '有效模板')
+    assert.match(text, /this is not json/) // 坏块留在正文，好块被剥离
+    assert.doesNotMatch(text, /有效模板/)
+    assert.equal(tplAdds.length, 1)
+  })
+})
+
+// ---------- 结构化块严格校验（各工具接口） ----------
+
+describe('结构化块严格校验', () => {
+  /** 拼一条「正文 + 一个块」的回复 */
+  const wrap = (name: string, body: string): string => ['说明正文', '```' + name, body, '```', '结尾'].join('\n')
+
+  it('ability-update：level 必须是 800–3500 的 100 整数倍', async () => {
+    const { parseMessageBlocks } = await import('../src/components/assistant/messageBlocks.ts')
+
+    const ok = parseMessageBlocks(wrap('ability-update', '{"level": 1900, "reason": "稳定 AC 1900"}'))
+    assert.equal(ok.abilityUpd?.level, 1900)
+    assert.equal(ok.issues.length, 0)
+
+    for (const bad of ['1850', '700', '4000', '"1900"']) {
+      const r = parseMessageBlocks(wrap('ability-update', `{"level": ${bad}}`))
+      assert.equal(r.abilityUpd, null, `level=${bad} 不应生成按钮`)
+      assert.equal(r.issues.length, 1)
+      assert.equal(r.issues[0]!.name, 'ability-update')
+      assert.match(r.text, /ability-update/) // 原文保留
+    }
+  })
+
+  it('plan-modify：缺 tasks / 任务字段不全一律不生成按钮', async () => {
+    const { parseMessageBlocks } = await import('../src/components/assistant/messageBlocks.ts')
+
+    const ok = parseMessageBlocks(
+      wrap('plan-modify', '{"tasks": [{"date": "2026-10-28", "title": "练图论", "kind": "topic"}]}'),
+    )
+    assert.ok(ok.modify)
+    assert.equal(ok.issues.length, 0)
+    assert.doesNotMatch(ok.text, /plan-modify/)
+
+    const noTasks = parseMessageBlocks(wrap('plan-modify', '{"title": "冲刺"}'))
+    assert.equal(noTasks.modify, null)
+    assert.match(noTasks.issues[0]!.reason, /tasks/)
+
+    const badTask = parseMessageBlocks(wrap('plan-modify', '{"tasks": [{"title": "没有日期"}]}'))
+    assert.equal(badTask.modify, null)
+    assert.match(badTask.issues[0]!.reason, /有效任务/)
+
+    const notJson = parseMessageBlocks(wrap('plan-modify', '{ tasks: 不是 JSON }'))
+    assert.equal(notJson.modify, null)
+    assert.match(notJson.issues[0]!.reason, /JSON/)
+  })
+
+  it('plan-modify：重复块只认第一个并给出说明', async () => {
+    const { parseMessageBlocks } = await import('../src/components/assistant/messageBlocks.ts')
+    const reply = [
+      '```plan-modify',
+      '{"tasks": [{"date": "2026-10-28", "title": "A"}]}',
+      '```',
+      '```plan-modify',
+      '{"tasks": [{"date": "2026-10-29", "title": "B"}]}',
+      '```',
+    ].join('\n')
+    const r = parseMessageBlocks(reply)
+    assert.ok(r.modify)
+    assert.equal(r.issues.length, 1)
+    assert.match(r.issues[0]!.reason, /重复/)
+    // 重复块也不该留在正文里（两份 JSON 同时出现会让用户困惑）
+    assert.doesNotMatch(r.text, /plan-modify/)
+  })
+
+  it('plan-create：标题与 tasks 都必填；日期格式不合法时忽略该字段但不作废整块', async () => {
+    const { parseMessageBlocks } = await import('../src/components/assistant/messageBlocks.ts')
+    const ok = parseMessageBlocks(
+      wrap(
+        'plan-create',
+        '{"title": "四周冲刺", "startDate": "2026-10-28", "days": 28, "tasks": [{"date": "2026-10-28", "title": "热身"}]}',
+      ),
+    )
+    assert.equal(ok.planDraft?.title, '四周冲刺')
+    assert.equal(ok.planDraft?.days, 28)
+    assert.equal(ok.issues.length, 0)
+
+    const noTitle = parseMessageBlocks(wrap('plan-create', '{"tasks": [{"date": "2026-10-28", "title": "热身"}]}'))
+    assert.equal(noTitle.planDraft, null)
+    assert.match(noTitle.issues[0]!.reason, /title/)
+
+    const badDate = parseMessageBlocks(
+      wrap('plan-create', '{"title": "T", "startDate": "10/28", "tasks": [{"date": "2026-10-28", "title": "热身"}]}'),
+    )
+    assert.equal(badDate.planDraft?.title, 'T')
+    assert.equal(badDate.planDraft?.startDate, undefined) // 非法日期被丢弃，但整块仍可用
+  })
+
+  it('list-create：title 与 raw 都必填', async () => {
+    const { parseMessageBlocks } = await import('../src/components/assistant/messageBlocks.ts')
+    const ok = parseMessageBlocks(wrap('list-create', '{"title": "图论 20 题", "raw": "P4779\\nP3371"}'))
+    assert.equal(ok.listDraft?.title, '图论 20 题')
+    assert.equal(ok.listDraft?.raw, 'P4779\nP3371')
+    assert.equal(ok.issues.length, 0)
+
+    const noRaw = parseMessageBlocks(wrap('list-create', '{"title": "空题单"}'))
+    assert.equal(noRaw.listDraft, null)
+    assert.match(noRaw.issues[0]!.reason, /raw/)
+  })
+
+  it('围栏写法不规范（~~~ / 4 个反引号 / 大写）同样按严格校验解析', async () => {
+    const { parseMessageBlocks } = await import('../src/components/assistant/messageBlocks.ts')
+    const variants = [
+      '说明\n~~~ABILITY-UPDATE\n{"level": 1800}\n~~~',
+      '说明\n````ability-update\n{"level": 1800}\n````',
+    ]
+    for (const v of variants) {
+      const r = parseMessageBlocks(v)
+      assert.equal(r.abilityUpd?.level, 1800)
+      assert.equal(r.issues.length, 0)
+      assert.equal(r.text, '说明')
+    }
+  })
 })
 
 // ---------- editorSettings.ts：缩进偏好（localStorage） ----------

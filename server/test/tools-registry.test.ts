@@ -90,6 +90,95 @@ describe('ToolRegistry', () => {
     assert.equal(result.content, 'executed with: nothing');
   });
 
+  it('rejects missing required args and tells the model the expected schema', async () => {
+    registerTool({
+      definition: {
+        type: 'function',
+        function: {
+          name: 'search_like',
+          description: 'x',
+          parameters: {
+            type: 'object',
+            properties: { query: { type: 'string' }, limit: { type: 'integer' } },
+            required: ['query'],
+          },
+        },
+      },
+      execute: async () => ({ content: 'should not run' }),
+    });
+    const result = await executeToolCall('search_like', {}, CTX);
+    assert.match(result.content, /缺少必填参数 arguments\.query/);
+    assert.match(result.content, /JSON Schema/); // 把正确结构回给模型，便于自纠
+    assert.doesNotMatch(result.content, /should not run/);
+  });
+
+  it('rejects wrong types, unknown params, enum violations and array shape errors', async () => {
+    registerTool({
+      definition: {
+        type: 'function',
+        function: {
+          name: 'strict_tool',
+          description: 'x',
+          parameters: {
+            type: 'object',
+            properties: {
+              url: { type: 'string' },
+              mode: { type: 'string', enum: ['fast', 'full'] },
+              items: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 2,
+                items: {
+                  type: 'object',
+                  properties: { key: { type: 'string' } },
+                  required: ['key'],
+                  additionalProperties: false,
+                },
+              },
+            },
+            required: ['url'],
+            additionalProperties: false,
+          },
+        },
+      },
+      execute: async () => ({ content: 'ok' }),
+    });
+
+    const bad = await executeToolCall(
+      'strict_tool',
+      { url: 123, mode: 'slow', extra: true, items: [{ nope: 1 }] },
+      CTX,
+    );
+    assert.match(bad.content, /arguments\.url 类型应为 string/);
+    assert.match(bad.content, /arguments\.mode 必须是 "fast" \/ "full"/);
+    assert.match(bad.content, /不认识的参数 arguments\.extra/);
+    assert.match(bad.content, /缺少必填参数 arguments\.items\[0\]\.key/);
+    assert.match(bad.content, /不认识的参数 arguments\.items\[0\]\.nope/);
+
+    const ok = await executeToolCall('strict_tool', { url: 'https://a', mode: 'fast', items: [{ key: 'k' }] }, CTX);
+    assert.equal(ok.content, 'ok');
+  });
+
+  it('rejects empty arrays when minItems is set', async () => {
+    registerTool({
+      definition: {
+        type: 'function',
+        function: {
+          name: 'array_tool',
+          description: 'x',
+          parameters: {
+            type: 'object',
+            properties: { problems: { type: 'array', minItems: 1, items: { type: 'string' } } },
+            required: ['problems'],
+          },
+        },
+      },
+      execute: async () => ({ content: 'ok' }),
+    });
+    const result = await executeToolCall('array_tool', { problems: [] }, CTX);
+    assert.match(result.content, /至少 1 项/);
+  });
+
   it('resetToolRegistry clears all registered tools', () => {
     registerTool(dummyTool);
     assert.equal(getRegisteredToolNames().length, 1);

@@ -94,9 +94,109 @@ export async function executeToolCall(
 ): Promise<ToolResult> {
   const tool = registry.get(name);
   if (!tool) {
-    return { content: `工具 ${name} 不可用` };
+    return {
+      content:
+        `工具 ${name} 不可用（未注册）。可用工具：${getRegisteredToolNames().join(' / ') || '（无）'}。` +
+        '不要臆造工具名；直接用文字回答，或改用上面列出的工具。',
+    };
+  }
+  // 参数严格校验：AI 传错 key / 少必填 / 类型不对时，直接把「错在哪 + 正确结构」回给它，
+  // 让模型在下一轮自行纠正。旧实现直接把 args 丢给 execute，工具内部再报各种莫名其妙的
+  // 错误（例如 web_search 空 query 去搜一个空串），用户看到的是「工具失败」而不是格式问题。
+  const issues = validateToolArgs(tool.definition.function.parameters, args);
+  if (issues.length > 0) {
+    return {
+      content:
+        `工具 ${name} 的参数不符合接口约定：\n` +
+        issues.map((s) => `- ${s}`).join('\n') +
+        `\n正确参数结构（JSON Schema）：${JSON.stringify(tool.definition.function.parameters)}\n` +
+        '请严格按该结构重新调用；参数不合法时不要编造工具结果。',
+    };
   }
   return tool.execute(args, ctx);
+}
+
+/* ---------------- 工具参数校验（JSON Schema 子集） ---------------- */
+
+/** 工具 parameters 支持的 JSON Schema 子集（各工具定义只用到这些字段） */
+interface ArgSchema {
+  type?: string;
+  properties?: Record<string, ArgSchema>;
+  required?: string[];
+  additionalProperties?: boolean;
+  items?: ArgSchema;
+  enum?: unknown[];
+  minItems?: number;
+  maxItems?: number;
+  minLength?: number;
+}
+
+/** 运行时类型名：null/数组与 object 分开，整数值额外识别为 integer */
+function jsonTypeOf(v: unknown): string {
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return 'array';
+  if (typeof v === 'number') return Number.isInteger(v) ? 'integer' : 'number';
+  return typeof v;
+}
+
+/** 单个值是否符合某个 schema 节点（递归） */
+function checkValue(schema: ArgSchema, value: unknown, path: string, issues: string[]): void {
+  if (schema.enum && !schema.enum.some((e) => e === value)) {
+    issues.push(`${path} 必须是 ${schema.enum.map((e) => JSON.stringify(e)).join(' / ')} 之一，收到 ${JSON.stringify(value)}`);
+    return;
+  }
+  if (schema.type) {
+    const actual = jsonTypeOf(value);
+    const expected = schema.type;
+    // integer 允许 number? 不允许：接口写 integer 就是整数值；number 反过来接受 integer。
+    const ok = expected === actual || (expected === 'number' && actual === 'integer');
+    if (!ok) {
+      issues.push(`${path} 类型应为 ${expected}，收到 ${actual}（${JSON.stringify(value)?.slice(0, 80)}）`);
+      return;
+    }
+  }
+  if (schema.type === 'string' && typeof value === 'string' && schema.minLength !== undefined && value.length < schema.minLength) {
+    issues.push(`${path} 至少 ${schema.minLength} 个字符（收到 ${value.length} 个）`);
+  }
+  if (Array.isArray(value)) {
+    if (schema.minItems !== undefined && value.length < schema.minItems) {
+      issues.push(`${path} 至少 ${schema.minItems} 项（收到 ${value.length} 项）`);
+    }
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+      issues.push(`${path} 最多 ${schema.maxItems} 项（收到 ${value.length} 项）`);
+    }
+    if (schema.items) {
+      value.forEach((item, i) => checkValue(schema.items!, item, `${path}[${i}]`, issues));
+    }
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value) && schema.properties) {
+    const obj = value as Record<string, unknown>;
+    for (const key of schema.required ?? []) {
+      if (obj[key] === undefined || obj[key] === null || obj[key] === '') {
+        issues.push(`缺少必填参数 ${path}.${key}`);
+      }
+    }
+    for (const [key, sub] of Object.entries(schema.properties)) {
+      if (obj[key] !== undefined && obj[key] !== null) checkValue(sub, obj[key], `${path}.${key}`, issues);
+    }
+    if (schema.additionalProperties === false) {
+      for (const key of Object.keys(obj)) {
+        if (!(key in schema.properties)) issues.push(`不认识的参数 ${path}.${key}（接口不接受，请删掉）`);
+      }
+    }
+  }
+}
+
+/**
+ * 校验工具参数，返回人类可读的问题列表（空数组 = 通过）。
+ * 只覆盖各工具定义实际用到的 schema 子集，够用且行为可预期。
+ */
+export function validateToolArgs(parameters: unknown, args: Record<string, unknown>): string[] {
+  const schema = parameters as ArgSchema | undefined;
+  if (!schema || schema.type !== 'object') return [];
+  const issues: string[] = [];
+  checkValue(schema, args, 'arguments', issues);
+  return issues;
 }
 
 /** 重置注册表（测试用） */

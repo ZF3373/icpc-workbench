@@ -745,12 +745,16 @@ export function renderPlanContext(db: Db, planId: number, userId: number = DEFAU
   ].join('\n');
 }
 
-/** AI 回复中 plan-modify 围栏块 + JSON 提取（与 parsePlanJson 相同的容错思路） */
+/**
+ * 从 AI 回复里取出 plan-modify 围栏块的正文；没有块时退回「首个 { 到最后一个 }」。
+ *
+ * 闭合围栏按 Markdown 语义判定：必须是**独占一行**的三反引号（长度不短于开启围栏）。
+ * 旧实现用懒匹配正则在第一个 ``` 处收尾 —— AI 在任务 note 里再写一段 ``` 说明时，
+ * JSON 会被截成半截，应用计划直接报「不是合法 JSON」。
+ */
 function extractJsonText(raw: string): string {
-  // 优先提取 plan-modify 围栏块正文（与前端 extractModifyBlock 同源），
-  // 避免 AI 回复正文中的花括号干扰 first-{/last-} 提取导致 JSON 损坏。
-  const fence = raw.match(/```[a-zA-Z-]*plan-modify[\s\S]*?\n([\s\S]*?)```/);
-  if (fence) return fence[1].trim();
+  const fence = fenceBodyOf(raw, 'plan-modify');
+  if (fence !== null) return fence;
 
   let text = raw.trim();
   if (text.includes('```')) {
@@ -760,6 +764,32 @@ function extractJsonText(raw: string): string {
   const end = text.lastIndexOf('}');
   if (start !== -1 && end > start) text = text.slice(start, end + 1);
   return text;
+}
+
+/** 按 Markdown 语义取围栏块正文（闭合围栏必须独占一行）；无此块返回 null */
+function fenceBodyOf(raw: string, name: string): string | null {
+  const lines = raw.split(/\r?\n/);
+  const open = /^ {0,3}(`{3,}|~{3,})[ \t]*([^\n]*)$/;
+  const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = open.exec(lines[i] ?? '');
+    if (!m) continue;
+    const mentioned = (m[2] ?? '')
+      .split(/[\s,]+/)
+      .map((t) => t.toLowerCase().replace(/[:：]+$/, ''))
+      .includes(name);
+    if (!mentioned) continue;
+    const opener = m[1] ?? '';
+    for (let j = i + 1; j < lines.length; j++) {
+      const c = close.exec(lines[j] ?? '');
+      if (c && c[1]![0] === opener[0] && c[1]!.length >= opener.length) {
+        return lines.slice(i + 1, j).join('\n').trim();
+      }
+    }
+    // 没闭合：把剩下的都当正文（上层 JSON 解析会失败并给出明确报错）
+    return lines.slice(i + 1).join('\n').trim();
+  }
+  return null;
 }
 
 function parseJsonLoose(text: string): Record<string, unknown> {

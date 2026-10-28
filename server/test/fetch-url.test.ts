@@ -432,12 +432,13 @@ describe('fetch_url registration & execute', () => {
 
   it('空 url 返回友好错误', async () => {
     const result = await executeToolCall('fetch_url', { url: '' }, CTX_NO_KEY);
-    assert.match(result.content, /url 参数不能为空/);
+    // 工具参数契约在注册表层就拦下（空串视为缺失），不再进到工具内部才报错
+    assert.match(result.content, /缺少必填参数 arguments\.url|url 参数不能为空/);
   });
 
   it('缺 url 参数返回友好错误', async () => {
     const result = await executeToolCall('fetch_url', {}, CTX_NO_KEY);
-    assert.match(result.content, /url 参数不能为空/);
+    assert.match(result.content, /缺少必填参数 arguments\.url|url 参数不能为空/);
   });
 
   it('非 http(s) 协议返回错误', async () => {

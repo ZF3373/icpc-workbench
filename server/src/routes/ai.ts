@@ -97,6 +97,27 @@ const TOOL_ROUND_LIMIT_NOTICE =
   '（系统提示：工具调用轮次已达上限，无法继续执行工具。请直接基于以上工具结果与你已有的知识给出最终回答，不要再尝试调用工具。）';
 
 /**
+ * 截断后自动续写时注入的提示。
+ *
+ * 强调「从断点接着写、不要重复、不要过渡语」：模型在续写时最常见的两个坏习惯
+ * 是把已输出内容重抄一遍（用户看到重复段落）或先来一句「好的，我继续」。
+ * 模板块被截断时，续写正好补上后半截 JSON，前端拼起来就是完整块。
+ */
+const CONTINUATION_NOTICE =
+  '（系统提示：你上一条回答因输出长度上限被截断了。请**紧接断点继续往下写**，不要重复已经输出过的任何内容，不要重新开头，不要写「我们继续」这类过渡语，直接续上原文。）';
+
+/** 合并两次上游调用的 usage（截断续写是独立请求，用量要累加才是真实消耗） */
+function mergeUsage(a: TokenUsage | undefined, b: TokenUsage | undefined): TokenUsage | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    prompt_tokens: a.prompt_tokens + b.prompt_tokens,
+    completion_tokens: a.completion_tokens + b.completion_tokens,
+    total_tokens: (a.total_tokens ?? a.prompt_tokens + a.completion_tokens) + (b.total_tokens ?? b.prompt_tokens + b.completion_tokens),
+  };
+}
+
+/**
  * DeepSeek 等网关会对每一轮输入做内容审查。题面、网页正文和搜索摘要是
  * 外部数据，偶尔会因为其中某个词触发 `data_inspection_failed`，这不是工具
  * 或模型调用本身失败。识别这类错误后，路由会丢弃外部工具内容并发起一次
@@ -796,6 +817,11 @@ export function aiRoutes(
       let finishReason: string | null = null;
       let pendingToolCalls: ToolCall[] | undefined;
       let usage: TokenUsage | undefined;
+      /**
+       * 截断续写时的上下文基准：最后真正发给上游的那份消息列表
+       * （无工具往返时就是 fullMsgs；有工具往返时是含工具结果的那一轮）。
+       */
+      let finalContext: ChatMessage[] = fullMsgs;
 
       /**
        * 按轮次累积思维链与正文，供工具往返构造 assistant 消息时回传。
@@ -884,9 +910,18 @@ export function aiRoutes(
             // 点停止后不再执行剩下的工具（web_search / fetch_url 单个就可能耗十几秒）
             if (abortController.signal.aborted) break;
             let args: Record<string, unknown> = {};
+            /** 参数不是合法 JSON 对象时的原因（不静默当空对象执行，见下方工具结果） */
+            let argsError: string | null = null;
             try {
-              args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
-            } catch { /* 参数解析失败，传空对象 */ }
+              const parsed = JSON.parse(tc.function.arguments) as unknown;
+              if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                argsError = `arguments 必须是 JSON 对象，收到 ${parsed === null ? 'null' : Array.isArray(parsed) ? 'array' : typeof parsed}`;
+              } else {
+                args = parsed as Record<string, unknown>;
+              }
+            } catch (eArg) {
+              argsError = `arguments 不是合法 JSON（${(eArg as Error).message}）：${String(tc.function.arguments).slice(0, 200)}`;
+            }
 
             // 通知前端正在执行工具。issue 36 现场：正文已经输出完、工具还在跑（检索/抓网页
             // 可能十几秒），前端只有「停止生成」一个状态，用户以为卡死就去点停止。
@@ -909,7 +944,13 @@ export function aiRoutes(
             // 结果让 AI 据此降级（标注推断 / 换路径重试），对话继续。
             let result: ToolResult;
             try {
-              result = await executeToolCall(tc.function.name, args, toolCtx);
+              result = argsError
+                ? {
+                    content:
+                      `工具 ${tc.function.name} 的调用格式错误：${argsError}。` +
+                      '工具 arguments 必须是一个严格合法的 JSON 对象；请按工具定义重新调用，不要编造结果。',
+                  }
+                : await executeToolCall(tc.function.name, args, toolCtx);
             } catch (eTool) {
               console.error('[AI chat] 工具执行异常:', tc.function.name, describeError(eTool));
               result = {
@@ -944,9 +985,11 @@ export function aiRoutes(
           // 工具调用也只当作噪音过滤（文本部分照常输出），保证一定有一条最终回答流
           const forcedFinal = round === MAX_TOOL_ROUNDS - 1;
           console.log('[AI chat] 轮次', round + 2, '开始, 消息数=', roundMsgs.length);
+          // 续写的上下文基准：这一轮实际发给上游的消息（截断续写时从它接着往下）
+          finalContext = forcedFinal ? [...roundMsgs, { role: 'user', content: TOOL_ROUND_LIMIT_NOTICE }] : roundMsgs;
           try {
             const streamN = provider.chatStream(
-              forcedFinal ? [...roundMsgs, { role: 'user', content: TOOL_ROUND_LIMIT_NOTICE }] : roundMsgs,
+              finalContext,
               {
                 maxTokens,
                 // 与第一轮同源的中断信号：点「停止」时在途的上游请求立即取消
@@ -1032,7 +1075,66 @@ export function aiRoutes(
         }
       }
 
-      // finish_reason === 'length' 表示因 max_tokens 上限被截断，通知前端给出可操作提示
+      /**
+       * 输出被 max_tokens 截断时**自动续写**，而不是把半截回答丢给用户。
+       *
+       * 为什么必须续写而不是只提示「去调大上限」：模型自身的单次输出上限（常见 8K）
+       * 并不受用户配置影响，配置已经拉到 384K 也照样会截断；而且模板块/计划块一旦
+       * 被截断，JSON 就是半截、前端整条回复作废。唯一能保证「不因截断作废」的做法是
+       * 接着上下文往下写：把已输出正文作为 assistant 消息回传，再附一条续写指令，
+       * 每次把 max_tokens 放宽一档（翻倍，封顶 384K）并强调「不要重复」。
+       *
+       * 上限 3 次：既能让 8K 模型稳定产出 20K+ 的长回复，又不至于在
+       * 循环退化（模型一直写不完）时无限烧配额。
+       */
+      const MAX_CONTINUATIONS = 3;
+      let continuations = 0;
+      let continueLimit = maxTokens;
+      while (finishReason === 'length' && continuations < MAX_CONTINUATIONS && !abortController.signal.aborted) {
+        continuations++;
+        continueLimit = Math.min(Math.max(continueLimit * 2, 8192), 393216);
+        console.log('[AI chat] 输出被截断，自动续写', continuations, 'max_tokens=', continueLimit);
+        const contMsgs: ChatMessage[] = [
+          ...finalContext,
+          { role: 'assistant', content: roundContent },
+          { role: 'user', content: CONTINUATION_NOTICE },
+        ];
+        let contText = '';
+        finishReason = null;
+        try {
+          const streamC = provider.chatStream(contMsgs, {
+            maxTokens: continueLimit,
+            // 续写只补正文：不再开放工具，也不再解析 DSML（避免模型在续写里再发起调用）
+            tools: undefined,
+            parseDsmlTools: false,
+            signal: abortController.signal,
+            onFinish: (r) => { finishReason = r; },
+            onReasoning: (chunk) => {
+              if (!res.writableEnded) res.write(`data: ${JSON.stringify({ reasoning: chunk })}\n\n`);
+            },
+            onUsage: (u) => { usage = mergeUsage(usage, u); },
+          });
+          for await (const delta of streamC) {
+            contText += delta;
+            emitDelta(delta);
+          }
+        } catch (eCont) {
+          // 用户「停止」：交给外层 aborted 分支收尾
+          if (abortController.signal.aborted) throw eCont;
+          // 续写本身失败：保留已经输出的内容正常收尾，不把整条回复变成错误
+          console.error('[AI chat] 自动续写失败:', describeError(eCont));
+          finishReason = 'stop';
+          break;
+        }
+        if (!contText.trim()) {
+          finishReason = 'stop';
+          break;
+        }
+        // 续写内容并入最终答复：下一轮续写的 assistant 消息要包含全部已输出文本
+        roundContent += contText;
+      }
+
+      // 仍然被截断（续写次数用尽/续写无产出）：通知前端给出可操作提示
       if (finishReason === 'length') {
         res.write(`data: ${JSON.stringify({ truncated: true })}\n\n`);
       }

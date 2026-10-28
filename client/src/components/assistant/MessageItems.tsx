@@ -144,7 +144,7 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
 }: AssistantMessageItemProps) {
   // 结构化块解析按正文 memo：只有正在增长的那条会重跑六组正则，
   // 应用标记 / 用量这类字段变化不必重扫（解析结果只取决于 content）
-  const { modify, abilityUpd, tplAdds, listDraft, planDraft, text } = useMemo(
+  const { modify, abilityUpd, tplAdds, issues, listDraft, planDraft, text } = useMemo(
     () => parseMessageBlocks(m.content),
     [m.content],
   )
@@ -313,6 +313,31 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
           )}
         </Space>
       )}
+      {/* 有结构化块但解析不出来：明确告诉用户是哪个块、为什么没有按钮。
+          块原文留在正文里可复制，这里只补原因 + 可操作建议。
+          流式期间不显示 —— 块还在增长时必然是「未闭合」，每帧提示会闪。 */}
+      {issues.length > 0 && !streaming && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: '6px 10px',
+            borderRadius: 6,
+            background: 'var(--overlay-2)',
+            fontSize: 12,
+            lineHeight: 1.6,
+            color: 'var(--text-2)',
+          }}
+        >
+          ⚠️ 有 {issues.length} 个操作块没有通过格式校验，因此没有生成按钮（原文保留在正文里，可复制后让 AI 重写）：
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+            {issues.map((issue, k) => (
+              <li key={`${issue.name}-${k}`}>
+                <code>{issue.name}</code>：{issue.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {m.usage && (
         <div
           style={{
@@ -328,4 +353,3 @@ export const AssistantMessageItem = memo(function AssistantMessageItem({
     </div>
   )
 })
-

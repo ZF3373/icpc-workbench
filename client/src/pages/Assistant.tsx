@@ -1361,14 +1361,14 @@ export default function Assistant() {
           return msgs
         })
       }
-      // AI 因 max_tokens 上限被截断：在回复末尾追加提示，引导用户调大上限或分批请求
+      // AI 因 max_tokens 上限被截断：服务端已自动续写过多次仍未写完，这里提示还可以怎么补救
       if (result.truncated) {
         patchActiveSessionMessages(sessionId, (msgs) => {
           const last = msgs[msgs.length - 1]
           if (last && last.role === 'assistant') {
             return [
               ...msgs.slice(0, -1),
-              { ...last, content: `${last.content}\n\n> ⚠️ **回复因达到最大 token 上限被截断。** 可到「设置 → AI 配置」调大「最大输出 token」（注意不得超过模型上限），或让 AI 分批输出。` },
+              { ...last, content: `${last.content}\n\n> ⚠️ **回复达到单次输出上限，服务端已自动续写多次仍未写完。** 已生成的内容保留；可到「设置 → AI 配置」调大「最大输出 token」（不得超过模型上限），或让 AI 分批输出。` },
             ]
           }
           return msgs

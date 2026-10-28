@@ -115,8 +115,12 @@ test('不可信题号、任意 URL、噪声页面均不能成为题面证据', a
   let count = 0;
   try {
     const ctx = { cfg, db, fetchFn: async () => { count++; return new Response(`Just a moment ${body}`); } };
-    const invalid = JSON.parse((await executeToolCall('read_problem', { platform: 'luogu', problemKey: '../settings?token=x', url: 'http://127.0.0.1' }, ctx)).content);
+    const invalid = JSON.parse((await executeToolCall('read_problem', { platform: 'luogu', problemKey: '../settings?token=x' }, ctx)).content);
     assert.equal(invalid.status, 'unavailable');
+    assert.equal(count, 0);
+    // 接口不接受额外参数：想借 url 让工具抓任意地址，在参数校验层就被拒（不进工具、不发请求）
+    const extra = await executeToolCall('read_problem', { platform: 'luogu', problemKey: 'P1001', url: 'http://127.0.0.1' }, ctx);
+    assert.match(extra.content, /不认识的参数 arguments\.url/);
     assert.equal(count, 0);
     const failed = JSON.parse((await executeToolCall('read_problem', { platform: 'luogu', problemKey: 'P1002' }, ctx)).content);
     assert.equal(failed.status, 'unavailable');

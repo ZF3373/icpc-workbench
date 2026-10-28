@@ -61,9 +61,19 @@ interface TestServer {
   contestCalls: number[]
 }
 
+interface ProviderStub {
+  enabled: boolean;
+  reply: string | ((prompt: string) => string);
+  statementHtml?: string;
+  /** 按调用次数给出回复（优先于 reply）：用于验证「截断 → 自动续写」 */
+  replies?: string[];
+  /** 按调用次数给出 finish_reason（缺省不回调 onFinish）：'length' 触发续写 */
+  finishReasons?: Array<string | null>;
+}
+
 async function withServer(
   fn: (s: TestServer) => Promise<void>,
-  provider?: { enabled: boolean; reply: string | ((prompt: string) => string); statementHtml?: string },
+  provider?: ProviderStub,
 ): Promise<void> {
   const db = createDb(':memory:');
   const providerChats: Array<{ system: string; messages: Array<{ role: string; content: string }> }> = [];
@@ -81,20 +91,32 @@ async function withServer(
         return { contests: [], failures: {} };
       },
       createProvider: provider
-        ? () => ({
-            enabled: provider.enabled,
-        chat: async (messages) => {
-          providerChats.push({ system: (messages[0]?.content ?? '') as string, messages: messages.slice(1) as Array<{ role: string; content: string }> });
-          const prompt = (messages[messages.length - 1]?.content ?? '') as string;
-          return typeof provider.reply === 'function' ? provider.reply(prompt) : provider.reply;
-        },
-        chatStream: async function* (messages) {
-          providerChats.push({ system: (messages[0]?.content ?? '') as string, messages: messages.slice(1) as Array<{ role: string; content: string }> });
-          const prompt = (messages[messages.length - 1]?.content ?? '') as string;
-              const reply = typeof provider.reply === 'function' ? provider.reply(prompt) : provider.reply;
-              yield reply;
-            },
-          })
+        ? () => {
+            let calls = 0;
+            const nextReply = (prompt: string): string => {
+              const byIndex = provider.replies?.[calls];
+              if (byIndex !== undefined) return byIndex;
+              return typeof provider.reply === 'function' ? provider.reply(prompt) : provider.reply;
+            };
+            return {
+              enabled: provider.enabled,
+              chat: async (messages) => {
+                providerChats.push({ system: (messages[0]?.content ?? '') as string, messages: messages.slice(1) as Array<{ role: string; content: string }> });
+                const prompt = (messages[messages.length - 1]?.content ?? '') as string;
+                calls++;
+                return nextReply(prompt);
+              },
+              chatStream: async function* (messages, opts) {
+                providerChats.push({ system: (messages[0]?.content ?? '') as string, messages: messages.slice(1) as Array<{ role: string; content: string }> });
+                const prompt = (messages[messages.length - 1]?.content ?? '') as string;
+                const reply = nextReply(prompt);
+                const finishReason = provider.finishReasons?.[calls] ?? null;
+                calls++;
+                yield reply;
+                if (finishReason !== null) opts?.onFinish?.(finishReason);
+              },
+            };
+          }
         : undefined,
     }),
   );
@@ -619,5 +641,55 @@ test('assistant: chat injects contest review context via contestKey, invalid key
       assert.equal(bad.status, 400);
     },
     { enabled: true, reply: 'ok', statementHtml: `<script>window.__INITIAL_STATE__ = ${JSON.stringify({ problem: { description: '首次复盘读取的真实题目：给定整数序列求操作次数。'.repeat(10), inputFormat: '输入 n 个整数', outputFormat: '输出操作数' } })};</script>` },
+  );
+});
+
+// ---------- 截断自动续写（放宽输出长度） ----------
+
+test('chat: finish_reason=length 时自动续写，拼成完整回复且不再报截断', async () => {
+  await withServer(
+    async ({ aiBase, providerChats }) => {
+      const res = await fetch(`${aiBase}/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: '给我一个完整模板' }] }),
+      });
+      assert.equal(res.status, 200);
+      const events = await readSseEvents(res);
+      const text = events
+        .map((e) => (typeof e.delta === 'string' ? e.delta : ''))
+        .join('');
+      assert.equal(text, '前半段后半段', '续写内容要接在同一条回复后面');
+      assert.equal(events.some((e) => e.truncated === true), false, '续写成功后不应再提示截断');
+
+      // 第二次调用必须带着「已输出正文 + 续写指令」，且不再开放工具
+      assert.equal(providerChats.length, 2);
+      const contMsgs = providerChats[1]!.messages;
+      const assistantMsg = contMsgs[contMsgs.length - 2];
+      assert.equal(assistantMsg?.role, 'assistant');
+      assert.equal(assistantMsg?.content, '前半段');
+      assert.match(contMsgs[contMsgs.length - 1]?.content ?? '', /紧接着断点继续往下写|不要重复/);
+    },
+    { enabled: true, reply: 'x', replies: ['前半段', '后半段'], finishReasons: ['length', 'stop'] },
+  );
+});
+
+test('chat: 连续截断用尽续写次数后仍标记 truncated（保留已输出内容）', async () => {
+  await withServer(
+    async ({ aiBase }) => {
+      const res = await fetch(`${aiBase}/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: '长文' }] }),
+      });
+      assert.equal(res.status, 200);
+      const events = await readSseEvents(res);
+      const text = events
+        .map((e) => (typeof e.delta === 'string' ? e.delta : ''))
+        .join('');
+      assert.equal(text, 'abcd'); // 首轮 + 3 次续写
+      assert.equal(events.some((e) => e.truncated === true), true);
+    },
+    { enabled: true, reply: 'x', replies: ['a', 'b', 'c', 'd'], finishReasons: ['length', 'length', 'length', 'length'] },
   );
 });

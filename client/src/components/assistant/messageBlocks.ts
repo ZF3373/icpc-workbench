@@ -7,16 +7,9 @@
  * 单测也无需挂载 React。
  */
 import {
-  extractAbilityUpdate,
-  extractListCreate,
-  extractModifyBlock,
-  extractPlanCreate,
-  extractTemplateAdd,
-  stripAbilityUpdate,
-  stripListCreate,
-  stripModifyBlock,
-  stripPlanCreate,
-  stripTemplateAdd,
+  parseStructuredBlocks,
+  stripFenceSpans,
+  type BlockIssue,
   type ListCreateDraft,
   type PlanCreateDraft,
   type TemplateAddDraft,
@@ -29,6 +22,8 @@ export interface MsgBlocks {
   modify: string | null
   abilityUpd: { level: number; reason?: string } | null
   tplAdds: TemplateAddDraft[]
+  /** 识别到但格式不合法 / 重复的块（UI 据此解释「为什么没有按钮」） */
+  issues: BlockIssue[]
   listDraft: ListCreateDraft | null
   planDraft: PlanCreateDraft | null
   /** 剥掉所有结构化块之后、留给 Markdown 渲染的正文 */
@@ -44,19 +39,22 @@ export interface MsgBlocks {
  * 内容 memo：正文没变就直接复用上一次的结果。
  */
 export function parseMessageBlocks(content: string): MsgBlocks {
-  const modify = extractModifyBlock(content)
-  const abilityUpd = extractAbilityUpdate(content)
-  const tplAdds = extractTemplateAdd(content)
-  const listDraft = extractListCreate(content)
-  const planDraft = extractPlanCreate(content)
+  const parsed = parseStructuredBlocks(content)
 
-  let text = stripModifyBlock(content)
-  if (abilityUpd) text = stripAbilityUpdate(text)
-  if (tplAdds.length > 0) text = stripTemplateAdd(text)
-  if (listDraft) text = stripListCreate(text)
-  if (planDraft) text = stripPlanCreate(text)
+  // 只剥离**解析成功**的块：解析失败的块留在正文里（用户能看到 AI 原话、可手动复制），
+  // 而不是被静默删掉又没给按钮 —— 那样用户彻底没法补救。
+  let text = parsed.parsedFences.length > 0 ? stripFenceSpans(content, parsed.parsedFences) : content
+  text = text.trim()
 
-  return { modify, abilityUpd, tplAdds, listDraft, planDraft, text }
+  return {
+    modify: parsed.modify,
+    abilityUpd: parsed.abilityUpd,
+    tplAdds: parsed.tplAdds,
+    issues: parsed.issues,
+    listDraft: parsed.listDraft,
+    planDraft: parsed.planDraft,
+    text,
+  }
 }
 
 /** 模板草稿的定位键：消息下标 + 消息内草稿下标（tplTargets / tplWriting 都按它索引） */
