@@ -105,8 +105,16 @@ test('GET /api/reviews/calendar：只回有到期项的日子，overdue 只挂�
   // 逾期项自己原本的到期日（-2 天）不该出现一行——那时用户确实没有这些题
   assert.equal(body.find((d) => d.date === dateAfterDays(today(), -2)), undefined);
   // 未来到期的日子有自己的行，且 overdue 为 0
-  const futureRow = body.find((d) => d.date === dateAfterDays(today(), 3));
-  assert.ok(futureRow);
+  // 注意：+3 天可能跨月（如 10-29 +3 = 11-01），那天不属于本月月历，需取它所在月份的月历，
+  // 否则每逢月末这条断言必然失败（与业务无关的时区/日历边界缺陷）
+  const future = dateAfterDays(today(), 3);
+  const futureMonth = future.slice(0, 7);
+  const futureBody =
+    futureMonth === month
+      ? body
+      : (await api<ReviewCalendarDay[]>(`/api/reviews/calendar?month=${futureMonth}`)).body;
+  const futureRow = futureBody.find((d) => d.date === future);
+  assert.ok(futureRow, `未来到期日 ${future} 应有自己的角标行`);
   assert.equal(futureRow.due, 1);
   assert.equal(futureRow.overdue, 0);
 });
