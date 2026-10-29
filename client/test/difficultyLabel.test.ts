@@ -23,6 +23,9 @@ test('formatDifficulty：各平台标度名与原生档位对应', () => {
   assert.equal(formatDifficulty(2000, '1234', 'atcoder-kenkoooo-irt'), '2000 · AtCoder 1234')
   // QOJ 的难度由 ICPC/CCPC 公开榜单档位推导（icpc-tier）：展示为「1500 · ICPC 榜单 铜」
   assert.equal(formatDifficulty(1500, '铜', 'icpc-tier'), '1500 · ICPC 榜单 铜')
+  // 第三方 clist.by（issue #57）：原生值就是 rating 本身，只标来源、不重复数值 ——
+  // 让用户能一眼看出这不是平台给的官方难度
+  assert.equal(formatDifficulty(1400, '1400', 'clist-rating'), '1400 · clist.by 第三方')
 })
 
 test('formatDifficulty：无原生标签 / 无标度名时只给数值', () => {

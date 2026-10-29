@@ -98,6 +98,9 @@ export function formatDifficulty(
   emptyText = '难度未知',
 ): string {
   if (difficulty == null) return emptyText
+  // 第三方 clist.by 的「原生值」就是 rating 本身（没有平台档位名），只标来源、不重复数值：
+  // 让用户一眼看出这不是平台官方难度（issue #57）
+  if (scale === 'clist-rating') return `${difficulty} · clist.by 第三方`
   const platformName = scale ? SCALE_PLATFORM_NAME[scale] : undefined
   return nativeLabel && platformName ? `${difficulty} · ${platformName} ${nativeLabel}` : String(difficulty)
 }

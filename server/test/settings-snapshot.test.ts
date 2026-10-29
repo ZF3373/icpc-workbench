@@ -175,6 +175,7 @@ test('GET /settings 输出结构与各字段值保持不变（含打码与默认
       'accounts',
       'adapterEnabled',
       'ai',
+      'clist',
       'contestReminder',
       'cookies',
       'platforms',
@@ -194,6 +195,8 @@ test('GET /settings 输出结构与各字段值保持不变（含打码与默认
       configured: true,
       masked: '_uid=••••••••; __client_id=••••••••',
     });
+    // 第三方难度备选源（issue #57）：未配置 → 空视图；配置后原文不下发前端，只给打码值
+    assert.deepEqual(body.clist, { username: '', configured: false, keyMasked: '' });
     assert.deepEqual(body.cookies.nowcoder, { configured: true });
     assert.deepEqual(body.cookies.qoj, { configured: true, hasUa: true });
     assert.deepEqual(body.accountCreds, {

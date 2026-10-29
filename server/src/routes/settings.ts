@@ -52,6 +52,14 @@ import {
 } from '../net/hostThrottle.ts';
 import { chatUrl } from '../ai/provider.ts';
 import { CUSTOM_PROMPTS_KEY, readCustomPrompts } from '../ai/customPrompts.ts';
+import { throttledFetch } from '../net/hostThrottle.ts';
+import {
+  CLIST_APIKEY_KEY,
+  CLIST_USERNAME_KEY,
+  clistCredentialsOf,
+  normalizeClistCredentials,
+  testClistCredentials,
+} from '../analysis/clistDifficulty.ts';
 
 const DEFAULT_REMINDER_TIME = '20:00';
 
@@ -158,7 +166,32 @@ export function readSyncSettings(db: Db, read?: SettingLookup): {
   };
 }
 
-export function settingsRoutes(db: Db, config: AppConfig): Router {
+/**
+ * clist.by 第三方难度备选源的凭据视图（issue #57）。
+ * 与 Cookie/AI Key 同口径：原文只写不回显，回显打码后的 Key，`configured` 供界面判断是否可用。
+ */
+function clistSettingsView(read: SettingLookup): {
+  username: string;
+  configured: boolean;
+  keyMasked: string;
+} {
+  const username = read(CLIST_USERNAME_KEY) ?? '';
+  const apiKey = read(CLIST_APIKEY_KEY) ?? '';
+  return {
+    username: username.trim(),
+    configured: apiKey.trim() !== '',
+    keyMasked: maskSecret(apiKey),
+  };
+}
+
+/**
+ * @param fetchFn clist.by 连通性自检用的 fetch（单测注入 mock；生产默认走全局节流单例）
+ */
+export function settingsRoutes(
+  db: Db,
+  config: AppConfig,
+  fetchFn: typeof fetch = throttledFetch,
+): Router {
   const r = Router();
 
   r.get('/ai/custom-prompts', (_req, res) => res.json(readCustomPrompts(db)));
@@ -224,8 +257,70 @@ export function settingsRoutes(db: Db, config: AppConfig): Router {
       reminder: readReminder(db, read),
       contestReminder: readContestReminder(db, read),
       sync: readSyncSettings(db, read),
+      // 第三方难度备选源（issue #57）：只回显 Key 的打码值，原文不回传前端
+      clist: clistSettingsView(read),
     });
   });
+
+  /**
+   * POST /api/settings/clist  body: { username?, apiKey?, clear? }
+   *
+   * 保存 clist.by 的 API 凭据（难度回填的第三方备选源，见 analysis/clistDifficulty.ts）：
+   * - `apiKey` 空白 = **保持已存值**（与 AI Key / Cookie 输入框同款语义：留空代表「不改」，
+   *   而不是清除；要清除用 `clear: true`）。
+   * - `username` 空白 = 清除用户名（此时把 apiKey 当作 clist 账户页复制的 `user:key` 整串）。
+   * - 这两个键只由回填链路读取，不参与同步/导入。
+   */
+  r.post('/clist', (req, res) => {
+    const b = (req.body ?? {}) as { username?: unknown; apiKey?: unknown; clear?: unknown };
+    if (b.username !== undefined && (typeof b.username !== 'string' || b.username.length > 100)) {
+      return res.status(400).json({ error: 'username 需为不超过 100 字的字符串' });
+    }
+    if (b.apiKey !== undefined && (typeof b.apiKey !== 'string' || b.apiKey.length > 200)) {
+      return res.status(400).json({ error: 'apiKey 需为不超过 200 字的字符串' });
+    }
+    const upsert = db.prepare(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    );
+    const remove = db.prepare('DELETE FROM settings WHERE key = ?');
+    if (b.clear === true) {
+      remove.run(CLIST_USERNAME_KEY);
+      remove.run(CLIST_APIKEY_KEY);
+    } else {
+      if (typeof b.username === 'string') {
+        const username = b.username.trim();
+        if (username === '') remove.run(CLIST_USERNAME_KEY);
+        else upsert.run(CLIST_USERNAME_KEY, username);
+      }
+      if (typeof b.apiKey === 'string' && b.apiKey.trim() !== '') {
+        upsert.run(CLIST_APIKEY_KEY, b.apiKey.trim());
+      }
+    }
+    // 保存即需要让用户看到是否「真的能用」：回传最新视图（Key 打码）+ 是否已配置
+    res.json({ ok: true, clist: clistSettingsView(snapshotLookup(readSettingsSnapshot(db))) });
+  });
+
+  /**
+   * POST /api/settings/clist/test  body: { username?, apiKey? }
+   *
+   * 连通性自检：请求体里的非空值优先（用于「保存前先试一下」），否则用已存凭据。
+   * 成功判据是「拿到 200 + objects 数组」—— 不要求查到任何题（题库里可能确实没有目标题）。
+   */
+  r.post('/clist/test', asyncHandler(async (req, res) => {
+    const b = (req.body ?? {}) as { username?: unknown; apiKey?: unknown };
+    const read = snapshotLookup(readSettingsSnapshot(db));
+    const saved = clistCredentialsOf(read);
+    const username =
+      typeof b.username === 'string' && b.username.trim() !== '' ? b.username.trim() : saved?.username ?? '';
+    const apiKey =
+      typeof b.apiKey === 'string' && b.apiKey.trim() !== '' ? b.apiKey.trim() : saved?.apiKey ?? '';
+    const creds = normalizeClistCredentials(username, apiKey);
+    if (creds === null) {
+      return res.status(400).json({ error: '尚未配置 clist.by API Key（clist.by 账户页可复制）' });
+    }
+    const result = await testClistCredentials(fetchFn, creds);
+    res.json(result);
+  }));
 
   // POST /api/settings/reminder  body: { enabled?, time? }  time 格式 HH:MM
   r.post('/reminder', (req, res) => {

@@ -19,13 +19,26 @@ export function BackfillDifficultyCard() {
    * 代价是这一轮耗时明显变长（洛谷 ≥4 秒/题），故默认关闭。
    */
   const [force, setForce] = useState(false)
+  /**
+   * 第三方备选（issue #57）：平台确实给不出难度时再去 clist.by 查一次 rating。
+   * 默认开启——但要真正生效，设置页必须已配置 API Key（见 clistConfigured）。
+   * 关掉它的理由：clist.by 免费额度 10 次/分钟，不想让回填占用这份额度，或不想把题目名发给第三方。
+   */
+  const [useClist, setUseClist] = useState(true)
+  /** clist.by 是否已配置 Key（由 /run 下发；null = 还没问到） */
+  const [clistConfigured, setClistConfigured] = useState<boolean | null>(null)
 
   const nameOf = (p: string): string => platformName(p as PlatformId)
 
   const refreshRun = useCallback(async () => {
     try {
-      const r = await get<{ ok: boolean; run: BackfillRunStatus }>('/api/problems/backfill-difficulty/run')
+      const r = await get<{
+        ok: boolean
+        run: BackfillRunStatus
+        clist?: { configured: boolean }
+      }>('/api/problems/backfill-difficulty/run')
       setRun(r.run)
+      if (r.clist !== undefined) setClistConfigured(r.clist.configured)
     } catch {
       /* 状态接口失败不影响回填本身：保持上一次的按钮语义，不误报「没在跑」 */
     }
@@ -60,6 +73,8 @@ export function BackfillDifficultyCard() {
     try {
       const r = await post<BackfillResponse>('/api/problems/backfill-difficulty', {
         ...(force ? { includeNativeOnly: true } : {}),
+        // 服务端默认也是开启；这里显式传，用户取消勾选时才真的不会打第三方
+        clistFallback: useClist,
       })
       setResult(resultText(r, nameOf))
       message.success(r.stopped ? '已停止回填（已落库的不受影响，再点一次继续）' : '难度回填完成')
@@ -131,6 +146,18 @@ export function BackfillDifficultyCard() {
       <div style={{ marginTop: 8 }}>
         <Checkbox checked={force} onChange={(e) => setForce(e.target.checked)} disabled={running}>
           强制重查（无视「平台无公开难度」的结论，并补洛谷的「仅缺原生值」行 —— 这一轮会明显更慢）
+        </Checkbox>
+      </div>
+      <div style={{ marginTop: 8 }}>
+        <Checkbox
+          checked={useClist}
+          onChange={(e) => setUseClist(e.target.checked)}
+          disabled={running || clistConfigured === false}
+        >
+          用 clist.by 第三方数据兜底「平台给不出难度」的题
+          {clistConfigured === false
+            ? '（未配置：先到「设置 → 第三方难度备选（clist.by）」填入 API Key）'
+            : '（每轮最多几十次查询，该站限额 10 次/分钟；只按题目链接确认同一道题，链接缺失的题不会补；补上的难度标注为第三方来源）'}
         </Checkbox>
       </div>
       {progress && <p style={{ marginTop: 12, color: 'var(--text-3)' }}>{progress}</p>}

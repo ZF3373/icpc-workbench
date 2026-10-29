@@ -80,6 +80,12 @@ export const HOST_MIN_INTERVAL_MS: Record<string, number> = {
   'dashoj.com': 1500,
   'www.jisuanke.com': 1500,
   'kenkoooo.com': 2000,
+  /**
+   * clist.by（issue #57 的第三方难度备选源）：官方文档写明「标准限额 10 次/分钟」，
+   * 6s/次即刚好不超限。这里必须登记进表，否则会落到 1.2s 的兜底间隔 —— 那等于 50 次/分钟，
+   * 远超限额，一轮回填就够触发 429/封禁。需要更高限额可向 clist.by 申请（见 API 文档 Throttle 节）。
+   */
+  'clist.by': 6000,
 };
 
 /** 未登记域名的兜底间隔：同样作为安全下限，保守但不至于拖慢一次性请求 */

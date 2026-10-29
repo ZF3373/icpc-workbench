@@ -71,6 +71,13 @@ export type DifficultyScale =
   | 'jisuanke-level-8'
   | 'hydro-1-10'
   | 'icpc-tier'
+  /**
+   * 第三方聚合站 clist.by 的题目 rating（issue #57 的备选来源）。
+   * 与平台原生标度区分开：它**不是**平台给出的难度，只是社区聚合值，用于官方/上游
+   * 确实给不出难度时的兜底（如 AtCoder 未被 kenkoooo 收录的题）。落库时同写
+   * native_difficulty = 该 rating，便于日后核对与重算。
+   */
+  | 'clist-rating'
   | 'none';
 
 export interface DifficultyParse {

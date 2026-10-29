@@ -17,6 +17,17 @@ import {
   type BankFetchResult,
 } from '../adapters/problemBank.ts';
 import { asHttpClient, sleep } from '../adapters/http.ts';
+import {
+  clistRatingToDifficulty,
+  clistSupportsPlatform,
+  fetchClistRating,
+  MAX_CLIST_LOOKUPS_PER_RUN,
+  normalizeProblemUrl,
+  readClistCredentials,
+  type ClistCredentials,
+  type ClistLookup,
+  type ClistTarget,
+} from './clistDifficulty.ts';
 import { HOST_MIN_INTERVAL_MS } from '../net/hostThrottle.ts';
 import { qojTransportFetch } from '../net/qojTransport.ts';
 import type { BackfillProgress } from './backfillRun.ts';
@@ -116,6 +127,11 @@ export interface BackfillTarget {
   platform: PlatformId;
   problemKey: string;
   title: string;
+  /**
+   * 库内题目链接：clist.by 备选源**用它确认「返回的是不是这一道题」**（issue #57 审查结论）。
+   * 为空 = 没有身份证据，第三方兜底将跳过该行（宁可漏补，不写错）。
+   */
+  url: string | null;
   difficulty: number | null;
   nativeDifficulty: string | null;
   tags: string[];
@@ -181,6 +197,13 @@ export interface PlatformBackfillResult {
    * （没有本轮请求，也就没有本轮结果），但计入 `unknownLeft` 等库内统计与前端文案。
    */
   cached: number;
+  /**
+   * 本轮向第三方 clist.by 发起的查询次数（issue #57 的备选来源；未配置 Key / 平台未收录时为 0）。
+   * 与 `clistFilled` 分开计：10 次/分钟的限额下，「问了几次」本身是运维关心的成本数据。
+   */
+  clistQueried: number;
+  /** 本轮由 clist.by 补上难度的题数（是 `filled` 的子集，难度来源记为 'clist'） */
+  clistFilled: number;
   /**
    * 本次运行被用户**中止**时该平台被中断（结果只覆盖已处理的部分）。
    * 中止不是失败：已提交的批次保留在库里（见 backfillPlatform 的中止分支），
@@ -326,11 +349,61 @@ interface BackfillCtx {
   /** 本次运行的统一时刻：写 `gap_checked_at` 用同一个值，避免同一轮里 TTL 起点漂移 */
   gapCheckedAt: string;
   /**
+   * clist.by 第三方难度备选（issue #57）：null = 本轮不使用（未配置 Key 或调用方未开启）。
+   * 只在主来源确实没给难度时才查，且受 `remaining` 与 `disabledReason` 双重约束。
+   */
+  clist: ClistFallbackState | null;
+  /**
    * 牛客本轮走**逐题 `keyword=` 搜索**（目标数 ≤ `NOWCODER_PROBLEM_SEARCH_MAX`）而非整表扫描。
    * 既决定 `fetchProblemMeta` 取数链路，也决定要不要按题补限速（整表模式只在页间限速，
    * 逐题模式每题一个真实请求 → 见 backfillPlatform 的 perProblemDelayMs）。
    */
   ncSearch: boolean;
+}
+
+/**
+ * 本轮 clist.by 备选源的可变状态（见 BackfillCtx.clist）。
+ *
+ * 为什么要有状态而不是纯函数：clist.by 免费额度只有 **10 次/分钟**（见 clistDifficulty.ts），
+ * 一次老库回填的「真缺难度」可能有几百题 —— 无脑逐题打必然 429。因此：
+ * - `remaining`：本轮硬上限（默认 MAX_CLIST_LOOKUPS_PER_RUN），用完就停，不留「打到限流为止」的口子；
+ * - `disabledReason`：一旦认证失败或限流就**整轮**停用 —— 继续发只会把额度烧光，
+ *   且每题都会记成「clist 里也没有」，让用户在界面上得出错误结论。
+ */
+interface ClistFallbackState {
+  creds: ClistCredentials;
+  remaining: number;
+  disabledReason: 'unauthorized' | 'rate_limited' | null;
+}
+
+/** 一次 clist.by 备选查询的尝试记录（queried=false = 本轮不该/不能问，不发任何请求；note = 给用户的原因） */
+type ClistAttempt =
+  | { queried: false; note?: string }
+  | { queried: true; status: ClistLookup['status']; rating?: number };
+
+/**
+ * 向 clist.by 追问一道题（issue #57）。调用方必须已经确认「主来源没给难度」——
+ * 本函数不再做这一判断，以免把「有官方难度」的题也送去第三方。
+ *
+ * 返回 `queried: false` 的情形（都不发请求）：未配置 / 调用方未开启、平台未被 clist 收录、
+ * 本轮额度用尽、已因认证/限流停用、题目名为空（clist 的 `name=` 是精确匹配，空名查不出东西）。
+ *
+ * **没有题目链接时不查**（2026-10-29 审查结论）：clist 上同名不同题是常态，唯一能把「返回的
+ * 是不是这一道」钉死的是 URL；没有链接就没有身份证据，写进去只可能是别人的难度。
+ * 这种情况返回带 note 的 queried:false，明细里会告诉用户为什么这道题没享受第三方兜底。
+ */
+async function clistLookup(platform: PlatformId, target: ClistTarget, ctx: BackfillCtx): Promise<ClistAttempt> {
+  const state = ctx.clist;
+  if (state === null || state.disabledReason !== null || state.remaining <= 0) return { queried: false };
+  if (!clistSupportsPlatform(platform)) return { queried: false };
+  if (target.title.trim() === '') return { queried: false };
+  if (normalizeProblemUrl(target.url) === '') {
+    return { queried: false, note: '缺少题目链接，无法核对第三方数据身份（未使用 clist.by）' };
+  }
+  state.remaining -= 1;
+  const res = await fetchClistRating(ctx.fetchFn, state.creds, platform, target);
+  if (res.status === 'unauthorized' || res.status === 'rate_limited') state.disabledReason = res.status;
+  return res.status === 'hit' ? { queried: true, status: res.status, rating: res.rating } : { queried: true, status: res.status };
 }
 
 // ---------- 回填目标选择 ----------
@@ -366,6 +439,7 @@ interface GapRow {
   platform: PlatformId;
   problem_key: string;
   title: string;
+  url: string | null;
   difficulty: number | null;
   native_difficulty: string | null;
   tags: string;
@@ -386,7 +460,7 @@ interface GapColumns {
 function selectGapRows(db: Db): GapRow[] {
   return db
     .prepare(
-      `SELECT platform, problem_key, title, difficulty, native_difficulty, tags, gap_state, gap_checked_at
+      `SELECT platform, problem_key, title, url, difficulty, native_difficulty, tags, gap_state, gap_checked_at
          FROM problems
         WHERE difficulty IS NULL OR native_difficulty IS NULL OR tags = '[]'
         ORDER BY platform,
@@ -409,6 +483,7 @@ function toBackfillTarget(r: GapRow): BackfillTarget {
     platform: r.platform,
     problemKey: r.problem_key,
     title: r.title,
+    url: r.url,
     difficulty: r.difficulty,
     nativeDifficulty: r.native_difficulty,
     tags,
@@ -1221,6 +1296,14 @@ export async function backfillDifficulties(
      * （net/qojTransport.ts —— 与提交同步共用同一节奏桶）；单测注入 mock，避免真的打上游。
      */
     qojTransport?: typeof fetch;
+    /**
+     * 是否启用 clist.by 第三方难度备选（issue #57）：默认关闭，由路由按用户勾选传入。
+     * 开启后仍需 settings 里配置了 Key 才真正发请求（见 readClistCredentials）；
+     * 只在**主来源确实没给难度**的题上追问，且受 MAX_CLIST_LOOKUPS_PER_RUN 约束。
+     */
+    clistFallback?: boolean;
+    /** 覆盖本轮 clist.by 查询上限（默认 MAX_CLIST_LOOKUPS_PER_RUN；仅供测试/运维调低） */
+    clistMaxLookups?: number;
     /** 进度回调：每个平台开始 + 每处理完一题上报一次（未处理的平台不上报） */
     onProgress?: (p: BackfillProgress) => void;
   } = {},
@@ -1293,6 +1376,15 @@ export async function backfillDifficulties(
     }),
     gapCheckedAt: new Date().toISOString(),
     ncSearch: ncTargets > 0 && ncTargets <= NOWCODER_PROBLEM_SEARCH_MAX,
+    // clist.by 备选（issue #57）：显式开启 **且** 设置页已配置 Key 才建立状态。
+    // 未配置时不建立 → 整条链路一次请求都不会发（而不是每题失败一次）。
+    clist: (() => {
+      if (opts.clistFallback !== true) return null;
+      const creds = readClistCredentials(db);
+      if (creds === null) return null;
+      const limit = Math.max(0, opts.clistMaxLookups ?? MAX_CLIST_LOOKUPS_PER_RUN);
+      return { creds, remaining: limit, disabledReason: null };
+    })(),
   };
 
   /** 本轮目标总数（跨平台）：进度文案里的「（本轮共 N 题）」 */
@@ -1337,6 +1429,8 @@ export async function backfillDifficulties(
             capped: 0,
             deferred: 0,
             cached: 0,
+            clistQueried: 0,
+            clistFilled: 0,
             details: [],
           };
     r.capped = cappedByPlatform.get(platform) ?? 0;
@@ -1432,6 +1526,8 @@ async function backfillPlatform(
     capped: 0,
     deferred: 0,
     cached: 0,
+    clistQueried: 0,
+    clistFilled: 0,
     details: [],
   };
   const before = db.prepare(
@@ -1446,7 +1542,10 @@ async function backfillPlatform(
    * - 已有难度且来源为 manual → 难度三元组（difficulty/native_difficulty/difficulty_scale）整体不动
    *   （用户手动标定最高优先；只补标题/标签，避免写出「手动难度 + 上游原生值」这种不同源组合）。
    * - 其余（难度为空 / 来源为 sync、bank 等）→ 补上游值：回填高于 sync/bank，可修正旧映射留下的过时值。
-   * - difficulty_source：只有真的采纳了新难度（且不是 manual）才标 'backfill'。
+   * - difficulty_source：只有真的采纳了新难度（且不是 manual）才写来源 —— 主来源写 'backfill'，
+   *   clist.by 备选写 'clist'（第三方值，见 issue #57）。'clist' 不在 problemWritePolicy 的优先级表里
+   *   → 该表把它当优先级 0，因此后续任何官方来源（sync/bank/backfill）都能把它覆盖掉，
+   *   这正是「第三方只做兜底、官方值一到就让位」的预期行为。
    * - 标题：上游有值才覆盖；标签：上游给了非空标签才覆盖。
    * 注：SQLite 的 SET 右值全部读旧行，故各分支里的 `difficulty IS NOT NULL` 判的是更新前的值。
    */
@@ -1466,7 +1565,7 @@ async function backfillPlatform(
             END,
             difficulty_source = CASE
               WHEN difficulty IS NOT NULL AND COALESCE(difficulty_source, 'sync') = 'manual' THEN difficulty_source
-              WHEN ? IS NOT NULL THEN 'backfill'
+              WHEN ? IS NOT NULL THEN ?
               ELSE difficulty_source
             END,
             title = COALESCE(?, title),
@@ -1544,6 +1643,57 @@ async function backfillPlatform(
         }
         failed = true;
       }
+      /**
+       * clist.by 备选（issue #57）：主来源没给难度时，再用第三方站点追问一次。
+       *
+       * 触发条件刻意收窄到「库内这道题难度为空」（t.difficulty === null）：只缺原生值/标签的行
+       * 不需要第三方值，多问一次只会白占 10 次/分钟的额度。
+       * 主来源「请求失败」（failed）时**也**问一次 —— 那多半是风控/网络，恰是第三方能补上的场景；
+       * 但 clist 也问不到时仍按原逻辑计 failed（不写负缓存定论）。
+       *
+       * 与熔断计数的关系（有意如此）：clist 兜底成功会走下面的 `consecutiveFails = 0`（本行算完成），
+       * 因此「上游连续失败、但第三方能补上」不会立刻熔断；代价有界 —— 本轮 clist 额度
+       * （默认 40 次）用尽后，后续行照旧逐行失败并按原阈值熔断，不会无限打下去。
+       */
+      let fromClist = false;
+      /** clist 追问的结论说明：拼进 failed/missing 的 note，让用户知道第三方也问过了 */
+      let clistNote: string | null = null;
+      if (t.difficulty === null && !aborted() && (meta === null || meta.difficulty === null)) {
+        flushTx(); // await 前提交未满批次（同上：事务不跨网络往返）
+        const attempt = await clistLookup(platform, { title: t.title, url: t.url }, ctx);
+        // 停止瞬间被打断的第三方请求不能算「clist 里没有」：本题留待下次运行再判
+        if (aborted()) {
+          stopped = true;
+          break;
+        }
+        if (attempt.queried) {
+          r.clistQueried += 1;
+          if (attempt.status === 'hit' && attempt.rating !== undefined) {
+            const rating = attempt.rating;
+            meta = {
+              difficulty: clistRatingToDifficulty(rating),
+              // 原生原文 = 该 rating 本身，标度单独记为 clist-rating（见 shared/src/difficulty.ts）
+              nativeDifficulty: String(rating),
+              difficultyScale: 'clist-rating',
+              tags: null,
+              title: null,
+            };
+            fromClist = true;
+            clistNote = 'clist.by 第三方数据';
+          } else if (attempt.status === 'miss') {
+            clistNote = 'clist.by 也无记录';
+          } else if (attempt.status === 'unauthorized') {
+            clistNote = 'clist.by 认证失败（本轮不再查询）';
+          } else if (attempt.status === 'rate_limited') {
+            clistNote = 'clist.by 限流（本轮不再查询）';
+          } else if (attempt.status === 'failed') {
+            clistNote = 'clist.by 查询失败';
+          }
+        } else if (attempt.note !== undefined) {
+          // 未发起查询但原因值得写进明细（目前只有「缺题目链接 → 无法核对身份」）
+          clistNote = attempt.note;
+        }
+      }
       if (failed || meta === null) {
         // 停止瞬间的「未命中」不能算上游失败：洛谷的 302 未登录分支、以及刚被打断的请求
         // 都会走到这里，而用户只是点了停止 —— 这道题的下场留待下次运行判定（也就不会写负缓存）
@@ -1558,6 +1708,9 @@ async function backfillPlatform(
           : platform === 'qoj'
             ? `公开榜单未匹配到该题（题号映射缺失 / 比赛页或榜单源不可用 / 本轮上限：比赛页 ${MAX_QOJ_PAGES_PER_RUN} 场、榜单 ${MAX_BOARDS_PER_RUN} 份）`
             : '上游未命中';
+        // 问过 clist.by 仍没结果时如实说出来：否则用户只看到「上游未命中」，
+        // 会以为配好了的第三方备选根本没被用上（或反过来以为它一定能补）
+        if (clistNote !== null) note = `${note}；${clistNote}`;
         /**
          * 「上游未命中」只有在**单次响应即完整题库**的平台上才是定论（CF 的 problemset 不含 gym、
          * AtCoder 已下线题），且**题号形态必须可信**（见 absenceIsDefinitive：形态可疑的 miss
@@ -1603,7 +1756,11 @@ async function backfillPlatform(
       // 否则这几行每轮都会白打请求、界面永远停在「难度未知」（见 DENIED_STATUS）。
       if (meta.denied === true) {
         r.denied += 1;
-        r.details.push({ problemKey: t.problemKey, action: 'missing', note: '上游已下架/私有（无公开来源）' });
+        r.details.push({
+          problemKey: t.problemKey,
+          action: 'missing',
+          note: `上游已下架/私有（无公开来源）${clistNote !== null ? `；${clistNote}` : ''}`,
+        });
         const miss = before.get(platform, t.problemKey) as GapColumns | undefined;
         if (miss) {
           const g = nextGapState({
@@ -1648,6 +1805,8 @@ async function backfillPlatform(
         meta.nativeDifficulty,
         meta.difficultyScale,
         meta.difficulty,
+        // 来源：clist.by 第三方值单独记账（issue #57），便于之后区分「官方补的」与「第三方兜底的」
+        fromClist ? 'clist' : 'backfill',
         title,
         tagsJson,
         tagsJson,
@@ -1677,8 +1836,14 @@ async function backfillPlatform(
       const tagsChanged = after.tags !== row.tags;
       if (filledByWrite) r.filled += 1;
       if (filledNative) r.nativeFilled += 1;
+      // clistFilled 是 filled 的子集：只统计「本次真由第三方补上的」（manual 保护行不会走到这里）
+      if (filledByWrite && fromClist) r.clistFilled += 1;
       if (filledByWrite) {
-        r.details.push({ problemKey: t.problemKey, action: 'filled', note: `难度 ${meta.difficulty}` });
+        r.details.push({
+          problemKey: t.problemKey,
+          action: 'filled',
+          note: fromClist ? `难度 ${meta.difficulty}（clist.by 第三方）` : `难度 ${meta.difficulty}`,
+        });
       } else if (meta.difficulty === null) {
         r.missing += 1;
         r.details.push({
@@ -1687,9 +1852,9 @@ async function backfillPlatform(
           // QOJ 平台本身没有难度字段（UOJ 数据模型）：「没难度」的含义是**推导不出来**，
           // 不是「上游未评级」——这句话直接决定用户会不会去翻榜单/换网络重试
           note:
-            platform === 'qoj'
+            (platform === 'qoj'
               ? `公开榜单推不出档位（题号映射缺失 / 榜单源不可用 / 本轮上限：比赛页 ${MAX_QOJ_PAGES_PER_RUN} 场、榜单 ${MAX_BOARDS_PER_RUN} 份）`
-              : '上游无难度数据（未评级/未设定）',
+              : '上游无难度数据（未评级/未设定）') + (clistNote !== null ? `；${clistNote}` : ''),
         });
       } else if (difficultyCorrected || titleChanged || tagsChanged || filledNative) {
         r.repaired += 1;

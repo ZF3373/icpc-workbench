@@ -287,9 +287,13 @@ test('hostThrottle: 安全下限足够保守（1× 时各站均 ≥ 官方要求
     }
   }
   assert.ok(MIN_REQUEST_INTERVAL_SCALE === 1, '倍率下限必须为 1：不允许调到安全下限以下');
-  // 洛谷风控在各平台中最严：间隔必须取全表最长一档，不得回落到短间隔组
+  // 洛谷风控在各平台中最严：间隔必须取全表最长一档，不得回落到短间隔组。
+  // 例外：clist.by 的 6s 来自官方「10 次/分钟」的 API 配额（issue #57 的第三方难度源），
+  // 属于**合同额度**而不是风控经验值，比洛谷更长是有据可依的。
   const luogu = HOST_MIN_INTERVAL_MS['www.luogu.com.cn']!;
+  const quotaDriven = new Set(['clist.by']);
   for (const [host, interval] of Object.entries(HOST_MIN_INTERVAL_MS)) {
+    if (quotaDriven.has(host)) continue;
     assert.ok(luogu >= interval!, `洛谷间隔(${luogu})应不短于任一平台（${host}=${interval}）`);
   }
 });

@@ -38,6 +38,7 @@ import { AiSettingsCard, type AiSettingsCardHandle, type SettingsAiData } from '
 import { ImportPlanModal } from './settings/ImportPlanModal'
 import { KnowledgePipelineCard } from './settings/KnowledgePipelineCard'
 import { BackupCard } from './settings/BackupCard'
+import { ClistCard, type ClistSettingsView } from './settings/ClistCard'
 
 interface SettingsData {
   ai: SettingsAiData
@@ -50,6 +51,8 @@ interface SettingsData {
   accountCreds?: Record<string, Record<string, { configured: boolean; masked: string }>>
   reminder: ReminderConfig
   contestReminder: ContestReminderConfig
+  /** 第三方难度备选源凭据（issue #57）；旧版服务端无此字段 → 按未配置渲染 */
+  clist?: ClistSettingsView
   sync: {
     maxSubmissions: number
     autoContinueRounds?: number
@@ -1269,6 +1272,14 @@ export default function Settings() {
             </span>
           </Space>
         </Card>
+      </Col>
+
+      {/* 难度回填的第三方备选源（issue #57）：凭据只在这里配一次，回填卡上才有可用的勾选项 */}
+      <Col span={24} id="settings-clist">
+        <ClistCard
+          clist={data.clist ?? { username: '', configured: false, keyMasked: '' }}
+          onSaved={load}
+        />
       </Col>
 
       <Col span={24}>

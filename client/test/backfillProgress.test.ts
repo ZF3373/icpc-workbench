@@ -120,6 +120,16 @@ test('resultText：QOJ 的 missing 说「推不出难度」而不是「官方无
   assert.doesNotMatch(text, /官方无难度/)
 })
 
+test('resultText：clist.by 第三方补的题单独标注（issue #57），未用第三方时不出现该段', () => {
+  const withThirdParty = resultText(
+    response({ results: [row({ filled: 3, clistFilled: 2, clistQueried: 5 })] }),
+    nameOf,
+  )
+  assert.match(withThirdParty, /牛客：补难度 3 题（其中 clist\.by 第三方 2 题）/)
+  const without = resultText(response({ results: [row({ filled: 3 })] }), nameOf)
+  assert.doesNotMatch(without, /clist\.by/)
+})
+
 test('resultText：库内没有任何待补的题', () => {
   assert.equal(resultText(response({ results: [], unknownLeft: 0 }), nameOf), '库内没有待回填难度的题')
 })

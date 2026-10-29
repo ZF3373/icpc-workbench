@@ -68,6 +68,8 @@ test('回填目标选择：未知难度/无原生值/无标签，QOJ 也纳入�
     platform: 'luogu',
     problemKey: 'P2',
     title: 'B',
+    // 题目链接随目标一起带出：clist.by 备选源用它确认「返回的是不是这一道题」（issue #57）
+    url: null,
     difficulty: null,
     nativeDifficulty: null,
     tags: ['dp'],

@@ -34,6 +34,10 @@ export interface BackfillPlatformResult {
   capped: number;
   deferred: number;
   cached: number;
+  /** 本轮向 clist.by 发起的三方查询次数（旧服务端不返回该字段） */
+  clistQueried?: number;
+  /** 本轮由 clist.by 第三方数据补上难度的题数（是 filled 的子集） */
+  clistFilled?: number;
   stopped?: boolean;
 }
 
@@ -44,6 +48,8 @@ export interface BackfillResponse {
   stopped?: boolean;
   results: BackfillPlatformResult[];
   unknownLeft: number;
+  /** 第三方备选源的使用情况（旧服务端不返回）：configured = 是否配了 clist.by Key */
+  clist?: { configured: boolean; queried: number; filled: number };
 }
 
 /**
@@ -74,7 +80,9 @@ export function resultText(r: BackfillResponse, nameOf: (platform: string) => st
       : '';
     // denied（上游明确拒绝：已删除/私有）与 missing（题还在、只是没评级）分开说 ——
     // 前者意味着「再等也不会有难度」，后者是「平台就没给这道题评级」，用户要做的事不同
-    return `${name}：补难度 ${x.filled} 题、补原生难度 ${x.nativeFilled} 题、修标题/标签/难度值 ${x.repaired} 题${missing}${x.denied ? `、无公开来源 ${x.denied} 题（上游已下架/私有）` : ''}${x.cached ? `、${x.cached} 题维持「无官方难度」（已问过上游，不再重复查询）` : ''}${x.failed ? `、失败 ${x.failed} 题` : ''}${x.deferred ? `、跳过 ${x.deferred} 题（难度已有、仅缺原生值）` : ''}${x.capped ? `、本次上限外还有 ${x.capped} 题（再点一次继续）` : ''}`;
+    // 第三方来源单独说：用户要知道这个难度不是平台给的（可回设置页关掉备选源）
+    const thirdParty = x.clistFilled ? `（其中 clist.by 第三方 ${x.clistFilled} 题）` : '';
+    return `${name}：补难度 ${x.filled} 题${thirdParty}、补原生难度 ${x.nativeFilled} 题、修标题/标签/难度值 ${x.repaired} 题${missing}${x.denied ? `、无公开来源 ${x.denied} 题（上游已下架/私有）` : ''}${x.cached ? `、${x.cached} 题维持「无官方难度」（已问过上游，不再重复查询）` : ''}${x.failed ? `、失败 ${x.failed} 题` : ''}${x.deferred ? `、跳过 ${x.deferred} 题（难度已有、仅缺原生值）` : ''}${x.capped ? `、本次上限外还有 ${x.capped} 题（再点一次继续）` : ''}`;
   });
   if (parts.length === 0) {
     return r.stopped === true

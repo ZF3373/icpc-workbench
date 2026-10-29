@@ -15,6 +15,7 @@ import { asyncHandler } from '../asyncHandler.ts';
 import { sendRouteError } from './routeError.ts';
 import { safeTags } from '../analysis/stats.ts';
 import { backfillDifficulties, GAP_TTL_MS, parseGapState } from '../analysis/difficultyBackfill.ts';
+import { readClistCredentials } from '../analysis/clistDifficulty.ts';
 import {
   beginBackfillRun,
   currentBackfillRun,
@@ -801,10 +802,17 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   // **可中止**（2026-09-27 用户要求）：运行中可 POST /backfill-difficulty/stop 立即停止；
   // 停止后已落库的不受影响，再点一次即从库里剩下的缺口继续（可多次回填）。
   // 同时只允许一轮：运行中重复触发返回 409 + 当前状态；运行状态与进度见 GET /run。
-  // 响应：{ ok, stopped, results: [...], unknownLeft }
+  // 响应：{ ok, stopped, results: [...], unknownLeft, clist }
   //   stopped = 本轮被用户停止（results 只覆盖已处理的部分；被中断的平台带 stopped: true）
+  //   clist = { configured, queried, filled }：第三方 clist.by 备选源的配置状态与本轮用量
+  // body { clistFallback: false } = 本轮**不用**第三方备选（默认开启；issue #57）
+  // 备选源只在「主来源确实没给难度」时追问一次（见 difficultyBackfill 的 clistLookup），
+  // 且每轮有硬上限（clist.by 免费额度 10 次/分钟）。未配置 Key 时一次请求都不会发。
   r.post('/backfill-difficulty', asyncHandler(async (req, res) => {
     const includeNativeOnly = req.body?.includeNativeOnly === true;
+    // 默认开启：是否真的会发请求还取决于设置页有没有配 Key（见 readClistCredentials）
+    const clistFallback = req.body?.clistFallback !== false;
+    const clistConfigured = readClistCredentials(db) !== null;
     // 互斥：并发跑两轮会同时打同一批上游、抢写同一批行，除了更快触发风控没有任何好处
     const signal = beginBackfillRun();
     if (signal === null) {
@@ -814,13 +822,24 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     try {
       const results = await backfillDifficulties(db, fetchFn, {
         includeNativeOnly,
+        clistFallback,
         signal,
         onProgress: setBackfillProgress,
       });
       const unknownLeft = (
         db.prepare('SELECT COUNT(*) AS c FROM problems WHERE difficulty IS NULL').get() as { c: number }
       ).c;
-      res.json({ ok: true, stopped: signal.aborted, results, unknownLeft });
+      res.json({
+        ok: true,
+        stopped: signal.aborted,
+        results,
+        unknownLeft,
+        clist: {
+          configured: clistConfigured,
+          queried: results.reduce((n, x) => n + x.clistQueried, 0),
+          filled: results.reduce((n, x) => n + x.clistFilled, 0),
+        },
+      });
     } catch (e) {
       // 回填链路含上游抓取与本地批处理：引擎/DB 细节只进日志，上游状态码保留
       sendRouteError(res, 502, e, `难度回填失败`);
@@ -844,7 +863,13 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     const unknownLeft = (
       db.prepare('SELECT COUNT(*) AS c FROM problems WHERE difficulty IS NULL').get() as { c: number }
     ).c;
-    res.json({ ok: true, run: currentBackfillRun(), unknownLeft });
+    // clist.configured：界面据此决定「第三方备选」勾选框是否可用（未配 Key 时置灰并给出设置入口）
+    res.json({
+      ok: true,
+      run: currentBackfillRun(),
+      unknownLeft,
+      clist: { configured: readClistCredentials(db) !== null },
+    });
   });
 
   /** 合法的卡点性质（与 client 的选项一一对应）。editorial/upsolved = 借助题解才做出（能力值模型据此降权） */
