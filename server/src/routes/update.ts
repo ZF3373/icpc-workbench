@@ -262,12 +262,37 @@ export async function checkForUpdate(
     if (!stableSeen && !nightly) return failed(current, buildCommit, '暂无发布版本');
     return resolveUpdate(current, buildCommit, stable, nightly);
   } catch (e) {
-    const message = `检查失败：${e instanceof Error ? e.message : String(e)}`;
+    const reason = e instanceof Error ? e.message : String(e);
     if (process.platform === 'win32' && fetchImpl === fetch) {
-      return checkViaPowerShell(current, buildCommit, repo);
+      const viaPs = await checkViaPowerShell(current, buildCommit, repo);
+      // 兜底也失败时，原生通道给出的明确原因（如 403 限流）比兜底的笼统措辞更可信
+      if (!viaPs.ok && isActionableReason(reason)) return failed(current, buildCommit, reason);
+      return viaPs;
     }
-    return failed(current, buildCommit, message);
+    return failed(current, buildCommit, reason);
   }
+}
+
+/** 原生通道的原因里带「限流/403」这类可执行信息时，才值得覆盖兜底的结论。 */
+function isActionableReason(reason: string): boolean {
+  return /403|429|限流|rate limit/i.test(reason);
+}
+
+/**
+ * 把 PowerShell 兜底拿到的 HTTP 状态翻译成人话：
+ * - 403：匿名限流（GitHub 每小时 60 次，出口 IP 与他人共享时极易打满）
+ * - 0：连不上（证书 / 网络问题）
+ * 两者都必须和「仓库确实没有 Release」区分开，否则用户只会看到含糊的
+ * 「暂无发布版本」，既不知道该等一会儿，也不知道该查网络。
+ */
+export function powershellFailureReason(codes: number[]): string | null {
+  if (codes.includes(403)) {
+    return 'GitHub API 限流（403）：匿名检查每小时 60 次已用尽，请稍后重试';
+  }
+  if (codes.length > 0 && codes.every((c) => c === 0)) {
+    return '网络受限，检查失败（PowerShell 通道也无法访问 GitHub）';
+  }
+  return null;
 }
 
 /** Windows 兜底通道：PowerShell Invoke-RestMethod（系统证书库，可穿透 TLS 拦截）。 */
@@ -279,13 +304,24 @@ function checkViaPowerShell(current: string, buildCommit: string, repo: string):
     }
     const base = `https://api.github.com/repos/${repo}`;
     // repo 已通过白名单校验后才拼入命令，避免注入
+    // 返回 { code, data } 而不是把失败一律吞成 $null：403（匿名限流）与连不上
+    // 必须能分辨，否则两者都会退化成含糊的「暂无发布版本」
     const script = [
       '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
       '$h = @{ \'User-Agent\' = \'icpc-workbench\' }',
-      'function Get-Rel($u) { try { Invoke-RestMethod -Uri $u -Headers $h -TimeoutSec 10 } catch { $null } }',
+      'function Get-Rel($u) {',
+      '  try {',
+      '    $d = Invoke-RestMethod -Uri $u -Headers $h -TimeoutSec 10',
+      '    return @{ code = 200; data = $d }',
+      '  } catch {',
+      '    $code = 0',
+      '    try { $code = [int]$_.Exception.Response.StatusCode.value__ } catch { $code = 0 }',
+      '    return @{ code = $code; data = $null }',
+      '  }',
+      '}',
       `$s = Get-Rel '${base}/releases/latest'`,
       `$n = Get-Rel '${base}/releases/tags/${NIGHTLY_TAG}'`,
-      '@{ stable = $s; nightly = $n } | ConvertTo-Json -Depth 5',
+      '@{ stable = $s; nightly = $n } | ConvertTo-Json -Depth 6 -Compress',
     ].join('\n');
     execFile(
       'powershell.exe',
@@ -297,10 +333,22 @@ function checkViaPowerShell(current: string, buildCommit: string, repo: string):
           return;
         }
         try {
-          const parsed = JSON.parse(stdout) as { stable: GithubRelease | null; nightly: GithubRelease | null };
-          const info = resolveUpdate(current, buildCommit, parsed.stable, parsed.nightly);
+          const parsed = JSON.parse(stdout) as {
+            stable?: { code?: number; data?: GithubRelease | null } | null;
+            nightly?: { code?: number; data?: GithubRelease | null } | null;
+          };
+          const info = resolveUpdate(
+            current,
+            buildCommit,
+            parsed.stable?.data ?? null,
+            parsed.nightly?.data ?? null,
+          );
           if (!info.latest && !info.commit) {
-            resolve(failed(current, buildCommit, '暂无发布版本'));
+            const reason = powershellFailureReason([
+              parsed.stable?.code ?? 0,
+              parsed.nightly?.code ?? 0,
+            ]);
+            resolve(failed(current, buildCommit, reason ?? '暂无发布版本'));
             return;
           }
           resolve(info);

@@ -13,6 +13,7 @@ import {
   applyStagedUpdateAsync,
   nightlyCommitSha,
   resolveUpdate,
+  powershellFailureReason,
 } from '../src/routes/update.ts';
 import { parseChecksums, verifyChecksums, buildRanges, candidateUrls, mirrorPrefixes, replaceStagedFiles, applyUpdate, setCoreExitSchedulerForTests, setUpdatePhaseForTests, updateState } from '../src/updater.ts';
 
@@ -79,6 +80,15 @@ test('checkForUpdate 网络/接口失败返回 ok:false 而非抛错', async () 
   const info404 = await checkForUpdate('v0.2.1', 'o/r', notFound);
   assert.equal(info404.ok, false);
   assert.equal(info404.hasUpdate, false);
+});
+
+test('powershellFailureReason：区分限流、断网与「确实没有 Release」', () => {
+  assert.match(powershellFailureReason([403, 403]) ?? '', /限流/);
+  assert.match(powershellFailureReason([403, 0]) ?? '', /限流/, '只要有一路被限流就该说限流');
+  assert.match(powershellFailureReason([0, 0]) ?? '', /网络受限/);
+  assert.equal(powershellFailureReason([404, 404]), null, '404 是真没有 Release，不该报限流');
+  assert.equal(powershellFailureReason([200, 404]), null);
+  assert.equal(powershellFailureReason([]), null);
 });
 
 // ---------- 双通道：nightly 提交构建 ----------
