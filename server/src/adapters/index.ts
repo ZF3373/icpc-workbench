@@ -6,6 +6,7 @@ import { createJisuankeAdapter } from './jisuanke.ts';
 import { createLeetcodeAdapter } from './leetcode.ts';
 import { createLuoguAdapter } from './luogu.ts';
 import { createNowcoderAdapter } from './nowcoder.ts';
+import { createVjudgeAdapter } from './vjudge.ts';
 import { createQojAdapter } from './qoj.ts';
 import { fetchPageViaAgent } from './qojAgent.ts';
 import { register } from './registry.ts';
@@ -32,6 +33,7 @@ export function initAdapters(dataDir?: string): void {
   register(createAtcoderAdapter(dataDir, http));
   register(createLuoguAdapter(http));
   register(createNowcoderAdapter(http));
+  register(createVjudgeAdapter(http));
   register(createDaimayuanAdapter(http));
   register(createDashojAdapter(http));
   register(createLeetcodeAdapter(http));

@@ -18,6 +18,8 @@ import { ThemeProvider } from './themeContext'
 import { UpdateProvider } from './updateContext'
 import { SyncProgressProvider } from './syncProgressContext'
 import App from './App.tsx'
+import { AppearanceProvider } from './appearance'
+import './fantasy.css'
 
 dayjs.locale('zh-cn')
 setupExternalLinks()
@@ -60,6 +62,7 @@ window.addEventListener('focus', syncAppHidden)
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ThemeProvider>
+      <AppearanceProvider>
       <BrowserRouter>
         <UpdateProvider>
           {/* 同步进度：全应用共享一份轮询（悬浮卡 / 数据概览面板 / 页内提示都读它） */}
@@ -68,6 +71,7 @@ createRoot(document.getElementById('root')!).render(
           </SyncProgressProvider>
         </UpdateProvider>
       </BrowserRouter>
+      </AppearanceProvider>
     </ThemeProvider>
   </StrictMode>,
 )

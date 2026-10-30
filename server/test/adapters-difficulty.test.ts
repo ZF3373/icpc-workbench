@@ -196,7 +196,7 @@ test('无难度来源的平台只下发标度，不产出 difficulty 键', async
   };
 
   for (const r of await createLuoguAdapter(luoguFetch).fetchUserSubmissions('1', { cookie: 'c', pageDelayMs: 0 })) push(r);
-  for (const r of await createNowcoderAdapter(router({ 'practice-coding': (url) => (new URL(url).searchParams.get('page') === '1' ? ncHtml : '<table></table>') })).fetchUserSubmissions('1', { pageDelayMs: 0 })) push(r);
+  for (const r of await createNowcoderAdapter(router({ 'contest-joined-history': () => ({ code: 0, data: { dataList: [], pageInfo: { pageCount: 0 } } }), 'submission-history': () => ({ code: 0, data: { records: [] } }), 'practice-coding': (url) => (new URL(url).searchParams.get('page') === '1' ? ncHtml : '<table></table>') })).fetchUserSubmissions('1', { pageDelayMs: 0 })) push(r);
   for (const r of await createLeetcodeAdapter(router({ '/graphql': () => ({ data: { submissionList: { hasNext: false, submissions: [{ id: '1', title: 'Two Sum', statusDisplay: 'Accepted', lang: 'cpp', timestamp: 1700000000, url: '/problems/two-sum/' }] } } }) })).fetchUserSubmissions('', { cookie: 'LEETCODE_SESSION=x; csrftoken=y', pageDelayMs: 0 })) push(r);
   for (const r of await createDaimayuanAdapter(router({ 'record?uidOrName': () => JSON.parse(dmyBody) as unknown })).fetchUserSubmissions('h', { cookie: 'sid=abc', pageDelayMs: 0 })) push(r);
   for (const r of await createJisuankeAdapter(router({

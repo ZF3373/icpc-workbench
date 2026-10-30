@@ -34,12 +34,20 @@ const PLATFORM_HOST: Record<PlatformId, string> = {
   atcoder: 'kenkoooo.com',
   luogu: 'www.luogu.com.cn',
   nowcoder: 'ac.nowcoder.com',
+  vjudge: 'vjudge.net',
   qoj: 'qoj.ac',
   leetcode: 'leetcode.cn',
   daimayuan: 'bs.daimayuan.top',
   jisuanke: 'www.jisuanke.com',
   dashoj: 'dashoj.com',
 };
+
+function platformStats(platform: PlatformId): { requests: number; lastRequestAt: number } {
+  const main = statsOf(PLATFORM_HOST[platform]);
+  if (platform !== 'nowcoder') return main;
+  const community = statsOf('gw-c.nowcoder.com');
+  return { requests: main.requests + community.requests, lastRequestAt: Math.max(main.lastRequestAt, community.lastRequestAt) };
+}
 
 /** 已登记的一次同步（含起算基线，快照时才换算成对外可读字段） */
 interface JobState {
@@ -97,7 +105,6 @@ export function beginSync(input: {
   days?: number;
   maxSubmissions?: number;
 }): void {
-  const host = PLATFORM_HOST[input.platform];
   jobs.set(input.platform, {
     platform: input.platform,
     handle: input.handle,
@@ -106,7 +113,7 @@ export function beginSync(input: {
     ...(input.maxSubmissions !== undefined ? { maxSubmissions: input.maxSubmissions } : {}),
     phase: 'fetching',
     startedAtMs: now(),
-    baseRequests: statsOf(host).requests,
+    baseRequests: platformStats(input.platform).requests,
   });
   // 属于当前批量的平台 → 标为「进行中」（批量进度里的 current）
   if (batch && batch.platforms.includes(input.platform)) batch.current = input.platform;
@@ -173,7 +180,7 @@ export function endBatch(): void {
 export function jobSiteRequests(platform: PlatformId): number | null {
   const job = jobs.get(platform);
   if (!job) return null;
-  const stat = statsOf(PLATFORM_HOST[platform]);
+  const stat = platformStats(platform);
   return Math.max(0, stat.requests - job.baseRequests);
 }
 
@@ -183,7 +190,7 @@ export function jobSiteRequests(platform: PlatformId): number | null {
   if (batch && batch.finishedAtMs !== null && t - batch.finishedAtMs > BATCH_KEEP_MS) batch = null;
   const out: SyncProgressJob[] = [];
   for (const job of jobs.values()) {
-    const stat = statsOf(PLATFORM_HOST[job.platform]);
+    const stat = platformStats(job.platform);
     const siteRequests = Math.max(0, stat.requests - job.baseRequests);
     out.push({
       platform: job.platform,

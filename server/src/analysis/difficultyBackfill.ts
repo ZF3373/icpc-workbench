@@ -266,6 +266,7 @@ const FLOOR_MS = {
  *   故取 20000 让它们在**一轮**内全部收敛（整表已拉、分批只会让下一轮重下整表）。
  */
 const PLATFORM_LIMITS: Record<PlatformId, { delayMs: number; failLimit: number | null; maxPerRun: number }> = {
+  vjudge: { delayMs: 0, failLimit: null, maxPerRun: 0 },
   // 牛客：整表分页扫描（见 fetchNowcoderTable）→ 默认不逐题请求；
   // 目标数少时改走逐题 keyword 搜索，那一档的间隔见 perProblemDelayMs
   nowcoder: { delayMs: 0, failLimit: null, maxPerRun: 20000 },
@@ -1017,7 +1018,7 @@ async function fetchNowcoderTable(ctx: BackfillCtx): Promise<Map<string, Problem
     wantKeys:
       ncWanted === undefined
         ? undefined
-        : new Set([...ncWanted].map((k) => ncProblemIdFromKey(k))),
+        : new Set([...ncWanted].map((k) => ncProblemIdFromKey(k)).filter(k => /^\d+$/.test(k))),
     // 页间兜底间隔 = 主机安全下限（见 FLOOR_MS）：不走全局节流层时也不会 0.5s/页 连发
     pageDelayMs: FLOOR_MS.nowcoder,
     max: 20000,
@@ -1154,6 +1155,8 @@ export async function fetchProblemMeta(
       return (await platformTable('jisuanke', ctx)).get(problemKey) ?? null;
     case 'nowcoder': {
       const id = ncProblemIdFromKey(problemKey);
+      // Community practice UUIDs are not ACM bank IDs; querying that bank cannot enrich them.
+      if (!/^\d+$/.test(id)) return null;
       // 目标少 → 逐题 keyword 搜索：整表是几百页的白扫，且降序上限内到不了小题号（见阈值注释）
       if (ctx.ncSearch) {
         const info = await fetchNcProblemInfo(ctx.fetchFn, id);

@@ -27,6 +27,7 @@ interface UrlPattern {
 }
 
 const URL_PATTERNS: UrlPattern[] = [
+  { re: /(?:www\.)?nowcoder\.com\/practice\/([a-f0-9]{32})/i, platform: 'nowcoder', key: m => 'practice:' + m[1].toLowerCase() },
   {
     re: /luogu\.com\.cn\/problem\/([A-Za-z0-9_]+)/,
     platform: 'luogu',

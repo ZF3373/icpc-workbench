@@ -8,24 +8,24 @@
   --app-viewport-height: calc(100vh / var(--app-zoom));
   --app-viewport-width: calc(100vw / var(--app-zoom));
   color-scheme: dark;
-  --bg: #111318;
-  --bg-elevated: #15181e;
-  --surface: #181b22;
-  --surface-2: #1d212a;
-  --surface-3: #242a34;
-  --line: #2a3039;
-  --line-soft: #222831;
-  --text: #f5f7fb;
-  --text-2: #c4cad4;
-  --text-3: #8993a2;
+  --bg: #090a0b;
+  --bg-elevated: #141416;
+  --surface: #19191b;
+  --surface-2: #202125;
+  --surface-3: #292a2e;
+  --line: #303135;
+  --line-soft: #26272b;
+  --text: #ecedef;
+  --text-2: #c5c6ca;
+  --text-3: #929397;
   /* 空值占位 / 装饰性图标（拖拽把手等）：比 --text-3 更弱，不用于承载正文信息 */
-  --text-dim: #5b6573;
-  --brand: #86a8ff;
-  --brand-strong: #7497f5;
-  --brand-soft: rgba(134, 168, 255, 0.13);
-  --brand-line: rgba(134, 168, 255, 0.45);
-  --green: #69d7a5;
-  --amber: #f2c46d;
+  --text-dim: #6b6e74;
+  --brand: #45b8c8;
+  --brand-strong: #68c6d2;
+  --brand-soft: #45b8c818;
+  --brand-line: #45b8c866;
+  --green: #68bba1;
+  --amber: #f1cb79;
   --red: #ff7b84;
   /* 语义底色/描边：浅色徽标与「下一档建议」卡片等（原先是 antd 亮色预设 hex，暗色下刺眼） */
   --green-soft: rgba(105, 215, 165, 0.12);
@@ -37,7 +37,7 @@
   --cyan-soft: rgba(69, 213, 229, 0.12);
   /* 图表专用 Token：recharts 把颜色写进 SVG 属性，必须取计算后的具体色值（见 ui.ts useTokenColors） */
   --chart-grid: rgba(255, 255, 255, 0.06);
-  --chart-cursor: rgba(134, 168, 255, 0.05);
+  --chart-cursor: #45b8c80d;
   /* CF 段位色：与 Codeforces 官方段位色同色相、按各自底色校准可读性的版本 */
   --cf-new: #aab6c2;
   --cf-pupil: #55d990;
@@ -46,31 +46,31 @@
   --cf-cm: #a887ff;
   --cf-master: #ffbd61;
   --cf-gm: #ff5d70;
-  --radius: 14px;
-  --radius-sm: 10px;
-  --shadow: 0 18px 48px rgba(0, 0, 0, 0.2);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 12px 36px #0003;
   --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.04), 0 8px 22px rgba(0, 0, 0, 0.16);
   --bg-glow-1: rgba(134, 168, 255, 0.1);
   --bg-glow-2: rgba(69, 213, 229, 0.05);
   --font:
     'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'PingFang SC',
     'Microsoft YaHei UI', sans-serif;
-  --sider-bg: #12151a;
-  --sider-hover-bg: #20242c;
-  --sider-group-title: #6d7684;
-  --sider-border: #2c323d;
-  --scrollbar-thumb: #263545;
-  --scrollbar-thumb-hover: #31435a;
-  --surface-inset: #101318;
-  --hover-bg: #20242c;
-  --item-border: #2c323d;
-  --item-hover-border: #3a424f;
-  --brand-text: #b9c8ff;
-  --brand-mute: #7f91c7;
+  --sider-bg: #090a0b;
+  --sider-hover-bg: #242529;
+  --sider-group-title: #929397;
+  --sider-border: #303135;
+  --scrollbar-thumb: #62656a70;
+  --scrollbar-thumb-hover: #62656a;
+  --surface-inset: #141416;
+  --hover-bg: #242529;
+  --item-border: #303135;
+  --item-hover-border: #62656a;
+  --brand-text: #70c9d5;
+  --brand-mute: #73a5ab;
   --accent-blue: #89bfff;
   --accent-violet: #cda6ff;
-  --text-on-brand: #10141e;
-  --logo-badge-bg: #91adff;
+  --text-on-brand: #0d1017;
+  --logo-badge-bg: #202125;
   --pitfall: #e8b4a4;
   /* Markdown 重点着色专用（暗色）。暗色下 --amber / --brand-text 本身就达标
      （7.55:1 / 9.80:1，见 test/contrastCheck.mjs），这里显式成对声明，
@@ -141,24 +141,24 @@
 /* 亮色主题变量覆盖 —— 柔和灰蓝调，避免大面积纯白刺眼 */
 [data-theme='light'] {
   color-scheme: light;
-  --bg: #e7ebf1;
-  --bg-elevated: #f2f4f8;
-  --surface: #f6f8fb;
-  --surface-2: #edf0f5;
-  --surface-3: #e2e7ee;
-  --line: #d3d9e3;
-  --line-soft: #e4e8ef;
-  --text: #23272f;
-  --text-2: #4a5260;
+  --bg: #f5f5f2;
+  --bg-elevated: #fff;
+  --surface: #fff;
+  --surface-2: #eaece9;
+  --surface-3: #e1e8e3;
+  --line: #d5dbd7;
+  --line-soft: #e6eae7;
+  --text: #212b2a;
+  --text-2: #334541;
   /* #8993a2 在 #f6f8fb 上只有 2.9:1，未达 WCAG AA 正文 4.5:1；改为 4.8:1 */
-  --text-3: #656e7e;
-  --text-dim: #9aa3b1;
-  --brand: #6b8eef;
-  --brand-strong: #5a7de0;
-  --brand-soft: rgba(107, 142, 239, 0.1);
-  --brand-line: rgba(107, 142, 239, 0.45);
-  --green: #2ba77e;
-  --amber: #d4961e;
+  --text-3: #667572;
+  --text-dim: #7a8a84;
+  --brand: #177c68;
+  --brand-strong: #126451;
+  --brand-soft: #177c6815;
+  --brand-line: #177c6855;
+  --green: #188960;
+  --amber: #b8781b;
   --red: #e5505a;
   --green-soft: rgba(43, 167, 126, 0.1);
   --green-line: rgba(43, 167, 126, 0.45);
@@ -180,22 +180,22 @@
   --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.72), 0 8px 22px rgba(30, 40, 60, 0.07);
   --bg-glow-1: rgba(107, 142, 239, 0.12);
   --bg-glow-2: rgba(10, 116, 136, 0.05);
-  --sider-bg: #eef1f6;
-  --sider-hover-bg: #e3e8ef;
-  --sider-group-title: #9ba3b0;
-  --sider-border: #dde2ea;
+  --sider-bg: #f5f5f2;
+  --sider-hover-bg: #e1e8e3;
+  --sider-group-title: #687a75;
+  --sider-border: #d5dbd7;
   --scrollbar-thumb: #c0c7d3;
   --scrollbar-thumb-hover: #a4adbb;
-  --surface-inset: #eaedf3;
-  --hover-bg: #e7ebf2;
-  --item-border: #d8dee7;
-  --item-hover-border: #b9c2cf;
-  --brand-text: #5a7de0;
-  --brand-mute: #8e9dc4;
+  --surface-inset: #f5f5f2;
+  --hover-bg: #e1e8e3;
+  --item-border: #d5dbd7;
+  --item-hover-border: #b8c8bf;
+  --brand-text: #17614d;
+  --brand-mute: #527a6f;
   --accent-blue: #4a8ed9;
   --accent-violet: #9b6dd9;
-  --text-on-brand: #ffffff;
-  --logo-badge-bg: #7497f5;
+  --text-on-brand: #fff;
+  --logo-badge-bg: #eaece9;
   --pitfall: #c87560;
   /* Markdown 重点着色专用（亮色）。
      不能复用 --amber(#d4961e) / --brand-text(#5a7de0)：这两个是给图表角标与

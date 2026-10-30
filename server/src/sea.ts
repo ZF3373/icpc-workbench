@@ -49,6 +49,7 @@ import { templatesRoutes } from './routes/templates.ts';
 import { todayRoutes } from './routes/today.ts';
 import { updateRoutes, APP_VERSION } from './routes/update.ts';
 import { uploadsRoutes } from './routes/uploads.ts';
+import { appearanceRoutes } from './routes/appearance.ts';
 import { widgetRoutes, setWidgetPublicDir } from './routes/widget.ts';
 import { mcpRoutes } from './routes/mcp.ts';
 import { setSchemaSql } from './db/index.ts';
@@ -185,6 +186,7 @@ export function startServer(
   app.use('/api/history', historyRoutes(db));
   app.use('/api/reviews', reviewsRoutes(db));
   app.use('/api/uploads', uploadsRoutes({ uploadsDir: path.join(config.dataDir, 'uploads') }));
+  app.use('/api/appearance', appearanceRoutes(config.dataDir));
   app.use('/api/today', todayRoutes(db));
   app.use('/api/templates', templatesRoutes(db, { dataDir: config.dataDir }));
   app.use('/api/contests', contestsRoutes(db));

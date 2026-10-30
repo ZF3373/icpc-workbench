@@ -4,7 +4,7 @@
 // 仅类型引用：本模块反向 re-export difficulty.ts，用 import type 避免运行时循环依赖
 import type { DifficultyScale } from './difficulty.ts';
 
-export type PlatformId = 'codeforces' | 'atcoder' | 'luogu' | 'nowcoder' | 'daimayuan' | 'leetcode' | 'jisuanke' | 'qoj' | 'dashoj';
+export type PlatformId = 'codeforces' | 'atcoder' | 'luogu' | 'nowcoder' | 'daimayuan' | 'leetcode' | 'jisuanke' | 'qoj' | 'dashoj' | 'vjudge';
 
 export type PlatformSync = 'auto' | 'cookie' | 'manual';
 
@@ -25,6 +25,7 @@ export interface PlatformMeta {
 }
 
 export const PLATFORMS: PlatformMeta[] = [
+  { id: 'vjudge', name: 'VJudge', nameEn: 'VJudge', hasOfficialApi: false, homepage: 'https://vjudge.net', sync: 'auto', hasBank: false, difficultyScale: 'none', syncSources: ['practice', 'contest'] },
   { id: 'codeforces', name: 'Codeforces', nameEn: 'Codeforces', hasOfficialApi: true, homepage: 'https://codeforces.com', sync: 'auto', hasBank: true, difficultyScale: 'cf-rating', syncSources: ['none'] },
   { id: 'atcoder', name: 'AtCoder', nameEn: 'AtCoder', hasOfficialApi: false, homepage: 'https://atcoder.jp', sync: 'auto', hasBank: true, difficultyScale: 'atcoder-kenkoooo-irt', syncSources: ['none'] },
   { id: 'luogu', name: '洛谷', nameEn: 'Luogu', hasOfficialApi: false, homepage: 'https://www.luogu.com.cn', sync: 'cookie', hasBank: true, difficultyScale: 'luogu-2026-06', syncSources: ['none'] },

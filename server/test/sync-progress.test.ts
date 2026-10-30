@@ -44,6 +44,20 @@ function setup(): ReturnType<typeof fakeStats> {
   return stats;
 }
 
+test('syncProgress: 牛客合计 ACM 与在线编程接口请求数', () => {
+  const stats = setup();
+  stats.bump('gw-c.nowcoder.com', clockMs);
+  beginSync({ platform: 'nowcoder', handle: '123', mode: 'incremental' });
+  stats.bump('ac.nowcoder.com', clockMs);
+  clockMs += 1000;
+  stats.bump('gw-c.nowcoder.com', clockMs);
+  clockMs += 500;
+  assert.equal(snapshot().jobs[0].siteRequests, 2);
+  assert.equal(snapshot().jobs[0].lastRequestAgoMs, 500);
+  assert.equal(jobSiteRequests('nowcoder'), 2);
+  endSync('nowcoder');
+});
+
 test('syncProgress: 同步期间可读，请求数按窗口增量统计，结束后清空', () => {
   const stats = setup();
   // 窗口前该站点已有 7 次请求（例如上一轮同步/回填留下的累计值）

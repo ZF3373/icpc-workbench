@@ -31,6 +31,7 @@ import { templatesRoutes } from './routes/templates.ts';
 import { todayRoutes } from './routes/today.ts';
 import { updateRoutes, APP_VERSION } from './routes/update.ts';
 import { uploadsRoutes } from './routes/uploads.ts';
+import { appearanceRoutes } from './routes/appearance.ts';
 import { widgetRoutes } from './routes/widget.ts';
 import { mcpRoutes } from './routes/mcp.ts';
 import { PLATFORMS } from '../../shared/src/index.ts';
@@ -94,6 +95,7 @@ app.use('/api/history', historyRoutes(db));
 app.use('/api/reviews', reviewsRoutes(db));
 // 笔记图片：上传与静态服务封装在同一 Router（GET 服务 /api/uploads/xxx，POST 上传）
 app.use('/api/uploads', uploadsRoutes({ uploadsDir: path.join(config.dataDir, 'uploads') }));
+app.use('/api/appearance', appearanceRoutes(config.dataDir));
 app.use('/api/today', todayRoutes(db));
 app.use('/api/templates', templatesRoutes(db, { dataDir: config.dataDir }));
 app.use('/api/contests', contestsRoutes(db));

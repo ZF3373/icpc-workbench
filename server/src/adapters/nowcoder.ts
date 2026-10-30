@@ -1,17 +1,16 @@
 import type {
   NormalizedSubmission,
-  PlatformId,
   Verdict,
 } from '../../../shared/src/index.ts';
 import { difficultyFields } from '../../../shared/src/difficulty.ts';
-import type { FetchOptions, PlatformAdapter } from './types.ts';
+import { SyncError, type PlatformAdapter } from './types.ts';
+import { numericUid, recordsJson, recordTime } from './remoteRecords.ts';
 import { pagedFetch } from './pagination.ts';
 import { asHttpClient, type HttpInit } from './http.ts';
 
 const API = 'https://ac.nowcoder.com';
 const PAGE_SIZE = 10;
-// 每次同步的保守页数上限：90 页 × 500ms = 45 秒（牛客反爬强，严格控制单次请求量）
-// 默认 maxSubmissions=500 时实际拉 50 页（25 秒）即触及条目上限停止
+// 每轮对各来源同页扫描，受新增条数和页数双重限制；实际请求由全局节流器错开。
 const PER_SYNC_MAX_PAGES = 90;
 const PAGE_DELAY_MS = 500; // 牛客反爬较强：页间限速
 
@@ -32,7 +31,7 @@ const RESULT_MAP: Record<string, Verdict> = {
 };
 
 /** 瞬态/未终态结果：评测未完成或评测机异常（通常会重判出终态），不落库 */
-const PENDING_RESULTS = new Set(['等待评测', '运行中', '系统错误', '未知错误']);
+const PENDING_RESULTS = new Set(['等待评测', '运行中', '系统错误', '未知错误', '评测中', '正在评测', '排队中']);
 
 interface NcRow {
   submissionId: string;
@@ -82,91 +81,114 @@ function parseTime(t: string): number {
   return Number.isFinite(ms) && ms > 0 ? ms : 0;
 }
 
-/**
- * 牛客适配器（公开 HTML 表格解析，无需登录）：
- * - 提交列表：GET /acm/contest/profile/{uid}/practice-coding?pageSize=10&page={n}
- *   （牛客已下线 JSON API；该页面匿名可访问，含运行ID/题目/结果/语言/提交时间）
- * - 表格按提交时间倒序 → 增量同步依赖同步层注入的 knownExternalIds（提交号精确判重），
- *   整页已知即提前停止。**不要**用 since（上次同步时刻）按提交时间截断——评测/列表
- *   数据延迟会让"提交时间早于上次同步"的新记录出现（实测踩坑），时间截断会漏掉它们。
- * - 分批防封号：单次同步受 maxSubmissions 新增上限与页数预算约束，触及即停（opts.truncated），
- *   下次同步通过 backfill 游标续拉更早历史。限速 500ms/页防反爬。
+
+interface CommunityRow {
+  problem: { questionUuid: string; questionNum?: string; title: string };
+  submission: { id: number; createdDate: number }; language?: string; status: { desc: string };
+}
+interface ContestRow {
+  submissionId: number; userId: number; problemId: number; index: string;
+  statusMessage: string; submitTime: number; language?: string; problemName?: string;
+}
+interface Envelope<T> { code: number; data: T; msg?: string }
+
+/** Advance all histories together so one completed source cannot end another's pagination.
+ * Capped pages are revisited using exact submission IDs. Community IDs have their own namespace.
  */
 export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
   const http = asHttpClient(fetchFn);
+  async function json<T>(url: string, init?: RequestInit): Promise<T> {
+    const body = await recordsJson<Envelope<T>>(http, url, init);
+    if (body.code !== 0 || !body.data) throw new SyncError('schema_changed', '牛客记录接口异常：' + (body.msg || '无有效数据'));
+    return body.data;
+  }
   return {
-    platform: 'nowcoder',
-    // 声明支持按已知提交号早停：同步层只在 knownIdsFilter 为真时注入 knownExternalIds，
-    // 缺了它，下面的 knownExternalIds 恒为 undefined → 增量同步无从判重，
-    // 每次都从最新一页整段重拉、重复行还占用新增上限额度（永远报「仍有历史待补全」）
-    knownIdsFilter: true,
-
-    async fetchUserSubmissions(
-      handle: string,
-      opts?: FetchOptions,
-    ): Promise<NormalizedSubmission[]> {
-      let firstPageEmpty = false; // 首页空 = 页面结构变化/风控，须抛错而非"同步成功 0 条"
-      return pagedFetch<NcRow>({
-        since: opts?.windowSince,
-        pageSize: PAGE_SIZE,
-        perSyncMax: PER_SYNC_MAX_PAGES,
-        fetchPage: async (page) => {
-          const url = `${API}/acm/contest/profile/${encodeURIComponent(handle)}/practice-coding?pageSize=${PAGE_SIZE}&search=&statusTypeFilter=-1&languageCategoryFilter=-1&orderType=DESC&page=${page}`;
-          const res = await http.fetch(url, {
-            headers: {
-              'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-              Referer: `${API}/acm/home/${encodeURIComponent(handle)}`,
-            },
-          }, { timeoutMs: 20000 });
-          if (!res.ok) {
-            throw new Error(`牛客页面 HTTP ${res.status}（可能触发风控，请稍后重试）`);
-          }
-          const html = await res.text();
-          const rows = parseRows(html);
-          if (rows.length === 0 && page === 1) firstPageEmpty = true;
-          // rawCount = 页内 <tr> 数据行数（含解析层丢弃的畸形/页脚行）：
-          // 「最后一页」按原始行数判，丢行不误判到底
-          const rawCount = (html.match(/<tr[\s>]/gi) ?? []).length;
-          return { rows, rawCount };
-        },
-        externalIdOf: (row) => row.submissionId,
-        normalize: (row) => {
-          if (PENDING_RESULTS.has(row.result)) return null; // 瞬态：不落库不计已知
-          const verdict = RESULT_MAP[row.result] ?? 'SKIPPED';
-          const timeMs = parseTime(row.timeText);
-          return {
-            problem: {
-              platform: 'nowcoder' as PlatformId,
-              problemKey: row.pid,
-              title: row.title || row.pid,
-              ...difficultyFields('nowcoder', null), // 提交列表不含难度：由题库/回填路径按难度分补齐
-              url: `https://ac.nowcoder.com/acm/problem/${row.pid}`,
-              tags: [],
-            },
-            verdict,
-            ...(row.language ? { language: row.language } : {}),
-            submittedAt:
-              timeMs > 0 ? new Date(timeMs).toISOString() : new Date().toISOString(),
-            externalId: row.submissionId,
-          };
-        },
-        knownExternalIds: opts?.knownExternalIds,
-        maxSubmissions: opts?.maxSubmissions,
-        backfill: opts?.backfill,
-        backfillFromPage: opts?.backfillFromPage,
-        opts,
+    platform: 'nowcoder', knownIdsFilter: true,
+    async fetchUserSubmissions(handle, opts) {
+      const uid = numericUid(handle, 'nowcoder');
+      const contests = new Set<string>();
+      for (let page = 1; page <= 20; page++) {
+        const data = await json<{ dataList: { contestId: number }[]; pageInfo: { pageCount: number } }>(
+          API + '/acm-heavy/acm/contest/profile/contest-joined-history?uid=' + uid + '&page=' + page + '&pageSize=10&onlyJoinedFilter=true&onlyRatingFilter=false&contestEndFilter=false');
+        if (!Array.isArray(data.dataList) || !data.pageInfo) throw new SyncError('schema_changed', '牛客竞赛历史结构发生变化');
+        for (const c of data.dataList) if (c.contestId) contests.add(String(c.contestId));
+        if (page >= data.pageInfo.pageCount) break;
+        if (page === 20) throw new SyncError('manual_required', '牛客参赛列表超过本次扫描上限，请使用手动导入补充');
+      }
+      const ended = new Set<string>();
+      const seen = new Set<string>();
+      return pagedFetch<NormalizedSubmission | null>({
+        pageSize: PAGE_SIZE, perSyncMax: PER_SYNC_MAX_PAGES,
+        knownExternalIds: opts?.knownExternalIds, maxSubmissions: opts?.maxSubmissions,
+        backfill: opts?.backfill, backfillFromPage: opts?.backfillFromPage, opts,
         pageDelayMs: opts?.pageDelayMs ?? PAGE_DELAY_MS,
-      }).then((out) => {
-        if (firstPageEmpty && out.length === 0) {
-          throw new Error('牛客页面未解析到提交记录（可能页面结构变化或触发风控），请稍后重试或使用手动导入');
-        }
-        return out;
+        async fetchPage(page) {
+          const rows: NormalizedSubmission[] = [];
+          let more = false;
+          if (!ended.has('practice')) {
+            const response = await http.fetch(API + '/acm/contest/profile/' + uid + '/practice-coding?pageSize=' + PAGE_SIZE + '&search=&statusTypeFilter=-1&languageCategoryFilter=-1&orderType=DESC&page=' + page,
+              { headers: { 'User-Agent': 'Mozilla/5.0', Referer: API + '/acm/home/' + uid } });
+            if (!response.ok) throw new SyncError(response.status === 403 ? 'auth_expired' : 'network', '牛客练习页 HTTP ' + response.status);
+            const html = await response.text();
+            const parsed = parseRows(html);
+            if (!parsed.length && !/运行ID|提交时间|暂无.*(?:记录|数据)|没有.*记录/.test(html)) throw new SyncError('schema_changed', '牛客页面未解析到提交记录，可能页面结构变化或触发风控');
+            for (const row of parsed) {
+              const submittedAt = recordTime(parseTime(row.timeText));
+              if (!submittedAt || PENDING_RESULTS.has(row.result)) continue;
+              rows.push({ externalId: row.submissionId, submittedAt, verdict: RESULT_MAP[row.result] ?? 'SKIPPED', language: row.language,
+                problem: { platform: 'nowcoder', problemKey: row.pid, title: row.title || row.pid, ...difficultyFields('nowcoder', null), url: API + '/acm/problem/' + row.pid, tags: [] } });
+            }
+            const rawCount = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)]
+              .filter(m => /<td[\s>]/i.test(m[1])).length;
+            if (rawCount >= PAGE_SIZE) more = true; else ended.add('practice');
+          }
+          if (!ended.has('community')) {
+            const data = await json<{ records: CommunityRow[] }>('https://gw-c.nowcoder.com/api/sparta/user/question-training/submission-history', {
+              method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://www.nowcoder.com' },
+              body: JSON.stringify({ userId: Number(uid), pageNo: page, pageSize: 20 }),
+            });
+            if (!Array.isArray(data.records)) throw new SyncError('schema_changed', '牛客在线编程记录结构发生变化');
+            for (const row of data.records) {
+              const submittedAt = recordTime(row.submission?.createdDate);
+              const verdict = RESULT_MAP[row.status?.desc];
+              const uuid = row.problem?.questionUuid;
+              if (!submittedAt || !verdict || !row.submission?.id || !/^[a-f0-9]{32}$/i.test(uuid)) continue;
+              rows.push({ externalId: 'community:' + row.submission.id, submittedAt, verdict, language: row.language,
+                problem: { platform: 'nowcoder', problemKey: 'practice:' + uuid, title: row.problem.title || row.problem.questionNum || uuid,
+                  url: 'https://www.nowcoder.com/practice/' + uuid, tags: [] } });
+            }
+            if (data.records.length >= 20) more = true; else ended.add('community');
+          }
+          for (const contest of contests) {
+            if (ended.has(contest)) continue;
+            const params = new URLSearchParams({ id: contest, page: String(page), pageSize: '20', searchUserName: uid, orderBy: 'submitTime', orderType: 'DESC' });
+            const data = await json<{ data: ContestRow[]; basicInfo: { pageCount: number } }>(API + '/acm-heavy/acm/contest/status-list?' + params);
+            if (!Array.isArray(data.data) || !data.basicInfo) throw new SyncError('schema_changed', '牛客竞赛提交记录结构发生变化');
+            for (const row of data.data) {
+              const submittedAt = recordTime(row.submitTime);
+              const verdict = RESULT_MAP[row.statusMessage];
+              if (String(row.userId) !== uid || !submittedAt || !verdict || !row.submissionId || !row.problemId) continue;
+              rows.push({ externalId: String(row.submissionId), submittedAt, verdict, language: row.language,
+                problem: { platform: 'nowcoder', problemKey: String(row.problemId), title: row.problemName || '牛客 ' + row.problemId,
+                  url: API + '/acm/contest/' + contest + '/' + encodeURIComponent(row.index), tags: [] } });
+            }
+            if (page < data.basicInfo.pageCount) more = true; else ended.add(contest);
+          }
+          // Independent streams do not have globally aligned page dates: filter each row.
+          const unique = rows.filter(r => {
+            if (seen.has(r.externalId)) return false;
+            seen.add(r.externalId);
+            return !opts?.windowSince || r.submittedAt >= opts.windowSince;
+          });
+          // A page of pending, duplicate or out-of-window rows must not end another source.
+          return { rows: unique.length ? unique : more ? [null] : [], rawCount: more ? PAGE_SIZE : 0 };
+        },
+        externalIdOf: row => row?.externalId ?? '',
+        normalize: row => row,
       });
     },
-
     problemUrl({ problemKey }) {
-      return `https://ac.nowcoder.com/acm/problem/${String(problemKey)}`;
+      return problemKey.startsWith('practice:') ? 'https://www.nowcoder.com/practice/' + problemKey.slice(9) : API + '/acm/problem/' + problemKey;
     },
   };
 }

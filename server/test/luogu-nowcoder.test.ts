@@ -28,6 +28,8 @@ function router(
         return new Response(JSON.stringify(v), { status: 200 });
       }
     }
+    if (u.includes('submission-history')) return Response.json({ code: 0, data: { records: [] } });
+    if (u.includes('contest-joined-history')) return Response.json({ code: 0, data: { dataList: [], pageInfo: { pageCount: 0 } } });
     return new Response(JSON.stringify({ message: 'not found' }), { status: 404 });
   };
 }
@@ -707,15 +709,12 @@ test('nowcoder: HTTP failure throws', async () => {
   );
 });
 
-test('nowcoder: first page with no rows throws (structure changed / risk control)', async () => {
+test('nowcoder: recognized empty table is a legitimate empty history', async () => {
   const fetchFn = router({
     'practice-coding': () => ncPage([]),
   });
   const adapter = createNowcoderAdapter(fetchFn);
-  await assert.rejects(
-    () => adapter.fetchUserSubmissions('87654321', {}),
-    /未解析到提交记录/,
-  );
+  assert.deepEqual(await adapter.fetchUserSubmissions('87654321', {}), []);
 });
 
 test('nowcoder: unknown result maps to SKIPPED, short rows skipped', async () => {

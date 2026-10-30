@@ -26,7 +26,7 @@ function getStoredPreference(): ThemePreference {
   } catch {
     // 隐私模式或无 localStorage
   }
-  return 'system'
+  return 'dark'
 }
 
 function resolveTheme(pref: ThemePreference): ResolvedTheme {
@@ -91,7 +91,7 @@ const darkTheme = {
     Card: { colorBgContainer: TOKEN_PAIRS.surface.dark, borderRadiusLG: 14 },
     Button: {
       borderRadius: 8,
-      primaryShadow: '0 6px 18px rgba(58, 76, 128, 0.28)',
+      primaryShadow: 'none',
       defaultShadow: 'none',
       dangerShadow: 'none',
     },
@@ -150,7 +150,7 @@ const lightTheme = {
     Card: { colorBgContainer: TOKEN_PAIRS.surface.light, borderRadiusLG: 14 },
     Button: {
       borderRadius: 8,
-      primaryShadow: '0 6px 18px rgba(58, 76, 128, 0.18)',
+      primaryShadow: 'none',
       defaultShadow: 'none',
       dangerShadow: 'none',
     },

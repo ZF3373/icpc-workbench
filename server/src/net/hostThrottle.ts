@@ -73,6 +73,8 @@ export const HOST_MIN_INTERVAL_MS: Record<string, number> = {
   'codeforces.com': 2000,
   'atcoder.jp': 2500,
   'www.luogu.com.cn': 4000,
+  'vjudge.net': 2000,
+  'gw-c.nowcoder.com': 2000,
   'ac.nowcoder.com': 2000,
   'qoj.ac': 2500,
   'leetcode.cn': 1500,
