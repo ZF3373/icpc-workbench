@@ -731,7 +731,7 @@ export default function Settings() {
         <div style={{ marginBottom: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 2 }}>账号名</div>
           <Input
-            placeholder={p.id === 'codeforces' ? 'CF handle' : p.id === 'nowcoder' ? '数字 UID / 个人主页链接' : '用户名 / 个人主页链接'}
+            placeholder={p.id === 'codeforces' ? 'CF handle' : p.id === 'nowcoder' ? '数字 UID / 个人主页链接' : p.id === 'vjudge' ? '用户名 / 个人主页链接' : '用户名 / uid'}
             value={draftHandle}
             onChange={(e) => setDraftHandle(e.target.value)}
             onPressEnter={() => void submitAcctEditor(p.id, handle)}
