@@ -10,9 +10,38 @@ import { asHttpClient, type HttpInit } from './http.ts';
 
 const API = 'https://ac.nowcoder.com';
 const PAGE_SIZE = 10;
-// 每轮对各来源同页扫描，受新增条数和页数双重限制；实际请求由全局节流器错开。
+// 每轮对各来源同页扫描，受新增条数、页数与**整轮请求总量**三重限制。
 const PER_SYNC_MAX_PAGES = 90;
 const PAGE_DELAY_MS = 500; // 牛客反爬较强：页间限速
+
+/**
+ * 竞赛段独占的请求额度。
+ * 竞赛段是次要来源，只在这份额度内扇出，且每页固定排在练习/社区之后 ——
+ * 预算紧张时先牺牲竞赛段，主站数据不受影响。
+ */
+const CONTEST_REQUEST_BUDGET = 60;
+/** 每页的固定来源数：练习页 + 在线编程接口（竞赛段另计）。 */
+const PAGE_SOURCE_COUNT = 2;
+/**
+ * 单次同步的**请求总量**总闸（含参赛列表扫描与页内各来源扇出）。
+ *
+ * 只封页数是不够的：页内会对每场参赛各发一次 status-list，实际请求量
+ * = 页数 × 参赛场次（实测 50 场 × 3 页 = 156 次，50 场 × 90 页 = 4592 次）。
+ * 生产装配统一走 throttledFetch，ac.nowcoder.com 的全局下限是 2000ms，
+ * 4592 次 ≈ 2.5 小时串行等待 —— 对自述「反爬强」的站点是封号风险量级的变化。
+ *
+ * 上界 = 页数上限 × 每页固定来源数 + 竞赛额度：
+ * 基线部分保证不带竞赛时行为与旧实现完全一致，超出部分才是竞赛段的扇出空间。
+ */
+const REQUEST_BUDGET = PER_SYNC_MAX_PAGES * PAGE_SOURCE_COUNT + CONTEST_REQUEST_BUDGET;
+/**
+ * 单页最多轮询的参赛场次。
+ * joined-history 按参赛时间倒序返回，取最近若干场：竞赛行与练习行共享题号空间，
+ * 但历史越久的竞赛收益越低，而每场每页都要占一次请求额度。
+ */
+const MAX_CONTESTS = 20;
+/** 参赛列表扫描页上限（每页 10 场）。 */
+const CONTEST_SCAN_MAX_PAGES = 20;
 
 // 牛客提交结果（HTML 中文状态文本）→ 统一 Verdict；未知值落到 SKIPPED。
 // 瞬态/未终态结果不进表：按 pagination 契约由 normalize 返回 null（不计已知不计新增），
@@ -106,14 +135,49 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
     platform: 'nowcoder', knownIdsFilter: true,
     async fetchUserSubmissions(handle, opts) {
       const uid = numericUid(handle, 'nowcoder');
+      // 整轮请求总闸：参赛列表扫描与后续分页共用同一份额度，用尽即停止发请求。
+      // 只封页数不封页内扇出会让实际请求量变成「页数 × 参赛场次」（见 REQUEST_BUDGET 注释）。
+      let requestBudget = REQUEST_BUDGET;
+      const takeRequest = (): boolean => {
+        if (requestBudget <= 0) return false;
+        requestBudget -= 1;
+        return true;
+      };
+      // 竞赛段独立额度：练习/社区用尽自己的份额后不再扇出到参赛场次，
+      // 反过来竞赛段耗尽也不会拖住主站数据（主站先发、竞赛后发）。
+      let contestBudget = CONTEST_REQUEST_BUDGET;
+      const takeContestRequest = (): boolean => {
+        if (contestBudget <= 0 || requestBudget <= 0) return false;
+        contestBudget -= 1;
+        requestBudget -= 1;
+        return true;
+      };
       const contests = new Set<string>();
-      for (let page = 1; page <= 20; page++) {
+      let contestsTruncated = false;
+      // 参赛列表扫描本身也计入预算：它是竞赛段的前置请求，此前完全在预算之外，
+      // 即使零新增，每轮也固定多出最多 20 次请求。
+      for (let page = 1; page <= CONTEST_SCAN_MAX_PAGES; page++) {
+        if (!takeRequest()) break;
         const data = await json<{ dataList: { contestId: number }[]; pageInfo: { pageCount: number } }>(
           API + '/acm-heavy/acm/contest/profile/contest-joined-history?uid=' + uid + '&page=' + page + '&pageSize=10&onlyJoinedFilter=true&onlyRatingFilter=false&contestEndFilter=false');
         if (!Array.isArray(data.dataList) || !data.pageInfo) throw new SyncError('schema_changed', '牛客竞赛历史结构发生变化');
         for (const c of data.dataList) if (c.contestId) contests.add(String(c.contestId));
+        if (contests.size >= MAX_CONTESTS) {
+          // 已收集够本轮上限：还有更多场次没扫（pageCount 未走完）→ 记下「有剩余」用于提示
+          if (page < data.pageInfo.pageCount) contestsTruncated = true;
+          break;
+        }
         if (page >= data.pageInfo.pageCount) break;
-        if (page === 20) throw new SyncError('manual_required', '牛客参赛列表超过本次扫描上限，请使用手动导入补充');
+      }
+      if (requestBudget <= 0 || contestBudget <= 0) contestsTruncated = true;
+      // 参赛过多不再整体失败：降级为「只扫最近若干场、其余跳过」，练习与在线编程照常同步。
+      // 旧实现在第 20 页直接抛 manual_required，会把练习/社区结果一起丢掉。
+      const contestList = [...contests].slice(0, MAX_CONTESTS);
+      if (contestsTruncated) {
+        // 通过 note 告知用户被跳过的场次，而不是让整次同步失败
+        if (opts) {
+          opts.directScanNote = `牛客参赛超过本次扫描上限，本次只同步最近 ${contestList.length} 场（其余场次可稍后同步或手动导入）`;
+        }
       }
       const ended = new Set<string>();
       const seen = new Set<string>();
@@ -122,9 +186,16 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
         knownExternalIds: opts?.knownExternalIds, maxSubmissions: opts?.maxSubmissions,
         backfill: opts?.backfill, backfillFromPage: opts?.backfillFromPage, opts,
         pageDelayMs: opts?.pageDelayMs ?? PAGE_DELAY_MS,
+        // 「仅同步最近 N 天」窗口起点：降序分页遇到早于该时刻的行即收尾，不再翻更旧的页。
+        // 注意必须传 windowSince 而不是 since —— opts.since 是**增量**语义，
+        // 而牛客存在「提交早于上次同步时刻、却晚出现在列表」的真实场景（见 types.ts），
+        // 常规增量只能靠 knownExternalIds 判重，绝不做时间截断。
+        since: opts?.windowSince,
         async fetchPage(page) {
           const rows: NormalizedSubmission[] = [];
           let more = false;
+          // 预算耗尽 → 本来源停在此处（不 throw，其余来源各自判断）
+          if (!ended.has('practice') && !takeRequest()) ended.add('practice');
           if (!ended.has('practice')) {
             const response = await http.fetch(API + '/acm/contest/profile/' + uid + '/practice-coding?pageSize=' + PAGE_SIZE + '&search=&statusTypeFilter=-1&languageCategoryFilter=-1&orderType=DESC&page=' + page,
               { headers: { 'User-Agent': 'Mozilla/5.0', Referer: API + '/acm/home/' + uid } });
@@ -142,6 +213,7 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
               .filter(m => /<td[\s>]/i.test(m[1])).length;
             if (rawCount >= PAGE_SIZE) more = true; else ended.add('practice');
           }
+          if (!ended.has('community') && !takeRequest()) ended.add('community');
           if (!ended.has('community')) {
             const data = await json<{ records: CommunityRow[] }>('https://gw-c.nowcoder.com/api/sparta/user/question-training/submission-history', {
               method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://www.nowcoder.com' },
@@ -159,8 +231,9 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
             }
             if (data.records.length >= 20) more = true; else ended.add('community');
           }
-          for (const contest of contests) {
+          for (const contest of contestList) {
             if (ended.has(contest)) continue;
+            if (!takeContestRequest()) break; // 竞赛额度耗尽：停止本页剩余场次（下轮续拉）
             const params = new URLSearchParams({ id: contest, page: String(page), pageSize: '20', searchUserName: uid, orderBy: 'submitTime', orderType: 'DESC' });
             const data = await json<{ data: ContestRow[]; basicInfo: { pageCount: number } }>(API + '/acm-heavy/acm/contest/status-list?' + params);
             if (!Array.isArray(data.data) || !data.basicInfo) throw new SyncError('schema_changed', '牛客竞赛提交记录结构发生变化');
@@ -174,13 +247,20 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
             }
             if (page < data.basicInfo.pageCount) more = true; else ended.add(contest);
           }
-          // Independent streams do not have globally aligned page dates: filter each row.
+          // Independent streams do not have globally aligned page dates, so rows are merged
+          // from several sources per page and deduped here by submission id.
+          // 注意：这里**不再**按 windowSince 过滤。pagedFetch 的 since 判定既要丢弃窗口外的行、
+          // 又要据此提前终止分页；若在 fetchPage 里先把它们滤掉，pagedFetch 永远看不到「更旧的行」，
+          // 窗口早停就失效了（7 天窗口会打满整个页预算）。
           const unique = rows.filter(r => {
             if (seen.has(r.externalId)) return false;
             seen.add(r.externalId);
-            return !opts?.windowSince || r.submittedAt >= opts.windowSince;
+            return true;
           });
           // A page of pending, duplicate or out-of-window rows must not end another source.
+          // 预算耗尽时必须真正收尾：若仍返回 [null] 占位，pagedFetch 会一路翻到页预算尽头，
+          // 而每一页都发不出请求（纯空转），既浪费时间又让「请求总量」失去意义。
+          if (requestBudget <= 0) return { rows: unique, rawCount: 0 };
           return { rows: unique.length ? unique : more ? [null] : [], rawCount: more ? PAGE_SIZE : 0 };
         },
         externalIdOf: row => row?.externalId ?? '',
