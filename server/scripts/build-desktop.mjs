@@ -50,13 +50,38 @@ if (!fs.existsSync(coreExe)) {
   process.exit(1);
 }
 
-// 版本号同步：git tag → tauri.conf.json（安装程序文件名/卸载信息随 tag 走）
+/**
+ * 版本号同步：git tag → tauri.conf.json（安装程序文件名/卸载信息随 tag 走）。
+ *
+ * 关键点：**已发布的 tag 不能直接当新版本号**。
+ * v0.5.7 是 2026-10-21 的正式 Release，而 `git describe` 在 master 上仍返回 v0.5.7 ——
+ * 于是每个从 master 打出来的包都叫 0.5.7，与线上同版本；更新检查用
+ * `compareVersions(current, latest) < 0` 判定（相等即不提示），用户永远收不到更新。
+ * 手改 tauri.conf.json 也没用 —— 这里每次都会覆写回去。
+ *
+ * 正确做法：tag 之后仍有提交（即这个 tag 已被发布过）→ 自动递增 patch，
+ * 得到「下一个未发布版本」；正好打在 tag 上（CI 发布构建）则用 tag 本身。
+ */
 let appVersion = '0.0.0';
 try {
   // 只认 vX.Y.Z 形式的 tag：CI 的 nightly tag 不是合法 semver，不能写进 tauri.conf
   const described = execSync('git describe --tags --abbrev=0 --match "v[0-9]*"', { cwd: repoRoot }).toString().trim();
   if (/^v?\d+\.\d+\.\d+/.test(described)) {
-    appVersion = described.replace(/^v/, '');
+    const base = described.replace(/^v/, '');
+    // tag 之后是否还有提交：有 → 该 tag 已发布，本包属于「下一个版本」
+    let commitsSinceTag = 0;
+    try {
+      commitsSinceTag = Number(
+        execSync(`git rev-list --count ${described}..HEAD`, { cwd: repoRoot }).toString().trim(),
+      ) || 0;
+    } catch { /* 浅克隆等情况：按打在 tag 上处理 */ }
+    if (commitsSinceTag > 0) {
+      const [major, minor, patch] = base.split('.').map(Number);
+      appVersion = `${major}.${minor}.${patch + 1}`;
+      console.log(`      最近 tag ${described} 之后有 ${commitsSinceTag} 个提交 → 本包版本 ${appVersion}（下一个未发布版本）`);
+    } else {
+      appVersion = base;
+    }
   } else {
     console.log(`      （最近 tag "${described}" 非语义化版本，tauri.conf.json 版本保持不变）`);
   }
@@ -149,8 +174,11 @@ try {
   （本软件未购买代码签名证书，属于正常提示，软件不联网上传任何数据。）
 
 【其他情况】
-  - 关闭软件窗口 = 退出软件。
-  - 若窗口停在"本地服务未响应"：软件会自动重启服务恢复，稍等即可。
+  - 关闭软件窗口 = 隐藏到托盘（不退出）；要完全退出请右键任务栏托盘图标选「退出」，
+    左键点击托盘图标可恢复窗口。
+  - 若窗口停在"本地服务未响应"：软件会自动重启服务恢复，稍等即可；
+    若一直不恢复，请右键托盘图标选「退出」后重新打开
+    （只关窗口不会重启服务，双击图标也只会唤回同一个窗口）。
   - 检查更新：设置页底部有「检查更新」按钮，支持一键更新（正式版与
     GitHub 最新提交构建）；也可手动下载新版安装包覆盖，
     或用新便携版的两个 exe 覆盖旧文件，data 文件夹不用动。

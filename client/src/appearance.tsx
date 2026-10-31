@@ -7,6 +7,48 @@ import { AppearanceContext as Context, type BackgroundSettings } from './appeara
 const DEFAULT: BackgroundSettings = { file: null, kind: null, name: '', opacity: .6, available: false }
 const assetUrl = (file: string) => `/api/appearance/assets/${encodeURIComponent(file)}`
 
+/**
+ * 图片平均亮度（0–1），用于决定压在背景上的文字用浅色还是深色。
+ *
+ * 为什么在浏览器端量而不是服务端：服务端要自己解 PNG/JPEG —— 而 JPEG 必须完整走
+ * Huffman + 反量化才能拿到真实像素（只解 DC 不做 AC 跳过会直接错位，实测首块读出
+ * -1021 这种不可能的值）。浏览器本来就要解码这张图来显示，用 canvas 缩到 1×1
+ * 取像素等于零成本且绝对准确；视频/取不到像素时返回 null，走中性叠加层。
+ */
+function measureLuminance(url: string): Promise<number | null> {
+  return new Promise(resolve => {
+    const node = new Image()
+    let settled = false
+    const finish = (value: number | null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const timer = setTimeout(() => finish(null), 15000)
+    node.addEventListener('load', () => {
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = 1; canvas.height = 1
+        const context = canvas.getContext('2d')
+        if (!context) return finish(null)
+        context.drawImage(node, 0, 0, 1, 1)
+        const [r, g, b] = context.getImageData(0, 0, 1, 1).data
+        const channel = (v: number) => {
+          const c = v / 255
+          return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)
+        }
+        finish(0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b))
+      } catch {
+        // 跨域/画布污染等：退回中性叠加层，不阻塞背景显示
+        finish(null)
+      }
+    }, { once: true })
+    node.addEventListener('error', () => finish(null), { once: true })
+    node.src = url
+  })
+}
+
 function validateMedia(url: string, kind: 'image' | 'video'): Promise<void> {
   return new Promise((resolve, reject) => {
     const node = document.createElement(kind === 'video' ? 'video' : 'img')
@@ -55,6 +97,28 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     root.style.setProperty('--background-surface-opacity', `${100 - opacity * 58}%`)
     root.style.setProperty('--background-control-opacity', `${100 - opacity * 30}%`)
   }, [active, opacity])
+  /**
+   * 背景图亮度 → 压在图上那层文字用浅色还是深色。
+   *
+   * 原实现无条件写死 `color: #ecedef`（亮色主题下），压在亮图上实测只有 1.07:1，
+   * 几乎不可读；暗色主题压在白图上同理。这里按图片实际亮度选择：
+   * - 亮图（≥0.55）→ 深色文字 + 白色描边，暗图 → 浅色文字 + 黑色描边
+   * - 视频 / 量不出亮度 → 保持中性：同时给出上下两层描边，两种底色都还能读
+   */
+  useEffect(() => {
+    const root = document.documentElement
+    if (!active || settings.kind !== 'image' || !settings.file) {
+      delete root.dataset.backgroundTone
+      return
+    }
+    let disposed = false
+    measureLuminance(assetUrl(settings.file)).then(value => {
+      if (disposed) return
+      if (value === null) delete root.dataset.backgroundTone
+      else root.dataset.backgroundTone = value >= 0.55 ? 'light' : 'dark'
+    })
+    return () => { disposed = true }
+  }, [active, settings.kind, settings.file])
   useEffect(() => {
     if (settings.kind !== 'video') return
     let disposed = false

@@ -68,7 +68,18 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item -LiteralPath LICENSE -Destination server/release/LICENSE
-          Copy-Item -LiteralPath docs/updates/2026-10-30-desktop-review-sync.md -Destination server/release/更新说明.md
+          # 取 docs/updates 里**最新一份**更新说明，而不是写死某个 PR 的文件名。
+          # 写死时：该文件一旦改名/删除，Actions 的 pwsh 默认 $ErrorActionPreference='Stop'
+          # 会让这一步直接红；而且这个 job 是常驻的（if: pull_request），
+          # 之后每个 PR 的测试包都会附上这份过期的更新说明。
+          $note = Get-ChildItem -Path docs/updates -Filter *.md -File |
+            Sort-Object Name -Descending | Select-Object -First 1
+          if ($null -eq $note) {
+            Write-Host 'docs/updates 下没有更新说明，跳过（不阻塞打包）'
+          } else {
+            Copy-Item -LiteralPath $note.FullName -Destination server/release/更新说明.md
+            Write-Host "更新说明：$($note.Name)"
+          }
 
       - name: 校验 MSVC 静态 WebView2 Loader
         shell: pwsh

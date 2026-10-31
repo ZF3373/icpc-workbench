@@ -33,7 +33,7 @@ export const TOKEN_PAIRS = {
   /** 正文与层级文本 */
   text: { cssVar: '--text', dark: '#ecedef', light: '#212b2a' },
   text2: { cssVar: '--text-2', dark: '#c5c6ca', light: '#334541' },
-  text3: { cssVar: '--text-3', dark: '#929397', light: '#667572' },
+  text3: { cssVar: '--text-3', dark: '#929397', light: '#5a6764' },
   /** 容器/布局底色（colorBgContainer ↔ --surface；模态暗色抬一档 ↔ --surface-2） */
   surface: { cssVar: '--surface', dark: '#19191b', light: '#fff' },
   surface2: { cssVar: '--surface-2', dark: '#202125', light: '#eaece9' },

@@ -180,7 +180,8 @@ const README_TXT = `
       ~/Library/Application Support/icpc-workbench/data
     （故意不放在 icpc-workbench.app 内部：应用包内写入会让签名失效，
       导致「已损坏，无法打开」，且覆盖安装新版会丢数据。）
-  - 关闭窗口 = 退出软件。
+  - 关闭窗口 = 隐藏到托盘（不退出）；要完全退出请从菜单栏图标选择「退出」。
+    （Windows 版同样如此：左键点击托盘图标可恢复窗口。）
 
 【已知限制】
   - 本 dmg 为 Apple Silicon（M1/M2/M3/M4）版本，Intel Mac 暂不支持。

@@ -47,5 +47,21 @@ html[data-background='active'] .app-sider { background: transparent !important; 
 html[data-background='active'] :is(.ant-card, .ant-collapse, .ant-table, .ant-table-cell, .dash-module, .mastery-tag) { background: var(--background-panel) !important; }
 html[data-background='active'] :is(.ant-input, .ant-input-affix-wrapper, .ant-input-number, .ant-select-selector, .ant-btn-default, .ant-segmented) { background: var(--background-control) !important; }
 html[data-background='active'] :is(.ant-modal-content, .ant-modal-header, .ant-drawer-content, .ant-dropdown-menu, .ant-select-dropdown, .ant-popover-inner) { background: var(--surface) !important; }
-html[data-theme='light'][data-background='active'] :is(.page-title, .page-description, .page-breadcrumb, .sider-logo-text, .sider-logo-sub, .app-sider .ant-menu-item:not(.ant-menu-item-selected), .app-sider .ant-menu-item-group-title) { color: #ecedef !important; text-shadow: 0 1px 3px #000b; }
+/* 压在背景图上的文字：按图片实际亮度选色，而不是无条件写死浅色。
+   原实现固定 #ecedef —— 亮色主题压亮图实测只有 1.07:1，几乎不可读。
+   亮度由 appearance.tsx 用 canvas 量出后写到 data-background-tone。 */
+:is(html[data-background='active'][data-background-tone]) :is(.page-title, .page-description, .page-breadcrumb, .sider-logo-text, .sider-logo-sub, .app-sider .ant-menu-item:not(.ant-menu-item-selected), .app-sider .ant-menu-item-group-title) {
+  text-shadow: 0 0 3px rgb(0 0 0 / 55%), 0 0 8px rgb(0 0 0 / 35%);
+}
+html[data-background='active'][data-background-tone='dark'] :is(.page-title, .page-description, .page-breadcrumb, .sider-logo-text, .sider-logo-sub, .app-sider .ant-menu-item:not(.ant-menu-item-selected), .app-sider .ant-menu-item-group-title) {
+  color: #f4f6f5 !important;
+}
+html[data-background='active'][data-background-tone='light'] :is(.page-title, .page-description, .page-breadcrumb, .sider-logo-text, .sider-logo-sub, .app-sider .ant-menu-item:not(.ant-menu-item-selected), .app-sider .ant-menu-item-group-title) {
+  color: #10201c !important;
+  text-shadow: 0 0 3px rgb(255 255 255 / 70%), 0 0 8px rgb(255 255 255 / 45%);
+}
+/* 视频或量不出亮度：保持中性 —— 只加描边不强制换色，避免赌错方向 */
+html[data-theme='light'][data-background='active']:not([data-background-tone]) :is(.page-title, .page-description, .page-breadcrumb, .sider-logo-text, .sider-logo-sub, .app-sider .ant-menu-item:not(.ant-menu-item-selected), .app-sider .ant-menu-item-group-title) {
+  color: #ecedef !important;
+}
 @media (max-width: 600px) { .page-title { font-size: 23px; } .background-strength { gap: 8px; } }

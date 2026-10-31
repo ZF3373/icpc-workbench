@@ -150,8 +150,11 @@
   --line-soft: #e6eae7;
   --text: #212b2a;
   --text-2: #334541;
-  /* #8993a2 在 #f6f8fb 上只有 2.9:1，未达 WCAG AA 正文 4.5:1；改为 4.8:1 */
-  --text-3: #667572;
+  /* 辅助文字/标签。四个底色都要达标 —— 此前 #667572 只在纯白 surface 上成立
+     （白 4.82 / surface-2 4.06 / surface-3 3.87 / bg 4.42，后三档全部跌破 AA）。
+     取 #5a6764：白 5.90 / surface-2 4.97 / surface-3 4.74 / bg 5.40，四档均 ≥ 4.5，
+     仍读作浅灰。check:contrast 已把 --text-3 纳入，防止再次回退。 */
+  --text-3: #5a6764;
   --text-dim: #7a8a84;
   --brand: #177c68;
   --brand-strong: #126451;
