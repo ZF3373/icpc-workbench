@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { Button, Card, Checkbox, Col, Dropdown, Empty, Row, Space, App as AntdApp, Tooltip as AntTooltip } from 'antd'
 import {
-  ArrowDownOutlined,
-  ArrowUpOutlined,
-  CheckCircleOutlined,
-  DownOutlined,
-  HolderOutlined,
-  RadarChartOutlined,
-  SendOutlined,
-  SyncOutlined,
-  TrophyOutlined,
-  UndoOutlined,
-  UpOutlined,
-} from '@ant-design/icons'
+  IconArrowDown,
+  IconArrowUp,
+  IconCheckCircle,
+  IconChevronDown,
+  IconChevronUp,
+  IconGrip,
+  IconRadar,
+  IconReset,
+  IconSend,
+  IconSync,
+  IconTrophy,
+  IconUndo,
+} from '../components/icons'
 import { useNavigate } from 'react-router-dom'
 import {
   Area,
@@ -43,7 +44,7 @@ import InlineError from '../components/InlineError'
 import { useSyncProgress } from '../syncProgressCore'
 import { applyModuleOrder, loadModuleOrder, saveModuleOrder, type ModuleId } from '../moduleOrder'
 import { readJson, writeJson } from '../persistence.ts'
-import { TONE_VAR, gapColor, platformName, rateColor, useTokenColors, type TokenName } from '../ui'
+import { platformName, useTokenColors, type TokenName } from '../ui'
 import { get, post } from '../api'
 import type { PlatformId, SyncResult } from '../../../shared/src/index.ts'
 import { compareDifficultyBuckets } from '../../../shared/src/difficulty.ts'
@@ -66,8 +67,13 @@ function savePlatformOrder(keys: string[]): void {
  * 与 moduleOrder.ts 的顺序 key 各存一份，互不影响（折叠不该改动顺序，反之亦然）。
  */
 const COLLAPSED_KEY = 'icpc-dashboard-module-collapsed-v1'
-/** 次要模块默认折叠：首屏只留「平台分布 / 难度分布 / 弱项 / 趋势」，历史与热力图按需展开 */
-const COLLAPSED_BY_DEFAULT = new Set<string>(['history', 'heatmap'])
+/**
+ * 次要模块默认折叠：首屏保留热力图 / 平台分布 / 难度分布 / 弱项 / 趋势这五块主视图，
+ * 只有「写题历史」按需展开（它是查询工具，不是"看一眼"的数据）。
+ * 热力图从默认折叠改为默认展开：它是本页最直观的训练密度视图，
+ * 极简重构后卡片更矮、留白更足，展开也不会把首屏撑长。
+ */
+const COLLAPSED_BY_DEFAULT = new Set<string>(['history'])
 function loadCollapsedModules(): string[] | null {
   return readJson<string[]>(COLLAPSED_KEY)
 }
@@ -90,6 +96,18 @@ function saveSyncChecked(keys: ReadonlySet<string>): void {
   writeJson(SYNC_CHECKED_KEY, [...keys])
 }
 
+/**
+ * AC 率的语义分档（只影响文字颜色）：
+ * ≥50% 判为正向（绿）、30~50% 判为中性（深灰）、<30% 判为偏弱（橙）。
+ * 阈值与 uiFormat.rateTone 一致，但这里只做「颜色类名」映射，
+ * 不改变任何统计口径。
+ */
+function rateClass(rate: number): string {
+  if (rate >= 50) return 'is-rate-good'
+  if (rate >= 30) return 'is-rate-fair'
+  return 'is-rate-poor'
+}
+
 /** 模块卡片的可读名：键盘排序/折叠按钮的 aria-label 与 title 用它（例：上移「难度分布」） */
 const MODULE_LABELS: Record<ModuleId, string> = {
   heatmap: '刷题热力图',
@@ -109,43 +127,63 @@ const MODULE_LABELS: Record<ModuleId, string> = {
    --------------------------------------------------------------- */
 const HEAD_BTN_SIZE = 22
 const HEAD_BTN_GAP = 4
-/** 上移/下移两个按钮的总宽 */
-const REORDER_CONTROLS_W = HEAD_BTN_SIZE * 2 + 2
 /** 卡片头的内边距（antd Card size="small"） */
 const CARD_HEAD_PAD = 12
 /** 普通模块头部的键盘控件右偏移 */
 const HEAD_CONTROLS_RIGHT = CARD_HEAD_PAD
 /**
- * 热力图头部的右偏移：热力图卡片头的 extra 是 ActivityHeatmap 自带的范围切换器
- * （任选近3月/近半年/近1年，宽度约 174px），本切片不能改那个文件，
- * 所以键盘控件右移让开它而不是压在切换器上。
+ * 热力图头部的右偏移：与普通卡片一致。
+ *
+ * 旧实现把控件整体左移到切换器左侧（硬编码 190px），但切换器宽度随字号/缩放变化，
+ * 一旦变宽就会被按钮压住。现在统一改成「控件贴右，卡片头留出固定的右侧通道」
+ * （见 index.css 的 .dash-module .ant-card-head-wrapper 内边距），
+ * 切换器无论多宽都在通道左侧换行或收窄，不会和按钮重叠。
  */
-const HEATMAP_CONTROLS_RIGHT = 190
-/** 键盘控件占用的总宽（折叠 + 间隙 + 上移/下移） */
-const HEAD_CONTROLS_W = HEAD_BTN_SIZE + HEAD_BTN_GAP + REORDER_CONTROLS_W
-/** 模块卡自带 extra 要留出的右间距，避免被绝对定位的键盘控件压住 */
-const HEAD_EXTRA_RESERVE = HEAD_CONTROLS_W + HEAD_BTN_GAP
-
-const LEGEND_STYLE = { fontSize: 12, iconType: 'circle', iconSize: 8 } as const
+const HEATMAP_CONTROLS_RIGHT = CARD_HEAD_PAD
 
 /**
- * gapColor() 返回的是 CSS 变量表达式（inline style 里可用），但 recharts 把 Cell 的 fill 写进
- * SVG **表现属性**，var() 在其中不会被解析（表现为柱子掉色）。这里只把语义色调名映射到
- * useTokenColors() 的计算值，5/15 两个分档判断仍然只有 `ui.ts` 一份。
+ * 图例统一样式：**顶部右对齐**（设计规范：图例移到图表顶部右侧）。
+ * recharts 的 Legend 支持 verticalAlign/align，直接交给它排版，
+ * 比用 CSS 去挪 absolute 定位的容器可靠得多。
  */
-const GAP_TONE_BY_VAR: Record<string, TokenName> = {
-  [TONE_VAR.danger]: 'danger',
-  [TONE_VAR.warning]: 'warning',
-  [TONE_VAR.success]: 'success',
+const LEGEND_STYLE = {
+  fontSize: 12,
+  iconType: 'circle',
+  iconSize: 8,
+  verticalAlign: 'top',
+  align: 'right',
+  // 顶部图例与绘图区之间留一点空气，避免贴住柱顶
+  wrapperStyle: { paddingBottom: 12 },
+} as const
+
+/**
+ * 弱项柱的填充色：**语义化的三段色阶**。
+ *
+ * 这里是"警示"语义的正主：缺口 >15 用柔和红、>5 用柔和橙、否则用低饱和绿。
+ * 与 AC 率、同步健康度共用同一套四色，读者不需要重新学配色。
+ * 之所以仍然克制：三档都是低饱和版本，柱长本身已经编码了程度，
+ * 颜色只是让"哪几个标签最该补"在扫视时跳出来。
+ * 取的是**具体色值**——recharts 把 fill 写进 SVG 表现属性，var() 在其中不生效。
+ */
+function gapShade(gap: number, t: Record<TokenName, string>): string {
+  if (gap > 15) return t.chartFillDanger
+  if (gap > 5) return t.chartFillWarn
+  return t.chartFillPositive
 }
 
-/** 模块卡片在 xl 布局的宽度（24 = 整行）；拖拽只改顺序，不改宽度 */
+/**
+ * 模块卡片在 xl 布局的宽度（24 = 整行）；拖拽只改顺序，不改宽度。
+ *
+ * 极简重构后的网格：整行模块（热力图 / 平台分布 / 趋势 / 历史）与
+ * 并排两列（难度分布 + 弱项标签）交替，形成规整的卡片式网格；
+ * 平台分布改为整行后，9 个平台卡按 auto-fill 排成 2 行而不是竖着堆 5 行。
+ */
 const MODULE_SPANS: Record<ModuleId, number> = {
   heatmap: 24,
-  platforms: 10,
-  difficulty: 14,
+  platforms: 24,
+  difficulty: 12,
   weakness: 12,
-  trend: 12,
+  trend: 24,
   history: 24,
 }
 
@@ -177,7 +215,7 @@ function ReorderButtons({
         aria-label={`上移「${label}」`}
         onClick={() => onMove(-1)}
       >
-        <ArrowUpOutlined />
+        <IconArrowUp size={13} />
       </button>
       <button
         type="button"
@@ -187,7 +225,7 @@ function ReorderButtons({
         aria-label={`下移「${label}」`}
         onClick={() => onMove(1)}
       >
-        <ArrowDownOutlined />
+        <IconArrowDown size={13} />
       </button>
     </span>
   )
@@ -216,7 +254,7 @@ function CollapseToggle({
       title={text}
       onClick={onToggle}
     >
-      {collapsed ? <DownOutlined /> : <UpOutlined />}
+      {collapsed ? <IconChevronDown size={14} /> : <IconChevronUp size={14} />}
     </button>
   )
 }
@@ -243,7 +281,7 @@ function ModuleCard({
       size="small"
       title={
         <>
-          <HolderOutlined className="module-drag-handle" />
+          <IconGrip size={14} className="module-drag-handle" />
           {title}
         </>
       }
@@ -299,8 +337,13 @@ export default function Dashboard() {
   const msgKeyRef = useRef(0)
 
   /* ---------- 图表常量：模块级常量要拿 Token 就得搬进组件，用 useMemo 跟着主题重算 ---------- */
+  /**
+   * 图表配色：AC 用低饱和绿（唯一保留的彩色），「未通过 / 提交量」用中性灰，
+   * 折线（AC 率）用深灰 —— 极简扁平化下图表只保留一个彩色维度，
+   * 其余信息靠明度阶梯区分，避免三色混战。
+   */
   const chartColors = useMemo(
-    () => ({ ac: t.success, failed: t.surface3, attempts: t.info, rate: t.warning }),
+    () => ({ ac: t.chartFillPositive, failed: t.chartNeutral1, attempts: t.chartNeutral2, rate: t.text2 }),
     [t],
   )
   const axisTick = useMemo(() => ({ fontSize: 11.5, fill: t.text3 }), [t])
@@ -310,10 +353,10 @@ export default function Dashboard() {
   const tooltipStyle = useMemo(
     () => ({
       contentStyle: {
-        borderRadius: 10,
+        borderRadius: 12,
         border: `1px solid ${t.line}`,
         background: t.surface2,
-        // 这是 inline style（不是 SVG 表现属性），var() 可用：阴影跟着主题的 --shadow 走
+        // 扁平化：浮层不给投影（亮色下 --shadow 已是 none，暗色保留原有层次）
         boxShadow: 'var(--shadow)',
         fontSize: 12,
       },
@@ -394,7 +437,7 @@ export default function Dashboard() {
             <Button
               type="link"
               size="small"
-              icon={<UndoOutlined />}
+              icon={<IconUndo size={13} />}
               onClick={() => {
                 message.destroy(key)
                 restore()
@@ -699,7 +742,7 @@ export default function Dashboard() {
 
   /** 下拉勾选面板：复用全局同步状态里的账号列表（与「同步状态」卡同源，不额外发请求） */
   const syncPickerContent = (
-    <div style={{ minWidth: 220, maxWidth: 300 }}>
+    <div className="sync-picker-panel" style={{ minWidth: 240, maxWidth: 320 }}>
       <div
         style={{
           display: 'flex',
@@ -764,7 +807,8 @@ export default function Dashboard() {
           placement="left"
         >
           <Button
-            icon={<SyncOutlined spin={syncing} />}
+            type="primary"
+            icon={<IconSync size={15} className={syncing ? 'icon-spin' : undefined} />}
             loading={syncing}
             onClick={() =>
               void doSync(
@@ -785,7 +829,7 @@ export default function Dashboard() {
           trigger={['click']}
           placement="bottomRight"
         >
-          <Button icon={<DownOutlined />} aria-label="选择要同步的账号" />
+          <Button icon={<IconChevronDown size={14} />} aria-label="选择要同步的账号" />
         </Dropdown>
       </Space.Compact>
       <SyncProgressHint />
@@ -847,6 +891,26 @@ export default function Dashboard() {
     ? weak.items.slice(0, 10).map((i) => ({ tag: i.tag, gap: i.evidenceGap ?? i.gap, acRate: i.acRate, attempts: i.attempts, sampleSize: i.evidence?.sampleSize ?? i.attempts }))
     : []
 
+  /**
+   * 「近 4 周 AC 率」相对「总 AC 率」的差值（百分点）—— 一个真正有信息量的对照。
+   *
+   * 为什么不是「与各平台均值比」：AC 率本身就是 ac/attempts，按提交量加权后
+   * 恰好等于总 AC 率，差值恒为 0，属于**看起来有、实际为零**的假指标。
+   * 改成"最近 vs 整体"才有意义：正数 = 近期在进步（绿），负数 = 近期在下滑（橙）。
+   * 样本太小（近期提交 < 10 次）时不显示，避免用噪声给出误导性的红绿结论。
+   */
+  const acDelta = (() => {
+    if (!trend || trend.length === 0 || stats.attempts < 20) return null
+    const recent = trend.slice(-4)
+    const attempts = recent.reduce((s, p) => s + p.attempts, 0)
+    if (attempts < 10) return null
+    const ac = recent.reduce((s, p) => s + p.ac, 0)
+    const recentRate = (ac / attempts) * 100
+    const delta = recentRate - stats.acRate
+    // 差值为 0（或小到读不出意义）时不显示徽章
+    return Math.abs(delta) < 0.5 ? null : delta
+  })()
+
   const trendData = (trend ?? []).map((p) => ({
     week: p.week,
     attempts: p.attempts,
@@ -873,10 +937,9 @@ export default function Dashboard() {
         title="平台分布"
         collapsed={collapsedSet.has('platforms')}
         extra={
-          // 右间距让开绝对定位的键盘排序/折叠控件（它们贴在卡片头部右上角）
-          <span style={{ fontSize: 12, color: 'var(--text-3)', marginRight: HEAD_EXTRA_RESERVE }}>
-            拖动卡片可排序
-          </span>
+          // 右间距让开绝对定位的键盘排序/折叠控件（它们贴在卡片头部右上角）。
+          // 极简重构后这句提示收进 title 属性，卡片头部只留标题，不再有第二行文字抢视线。
+          <span className="card-head-hint" title="拖动卡片头部可排序" aria-hidden="true" />
         }
         onHeadMouseDown={(e) => handleModuleMouseDown(e, 'platforms')}
       >
@@ -884,31 +947,34 @@ export default function Dashboard() {
           {orderedPlatforms.map((p, index) => (
             <div
               key={p.platform}
-              className={`platform-stat-card reorder-host${dragPlatform === p.platform ? ' is-dragging' : ''}`}
+              className={`platform-stat-card reorder-host${dragPlatform === p.platform ? ' is-dragging' : ''}${p.attempts === 0 ? ' is-empty' : ''}`}
               style={{ position: 'relative' }}
               onMouseDown={(e) => handlePlatformMouseDown(e, p.platform)}
               onMouseEnter={() => handlePlatformMouseEnter(p.platform)}
               onMouseUp={handlePlatformMouseUp}
             >
+              {/* 头部：平台名在左，AC 率贴右。
+                  AC 率放这里而不是跟三项主数据并排 —— 它是"比率"，与"计数"不同量纲，
+                  并排会让数值行按内容长度换行，卡片高度就参差不齐了。 */}
               <div className="platform-stat-head">
                 <PlatformTag id={p.platform} />
-                <HolderOutlined className="platform-drag-handle" />
+                {/* AC 率按高低着色：≥50% 绿、30~50% 中性、<30% 橙 —— 一眼看出哪个平台拖后腿 */}
+                <span className={`mono is-rate ${rateClass(p.acRate)}`}>{p.acRate}%</span>
+                <IconGrip size={13} className="platform-drag-handle" />
               </div>
+              {/* 三项主数据：数值大而粗、标签小而灰，一行排开不换行（规范 §2） */}
               <div className="platform-stat-nums">
-                <span>
-                  <strong className="mono">{p.attempts}</strong> 提交
+                <span className="platform-stat-num">
+                  <strong className="mono">{p.attempts}</strong>
+                  <em className="platform-stat-unit">提交</em>
                 </span>
-                <span>
-                  <strong className="mono">{p.ac}</strong> AC
+                <span className="platform-stat-num">
+                  <strong className="mono">{p.ac}</strong>
+                  <em className="platform-stat-unit">AC</em>
                 </span>
-                <span className="mono" style={{ color: rateColor(p.acRate), fontWeight: 600 }}>
-                  {p.acRate}%
-                </span>
-                <span>
-                  <strong className="mono" style={{ color: 'var(--green)' }}>
-                    {p.solved}
-                  </strong>{' '}
-                  已解
+                <span className="platform-stat-num">
+                  <strong className="mono is-solved">{p.solved}</strong>
+                  <em className="platform-stat-unit">已解</em>
                 </span>
               </div>
               <ReorderButtons
@@ -929,18 +995,32 @@ export default function Dashboard() {
         collapsed={collapsedSet.has('difficulty')}
         onHeadMouseDown={(e) => handleModuleMouseDown(e, 'difficulty')}
       >
-        <ResponsiveContainer width="100%" height={280}>
-          <BarChart data={diffData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={gridStroke} />
-            <XAxis dataKey="bucket" tick={axisTick} interval={0} axisLine={false} tickLine={false} />
-            <YAxis allowDecimals={false} tick={axisTick} axisLine={false} tickLine={false} />
+        <ResponsiveContainer width="100%" height={300}>
+          {/* 顶部留 44px 给图例（图例移到顶部右侧后需要额外垂直空间） */}
+          <BarChart data={diffData} margin={{ top: 44, right: 8, left: 0, bottom: 0 }} barCategoryGap="32%">
+            {/* 横向虚线网格已移除（规范：移除或淡化 Y 轴数值与横向虚线网格）。
+                竖向网格本来就没有，这里整块不渲染 CartesianGrid */}
+            <XAxis
+              dataKey="bucket"
+              tick={{ fontSize: 11, fill: t.text3 }}
+              interval={0}
+              axisLine={false}
+              tickLine={false}
+              /* 难度标签紧凑横向排列：不换行、不倾斜，靠缩小字号塞下 */
+              tickMargin={10}
+              height={28}
+            />
+            {/* Y 轴数值同样移除：柱高本身编码了提交量，刻度只增加噪声 */}
             <Tooltip {...tooltipStyle} cursor={chartCursor} />
             <Legend {...LEGEND_STYLE} />
             {/* isAnimationActive={false}：Recharts 的柱体生长动画用 rAF 驱动 SVG 属性插值，
                 每次 load() 刷新都会重播一轮（三张图叠加），期间 GPU 持续重绘。
                 数据概览是「看数」不是「看动效」，直接关掉省一整段合成开销 */}
-            <Bar dataKey="AC" stackId="a" fill={chartColors.ac} radius={[0, 0, 0, 0]} maxBarSize={34} isAnimationActive={false} />
-            <Bar dataKey="未通过" stackId="a" fill={chartColors.failed} radius={[5, 5, 0, 0]} maxBarSize={34} isAnimationActive={false} />
+            {/* 统一小圆角：两段都写 6px 顶角。堆叠时上段（未通过）盖住下段（AC）的圆角，
+                所以看上去仍是"整根柱子一个圆顶"；当未通过为 0 时 AC 独自成柱，
+                圆角正好露出来 —— 两种情况都是圆顶，不会出现半截方头 */}
+            <Bar dataKey="AC" stackId="a" fill={chartColors.ac} radius={[6, 6, 0, 0]} maxBarSize={30} isAnimationActive={false} />
+            <Bar dataKey="未通过" stackId="a" fill={chartColors.failed} radius={[6, 6, 0, 0]} maxBarSize={30} isAnimationActive={false} />
           </BarChart>
         </ResponsiveContainer>
       </ModuleCard>
@@ -952,6 +1032,7 @@ export default function Dashboard() {
         onHeadMouseDown={(e) => handleModuleMouseDown(e, 'weakness')}
       >
         {weakData.length > 0 ? (
+          <>
           <ResponsiveContainer width="100%" height={320}>
             <BarChart data={weakData} layout="vertical" margin={{ top: 8, right: 24, left: 40, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={gridStroke} />
@@ -959,13 +1040,15 @@ export default function Dashboard() {
               <YAxis
                 type="category"
                 dataKey="tag"
-                width={110}
+                width={116}
                 tick={{ fontSize: 12, fill: t.text3 }}
                 axisLine={false}
                 tickLine={false}
+                // 样本不足用尾随的中性圆点标记，不用 emoji：极简界面里彩色 emoji
+                // 会在灰阶图表中跳出来，且与"低饱和"的配色纪律冲突
                 tickFormatter={(tag: string, index: number) => {
                   const d = weakData[index];
-                  return d && d.sampleSize < 5 ? `${tag} ⚠️` : tag;
+                  return d && d.sampleSize < 5 ? `${tag} ·` : tag;
                 }}
               />
               <Tooltip
@@ -983,13 +1066,15 @@ export default function Dashboard() {
               />
               <Bar dataKey="gap" radius={[0, 5, 5, 0]} maxBarSize={16} isAnimationActive={false}>
                 {weakData.map((d) => (
-                  // gapColor() 给的是 var(--*)，Cell 的 fill 走 SVG 表现属性不解析 var()，
-                  // 所以按语义色调名换成当前主题的计算值
-                  <Cell key={d.tag} fill={t[GAP_TONE_BY_VAR[gapColor(d.gap)] ?? 'warning']} />
+                  // 语义色阶：红(>15) / 橙(>5) / 绿(其余)，与全站四色体系一致
+                  <Cell key={d.tag} fill={gapShade(d.gap, t)} />
                 ))}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
+          {/* 图例说明：把「·」的含义写清楚，替代原先坐标轴上的 emoji 警告 */}
+          <p className="chart-caption">· 表示该标签的去重样本不足 5 题，结论仅供参考</p>
+          </>
         ) : (
           <Empty description="暂无足够样本（各标签至少 5 次提交）" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         )}
@@ -1003,12 +1088,7 @@ export default function Dashboard() {
       >
         <ResponsiveContainer width="100%" height={320}>
           <ComposedChart data={trendData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-            <defs>
-              <linearGradient id="rateArea" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={t.warning} stopOpacity={0.25} />
-                <stop offset="100%" stopColor={t.warning} stopOpacity={0} />
-              </linearGradient>
-            </defs>
+            {/* 扁平化：AC 率面积不再用自上而下的渐变，改为单一低透明度实色 */}
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={gridStroke} />
             <XAxis
               dataKey="week"
@@ -1031,7 +1111,8 @@ export default function Dashboard() {
               name="AC 率 %"
               stroke={chartColors.rate}
               strokeWidth={2}
-              fill="url(#rateArea)"
+              fill={chartColors.rate}
+              fillOpacity={0.08}
               isAnimationActive={false}
             />
           </ComposedChart>
@@ -1051,14 +1132,14 @@ export default function Dashboard() {
   }
 
   return (
-    <div>
+    <div className="dash-page">
       <PageHeader
         title="数据概览"
         description="追踪你的训练进度和薄弱环节"
         extra={
           <Space align="start" wrap>
             <AccountScopePicker value={scope} onChange={setScope} />
-            <Button size="small" onClick={restoreDefaultLayout}>
+            <Button icon={<IconReset size={14} />} onClick={restoreDefaultLayout}>
               恢复默认布局
             </Button>
             {syncButton}
@@ -1066,21 +1147,21 @@ export default function Dashboard() {
         }
       />
 
-      {/* 今日聚焦（§5.1）：把「今天去哪练、最近弱在哪、比赛在哪看」提到首屏，降低决策成本。
-          数据源只用本页已经拉到的 weak，不再发新请求 */}
-      <Card size="small" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <span style={{ fontWeight: 600 }}>今日聚焦</span>
-          <Button type="primary" onClick={() => nav('/today')}>
-            今日训练
-          </Button>
-          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+      {/*
+        今日聚焦（§5.1）：把「今天去哪练、最近弱在哪、比赛在哪看」提到首屏，降低决策成本。
+        数据源只用本页已经拉到的 weak，不再发新请求。
+        极简重构后它从「一张带边框的卡」变成页头下的**扁平信息条**：左侧一句提示 +
+        中间弱项读数 + 右侧两个动作，不再占一张卡片的视觉权重（首屏的主角是数据）。
+      */}
+      <section className="focus-strip">
+        <div className="focus-strip-copy">
+          <span className="focus-strip-label">今日聚焦</span>
+          <span className="focus-strip-text">
             最近弱项：
             {focusWeak ? (
               <>
-                <strong style={{ color: 'var(--text)' }}>{focusWeak.tag}</strong>
-                <span style={{ color: gapColor(focusGap), fontWeight: 600 }}>
-                  {' '}
+                <strong className="focus-strip-tag">{focusWeak.tag}</strong>
+                <span className={`focus-strip-gap ${focusGap > 5 ? 'is-warn' : 'is-ok'}`}>
                   补强缺口 {focusGap > 0 ? '+' : ''}
                   {Math.round(focusGap * 10) / 10}
                 </span>
@@ -1092,45 +1173,82 @@ export default function Dashboard() {
               '样本还不够，先多刷几十题'
             )}
           </span>
+        </div>
+        <div className="focus-strip-actions">
+          <Button type="primary" onClick={() => nav('/today')}>
+            今日训练
+          </Button>
           <Button onClick={() => nav('/contests')}>查看赛事中心</Button>
         </div>
-      </Card>
+      </section>
 
       {/* 同步状态：进行中显示逐平台进度；空闲显示上次同步结果（含历史抽屉入口） */}
       <SyncStatusCard />
 
-      <StatStrip
-        items={[
-          { label: '总提交', value: stats.attempts, icon: <SendOutlined />, tone: 'blue' },
-          {
-            label: 'AC 率',
-            value: (
-              <>
-                {stats.acRate.toFixed(1)}
-                <span className="stat-suffix">%</span>
-              </>
-            ),
-            icon: <CheckCircleOutlined />,
-            tone: 'green',
-          },
-          { label: '已解题目', value: stats.solvedProblems, icon: <TrophyOutlined />, tone: 'cyan' },
-          {
-            label: '活跃平台',
-            value: (
-              <>
-                {stats.byPlatform.filter((p) => p.attempts > 0).length}
-                <span className="stat-suffix">个</span>
-              </>
-            ),
-            icon: <RadarChartOutlined />,
-            tone: 'amber',
-          },
-        ]}
-      />
+      {/* 核心指标：四张独立白卡（大留白、无竖线分隔），数值用字号 + 字重拉层级 */}
+      <section className="dash-stats">
+        <StatStrip
+          items={[
+            // 四个指标各自承担一种语义：核心量（蓝）/ 正向率（绿）/ 正向成果（绿）/ 中性规模（黑）
+            {
+              label: '总提交',
+              value: stats.attempts,
+              icon: <IconSend size={16} />,
+              tone: 'blue',
+              valueTone: 'core',
+            },
+            {
+              label: 'AC 率',
+              value: (
+                <>
+                  {stats.acRate.toFixed(1)}
+                  <span className="stat-suffix">%</span>
+                </>
+              ),
+              icon: <IconCheckCircle size={16} />,
+              tone: 'green',
+              valueTone: 'positive',
+              // 与「平台平均 AC 率」的差值：正 = 高于平均（绿），负 = 低于平均（橙）
+              // 徽章语义：近 4 周相对总体的变化（+ 进步 / − 下滑），title 说明口径
+              badge:
+                acDelta === null ? undefined : (
+                  <span
+                    className={`stat-delta ${acDelta >= 0 ? 'is-up' : 'is-down'}`}
+                    title={`近 4 周 AC 率相对总体 ${acDelta >= 0 ? '高' : '低'} ${Math.abs(acDelta).toFixed(1)} 个百分点`}
+                  >
+                    {acDelta >= 0 ? '+' : ''}
+                    {acDelta.toFixed(1)}
+                  </span>
+                ),
+            },
+            {
+              label: '已解题目',
+              value: stats.solvedProblems,
+              icon: <IconTrophy size={16} />,
+              tone: 'cyan',
+              valueTone: 'positive',
+            },
+            {
+              label: '活跃平台',
+              value: (
+                <>
+                  {stats.byPlatform.filter((p) => p.attempts > 0).length}
+                  <span className="stat-suffix">个</span>
+                </>
+              ),
+              icon: <IconRadar size={16} />,
+              tone: 'amber',
+              valueTone: 'neutral',
+            },
+          ]}
+        />
+      </section>
 
       {/* 模块卡片：按住标题栏拖拽可排序，或用头部右上角的按钮键盘排序；
           两条路径都持久化到 localStorage，折叠态单独存一份 */}
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+      {/* gutter：[横向 24, 纵向 32]。纵向就是"三大区块之间的垂直间距"，
+          与 --grid-gap / --section-gap 同源（亮暗共用同一组几何值） */}
+      <Row gutter={[24, 32]} className="dash-grid">
         {orderedModules.map((id, index) => {
           const collapsed = collapsedSet.has(id)
           // 热力图展开态的卡片头带范围切换器，键盘控件右移让开它

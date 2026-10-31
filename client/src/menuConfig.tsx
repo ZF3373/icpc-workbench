@@ -5,20 +5,20 @@
 import type { ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 import {
-  CalendarOutlined,
-  CodeOutlined,
-  DashboardOutlined,
-  FileTextOutlined,
-  FlagOutlined,
-  HeatMapOutlined,
-  InfoCircleOutlined,
-  ReadOutlined,
-  RobotOutlined,
-  ScheduleOutlined,
-  SettingOutlined,
-  ThunderboltOutlined,
-  TagsOutlined,
-} from '@ant-design/icons'
+  IconBolt,
+  IconBook,
+  IconCalendar,
+  IconCalendarCheck,
+  IconCode,
+  IconDashboard,
+  IconDocument,
+  IconFlag,
+  IconGridHeat,
+  IconInfo,
+  IconSliders,
+  IconSparkChat,
+  IconTag,
+} from './components/icons'
 
 export interface MenuMeta {
   key: string
@@ -28,19 +28,19 @@ export interface MenuMeta {
 
 /** 全部菜单项的元数据（key = 路由路径） */
 export const MENU: MenuMeta[] = [
-  { key: '/', icon: <DashboardOutlined />, label: '数据概览' },
-  { key: '/today', icon: <ThunderboltOutlined />, label: '今日训练' },
-  { key: '/ai', icon: <RobotOutlined />, label: 'AI 助手' },
-  { key: '/templates', icon: <CodeOutlined />, label: '模板库' },
-  { key: '/lists', icon: <TagsOutlined />, label: '题单整理' },
-  { key: '/problems', icon: <FileTextOutlined />, label: '题目管理' },
-  { key: '/mastery', icon: <HeatMapOutlined />, label: '掌握度地图' },
-  { key: '/plans', icon: <ScheduleOutlined />, label: '训练计划' },
-  { key: '/calendar', icon: <CalendarOutlined />, label: '日历打卡' },
-  { key: '/reviews', icon: <ReadOutlined />, label: '复习库' },
-  { key: '/contests', icon: <FlagOutlined />, label: '赛事中心' },
-  { key: '/settings', icon: <SettingOutlined />, label: '设置' },
-  { key: '/about', icon: <InfoCircleOutlined />, label: '关于' },
+  { key: '/', icon: <IconDashboard size={17} />, label: '数据概览' },
+  { key: '/today', icon: <IconBolt size={17} />, label: '今日训练' },
+  { key: '/ai', icon: <IconSparkChat size={17} />, label: 'AI 助手' },
+  { key: '/templates', icon: <IconCode size={17} />, label: '模板库' },
+  { key: '/lists', icon: <IconTag size={17} />, label: '题单整理' },
+  { key: '/problems', icon: <IconDocument size={17} />, label: '题目管理' },
+  { key: '/mastery', icon: <IconGridHeat size={17} />, label: '掌握度地图' },
+  { key: '/plans', icon: <IconCalendarCheck size={17} />, label: '训练计划' },
+  { key: '/calendar', icon: <IconCalendar size={17} />, label: '日历打卡' },
+  { key: '/reviews', icon: <IconBook size={17} />, label: '复习库' },
+  { key: '/contests', icon: <IconFlag size={17} />, label: '赛事中心' },
+  { key: '/settings', icon: <IconSliders size={17} />, label: '设置' },
+  { key: '/about', icon: <IconInfo size={17} />, label: '关于' },
 ]
 
 const menuMap = new Map(MENU.map((m) => [m.key, m]))

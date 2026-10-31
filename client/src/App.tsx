@@ -1,6 +1,6 @@
 import { Suspense, lazy, useEffect, useState } from 'react'
 import { Layout, Tooltip } from 'antd'
-import { MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined } from '@ant-design/icons'
+import { IconPanelLeft, IconPanelRight, IconSearch } from './components/icons'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 // 首屏页面保持同步 import：Dashboard 是默认路由，懒加载只会多一次往返
 import Dashboard from './pages/Dashboard'
@@ -105,7 +105,7 @@ export default function App() {
             title={collapsed ? '展开侧栏' : '收起侧栏'}
             onClick={() => setCollapsed((c) => !c)}
           >
-            {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+            {collapsed ? <IconPanelRight size={16} /> : <IconPanelLeft size={16} />}
           </button>
           {!collapsed && (
             <button
@@ -114,7 +114,7 @@ export default function App() {
               title="全局搜索（Ctrl/⌘ + K）"
               onClick={() => setPaletteOpen(true)}
             >
-              <SearchOutlined />
+              <IconSearch size={14} />
               <span>搜索</span>
               <kbd>⌘K</kbd>
             </button>
@@ -125,7 +125,9 @@ export default function App() {
           </span>
         </div>
       </Sider>
-      <Content className="app-content" style={{ padding: '20px 24px 24px', background: 'transparent' }}>
+      {/* 内边距与底色统一交给 index.css 的 .app-content（亮色极简版需要更大的留白，
+          内联 style 会盖掉主题样式，所以这里不再写死 padding） */}
+      <Content className="app-content">
         <UpdateChecker />
         <div className="content-container page-content" key={loc.pathname}>
           {/* Suspense 放 key 容器内层：切路由时 key 先强制重挂载，再按新页面 chunk 加载显示骨架 */}

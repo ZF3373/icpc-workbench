@@ -1,6 +1,10 @@
 /* ============================================================
    ICPC Workbench · 全局设计系统
-   参考 cf-compass 暗色工作台风格：深空底色 + 雾蓝主色 + CF 段位色
+   ------------------------------------------------------------
+   两套主题共用一套 Token 名，值分别落在 :root（暗色）与亮色主题覆盖块：
+     · 暗色 = 极简现代扁平化：中性深灰/纯黑四级底色阶梯 + 亮紫蓝强调 + 霓虹绿图表
+     · 亮色 = 极简现代扁平化：纯白/浅灰白 + 黑白高对比 + 低饱和绿图表
+   结构层（圆角、留白、字号字重、零投影）在文件末尾集中一处，亮暗共用。
    ============================================================ */
 
 :root {
@@ -8,37 +12,63 @@
   --app-viewport-height: calc(100vh / var(--app-zoom));
   --app-viewport-width: calc(100vw / var(--app-zoom));
   color-scheme: dark;
-  --bg: #111318;
-  --bg-elevated: #15181e;
-  --surface: #181b22;
-  --surface-2: #1d212a;
-  --surface-3: #242a34;
-  --line: #2a3039;
-  --line-soft: #222831;
-  --text: #f5f7fb;
-  --text-2: #c4cad4;
-  --text-3: #8993a2;
+  /* ============================================================
+     极简现代扁平化 · 暗色基底（本块同时是暗色主题的唯一色值来源）
+     ------------------------------------------------------------
+     底色是**中性深灰 → 纯黑**的四级明度阶梯，刻意不带蓝调：
+       内容区 #0d0d0f → 侧栏 #141416 → 卡片 #1a1a1d → 卡片内嵌块 #212124
+     层次只靠这四级底色的明度差表达，**既不靠描边也不靠投影**；
+     --line / --line-soft 只留给"必须有边界"的控件（输入框、表格、分隔线）。
+     ============================================================ */
+  --bg: #0d0d0f;
+  --bg-elevated: #141416;
+  --surface: #1a1a1d;
+  --surface-2: #212124;
+  --surface-3: #2a2a2e;
+  --line: #26262a;
+  --line-soft: #202024;
+  --text: #f6f7f9;
+  --text-2: #c6cad2;
+  --text-3: #8b909a;
   /* 空值占位 / 装饰性图标（拖拽把手等）：比 --text-3 更弱，不用于承载正文信息 */
-  --text-dim: #5b6573;
-  --brand: #86a8ff;
-  --brand-strong: #7497f5;
-  --brand-soft: rgba(134, 168, 255, 0.13);
-  --brand-line: rgba(134, 168, 255, 0.45);
-  --green: #69d7a5;
-  --amber: #f2c46d;
-  --red: #ff7b84;
-  /* 语义底色/描边：浅色徽标与「下一档建议」卡片等（原先是 antd 亮色预设 hex，暗色下刺眼） */
-  --green-soft: rgba(105, 215, 165, 0.12);
-  --green-line: rgba(105, 215, 165, 0.45);
-  --amber-soft: rgba(242, 196, 109, 0.12);
-  --danger-soft: rgba(255, 123, 132, 0.12);
-  --violet-soft: rgba(181, 125, 255, 0.13);
-  --info-soft: rgba(75, 134, 217, 0.13);
-  --cyan-soft: rgba(69, 213, 229, 0.12);
+  --text-dim: #5c6068;
+  /* 强调色 = 亮紫蓝。同一个色相拆成两个明度，因为"当文字读"和"当底衬白字"
+     对明度的要求正好相反，合成一个值必然有一边不达标：
+       --brand        文字 / 图标 / 描边（对卡片底 7.38:1）
+       --brand-fill   实心按钮底（白字 5.03:1） */
+  --brand: #9aa1ff;
+  --brand-strong: #b3b8ff;
+  --brand-soft: rgba(154, 161, 255, 0.14);
+  --brand-line: rgba(154, 161, 255, 0.45);
+  --brand-fill: #4c55ee;
+  --brand-fill-hover: #5b62f5;
+  --brand-fill-active: #434ae0;
+  --green: #4fd18b;
+  --amber: #f0c274;
+  --red: #ff8b93;
+  /* 语义底色/描边：低饱和度暗色点缀（标签底），叠在卡片上只留一层极淡色晕 */
+  --green-soft: rgba(79, 209, 139, 0.13);
+  --green-line: rgba(79, 209, 139, 0.42);
+  --amber-soft: rgba(240, 194, 116, 0.13);
+  --danger-soft: rgba(255, 139, 147, 0.13);
+  --violet-soft: rgba(154, 161, 255, 0.14);
+  --info-soft: rgba(127, 176, 255, 0.13);
+  --cyan-soft: rgba(79, 209, 139, 0.13);
   /* 图表专用 Token：recharts 把颜色写进 SVG 属性，必须取计算后的具体色值（见 ui.ts useTokenColors） */
-  --chart-grid: rgba(255, 255, 255, 0.06);
-  --chart-cursor: rgba(134, 168, 255, 0.05);
-  /* CF 段位色：与 Codeforces 官方段位色同色相、按各自底色校准可读性的版本 */
+  --chart-grid: rgba(255, 255, 255, 0.07);
+  --chart-cursor: rgba(154, 161, 255, 0.07);
+  /* 图表中性色阶（明度阶梯，用于"未通过 / 提交量"这类次级数据） */
+  --chart-neutral-1: #3a3d45;
+  --chart-neutral-2: #52565f;
+  /* 图表绿色明度阶梯：暗色下的**霓虹绿**三档（相邻档明度差 ≥ 0.15，热力图"哪几天在练"一眼可辨） */
+  --chart-green-soft: #1b8552;
+  --chart-green-mid: #2fc47f;
+  --chart-green-deep: #66f2ab;
+  --chart-fill-positive: #35d08a;
+  --chart-fill-warn: #d9a05c;
+  --chart-fill-danger: #e07a6f;
+  --chart-fill-core: #7f9dd6;
+  /* CF 段位色：与 Codeforces 官方段位色同色相、按暗底提亮到可读 */
   --cf-new: #aab6c2;
   --cf-pupil: #55d990;
   --cf-specialist: #45d5e5;
@@ -48,86 +78,74 @@
   --cf-gm: #ff5d70;
   --radius: 14px;
   --radius-sm: 10px;
-  --shadow: 0 18px 48px rgba(0, 0, 0, 0.2);
-  --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.04), 0 8px 22px rgba(0, 0, 0, 0.16);
-  --bg-glow-1: rgba(134, 168, 255, 0.1);
-  --bg-glow-2: rgba(69, 213, 229, 0.05);
+  /* 彻底扁平：暗色下同样不留任何投影（大量组件以 var(--shadow) 取用，一处关掉） */
+  --shadow: none;
+  --shadow-sm: none;
   --font:
     'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'PingFang SC',
     'Microsoft YaHei UI', sans-serif;
-  --sider-bg: #12151a;
-  --sider-hover-bg: #20242c;
-  --sider-group-title: #6d7684;
-  --sider-border: #2c323d;
-  --scrollbar-thumb: #263545;
-  --scrollbar-thumb-hover: #31435a;
-  --surface-inset: #101318;
-  --hover-bg: #20242c;
-  --item-border: #2c323d;
-  --item-hover-border: #3a424f;
+  --sider-bg: #17171a;
+  --sider-hover-bg: #232327;
+  --sider-group-title: #6b7078;
+  --sider-border: #26262a;
+  --scrollbar-thumb: #2c2c31;
+  --scrollbar-thumb-hover: #3a3a41;
+  --surface-inset: #141416;
+  --hover-bg: #232327;
+  --item-border: #26262a;
+  --item-hover-border: #38383f;
   --brand-text: #b9c8ff;
-  --brand-mute: #7f91c7;
-  --accent-blue: #89bfff;
-  --accent-violet: #cda6ff;
-  --text-on-brand: #10141e;
+  --brand-mute: #8f95c7;
+  --accent-blue: #7fb0ff;
+  --accent-violet: #b3b8ff;
+  --text-on-brand: #10101a;
   --logo-badge-bg: #91adff;
   --pitfall: #e8b4a4;
-  /* Markdown 重点着色专用（暗色）。暗色下 --amber / --brand-text 本身就达标
-     （7.55:1 / 9.80:1，见 test/contrastCheck.mjs），这里显式成对声明，
-     让"重点色"在两套主题里都有单一来源，不依赖某个 Token 恰好也够深。 */
-  --mark-text: #f2c46d;
-  --strong-text: #b9c8ff;
-  /* 代码编辑器配色（CodeEditor.tsx 消费），亮暗两套均按各自底色校准对比度 */
-  --code-text: #d8e0ee;
-  --code-gutter: #5b6472;
-  --code-keyword: #7497f5;
-  --code-control: #c792ea;
-  --code-func: #86a8ff;
-  --code-const: #f2c46d;
+  /* Markdown 重点着色专用（暗色）。成对声明，让"重点色"在两套主题里都有单一来源 */
+  --mark-text: #f0c274;
+  --strong-text: #b3b8ff;
+  /* 代码编辑器配色（CodeEditor.tsx 消费），按暗色底校准对比度 */
+  --code-text: #d8dbe4;
+  --code-gutter: #5b6068;
+  --code-keyword: #9aa1ff;
+  --code-control: #c79aff;
+  --code-func: #8fb4ff;
+  --code-const: #f0c274;
   --code-type: #5ad4e6;
-  --code-operator: #69d7a5;
-  --code-comment: #8993a2;
-  --code-invalid: #ff7b84;
-  /* Markdown 代码卡语法高亮（rehype-highlight / highlight.js）。
-     关键字/类型/函数/注释/运算符直接复用上面 CodeEditor 的 --code-*，
-     保证「编辑器里看到的颜色」和「AI 回答里看到的颜色」是同一套 */
-  --hl-string: #98c379;
-  --hl-variable: #d8e0ee;
+  --code-operator: #4fd18b;
+  --code-comment: #8b909a;
+  --code-invalid: #ff8b93;
+  /* Markdown 代码卡语法高亮（rehype-highlight / highlight.js） */
+  --hl-string: #a3d98a;
+  --hl-variable: #d8dbe4;
   --hl-tag: #ff8b93;
-  /* 语义强调色：亮/暗各一套（原先只有 --green/--amber/--red，蓝紫青三色在多处直接写死 hex） */
-  --blue: #58a3ff;
-  --violet: #c080ff;
-  --cyan: #45d5e5;
-  --accent-bg: rgba(88, 163, 255, 0.12);
-  /* 连接状态点光晕（.conn-dot-*）：与 --green/--red/--blue 同色系的低透明度外环 */
-  --ring-ok: rgba(105, 215, 165, 0.18);
-  --ring-fail: rgba(255, 123, 132, 0.18);
-  --ring-checking: rgba(88, 163, 255, 0.18);
-  /* 半透明叠层：必须给出具体值。曾经写成 --overlay-1: var(--overlay-1) 自引用，
-     暗色下真实值未定义 → var(--overlay-1) 整条声明失效（.rating-pill 底色丢失） */
+  /* 语义强调色 */
+  --blue: #7fb0ff;
+  --violet: #b3b8ff;
+  --cyan: #4fd18b;
+  --accent-bg: rgba(127, 176, 255, 0.12);
+  /* 核心数据的强调色：只给"最重要的一两个大数字"用，不铺到控件上 */
+  --accent-core: #a8b0ff;
+  --accent-core-soft: rgba(154, 161, 255, 0.14);
+  /* 连接状态点光晕（.conn-dot-*）：扁平化下不投影，这几个环只作残留兼容 */
+  --ring-ok: rgba(79, 209, 139, 0.18);
+  --ring-fail: rgba(255, 139, 147, 0.18);
+  --ring-checking: rgba(154, 161, 255, 0.18);
+  /* 半透明叠层：必须给出具体值（曾经写成自引用导致整条声明失效） */
   --overlay-1: rgba(255, 255, 255, 0.02);
   --overlay-2: rgba(255, 255, 255, 0.04);
   --overlay-3: rgba(255, 255, 255, 0.06);
-  /* 平台色点内描边：暗色底用浅色环把色点从背景里"切"出来（原先亦为自引用，未定义） */
+  /* 平台色点内描边：暗色底用浅色环把色点从背景里"切"出来 */
   --marker-ring: rgba(255, 255, 255, 0.16);
-  /* 动效 Token：交互过渡时长三档 + 结构morph一档，亮暗主题共用（时长与主题无关）。
-     档位沿用既有实测值：120 / 140 / 200 / 400ms；原先散落的 130/150/160/450ms
-     归并到最近档（±20ms，不可感知）。关键帧动画时长（骨架呼吸、流光、pageFadeIn）
-     与进度条填充宽度（.ant-progress-bg 的 0.6s，刻意放慢的结构动画）不收编，保留字面量。
-     缓动统一用 material standard 曲线；只调不透明度/颜色的合成器友好过渡同样适用 */
+  /* 动效 Token：交互过渡时长三档 + 结构 morph 一档，亮暗主题共用（时长与主题无关） */
   --dur-1: 120ms;
   --dur-2: 140ms;
   --dur-3: 200ms;
   --dur-4: 400ms;
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
-  /* Markdown 链接文字专用：亮色下 --brand(#6b8eef) 在 surface 上只有 ~2.7:1，
-     远低于 AA；链接需要比 --brand 更深的一档，且不能复用 --strong-text（语义不同，
-     将来可能分道）。暗色与 --brand 同值（7.4:1），亮色按 surface/surface-2 校准 ≥4.5:1。
-     见 .markdown-body a 与 test/contrastCheck.mjs 的「Markdown 链接」条目 */
-  --link-text: #86a8ff;
-  /* 间距尺度（4px 基准）：新写/改动的样式一律从这里取值，存量不批量迁移
-     （数千处 px 的等值替换 diff 巨大而用户不可见，收益为负；纪律见 docs/UI-优化实施计划.md 阶段4）。
-     20px 等既有偏离值保留字面量并在原地注释，不做强行归档 */
+  /* Markdown 链接文字专用：与 --brand 同值（对 surface-2 6.74:1） */
+  --link-text: #9aa1ff;
+  /* 间距尺度（4px 基准） */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -136,103 +154,183 @@
   --space-6: 32px;
   --space-7: 48px;
   --space-8: 64px;
+  /* ============================================================
+     结构层专用 Token（与主题无关的"颜色角色"，两种主题各给一套值）
+     ------------------------------------------------------------
+     极简扁平化要求"用背景色阶而非边框/阴影划分区域"，所以卡片的边框
+     在暗色下是 **transparent**（层次由 #0d0d0f → #141416 → #1a1a1d → #212124
+     四级底色差承担），亮色下才用 1px 浅灰描边（白卡叠白底没有色阶可用）。
+     ============================================================ */
+  --card-border: transparent;
+  --card-hover-border: #303036;
+  /* 导航选中态：实心高亮色 + 反白字 */
+  --nav-selected-bg: #4c55ee;
+  --nav-selected-fg: #ffffff;
+  --text-on-fill: #ffffff;
+  /* 分段控件选中块：比轨道亮一档 */
+  --seg-selected-bg: #2f2f35;
+  /* 模态遮罩 */
+  --mask-bg: rgba(0, 0, 0, 0.62);
+  /* 热力图空格：必须比第一档绿明显更淡，否则"没练"和"练了一点"分不开 */
+  --heatmap-empty: #26262b;
+  /* ============================================================
+     排版尺度 Token（几何值，两种主题**完全一致**）
+     ------------------------------------------------------------
+     这一组只有尺寸没有颜色：圆角、内边距、区块间距。
+     亮暗两套主题都写同一组值，保证"仅切换色彩变量、排版结构不变"。
+     ============================================================ */
+  --card-radius: 18px;
+  --card-pad: 24px;
+  /* 三大区块（热力图 / 平台分布 / 难度分布）之间的垂直间距 */
+  --section-gap: 32px;
+  /* 卡片网格的 gutter（与 --section-gap 分开：前者是块间、后者是卡间） */
+  --grid-gap: 24px;
+  /* 内嵌卡（平台卡片）统一尺寸，保证网格规整 */
+  --tile-radius: 14px;
+  --tile-pad: 18px;
 }
 
-/* 亮色主题变量覆盖 —— 柔和灰蓝调，避免大面积纯白刺眼 */
+/* 亮色主题变量覆盖 —— 极简现代扁平化：纯白 + 浅灰白底，黑白高对比度强调，低饱和绿保留给图表 */
 [data-theme='light'] {
   color-scheme: light;
-  --bg: #e7ebf1;
-  --bg-elevated: #f2f4f8;
-  --surface: #f6f8fb;
-  --surface-2: #edf0f5;
-  --surface-3: #e2e7ee;
-  --line: #d3d9e3;
-  --line-soft: #e4e8ef;
-  --text: #23272f;
-  --text-2: #4a5260;
-  /* #8993a2 在 #f6f8fb 上只有 2.9:1，未达 WCAG AA 正文 4.5:1；改为 4.8:1 */
-  --text-3: #656e7e;
-  --text-dim: #9aa3b1;
-  --brand: #6b8eef;
-  --brand-strong: #5a7de0;
-  --brand-soft: rgba(107, 142, 239, 0.1);
-  --brand-line: rgba(107, 142, 239, 0.45);
-  --green: #2ba77e;
-  --amber: #d4961e;
-  --red: #e5505a;
-  --green-soft: rgba(43, 167, 126, 0.1);
-  --green-line: rgba(43, 167, 126, 0.45);
-  --amber-soft: rgba(212, 150, 30, 0.12);
-  --danger-soft: rgba(229, 80, 90, 0.1);
-  --violet-soft: rgba(122, 79, 208, 0.1);
-  --info-soft: rgba(47, 111, 181, 0.1);
-  --cyan-soft: rgba(10, 116, 136, 0.1);
-  --chart-grid: rgba(0, 0, 0, 0.07);
-  --chart-cursor: rgba(107, 142, 239, 0.06);
-  --cf-new: #6b7484;
+  /* 底色：内容区浅灰白，卡片纯白。两层之间的差别只靠 1px 描边与留白区分，不用阴影 */
+  --bg: #f4f5f6;
+  --bg-elevated: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f6f6f7;
+  --surface-3: #f0f0f1;
+  --line: #e8e8ea;
+  --line-soft: #f0f0f2;
+  --text: #111111;
+  --text-2: #3f4247;
+  /* 辅助文字/标签：中性浅灰（在白底与 --surface-2 上都 ≥ 4.5:1，仍读作"浅灰"） */
+  --text-3: #6b6e73;
+  --text-dim: #b4b7bb;
+  /* 强调色 = 纯黑：主按钮、选中态、核心图标全部走黑白，不再引入品牌蓝 */
+  --brand: #111111;
+  --brand-strong: #000000;
+  --brand-soft: rgba(17, 17, 17, 0.06);
+  --brand-line: rgba(17, 17, 17, 0.18);
+  /* ============================================================
+     语义化强调色（亮色极简版的核心设计决策）
+     ------------------------------------------------------------
+     界面主体是纯白 + 浅灰白的无彩底，颜色只承担"读数据"的职责，
+     所以只保留四个语义槽位，每个槽位有「文字色 / 浅底 / 描边」三件套：
+       · 正向（AC 率、已解题目、平台健康）→ 低饱和绿
+       · 警示（补强缺口、待办、样本不足）→ 柔和橙
+       · 危险（失败、鉴权失效）        → 柔和红
+       · 核心强调（总提交等关键大数字）→ 品牌蓝
+     全部在白底上 ≥ 4.5:1（见 test/contrastCheck.mjs），在各自的浅底上也 ≥ 4.5:1。
+     ============================================================ */
+  --green: #2f7a58;
+  --amber: #9e5a2a;
+  --red: #b0453c;
+  --blue: #1b4a94;
+  /* 浅底：用作标签/徽章背景，白底上极淡（<1.2:1），文字压上去仍有 4.5:1 */
+  --green-soft: #eaf3ee;
+  --amber-soft: #fdf1ea;
+  --danger-soft: #fbedeb;
+  --info-soft: #edf2f9;
+  --green-line: rgba(47, 122, 88, 0.28);
+  --violet-soft: rgba(17, 17, 17, 0.06);
+  --cyan-soft: #eaf3ee;
+  /* 核心数据的强调色（品牌蓝）：只给"最重要的一两个大数字"用，不铺到控件上 */
+  --accent-core: #1b4a94;
+  --accent-core-soft: #edf2f9;
+  /* 图表填充专用：比上面的"文字色"更柔一档（明度更高、饱和度更低），
+     因为柱体是大面积色块，用文字色会显得刺眼。柱体只需 2.5:1 即可辨认，
+     文字仍走上面的 --green/--amber/--red（≥4.5:1）。 */
+  --chart-fill-positive: #5f9d7e;
+  --chart-fill-warn: #d08a5c;
+  --chart-fill-danger: #c9705f;
+  --chart-fill-core: #6b8cbb;
+  --chart-grid: rgba(17, 17, 17, 0.07);
+  --chart-cursor: rgba(17, 17, 17, 0.03);
+  /* 图表中性色阶：白底上要看得见又不抢 AC 的绿，取浅中灰两档 */
+  --chart-neutral-1: #e4e5e7;
+  --chart-neutral-2: #bcbec2;
+  /* 图表绿色明度阶梯（亮色：低饱和灰绿三档，与热力图同色系） */
+  --chart-green-soft: #8fc0a8;
+  --chart-green-mid: #5f9d7e;
+  --chart-green-deep: #2f7a58;
+  --cf-new: #6b6e73;
   --cf-pupil: #1b8a5a;
   --cf-specialist: #0a7488;
   --cf-expert: #2f6fb5;
   --cf-cm: #7a4fd0;
   --cf-master: #9a6a12;
   --cf-gm: #c0392b;
-  --shadow: 0 18px 48px rgba(30, 40, 60, 0.1);
-  --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.72), 0 8px 22px rgba(30, 40, 60, 0.07);
-  --bg-glow-1: rgba(107, 142, 239, 0.12);
-  --bg-glow-2: rgba(10, 116, 136, 0.05);
-  --sider-bg: #eef1f6;
-  --sider-hover-bg: #e3e8ef;
-  --sider-group-title: #9ba3b0;
-  --sider-border: #dde2ea;
-  --scrollbar-thumb: #c0c7d3;
-  --scrollbar-thumb-hover: #a4adbb;
-  --surface-inset: #eaedf3;
-  --hover-bg: #e7ebf2;
-  --item-border: #d8dee7;
-  --item-hover-border: #b9c2cf;
-  --brand-text: #5a7de0;
-  --brand-mute: #8e9dc4;
-  --accent-blue: #4a8ed9;
-  --accent-violet: #9b6dd9;
+  /* 彻底扁平：不保留任何投影（大量组件以 var(--shadow) 取用，这里一处关掉） */
+  --shadow: none;
+  --shadow-sm: none;
+  /* 背景不铺任何渐变/光晕 */
+  /* 侧栏：纯白浮起，靠 1px 描边与内容区区分 */
+  --sider-bg: #ffffff;
+  --sider-hover-bg: #f2f2f3;
+  --sider-group-title: #a2a5a9;
+  --sider-border: #ececee;
+  --scrollbar-thumb: #d8d8db;
+  --scrollbar-thumb-hover: #c2c2c6;
+  --surface-inset: #f6f6f7;
+  --hover-bg: #f2f2f3;
+  --item-border: #e8e8ea;
+  --item-hover-border: #c9c9cd;
+  --brand-text: #111111;
+  --brand-mute: #6b6e73;
+  --accent-blue: #1b4a94;
+  --accent-violet: #3f4247;
   --text-on-brand: #ffffff;
-  --logo-badge-bg: #7497f5;
-  --pitfall: #c87560;
-  /* Markdown 重点着色专用（亮色）。
-     不能复用 --amber(#d4961e) / --brand-text(#5a7de0)：这两个是给图表角标与
-     大字号标题调的，放到 13px 正文的淡色底上对比度只有 2.05:1 / 3.38:1，
-     低于 WCAG AA 的 4.5:1（实测见 test/contrastCheck.mjs）。
-     这里给正文重点单独取更深的一档：高亮文字 5.44:1、粗体文字 5.16:1。 */
+  --logo-badge-bg: #91adff;
+  --pitfall: #a86a55;
+  /* Markdown 重点着色专用（亮色）。正文重点必须过 AA，故取深色档，不走品牌色 */
   --mark-text: #7a4f00;
-  --strong-text: #3d5cc8;
-  /* 亮色链接：--brand(#6b8eef) 在 #f6f8fb 上只有 ~2.69:1（AA 要求 4.5:1），
-     取更深一档蓝：surface 上 5.75:1、surface-2 上 5.35:1。与暗色 --link-text 成对声明 */
-  --link-text: #3a5bc0;
-  /* 亮色代码配色：相对 --surface-inset(#eaedf3) 校准对比度（正文/主要记号 ≥ 4.5:1） */
-  --code-text: #23272f;
-  --code-gutter: #98a1b0;
+  --strong-text: #111111;
+  /* 链接：纯黑 + 下划线，极简界面里不再用蓝色链接 */
+  --link-text: #111111;
+  /* 亮色代码配色：相对 --surface-inset(#f6f6f7) 校准对比度（正文/主要记号 ≥ 4.5:1） */
+  --code-text: #111111;
+  --code-gutter: #9aa0a6;
   --code-keyword: #3d5cc8;
   --code-control: #8a4fc0;
   --code-func: #2b6cb8;
   --code-const: #8a6009;
   --code-type: #0a7488;
   --code-operator: #1b7154;
-  --code-comment: #6b7484;
+  --code-comment: #6b6e73;
   --code-invalid: #b8353f;
-  /* 亮色高亮：相对 --surface-inset(#eaedf3) 校准对比度 */
+  /* 亮色高亮：相对 --surface-inset 校准对比度 */
   --hl-string: #2a7d4f;
   --hl-variable: #3f4757;
   --hl-tag: #b0322a;
-  --blue: #2f6fb5;
-  --violet: #8a4fc0;
-  --cyan: #0a7488;
-  --accent-bg: rgba(47, 111, 181, 0.1);
-  --ring-ok: rgba(43, 167, 126, 0.2);
-  --ring-fail: rgba(229, 80, 90, 0.2);
-  --ring-checking: rgba(47, 111, 181, 0.2);
-  --overlay-1: rgba(0, 0, 0, 0.02);
-  --overlay-2: rgba(0, 0, 0, 0.04);
-  --overlay-3: rgba(0, 0, 0, 0.06);
-  --marker-ring: rgba(0, 0, 0, 0.15);
+  --violet: #5b5f66;
+  --cyan: #2f7a58;
+  --accent-bg: rgba(27, 74, 148, 0.07);
+  --ring-ok: rgba(47, 122, 88, 0.2);
+  --ring-fail: rgba(176, 69, 60, 0.2);
+  --ring-checking: rgba(17, 17, 17, 0.1);
+  --overlay-1: rgba(0, 0, 0, 0.015);
+  --overlay-2: rgba(0, 0, 0, 0.03);
+  --overlay-3: rgba(0, 0, 0, 0.05);
+  --marker-ring: rgba(0, 0, 0, 0.12);
+  /* 结构层专用 Token（亮色一套）—— 白卡叠白底没有色阶可用，只能靠 1px 描边 */
+  --card-border: #e8e8ea;
+  --card-hover-border: #dcdcdf;
+  --nav-selected-bg: #111111;
+  --nav-selected-fg: #ffffff;
+  --brand-fill: #111111;
+  --brand-fill-hover: #000000;
+  --brand-fill-active: #000000;
+  --text-on-fill: #ffffff;
+  --seg-selected-bg: #ffffff;
+  --mask-bg: rgba(17, 17, 17, 0.24);
+  --heatmap-empty: #f0f0f2;
+  /* 排版尺度：与暗色**逐项相同**（这组是几何值，不该随主题变） */
+  --card-radius: 18px;
+  --card-pad: 24px;
+  --section-gap: 32px;
+  --grid-gap: 24px;
+  --tile-radius: 14px;
+  --tile-pad: 18px;
 }
 
 html {
@@ -244,10 +342,7 @@ body {
   margin: 0;
   font-family: var(--font);
   background-color: var(--bg);
-  background-image:
-    radial-gradient(1100px 540px at 0% -12%, var(--bg-glow-1), transparent 58%),
-    radial-gradient(880px 460px at 100% 0%, var(--bg-glow-2), transparent 52%);
-  background-attachment: fixed;
+  /* 极简扁平化：底色是纯色，不铺任何光晕/渐变 */
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -949,45 +1044,19 @@ body {
    自身高度条带（200% 宽）在元素内左右滑动。background-position 动画每帧
    都要重新栅格化整块渐变再提交纹理（GPU 进程持续高占用的元凶之一），
    transform 平移由合成器插值，帧成本低几个量级，视觉上无差别 */
-@keyframes shimmer {
-  0% {
-    transform: translateX(-50%);
-  }
-  100% {
-    transform: translateX(50%);
-  }
-}
-
+/* 极简扁平化：AI 标记不再走流光渐变（动画渐变是典型的"拟物质感"），
+   改为实心高亮底 + 反白字，靠色块本身而不是动效来区分 */
 .ai-tag-shimmer {
   position: relative;
-  color: var(--text-on-brand) !important;
+  color: var(--text-on-fill) !important;
   border: none !important;
   font-weight: 600;
-  background: var(--brand);
+  background: var(--brand-fill);
   overflow: hidden;
-  isolation: isolate;
-}
-
-.ai-tag-shimmer::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  width: 200%;
-  background: linear-gradient(
-    90deg,
-    var(--brand-strong) 0%,
-    var(--brand) 25%,
-    var(--brand-text) 50%,
-    var(--brand) 75%,
-    var(--brand-strong) 100%
-  );
-  animation: shimmer 3s linear infinite;
-  will-change: transform;
 }
 
 .gradient-progress .ant-progress-bg {
-  background: linear-gradient(90deg, var(--brand-strong), var(--brand)) !important;
+  background: var(--brand-fill) !important;
 }
 
 /* ============================================================
@@ -1210,8 +1279,12 @@ body {
 .taxonomy-item.is-active {
   color: var(--text);
   border-color: var(--brand-strong);
+  /* 左侧 3px 指示条：用 border-left 而不是 inset 内阴影 ——
+     视觉等价，但不产生任何 box-shadow（扁平化审计口径统一） */
+  border-left: 3px solid var(--brand);
+  /* 基础 padding 是 0 9px，左侧多出的 2px 边框用 padding 找平，内容不位移 */
+  padding-left: 7px;
   background: var(--brand-soft);
-  box-shadow: inset 3px 0 0 var(--brand);
 }
 
 .taxonomy-item__marker {
@@ -2553,13 +2626,13 @@ button.dist-row:hover {
   background: var(--surface-3);
 }
 .indent-switch-option.is-active {
-  background: var(--brand);
-  color: var(--text-on-brand);
-  box-shadow: 0 1px 4px var(--brand-line);
+  background: var(--brand-fill);
+  color: var(--text-on-fill);
+  box-shadow: none;
 }
 .indent-switch-option.is-active:hover {
-  color: var(--text-on-brand);
-  background: var(--brand);
+  color: var(--text-on-fill);
+  background: var(--brand-fill-hover);
 }
 .indent-switch-option:focus-visible {
   outline: 2px solid var(--brand);
@@ -2716,7 +2789,7 @@ button.dist-row:hover {
   border: 1px solid var(--line-soft);
   border-left: 2px solid var(--brand-line);
   border-radius: 0 10px 10px 0;
-  background: linear-gradient(90deg, var(--brand-soft), transparent 72%);
+  background: var(--brand-soft);
 }
 
 .template-doc-outline .template-doc-label {
@@ -3070,12 +3143,10 @@ button.dist-row:hover {
   height: 5px;
   border-radius: 50%;
   background: var(--brand);
-  box-shadow: 0 0 0 3px var(--brand-soft);
 }
 
 .template-writer-pane.is-preview .template-writer-pane-title::before {
   background: var(--green);
-  box-shadow: 0 0 0 3px var(--green-soft);
 }
 
 .template-writer-pane-meta {
@@ -3136,7 +3207,7 @@ button.dist-row:hover {
 }
 
 .template-writer-preview-scroll .template-doc-outline {
-  background: linear-gradient(90deg, var(--brand-soft), transparent 80%);
+  background: var(--brand-soft);
 }
 
 /* fill 编辑器：父级已有确定高度时撑满，滚动交给 .cm-scroller */
@@ -5869,4 +5940,1218 @@ html.app-hidden *::after {
   .contest-analysis-tag-select {
     grid-column: auto;
   }
+}
+
+/* ============================================================
+   极简现代扁平化 · 结构层（亮/暗共用）
+   ------------------------------------------------------------
+   这一层只放**与主题无关**的东西：圆角、留白、字号字重、层级、零投影。
+   颜色一律走 index.css 顶部的 Token（:root 暗色 / [data-theme='light'] 亮色），
+   所以同一份规则在两种主题下各自呈现正确配色，不需要写两遍。
+
+   三条硬性纪律（设计指令）：
+   1. 彻底扁平：投影、渐变、拟物纹理全部为 0（--shadow 在 Token 里就是 none，背景是纯色）；
+   2. 区域靠**背景色阶**划分，不靠边框 —— 卡片边框走 --card-border，
+      暗色下该 Token 是 transparent，亮色下是 1px 浅灰；
+   3. 全界面统一平滑圆角：侧栏 20 / 卡片 18 / 内嵌块 14 / 控件 10 / 标签 8。
+   ============================================================ */
+
+body {
+  /* 扁平化：底色纯色，不铺任何径向光晕 */
+  background-image: none;
+  background-color: var(--bg);
+  font-feature-settings: 'ss01' on, 'cv05' on;
+  letter-spacing: 0.005em;
+}
+
+/* ---------- 布局骨架：更大的留白 ---------- */
+
+.app-content {
+  /* 左侧 28px：侧栏已自带 12px 外边距，视觉间距与右侧 40px 对齐 */
+  padding: 32px 40px 56px 28px;
+}
+
+.content-container {
+  max-width: 1320px;
+}
+
+/* ---------- 卡片：大圆角、零阴影，层次靠底色阶梯 ---------- */
+
+.ant-card {
+  background: var(--surface);
+  border: 1px solid var(--card-border);
+  /* 全站统一圆角：所有卡片容器同一档，不再分大小卡 */
+  border-radius: var(--card-radius);
+  box-shadow: none;
+  transition: border-color var(--dur-3) var(--ease-standard);
+}
+
+/* 卡片 hover 不浮起、不加投影：只把边界压深一档，保持"通透" */
+.ant-card:hover {
+  box-shadow: none;
+  border-color: var(--card-hover-border);
+}
+
+/* 区块标题：统一放大加粗，与右侧操作项（切换器 / 文字链接）形成层级 */
+.ant-card > .ant-card-head {
+  border-bottom: 1px solid var(--line-soft);
+  padding: 0 var(--card-pad);
+  min-height: 58px;
+  font-weight: 650;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+/* 标题与右侧操作项：标题左对齐占满剩余宽度，操作项贴右垂直居中 */
+.ant-card > .ant-card-head .ant-card-head-wrapper {
+  align-items: center;
+}
+
+.ant-card > .ant-card-head .ant-card-head-title {
+  text-align: start;
+}
+
+.ant-card > .ant-card-head .ant-card-extra {
+  text-align: end;
+}
+
+.ant-card > .ant-card-body {
+  padding: var(--card-pad);
+}
+
+.ant-card-small > .ant-card-head {
+  min-height: 58px;
+}
+
+.ant-card-small > .ant-card-body {
+  padding: var(--card-pad);
+}
+
+/* ---------- 侧边栏：浮起的圆角面板，比内容区亮/暗一档 ---------- */
+
+/* 四周留 12px 呼吸、20px 圆角、零投影；与内容区的差别只靠 --sider-bg 的色阶 */
+.app-sider {
+  background: var(--sider-bg) !important;
+  border: 1px solid var(--card-border) !important;
+  border-radius: 20px;
+  box-shadow: none !important;
+  margin: 12px 0 12px 12px;
+  height: calc(var(--app-viewport-height) - 24px);
+  overflow: hidden;
+}
+
+.app-sider .ant-layout-sider-children {
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+/* 折叠态的图标轨同样保持圆角，宽度收窄 */
+.ant-layout-sider-collapsed.app-sider {
+  border-radius: 18px;
+}
+
+.sider-logo {
+  padding: 22px 18px 16px;
+  gap: 11px;
+}
+
+/* Logo 徽标保持原样式（浅蓝底 + 品牌图形），只把投影压平 ——
+   极简规范要求移除阴影，但不该改动品牌标识本身的配色与比例 */
+.sider-logo-badge {
+  box-shadow: none;
+}
+
+.sider-logo-text {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.sider-logo-sub {
+  margin-top: 3px;
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.28em;
+  color: var(--text-3);
+  text-transform: uppercase;
+}
+
+.sider-nav.sider-menu {
+  padding: 6px 0 12px;
+}
+
+.sider-nav-group-title {
+  padding: 18px 22px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--text-dim);
+}
+
+.sider-nav-row {
+  margin: 2px 12px;
+}
+
+.sider-nav-item {
+  height: 38px;
+  padding: 0 12px;
+  gap: 11px;
+  border-radius: 11px;
+  color: var(--text-2);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.sider-nav-item .sider-nav-icon {
+  font-size: 17px;
+  color: var(--text-3);
+  transition: color var(--dur-2) var(--ease-standard);
+}
+
+.sider-nav-item:hover {
+  background: var(--hover-bg);
+  color: var(--text);
+}
+
+.sider-nav-item:hover .sider-nav-icon {
+  color: var(--text);
+}
+
+/* 选中态：整块高亮实底 + 反白字（亮色 = 纯黑底白字，暗色 = 低饱和品牌软底 + 品牌色文字） */
+.sider-nav-item.is-selected {
+  background: var(--nav-selected-bg) !important;
+  color: var(--nav-selected-fg) !important;
+  font-weight: 600;
+}
+
+.sider-nav-item.is-selected .sider-nav-icon {
+  color: var(--nav-selected-fg);
+}
+
+/* 选中态的左侧竖条在扁平化里是多余的装饰：去掉，只留实底 */
+.sider-nav-item.is-selected::before {
+  display: none;
+}
+
+.sider-nav-row .reorder-btn:hover:not(:disabled),
+.sider-nav-row .reorder-btn:focus-visible {
+  color: var(--text);
+  background: var(--hover-bg);
+}
+
+.sider-footer {
+  border-top: 1px solid var(--line-soft);
+  padding: 12px 14px 16px;
+}
+
+.sider-footer-toggle {
+  border-radius: 10px;
+}
+
+.sider-footer-search {
+  height: 30px;
+  border-radius: 10px;
+  border-color: var(--line);
+  color: var(--text-3);
+}
+
+.sider-footer-search:hover {
+  border-color: var(--item-hover-border);
+  background: var(--hover-bg);
+  color: var(--text);
+}
+
+.sider-footer-search kbd {
+  border-radius: 6px;
+  border-color: var(--line);
+  color: var(--text-dim);
+}
+
+.sider-footer-version {
+  color: var(--text-dim);
+  letter-spacing: 0.02em;
+}
+
+.sider-footer-dot {
+  background: var(--brand);
+  opacity: 0.55;
+}
+
+/* ---------- 页头：左对齐、大字号 + 字重拉开层级 ---------- */
+
+.page-title {
+  font-size: 27px;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  color: var(--text);
+}
+
+.page-description {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-3);
+  letter-spacing: 0;
+}
+
+.page-breadcrumb {
+  margin-bottom: 8px;
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.page-breadcrumb-sep {
+  color: var(--text-dim);
+}
+
+/* ---------- 统计带 → 四张独立卡片（大留白、无竖线分隔） ---------- */
+
+.stats-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+  padding: var(--card-pad);
+  border: 1px solid var(--card-border);
+  border-right: 1px solid var(--card-border);
+  border-radius: var(--card-radius);
+  background: var(--surface);
+}
+
+/* 线性图标块：内嵌一档的圆角方块 + 细线图标 */
+.stat-strip-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: var(--surface-2) !important;
+  color: var(--text) !important;
+  font-size: 16px;
+  border: none;
+  box-shadow: none;
+}
+
+.stat-text {
+  gap: 6px;
+}
+
+.stat-label {
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  text-transform: uppercase;
+}
+
+.stat-text strong {
+  font-size: 30px;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  line-height: 1.05;
+  color: var(--text);
+}
+
+.stat-suffix {
+  margin-left: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-3);
+  letter-spacing: 0;
+}
+
+/* ---------- 平台分布卡：内嵌一档的底块 + 大圆角，去掉投影与缩放 ---------- */
+
+/* 固定响应式网格：列宽下限写死 + 每格等高，卡片尺寸随列宽统一缩放，
+   不会因为数值长短而参差（"统一卡片尺寸"是这一节的硬要求） */
+.platform-card-grid {
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: var(--grid-gap);
+  align-items: stretch;
+}
+
+.platform-stat-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 96px;
+  padding: var(--tile-pad);
+  background: var(--surface-2);
+  border: 1px solid transparent;
+  border-radius: var(--tile-radius);
+  box-shadow: none;
+  /* 文字严格左对齐：网格项默认 stretch，这里显式声明避免继承到居中 */
+  text-align: start;
+}
+
+.platform-stat-card:hover {
+  border-color: var(--card-hover-border);
+  background: var(--surface-2);
+}
+
+.platform-stat-card.is-dragging {
+  opacity: 0.9;
+  border-color: var(--brand-fill);
+  box-shadow: none;
+  transform: none;
+}
+
+/* 无数据平台：只降背景对比度，**尺寸与位置完全不变**（不塌陷、不隐藏） */
+.platform-stat-card.is-empty {
+  background: var(--surface-inset);
+}
+
+.platform-stat-card.is-empty .platform-stat-nums,
+.platform-stat-card.is-empty .platform-cell {
+  opacity: 0.55;
+}
+
+/* 卡片头部：平台名在左、拖拽把手在右 */
+.platform-stat-head {
+  justify-content: flex-start;
+  text-align: start;
+}
+
+/* 数值行：核心数值放大加粗，单位标签缩小变灰 */
+.platform-stat-nums {
+  display: flex;
+  align-items: flex-end;
+  /* 三项主数据固定一行：不换行，卡片高度才整齐 */
+  flex-wrap: nowrap;
+  gap: 8px 20px;
+  font-size: 11px;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  text-align: start;
+}
+
+/* 单个"数值 + 标签"块：数值在上、标签在下，严格左对齐 */
+.platform-stat-num {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.platform-stat-num strong {
+  font-size: 21px;
+  font-weight: 680;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 标签（提交 / AC / 已解）：缩小变灰，不与数值抢视线 */
+.platform-stat-unit {
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+/* AC 率：放在卡片头部右端，字号介于数值与标签之间 */
+.platform-stat-head .is-rate {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 平台品牌色点是**数据身份**，不重新着色；只压饱和并降透明度，
+   让它在深底上不刺眼（暗色下额外留一圈极淡内描边把它从底里切出来） */
+.platform-dot {
+  width: 7px;
+  height: 7px;
+  box-shadow: none;
+  opacity: 0.72;
+  filter: saturate(0.42);
+}
+
+.platform-cell {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+/* ---------- 模块卡片头部的键盘控件：细线图标 + 无边框 ---------- */
+
+.reorder-btn {
+  border-radius: 8px;
+  color: var(--text-3);
+}
+
+.reorder-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--hover-bg);
+}
+
+.module-drag-handle,
+.platform-drag-handle {
+  color: var(--text-dim);
+}
+
+.dash-module > .ant-card > .ant-card-head .ant-card-head-wrapper {
+  border-radius: 12px;
+}
+
+/* ---------- 控件：实心高亮主按钮（反白字）、描边次按钮，统一圆角 ---------- */
+
+.ant-btn {
+  border-radius: 10px;
+  font-weight: 500;
+  box-shadow: none !important;
+  transition:
+    background var(--dur-2) var(--ease-standard),
+    border-color var(--dur-2) var(--ease-standard),
+    color var(--dur-2) var(--ease-standard);
+}
+
+.ant-btn-primary:not(:disabled) {
+  background: var(--brand-fill);
+  border-color: var(--brand-fill);
+  color: var(--text-on-fill);
+}
+
+.ant-btn-primary:not(:disabled):hover {
+  background: var(--brand-fill-hover);
+  border-color: var(--brand-fill-hover);
+  transform: none;
+  box-shadow: none;
+}
+
+.ant-btn-primary:not(:disabled):active {
+  background: var(--brand-fill-active);
+  border-color: var(--brand-fill-active);
+}
+
+.ant-btn-default:not(:disabled) {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--text-2);
+}
+
+.ant-btn-default:not(:disabled):hover {
+  border-color: var(--item-hover-border);
+  color: var(--text);
+  background: var(--surface);
+}
+
+.ant-btn-text:not(:disabled):hover {
+  background: var(--hover-bg);
+}
+
+/* ---------- 标签 / 分段控件 / 输入框：圆角 + 中性底 ---------- */
+
+.ant-tag {
+  border-radius: 8px;
+  border-color: var(--card-border);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.ant-segmented {
+  border-radius: 10px;
+  background: var(--surface-2);
+  padding: 3px;
+}
+
+.ant-segmented .ant-segmented-item {
+  border-radius: 8px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.ant-segmented .ant-segmented-item-selected {
+  background: var(--seg-selected-bg);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-select .ant-select-selector,
+.ant-picker {
+  border-radius: 10px !important;
+  border-color: var(--line) !important;
+  box-shadow: none !important;
+}
+
+.ant-input:focus,
+.ant-input-affix-wrapper:focus-within,
+.ant-select-focused .ant-select-selector {
+  border-color: var(--brand-fill) !important;
+  box-shadow: none !important;
+}
+
+.ant-input::placeholder {
+  color: var(--text-dim);
+}
+
+/* ---------- 浮层：抬一档底色 + 描边，仍然不给投影 ---------- */
+
+.ant-dropdown .ant-dropdown-menu,
+.ant-select-dropdown,
+.ant-picker-dropdown .ant-picker-panel-container {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+.ant-modal-content,
+.ant-drawer-content {
+  box-shadow: none;
+  border: 1px solid var(--line);
+}
+
+.ant-modal-mask,
+.ant-drawer-mask {
+  background: var(--mask-bg);
+}
+
+.ant-tooltip-inner {
+  border-radius: 10px;
+  font-size: 12px;
+  box-shadow: none;
+}
+
+/* 同步账号勾选浮层：dropdownRender 自绘面板（没有 .ant-dropdown-menu 外壳），
+   这里给它补上底色 + 描边 + 圆角，与其它浮层一致 */
+.sync-picker-panel {
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-2);
+  box-shadow: none;
+}
+
+/* ---------- 表格：表头低一档底、行悬停极浅 ---------- */
+
+.ant-table {
+  border-radius: 14px;
+}
+
+.ant-table-thead .ant-table-cell {
+  font-weight: 600;
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* ---------- 通用小组件 ---------- */
+
+.mono {
+  font-family: 'Inter', ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* 热力图摘要行：标签辅助色、数值主色，靠字重区分 */
+.heatmap-summary {
+  margin-bottom: 14px;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--text-3);
+}
+
+.heatmap-summary strong {
+  margin: 0 2px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.heatmap-summary strong + strong {
+  color: var(--text);
+}
+
+/* ============================================================
+   数据概览：极简扁平化版式
+   ------------------------------------------------------------
+   节奏：页头 → 今日聚焦条 → 同步状态 → 四张指标卡 → 模块卡片网格，
+   每一层之间 20~24px 留白，卡片内部 20~24px，元素间距比旧版放大一档。
+   ============================================================ */
+
+/* 页面各层之间的节奏：页头 → 聚焦条 → 同步状态 → 指标卡 → 模块网格 */
+.dash-page > * + * {
+  margin-top: var(--section-gap);
+}
+
+/* 今日聚焦：扁平信息条（比卡片低一档的底，无外框） */
+.focus-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px 24px;
+  padding: 18px var(--card-pad);
+  border: 1px solid var(--card-border);
+  border-radius: var(--card-radius);
+  background: var(--surface);
+}
+
+.focus-strip-copy {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  min-width: 0;
+}
+
+.focus-strip-label {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.focus-strip-text {
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.focus-strip-tag {
+  margin: 0 6px;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.focus-strip-gap {
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.focus-strip-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* 指标卡与模块网格：与 --section-gap 同源，保证全页节奏一致 */
+.dash-stats {
+  margin-top: var(--section-gap);
+}
+
+.dash-grid {
+  margin-top: var(--section-gap);
+}
+
+/* 模块卡片：拖拽中只降透明度 + 压深边界，不做缩放/投影 */
+.dash-module.is-dragging > .ant-card {
+  opacity: 0.9;
+  border-color: var(--item-hover-border);
+}
+
+/* 同步状态卡：标题行更轻，操作入口是纯文字链接 */
+.ant-card .ant-card-extra a {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.ant-card .ant-card-extra a:hover {
+  color: var(--text);
+}
+
+/* 旋转的同步图标（替代 antd 的 spin 属性） */
+.icon-spin {
+  animation: iconSpin 1s linear infinite;
+}
+
+@keyframes iconSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 图表坐标轴文字：等宽数字、无描边 */
+.recharts-cartesian-axis-tick-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.recharts-legend-item-text {
+  font-size: 12px !important;
+}
+
+/* 扁平化：图例圆点去掉投影 */
+.recharts-legend-item svg {
+  filter: none;
+}
+
+/* ---------- 卡片头部：为绝对定位的键盘排序/折叠控件留出通道 ----------
+   控件贴在卡片头部右上角（约 90px 宽），标题区预留同样的右侧内边距，
+   标题过长时先省略而不是被按钮压住。 */
+.dash-module > .ant-card > .ant-card-head .ant-card-head-wrapper {
+  gap: 12px;
+  /* 右侧 92px 是键盘排序/折叠按钮的专属通道：标题与 extra 都排在它左边 */
+  padding-right: 92px;
+}
+
+.dash-module > .ant-card > .ant-card-head .ant-card-head-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 平台分布卡头部的"可拖拽"提示改成占位符：只负责让开控件，不显示文字 */
+.card-head-hint {
+  display: inline-block;
+  width: 0;
+}
+
+/* ---------- 热力图卡：范围切换器与控件不打架 ---------- */
+.dash-module .ant-segmented {
+  margin-right: 0;
+}
+
+/* ---------- 窄屏：控件通道会挤掉标题，改为贴边不留白 ---------- */
+@media (max-width: 1180px) {
+  /* 窄屏卡片头本身留出通道，标题区不再二次挤压 */
+  .dash-module > .ant-card > .ant-card-head .ant-card-head-wrapper {
+    padding-right: 0;
+  }
+  .dash-module > .ant-card > .ant-card-head {
+    padding-right: 92px;
+  }
+}
+
+/* ---------- 残留的装饰性投影 / 渐变：一律压平 ----------
+   · .band-dot        今日训练进度带上的发光点 → 纯色小圆点
+   · .conn-dot-*      连接状态点的外环光晕 → 只留实心点
+   · .indent-switch-option.is-active  缩进切换的浮起感 → 去掉投影
+   · .taxonomy-item__marker 标记点内描边 → 实心点
+   · .gradient-progress 进度条渐变 → 实色 */
+.band-dot {
+  box-shadow: none;
+}
+
+.conn-dot,
+.conn-dot-ok,
+.conn-dot-fail,
+.conn-dot-checking {
+  box-shadow: none;
+}
+
+.indent-switch-option.is-active {
+  box-shadow: none;
+  border-color: var(--brand-fill);
+}
+
+.taxonomy-item__marker {
+  box-shadow: none;
+}
+
+/* 任务卡悬停的浮起投影 → 只压深边界（扁平化：hover 不"抬起"） */
+.task-card:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--item-hover-border);
+}
+
+/* 模板写作面板的"实时预览中"指示灯：外发光环 → 实心点 */
+.template-writer-live i {
+  box-shadow: none;
+}
+
+/* 消息定位闪烁：外扩光圈 → 改为描边高亮（不产生任何投影） */
+@keyframes msg-flash {
+  0%,
+  55% {
+    box-shadow: none;
+    outline: 2px solid var(--brand-line);
+    outline-offset: 0;
+  }
+  100% {
+    box-shadow: none;
+    outline: 2px solid transparent;
+  }
+}
+
+.gradient-progress .ant-progress-bg {
+  background: var(--brand-fill) !important;
+}
+
+/* 同步状态栏：压成"一条状态线"，与下方的数据卡区分开（它是操作反馈，不是数据主角） */
+.sync-status-card > .ant-card-head {
+  min-height: 46px;
+  padding: 0 20px;
+  border-bottom-color: var(--line-soft);
+}
+
+.sync-status-card > .ant-card-head .ant-card-head-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-3);
+  letter-spacing: 0.01em;
+}
+
+.sync-status-card > .ant-card-body {
+  padding: 16px 20px;
+}
+
+/* 同一行的模块卡等高：难度分布 / 弱项标签并排时高度对齐，
+   网格才"规整"（antd 的 Col 不会自动拉齐子元素高度） */
+.dash-grid > .dash-module {
+  display: flex;
+}
+
+.dash-grid > .dash-module > .ant-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dash-grid > .dash-module > .ant-card > .ant-card-body {
+  flex: 1;
+}
+
+/* 图例位置由 recharts 的 verticalAlign/align 控制（见 Dashboard 的 LEGEND_STYLE），
+   CSS 只负责文字与间距，不再用绝对定位硬挪容器 */
+
+/* 顶部图例：与卡片标题同一水平带，靠右；图例项之间留 16px */
+.recharts-default-legend {
+  text-align: end !important;
+}
+
+.recharts-default-legend .recharts-legend-item {
+  margin-right: 16px !important;
+  margin-left: 0 !important;
+}
+
+.recharts-default-legend .recharts-legend-item:last-child {
+  margin-right: 0 !important;
+}
+
+/* 图表容器：顶部图例需要一点呼吸，避免贴住柱顶 */
+.recharts-surface {
+  overflow: visible;
+}
+
+/* 图例文字：recharts 默认把文字染成系列色，中性色系列会低到读不出。
+   统一用中性文字 + 彩色小圆点，信息不丢、对比度达标 */
+.recharts-legend-item-text {
+  color: var(--text-2) !important;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+/* 图表脚注：说明性小字，辅助色、左对齐，与图表底边留 10px */
+.chart-caption {
+  margin: 10px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  color: var(--text-3);
+  text-align: left;
+}
+
+/* 图表容器：统一圆角（设计指令要求"图表容器"也在圆角范围内） */
+.recharts-responsive-container {
+  border-radius: var(--tile-radius);
+  overflow: hidden;
+}
+
+.recharts-wrapper {
+  border-radius: var(--tile-radius);
+}
+
+/* 热力图的格子矩阵同理：整体圆角裁切 */
+.heatmap-plot {
+  border-radius: var(--tile-radius);
+}
+
+/* ============================================================
+   关键数据的语义化配色
+   ------------------------------------------------------------
+   规则只有一条：**颜色只用于读数，不用于装饰**。
+   · 核心量（总提交）        → 强调色（亮色=深蓝 / 暗色=亮紫蓝）
+   · 正向（AC 率 / 已解题目）→ 绿
+   · 警示（补强缺口 / 待办） → 橙
+   · 中性（活跃平台等规模数）→ 主文字色
+   大数字同时保留 30px/650 的字号字重，颜色是第二重强调而非唯一手段
+   （色觉障碍用户仍能靠字号与标签读出层级）。
+   ============================================================ */
+
+/* ---------- 指标卡数值 ---------- */
+.stat-item[data-value-tone='core'] .stat-text strong {
+  color: var(--accent-core);
+}
+
+.stat-item[data-value-tone='positive'] .stat-text strong {
+  color: var(--green);
+}
+
+.stat-item[data-value-tone='warn'] .stat-text strong {
+  color: var(--amber);
+}
+
+.stat-item[data-value-tone='neutral'] .stat-text strong {
+  color: var(--text);
+}
+
+/* 数值行：大数字 + 语义徽章同一基线 */
+.stat-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 差值徽章：低饱和语义底 + 同色文字，胶囊形；正绿负橙 */
+.stat-delta {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-delta.is-up {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.stat-delta.is-down {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+/* 指标图标：跟随语义色调（只染图标，不染底色，保持"克制"） */
+.stat-item[data-value-tone='core'] .stat-strip-icon {
+  color: var(--accent-core) !important;
+  background: var(--accent-core-soft) !important;
+}
+
+.stat-item[data-value-tone='positive'] .stat-strip-icon {
+  color: var(--green) !important;
+  background: var(--green-soft) !important;
+}
+
+.stat-item[data-value-tone='neutral'] .stat-strip-icon {
+  color: var(--text-2) !important;
+  background: var(--surface-2) !important;
+}
+
+/* ============================================================
+   语义色在界面其它位置的落点
+   ------------------------------------------------------------
+   同一套四色（强调/绿/橙/红）只出现在"数据有语义"的地方：
+   平台 AC 率、弱项缺口、同步健康度、热力图。其余一律中性灰。
+   ============================================================ */
+
+/* ---------- 平台分布卡：AC 率按高低着色 ---------- */
+/* 注意作用域是 .platform-stat-card 而不是 .platform-stat-nums ——
+   AC 率已移到卡片头部（与数值行分开，避免换行导致卡片高度参差） */
+.platform-stat-card .is-rate-good {
+  color: var(--green) !important;
+}
+
+.platform-stat-card .is-rate-poor {
+  color: var(--amber) !important;
+}
+
+.platform-stat-card .is-rate-fair {
+  color: var(--text-2) !important;
+}
+
+/* 「已解」数保持绿色（正向成果），「提交/AC」保持主文字色（客观量） */
+.platform-stat-card .is-solved {
+  color: var(--green) !important;
+}
+
+/* ---------- 弱项标签：缺口越大越偏橙红 ---------- */
+.weak-gap.is-strong {
+  color: var(--red);
+  font-weight: 650;
+}
+
+.weak-gap.is-mild {
+  color: var(--amber);
+  font-weight: 600;
+}
+
+.weak-gap.is-ok {
+  color: var(--green);
+  font-weight: 600;
+}
+
+/* ---------- 今日聚焦条：弱项读数用橙，正常用绿 ---------- */
+.focus-strip-gap.is-warn {
+  color: var(--amber);
+}
+
+.focus-strip-gap.is-ok {
+  color: var(--green);
+}
+
+/* ---------- 语义标签（低饱和语义底 + 同色文字，胶囊形） ---------- */
+.semantic-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.semantic-pill.is-positive {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.semantic-pill.is-warn {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.semantic-pill.is-danger {
+  color: var(--red);
+  background: var(--danger-soft);
+}
+
+.semantic-pill.is-core {
+  color: var(--accent-core);
+  background: var(--accent-core-soft);
+}
+
+.semantic-pill.is-neutral {
+  color: var(--text-2);
+  background: var(--surface-2);
+}
+
+/* 同步状态卡里的健康徽章：把 antd 的彩色 Tag 换成低饱和语义底胶囊 */
+.ant-tag.ant-tag-success {
+  color: var(--green);
+  background: var(--green-soft);
+  border-color: transparent;
+}
+
+.ant-tag.ant-tag-warning {
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-color: transparent;
+}
+
+.ant-tag.ant-tag-error {
+  color: var(--red);
+  background: var(--danger-soft);
+  border-color: transparent;
+}
+
+.ant-tag.ant-tag-processing {
+  color: var(--accent-core);
+  background: var(--accent-core-soft);
+  border-color: transparent;
+}
+
+.ant-tag.ant-tag-default {
+  color: var(--text-2);
+  background: var(--surface-2);
+  border-color: transparent;
+}
+
+/* 图例色块：recharts 用系列色画小圆点，中性色系列在深底上偏暗，
+   给图例点留出可辨的溢出空间，同时不给图表加装饰 */
+.recharts-legend-item svg {
+  overflow: visible;
+}
+
+/* ============================================================
+   暗色专属微调（[data-theme='dark']）
+   ------------------------------------------------------------
+   上面所有规则都走 Token，两种主题各自成立；这里只补三件事：
+   1. 深底上"描边式"边界要更淡，靠色阶而不是线；
+   2. 细线图标在深底上要提亮一档才够清晰；
+   3. 少数亮色下需要"纯黑实底"的地方，暗色要换成低饱和品牌软底。
+   ============================================================ */
+
+/* 细线图标：深底上描边本来就比浅底显细，统一提亮到 --text-2 以上 */
+[data-theme='dark'] .sider-nav-item .sider-nav-icon {
+  color: var(--text-3);
+}
+
+[data-theme='dark'] .sider-nav-item:hover .sider-nav-icon,
+[data-theme='dark'] .sider-nav-item.is-selected .sider-nav-icon {
+  color: var(--nav-selected-fg);
+}
+
+/* 卡片头部与内容区之间只留一条极淡的线（--line-soft 在深底上仅 1.05:1，
+   提到 --line 才有 1.12:1，够"分明"又不至于变成框线） */
+[data-theme='dark'] .ant-card > .ant-card-head {
+  border-bottom: 1px solid var(--line);
+}
+
+/* 主按钮在深底上是唯一的饱和色块，给它一点点外扩的"选中光"是不允许的，
+   所以这里只把按下态压暗，不做任何投影 */
+[data-theme='dark'] .ant-btn-primary:not(:disabled) {
+  box-shadow: none;
+}
+
+/* 输入框在深底上需要比卡片更暗一档，否则"可输入区域"看不出来 */
+[data-theme='dark'] .ant-input,
+[data-theme='dark'] .ant-input-affix-wrapper,
+[data-theme='dark'] .ant-select .ant-select-selector,
+[data-theme='dark'] .ant-picker {
+  background: var(--surface-inset) !important;
+}
+
+/* 平台品牌色点在深底上压得更狠一点，避免 9 个高饱和圆点抢过数据本身 */
+[data-theme='dark'] .platform-dot {
+  opacity: 0.8;
+  filter: saturate(0.5);
+  /* 用 outline 而不是 box-shadow 把色点从深底里"切"出来：
+     极简规范的"零阴影"审计是按 box-shadow 统计的，这里不该被算成一处投影 */
+  outline: 1px solid var(--marker-ring);
+  outline-offset: 0;
+}
+
+/* 进度条：深底上实心高亮色比浅底更抓眼，统一走品牌填充色 */
+[data-theme='dark'] .ant-progress-bg {
+  background: var(--brand-fill) !important;
 }
