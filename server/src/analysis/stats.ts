@@ -191,18 +191,25 @@ export function computeOverall(
   const time = timeClause(filter);
   const rows = db
     .prepare(
-      `SELECT p.platform AS platform, p.difficulty AS difficulty, p.problem_key AS problem_key,
+      // 两个平台维度必须分开取：
+      // - `platform`（题目归属，p.platform）→ 已解题目去重的身份口径
+      // - `source_platform`（提交来源，s.platform）→ 平台分布的归属口径
+      // VJudge 是转发站：题目映射回原 OJ 后，若平台分布也按题目平台统计，
+      // VJudge 账号的全部提交会被算进原 OJ，VJudge 自己永远显示 0（见 importService.sourcePlatform）。
+      `SELECT p.platform AS platform, s.platform AS source_platform,
+              p.difficulty AS difficulty, p.problem_key AS problem_key,
               COUNT(*) AS attempts,
               SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END) AS ac,
               MIN(${rowOrderKey(time.sql !== '')}) AS first_seen,
               ${knowledgeTagsSql(db)}
          FROM submissions s JOIN problems p ON s.problem_id = p.id
         WHERE s.user_id = ?${scope.sql}${time.sql}
-        GROUP BY p.id
+        GROUP BY p.id, s.platform
         ORDER BY first_seen`,
     )
     .all(userId, ...scope.params, ...time.params) as unknown as Array<{
     platform: PlatformId;
+    source_platform: PlatformId;
     difficulty: number | null;
     problem_key: string;
     attempts: number;
@@ -228,11 +235,13 @@ export function computeOverall(
     const n = r.attempts;
     attempts += n;
     ac += r.ac;
-    let plat = byPlatform.get(r.platform);
+    // 平台分布按**提交来源**归属（VJudge 转发的题记在 VJudge 名下）
+    const source = r.source_platform;
+    let plat = byPlatform.get(source);
     if (!plat) {
       // 平台枚举之外的脏值（历史数据）也要计入，旧实现同样会 bump 出新条目
       plat = { attempts: 0, ac: 0 };
-      byPlatform.set(r.platform, plat);
+      byPlatform.set(source, plat);
     }
     plat.attempts += n;
     plat.ac += r.ac;
@@ -252,9 +261,12 @@ export function computeOverall(
       }
     }
     if (isAc) {
+      // 已解题目按**题目身份**去重：同一道题经 VJudge 和原站各同步一次不能算两题
       solvedSet.add(`${r.platform}:${r.problem_key}`);
-      if (!solvedByPlatform.has(r.platform)) solvedByPlatform.set(r.platform, new Set());
-      solvedByPlatform.get(r.platform)!.add(r.problem_key);
+      // 平台下的已解数按来源归集（与上面 byPlatform 同口径）；
+      // 去重键仍是题目身份，避免同一题在 VJudge 与原站重复计数
+      if (!solvedByPlatform.has(source)) solvedByPlatform.set(source, new Set());
+      solvedByPlatform.get(source)!.add(`${r.platform}:${r.problem_key}`);
     }
   }
 

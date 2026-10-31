@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import { createNowcoderAdapter } from '../src/adapters/nowcoder.ts';
 import { createVjudgeAdapter } from '../src/adapters/vjudge.ts';
 import { numericUid } from '../src/adapters/remoteRecords.ts';
+import { problemIdentity } from '../src/problems/identity.ts';
+import { addReviewFromUrl } from '../src/reviews/fromUrl.ts';
+import { createDb } from '../src/db/index.ts';
+import { insertNormalized } from '../src/import/importService.ts';
+import { computeOverall } from '../src/analysis/stats.ts';
 import type { FetchOptions } from '../src/adapters/types.ts';
 
 const uuid = '40bf74658879460bbf5f1bfe772e8580';
@@ -81,7 +86,12 @@ test('VJudge uses offset paging, ignores placeholder totals, other users and pen
   const rows = await createVjudgeAdapter(fetchFn).fetchUserSubmissions('https://vjudge.net/user/Fantasy____', { pageDelayMs: 0 });
   assert.equal(rows.length, 18);
   assert.deepEqual(offsets, ['0', '20']);
-  assert.equal(rows[0].problem.problemKey, '洛谷-P1001');
+  // 记录一律映射回**原 OJ**：保留 vjudge 身份会让同一道题在库里变成两行
+  // （同步落 vjudge/洛谷-P1001、URL 导入落 luogu/P1001），
+  // 同步来的 AC 在「通过链接添加」的复习条目上永远不显示，统计里也各算一次。
+  assert.equal(rows[0].problem.platform, 'luogu');
+  assert.equal(rows[0].problem.problemKey, 'P1001');
+  assert.equal(rows[0].problem.url, 'https://www.luogu.com.cn/problem/P1001');
 });
 
 test('VJudge preserves failed verdicts with judge-specific test suffixes and capitalization', async () => {
@@ -91,4 +101,80 @@ test('VJudge preserves failed verdicts with judge-specific test suffixes and cap
   ] }));
   const rows = await adapter.fetchUserSubmissions('Fantasy____');
   assert.deepEqual(rows.map(r => r.verdict), ['WA', 'TLE']);
+});
+
+/**
+ * 回归（P1-4）：同一道 VJudge 题曾被存成两个不同身份 ——
+ * 同步侧落 `vjudge/洛谷-P1001`，URL 导入侧落 `luogu/P1001`，
+ * identity 不同 → 通过 VJudge 同步来的 AC 在「通过链接添加」的复习条目上永远不显示。
+ */
+test('VJudge 同步与原 OJ 链接导入落到同一个身份（identity 一致）', async () => {
+  const cases = [
+    { oj: '洛谷', probNum: 'P1001', platform: 'luogu', key: 'P1001' },
+    { oj: 'CodeForces', probNum: '1234A', platform: 'codeforces', key: '1234A' },
+    { oj: 'Gym', probNum: '104821A', platform: 'codeforces', key: '104821A' },
+    { oj: 'AtCoder', probNum: 'abc300_a', platform: 'atcoder', key: 'abc300_a' },
+    { oj: 'QOJ', probNum: '9242', platform: 'qoj', key: '9242' },
+  ] as const;
+  const adapter = createVjudgeAdapter(async () => Response.json({
+    data: cases.map((c, i) => ({
+      runId: i + 1, time: timestamp, oj: c.oj, probNum: c.probNum,
+      status: 'Accepted', processing: false, userName: 'Fantasy____',
+    })),
+  }));
+  const rows = await adapter.fetchUserSubmissions('Fantasy____');
+
+  const db = createDb(':memory:');
+  try {
+    for (const [i, c] of cases.entries()) {
+      const synced = rows[i]!;
+      assert.equal(synced.problem.platform, c.platform, c.oj);
+      assert.equal(synced.problem.problemKey, c.key, c.oj);
+
+      // 同一个平台：URL 导入侧解析出来的身份必须与之相同
+      const imported = addReviewFromUrl(db, `https://vjudge.net/problem/${encodeURIComponent(c.oj)}-${c.probNum}`);
+      const syncedIdentity = problemIdentity({ platform: synced.problem.platform, problemKey: synced.problem.problemKey });
+      const importedIdentity = problemIdentity({ platform: imported.platform, problemKey: imported.problemKey });
+      assert.equal(importedIdentity, syncedIdentity, `${c.oj}: 同步与导入必须是同一道题`);
+    }
+  } finally { db.close(); }
+});
+
+test('VJudge 未接入的原 OJ（SPOJ / SGU 等）不落库，避免幽灵题目', async () => {
+  const adapter = createVjudgeAdapter(async () => Response.json({ data: [
+    { runId: 1, time: timestamp, oj: 'SPOJ', probNum: 'TEST', status: 'Accepted', processing: false, userName: 'Fantasy____' },
+    { runId: 2, time: timestamp, oj: 'SGU', probNum: '123', status: 'Accepted', processing: false, userName: 'Fantasy____' },
+    { runId: 3, time: timestamp, oj: '洛谷', probNum: 'P1001', status: 'Accepted', processing: false, userName: 'Fantasy____' },
+  ] }));
+  const rows = await adapter.fetchUserSubmissions('Fantasy____');
+  assert.deepEqual(rows.map(r => r.externalId), ['3'], '只有映射得到的 OJ 才落库');
+});
+
+/**
+ * 映射回原 OJ 的连带影响：提交的「来源平台」不能跟着题目平台走。
+ * 若不分开，VJudge 账号的提交会全部记在原 OJ 名下，
+ * 「VJudge」在平台分布里永远显示 0，按账号筛选也查不到自己的记录。
+ */
+test('VJudge 提交记在 VJudge 名下，题目归原 OJ（来源与题目身份分离）', async () => {
+  const adapter = createVjudgeAdapter(async () => Response.json({ data: [
+    { runId: 1, time: timestamp, oj: '洛谷', probNum: 'P1001', status: 'Accepted', processing: false, userName: 'Fantasy____' },
+  ] }));
+  const rows = await adapter.fetchUserSubmissions('Fantasy____');
+
+  const db = createDb(':memory:');
+  try {
+    insertNormalized(db, 1, rows, { account: 'Fantasy____', sourcePlatform: 'vjudge' });
+    const sub = db.prepare('SELECT platform, account FROM submissions').get() as { platform: string; account: string };
+    assert.equal(sub.platform, 'vjudge', '提交来源是 VJudge（用户在 VJudge 上提交的）');
+    assert.equal(sub.account, 'Fantasy____');
+
+    const prob = db.prepare('SELECT platform, problem_key FROM problems').get() as { platform: string; problem_key: string };
+    assert.equal(prob.platform, 'luogu', '题目身份归原 OJ');
+    assert.equal(prob.problem_key, 'P1001');
+
+    // 平台分布：VJudge 有数据（而不是 0）
+    const stats = computeOverall(db, 1);
+    const vj = stats.byPlatform.find(p => p.platform === 'vjudge');
+    assert.ok(vj && vj.attempts > 0, 'VJudge 必须出现在平台分布里且有数据');
+  } finally { db.close(); }
 });

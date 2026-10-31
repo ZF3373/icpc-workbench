@@ -1410,3 +1410,62 @@ test('回填：上游明确拒绝的题记 denied 并进负缓存（下轮不再
     ['90002'],
   );
 });
+
+/**
+ * 回归（P1-5）：VJudge / 牛客社区题会让「一键回填」永久报失败。
+ *
+ * 旧行为：PLATFORM_LIMITS.vjudge.maxPerRun = 0 在 `limit > 0` 判定里是「不设上限」而非「跳过」，
+ * fetchProblemMeta 的 default 分支对 vjudge 返回 null、practice:<uuid> 键也返回 null，
+ * 两者都不在 ABSENCE_IS_DEFINITIVE 里 → 不写负缓存 → 每轮重扫、每轮计 failed。
+ * 按更新说明自述的规模（牛客 171 + VJudge 200），用户每次点「一键回填」都看到
+ * 「牛客：失败 171 题；VJudge：失败 200 题」。
+ */
+test('回填：平台本身不提供难度的题记终态，不计 failed，且下一轮不再重扫', async () => {
+  const ins = db.prepare(`INSERT INTO problems (platform, problem_key, title, difficulty, url, tags, difficulty_source, native_difficulty, difficulty_scale)
+    VALUES (?, ?, ?, NULL, NULL, '[]', 'sync', NULL, NULL)`);
+  ins.run('vjudge', 'vjudge-洛谷-P1001', '转发站记录');
+  ins.run('nowcoder', 'practice:40bf74658879460bbf5f1bfe772e8580', '牛客社区题');
+  ins.run('luogu', 'P1001', '正常题'); // 有来源的对照行
+
+  let requests = 0;
+  const fetchFn = router({
+    'luogu.com.cn/problem/P1001': () => ({ code: 200, data: { problem: { pid: 'P1001', title: 'A+B', difficulty: 1, tags: [] } } }),
+  });
+  const counted: typeof fetch = async (input, init) => { requests += 1; return fetchFn(input, init); };
+
+  const first = await backfillDifficulties(db, counted);
+  const vj = first.find((r) => r.platform === 'vjudge')!;
+  const nc = first.find((r) => r.platform === 'nowcoder')!;
+  assert.equal(vj.failed, 0, 'VJudge 不得计 failed（平台结构上不提供难度）');
+  assert.equal(nc.failed, 0, '牛客社区题不得计 failed（题号不在 ACM 难度体系内）');
+  assert.ok(vj.missing >= 1, '应计入 missing（平台不提供）而不是 failed');
+  assert.ok(nc.missing >= 1);
+
+  // 终态已写入 gap_state：下一轮不再进目标
+  const vjRow = db.prepare("SELECT gap_state, gap_checked_at FROM problems WHERE platform='vjudge'").get() as any;
+  assert.match(vjRow.gap_state ?? '', /difficulty/, '应写入 difficulty 终态');
+  assert.match(vjRow.gap_state ?? '', /tags/, '应同时写入 tags 终态（否则因 tags=[] 继续留在目标里）');
+  assert.ok(vjRow.gap_checked_at, '终态必须带查证时刻（TTL 判据）');
+
+  const targets = pickBackfillTargets(db);
+  assert.ok(
+    !targets.some((t) => t.platform === 'vjudge'),
+    'VJudge 行已有终态，下一轮不得再成为目标',
+  );
+  assert.ok(
+    !targets.some((t) => t.platform === 'nowcoder' && t.problemKey.startsWith('practice:')),
+    '牛客社区题同样不得再成为目标',
+  );
+});
+
+test('回填：VJudge 走不到主链路（不发任何上游请求）', async () => {
+  db.prepare(`INSERT INTO problems (platform, problem_key, title, difficulty, url, tags, difficulty_source, native_difficulty, difficulty_scale)
+    VALUES ('vjudge', 'vjudge-CodeForces-1234A', 'T', NULL, NULL, '[]', 'sync', NULL, NULL)`).run();
+  let requests = 0;
+  const fetchFn: typeof fetch = async () => { requests += 1; return new Response('{}', { status: 404 }); };
+  const results = await backfillDifficulties(db, fetchFn);
+  const vj = results.find((r) => r.platform === 'vjudge')!;
+  assert.equal(requests, 0, 'VJudge 没有任何难度来源，不应发请求');
+  assert.equal(vj.failed, 0);
+  assert.equal(vj.filled, 0);
+});

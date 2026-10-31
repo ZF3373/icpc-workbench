@@ -51,6 +51,38 @@ test('parseProblemList: VJudge 转发链接映射回原始平台', () => {
   assert.match(rows[0]!.url ?? '', /vjudge\.net\/problem\/Gym-104821A/);
 });
 
+test('parseProblemList: VJudge 真实 OJ 字面量（CodeForces）与 URL 编码往返', () => {
+  // 线上 VJudge 的 oj 字段是 CodeForces，CF 是它并不使用的简写；
+  // 修复前只认 gym/cf → 用户从 VJudge 复制的真实链接识别失败。
+  const raw = [
+    'https://vjudge.net/problem/CodeForces-1234A',
+    'https://vjudge.net/problem/CodeForces-104821A', // Gym 题在 VJudge 里也可能标 CodeForces
+    'https://vjudge.net/problem/codeforces-1234B', // 大小写混排
+    'https://vjudge.net/problem/SGU-123', // 未接入的 OJ → 跳过
+    'https://vjudge.net/problem/CodeChef-ABC123', // 同上
+  ].join('\n');
+  const rows = parseProblemListText(raw);
+  assert.equal(rows.length, 3);
+  assert.deepEqual(
+    rows.map((r) => `${r.platform}:${r.problemKey}`),
+    ['codeforces:1234A', 'codeforces:104821A', 'codeforces:1234B'],
+  );
+});
+
+test('parseProblemList: 应用自己生成的 VJudge 编码链接能被自己解析（往返一致）', () => {
+  // vjudge.ts 的 problemUrl 用 encodeURIComponent 生成链接，洛谷键会编码成
+  // %E6%B4%9B%E8%B0%B7-P1001；解析器若先匹配再解码，这条往返就是断的。
+  for (const [encoded, platform, key] of [
+    ['https://vjudge.net/problem/%E6%B4%9B%E8%B0%B7-P1001', 'luogu', 'P1001'],
+    ['https://vjudge.net/problem/%E7%89%9B%E5%AE%A2-51000', 'nowcoder', '51000'],
+  ] as const) {
+    const rows = parseProblemListText(encoded);
+    assert.equal(rows.length, 1, encoded);
+    assert.equal(rows[0]!.platform, platform, encoded);
+    assert.equal(rows[0]!.problemKey, key, encoded);
+  }
+});
+
 test('parseProblemList: CF Gym 直接链接', () => {
   const raw = 'https://codeforces.com/gym/104821/problem/A';
   const rows = parseProblemListText(raw);

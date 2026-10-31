@@ -434,8 +434,10 @@ async function runSyncPlatform(
     waitedMs = fetchOpts.waitedMs ?? 0;
     const reachedPage = fetchOpts.backfillReachedPage;
 
-    // 多账号按账号隔离入库：不同账号数据共存，重复由唯一键去重，不再有任何清库路径
-    const r = insertNormalized(db, userId, rows, { account: handle });
+    // 多账号按账号隔离入库：不同账号数据共存，重复由唯一键去重，不再有任何清库路径。
+    // sourcePlatform = 本次同步的平台：VJudge 是转发站，题目已映射回原 OJ，
+    // 但提交本身来自 VJudge 账号 —— 不传的话 VJudge 在平台分布里永远显示 0。
+    const r = insertNormalized(db, userId, rows, { account: handle, sourcePlatform: platform });
     result.imported = r.imported;
     result.skipped = r.skipped;
     if (!daysWindow && !fullMode && (since || (knownSubs && knownSubs.ids.size > 0))) {

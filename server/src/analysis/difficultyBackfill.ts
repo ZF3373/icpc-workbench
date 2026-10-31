@@ -105,6 +105,34 @@ const ABSENCE_IS_DEFINITIVE: ReadonlySet<PlatformId> = new Set<PlatformId>(['cod
  */
 const NO_GAP_CACHE: ReadonlySet<PlatformId> = new Set<PlatformId>(['qoj']);
 
+/**
+ * 平台**本身不提供难度来源**：这些题永远补不上，必须给显式终态，而不是每轮重扫、每轮计 failed。
+ *
+ * 两处曾同时踩坑（2026-10-30 review）：
+ * - `PLATFORM_LIMITS.vjudge = { maxPerRun: 0 }`，而 0 在 `limit > 0` 的判定里语义是「不设上限」
+ *   而不是「跳过」——于是 VJudge 的行照常进目标；
+ * - `fetchProblemMeta` 的 default 分支对 vjudge 直接返回 null，`practice:<uuid>` 键也在牛客分支
+ *   主动返回 null，两者都不在 ABSENCE_IS_DEFINITIVE 里 → 不写负缓存 → 每轮重扫。
+ *
+ * 结果：按更新说明自述的规模（牛客 171 条在线编程 + VJudge 200 条），用户点一次「一键回填」
+ * 会看到「牛客：失败 171 题；VJudge：失败 200 题」，而且每次都一样。
+ */
+const NO_DIFFICULTY_SOURCE: ReadonlySet<PlatformId> = new Set<PlatformId>(['vjudge']);
+
+/**
+ * 该题是否存在任何难度来源。返回 false = 平台结构上给不出，直接记终态（写 gap_state），不计 failed。
+ *
+ * 两类：
+ * - 整个平台没有难度来源（VJudge 是转发站，难度要回原站查，见 NO_DIFFICULTY_SOURCE）
+ * - 平台有来源，但**这个键**不在其难度体系内（牛客社区在线编程题的 `practice:<uuid>`：
+ *   ACM 数字题号难度接口对它无意义，按数字去查必然查不到）
+ */
+function hasDifficultySource(platform: PlatformId, problemKey: string): boolean {
+  if (NO_DIFFICULTY_SOURCE.has(platform)) return false;
+  if (platform === 'nowcoder' && problemKey.startsWith('practice:')) return false;
+  return true;
+}
+
 /** `gap_state` 列（CSV）→ 维度集合；脏值（未知维度、空串）逐项忽略，不让它影响回填 */
 export function parseGapState(raw: string | null | undefined): Set<GapDimension> {
   const set = new Set<GapDimension>();
@@ -266,6 +294,9 @@ const FLOOR_MS = {
  *   故取 20000 让它们在**一轮**内全部收敛（整表已拉、分批只会让下一轮重下整表）。
  */
 const PLATFORM_LIMITS: Record<PlatformId, { delayMs: number; failLimit: number | null; maxPerRun: number }> = {
+  // VJudge 是转发站，本身不提供难度（要回原站查）；题在同步时已映射回原 OJ，
+  // 真正需要回填的是那些原 OJ 的行。这里的行只可能是历史遗留的 vjudge 键 ——
+  // 交给 hasDifficultySource 记终态，不进主链路。
   vjudge: { delayMs: 0, failLimit: null, maxPerRun: 0 },
   // 牛客：整表分页扫描（见 fetchNowcoderTable）→ 默认不逐题请求；
   // 目标数少时改走逐题 keyword 搜索，那一档的间隔见 perProblemDelayMs
@@ -1187,6 +1218,8 @@ export async function fetchProblemMeta(
       };
     }
     default:
+      // vjudge 是转发站（见 NO_DIFFICULTY_SOURCE），其余未登记平台说明没有难度来源；
+      // 这类行本应在进循环前就被 hasDifficultySource 拦掉，走到这里只可能是新增平台漏登记。
       return null;
   }
 }
@@ -1624,6 +1657,42 @@ async function backfillPlatform(
         break;
       }
       const t = targets[i]!;
+      /**
+       * 平台结构上给不出难度 → 直接记终态，**不计 failed**。
+       *
+       * 旧实现让这些行进主链路：fetchProblemMeta 返回 null → 落进「上游未命中」分支 →
+       * 计 failed（因为平台不在 ABSENCE_IS_DEFINITIVE 里，也不写负缓存）→ 下一轮原样重来。
+       * 用户看到的就是「VJudge：失败 200 题」反复出现，而这 200 题永远不会成功。
+       *
+       * 现在写 gap_state 作为显式终态（difficulty + tags 两个维度都记为「无来源」），
+       * 由 isGapCached 在 TTL 内跳过；计数走 missing（「平台不提供」）而不是 failed（「这次没成功」）。
+       */
+      if (!hasDifficultySource(platform, t.problemKey)) {
+        openTx();
+        const miss = before.get(platform, t.problemKey) as GapColumns | undefined;
+        if (miss) {
+          const g = nextGapState({
+            platform,
+            oldState: miss.gap_state,
+            oldCheckedAt: miss.gap_checked_at,
+            meta: null,
+            tagsFromUpstream: null,
+            definitiveAbsence: true,
+            checkedAt: ctx.gapCheckedAt,
+            after: miss,
+          });
+          // 标签维度也一并记为「无来源」：转发站/社区题同样没有标签源，
+          // 不记的话这些行会因为 tags = '[]' 继续留在目标里，每轮重扫。
+          const state = g.state === null ? 'difficulty,tags' : g.state.includes('tags') ? g.state : g.state + ',tags';
+          const checkedAt = g.checkedAt ?? ctx.gapCheckedAt;
+          writeGap.run(state, checkedAt, platform, t.problemKey);
+          batchedWrites += 1;
+          if (batchedWrites >= WRITE_BATCH) flushTx();
+        }
+        r.missing += 1;
+        r.details.push({ problemKey: t.problemKey, action: 'missing', note: '该平台不提供难度数据（已记为终态，不再重复查询）' });
+        continue;
+      }
       if (limits.failLimit !== null && consecutiveFails >= limits.failLimit) {
         r.failed += 1;
         r.details.push({ problemKey: t.problemKey, action: 'failed', note: '疑似触发风控，中止后续查询（可稍后重试）' });
