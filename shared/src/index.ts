@@ -4,7 +4,7 @@
 // 仅类型引用：本模块反向 re-export difficulty.ts，用 import type 避免运行时循环依赖
 import type { DifficultyScale } from './difficulty.ts';
 
-export type PlatformId = 'codeforces' | 'atcoder' | 'luogu' | 'nowcoder' | 'daimayuan' | 'leetcode' | 'jisuanke' | 'qoj' | 'dashoj';
+export type PlatformId = 'codeforces' | 'atcoder' | 'luogu' | 'nowcoder' | 'daimayuan' | 'leetcode' | 'jisuanke' | 'qoj' | 'dashoj' | 'vjudge';
 
 export type PlatformSync = 'auto' | 'cookie' | 'manual';
 
@@ -28,7 +28,8 @@ export const PLATFORMS: PlatformMeta[] = [
   { id: 'codeforces', name: 'Codeforces', nameEn: 'Codeforces', hasOfficialApi: true, homepage: 'https://codeforces.com', sync: 'auto', hasBank: true, difficultyScale: 'cf-rating', syncSources: ['none'] },
   { id: 'atcoder', name: 'AtCoder', nameEn: 'AtCoder', hasOfficialApi: false, homepage: 'https://atcoder.jp', sync: 'auto', hasBank: true, difficultyScale: 'atcoder-kenkoooo-irt', syncSources: ['none'] },
   { id: 'luogu', name: '洛谷', nameEn: 'Luogu', hasOfficialApi: false, homepage: 'https://www.luogu.com.cn', sync: 'cookie', hasBank: true, difficultyScale: 'luogu-2026-06', syncSources: ['none'] },
-  { id: 'nowcoder', name: '牛客', nameEn: 'Nowcoder', hasOfficialApi: false, homepage: 'https://ac.nowcoder.com', sync: 'auto', hasBank: true, difficultyScale: 'nowcoder-score', syncSources: ['none'] },
+  // 牛客自 2026-10 起是多来源：主站在线编程 + ACM 练习 + 竞赛提交（见 adapters/nowcoder.ts）
+  { id: 'nowcoder', name: '牛客', nameEn: 'Nowcoder', hasOfficialApi: false, homepage: 'https://ac.nowcoder.com', sync: 'auto', hasBank: true, difficultyScale: 'nowcoder-score', syncSources: ['practice', 'contest'] },
   // 代码源（Hydro 系）：评测记录页需登录（会话 Cookie sid），题库公开
   { id: 'daimayuan', name: '代码源', nameEn: 'Daimayuan', hasOfficialApi: false, homepage: 'https://bs.daimayuan.top', sync: 'cookie', hasBank: true, difficultyScale: 'hydro-1-10', syncSources: ['none'] },
   // 力扣（leetcode.cn）：GraphQL 接口无官方公开 API；提交记录需登录 Cookie，题库匿名可访问。
@@ -49,6 +50,12 @@ export const PLATFORMS: PlatformMeta[] = [
   // 故同步无需登录 Cookie（sync=auto，2026-10-22 实测确认）。题库 /p 公开、含 Hydro 1-10 难度字段，
   // 复用 hydro-1-10 标度（与代码源同源映射表）。
   { id: 'dashoj', name: 'DashOJ', nameEn: 'DashOJ', hasOfficialApi: false, homepage: 'https://dashoj.com', sync: 'auto', hasBank: true, difficultyScale: 'hydro-1-10', syncSources: ['none'] },
+  // VJudge（vjudge.net，转发站）：本身不提供题库与难度，提交记录按公开 status 分页拉取。
+  // 必须排在**末尾**：数组顺序就是各平台下拉/账号卡片的展示顺序，转发站不该占首项
+  //（2026-10-30 review 实测约 7 处列表首项被它顶掉）。
+  // syncSources 记 practice：该字段目前无消费者（计蒜客开关走 settings['jisuanke.practiceSync']），
+  // 这里如实描述「按提交记录拉取」，不再声称 contest（VJudge 不按比赛组织记录）。
+  { id: 'vjudge', name: 'VJudge', nameEn: 'VJudge', hasOfficialApi: false, homepage: 'https://vjudge.net', sync: 'auto', hasBank: false, difficultyScale: 'none', syncSources: ['practice'] },
 ];
 
 export function platformMeta(id: PlatformId): PlatformMeta {
@@ -230,6 +237,7 @@ export type PlatformSyncStatus =
   | 'rate_limited'
   | 'schema_changed'
   | 'manual_required'
+  | 'invalid_account'
   | 'never';
 
 /** 手动导入单行输入（JSON 表单或 CSV 解析后）。 */

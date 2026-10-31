@@ -29,6 +29,7 @@ export const AUTO_CONTINUE_DELAY_MS: Record<PlatformId, number> = {
   atcoder: 120_000,
   luogu: 90_000,
   nowcoder: 180_000,
+  vjudge: 120_000,
   jisuanke: 180_000,
   daimayuan: 120_000,
   leetcode: 120_000,

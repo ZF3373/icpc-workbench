@@ -11,6 +11,7 @@ export const PLATFORM_COLOR: Record<PlatformId, string> = {
   atcoder: '#f2b75b',
   luogu: '#45d5e5',
   nowcoder: '#69d7a5',
+  vjudge: '#49b9aa',
   daimayuan: '#f2965c',
   leetcode: '#ffa116',
   jisuanke: '#7ee0a3', // 计蒜客品牌绿（暗色底可读版）

@@ -47,12 +47,27 @@ export function insertNormalized(
   db: Db,
   userId: number,
   subs: NormalizedSubmission[],
-  opts: { account?: string | null; clearPlatform?: PlatformId } = {},
+  opts: {
+    account?: string | null;
+    clearPlatform?: PlatformId;
+    /**
+     * 提交来源平台（同步适配器的 platform）。
+     *
+     * 默认取题目自身平台（手动导入 / 绝大多数适配器两者相同）。VJudge 是**转发站**：
+     * 题目已映射回原 OJ（luogu/P1001），但这条提交是用户在 VJudge 上提交的 ——
+     * 若 platform 跟随题目，VJudge 账号的提交会全部记在原 OJ 名下，
+     * 「VJudge」在平台分布里永远显示 0，按账号筛选也查不到自己的记录。
+     * 因此两个维度必须分开：problem.platform = 题目归属，opts.sourcePlatform = 提交来源。
+     */
+    sourcePlatform?: PlatformId;
+  } = {},
 ): InsertResult {
   const upsertSync = db.prepare(problemUpsertSql('sync'));
   const upsertManual = db.prepare(problemUpsertSql('manual'));
   // 空串 = 无账号来源（手动导入/本地）；不用 NULL——UNIQUE 约束视 NULL 互异，会破坏按键去重
   const account = opts.account ?? '';
+  /** 提交来源平台；缺省与题目平台一致（手动导入与转发型之外的适配器） */
+  const sourcePlatform = opts.sourcePlatform;
   const insertSub = db.prepare(
     `INSERT OR IGNORE INTO submissions
        (user_id, platform, account, problem_id, verdict, language, submitted_at, external_id, context)
@@ -157,9 +172,9 @@ export function insertNormalized(
       }
       const r = insertSub.run(
         userId,
-        s.problem.platform,
+        sourcePlatform ?? s.problem.platform, // 提交来源（VJudge 转发时与原 OJ 题目平台不同）
         account,
-        s.problem.platform,
+        s.problem.platform, // 题目归属
         s.problem.problemKey,
         s.verdict,
         normalizeLanguageCell(s.language),
@@ -175,13 +190,13 @@ export function insertNormalized(
         // 实测返回 {"imported":2,"skipped":-1}（一次逻辑提交被算成两条新增、跳过数为负）。
         let effective = false;
         // 补语境列（见 backfillContext 注释）
-        if (s.context) backfillContext.run(s.context, userId, s.problem.platform, account, s.externalId);
+        if (s.context) backfillContext.run(s.context, userId, sourcePlatform ?? s.problem.platform, account, s.externalId);
         // 平台侧改题号（洛谷比赛题赛后 T 号转正式 P 号等）：既有行被 INSERT OR IGNORE
         // 冻结在失效的旧题行上（链接打不开、标题退化为题号），把旧题行并入新键行、
         // 提交重定向过去——旧键行从此不再下发，记墓碑防止迟到的旧键提交拽回死链
         const submitted = findSubmittedProblem.get(
           userId,
-          s.problem.platform,
+          sourcePlatform ?? s.problem.platform,
           account,
           s.externalId,
         ) as { id: number; problemKey: string } | undefined;
@@ -200,7 +215,7 @@ export function insertNormalized(
         // verdict 实际变化（评测中→终态、平台重判）同样是有效写入
         if (
           refreshVerdict
-            .run(s.verdict, userId, s.problem.platform, account, s.externalId, s.verdict)
+            .run(s.verdict, userId, sourcePlatform ?? s.problem.platform, account, s.externalId, s.verdict)
             .changes > 0
         ) {
           effective = true;

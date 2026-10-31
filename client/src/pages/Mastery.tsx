@@ -491,11 +491,14 @@ export default function Mastery() {
                   {tagProblems.slice(0, DRAWER_PROBLEM_LIMIT).map((p) => (
                     <Button
                       key={`${p.platform}:${p.problem_key}`}
-                      type="text"
+                      type="link"
                       block
-                      style={{ justifyContent: 'flex-start', padding: '4px 8px', height: 'auto' }}
+                      style={{ justifyContent: 'flex-start', padding: '4px 8px', height: 'auto', whiteSpace: 'normal', textAlign: 'left' }}
                       disabled={!p.url}
-                      onClick={() => p.url && window.open(p.url, '_blank')}
+                      href={p.url ?? undefined}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={p.url ? '在浏览器中打开题目' : '该题暂缺链接'}
                     >
                       <Space wrap size={8}>
                         <Tag color={PROBLEM_STATUS_META[p.status].color} style={{ marginInlineEnd: 0 }}>

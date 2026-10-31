@@ -32,6 +32,12 @@ import { readSettingsSnapshot, snapshotLookup, type SettingLookup } from '../db/
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
 import { getAdapter } from '../adapters/registry.ts';
+import { numericUid } from '../adapters/remoteRecords.ts';
+import { vjudgeHandle } from '../adapters/vjudge.ts';
+
+function normalizedAccount(platform: PlatformId, value: string): string {
+  return platform === 'nowcoder' ? numericUid(value, platform) : platform === 'vjudge' ? vjudgeHandle(value) : value.trim();
+}
 import { createBackup } from '../backup.ts';
 import { effectiveCredentials, readAccountCreds, removeAccountCreds, writeAccountCreds } from '../adapters/accountCreds.ts';
 import {
@@ -785,13 +791,15 @@ export function settingsRoutes(
     if (typeof handle !== 'string' || handle.trim() === '') {
       return res.status(400).json({ error: 'handle 必填' });
     }
+    let normalized: string;
+    try { normalized = normalizedAccount(platform, handle); } catch (e) { return res.status(400).json({ error: (e as Error).message }); }
     const r = db
       .prepare(
         `INSERT INTO platform_accounts (user_id, platform, handle, enabled)
          VALUES (?, ?, ?, 1)
          ON CONFLICT(user_id, platform, handle) DO UPDATE SET enabled = 1`,
       )
-      .run(DEFAULT_USER_ID, platform, handle.trim());
+      .run(DEFAULT_USER_ID, platform, normalized);
     res.json({ ok: true, id: Number(r.lastInsertRowid) });
   });
 
@@ -813,7 +821,8 @@ export function settingsRoutes(
       return res.status(400).json({ error: 'handle 与 newHandle 必填' });
     }
     const from = handle.trim();
-    const to = newHandle.trim();
+    let to: string;
+    try { to = normalizedAccount(platform, newHandle); } catch (e) { return res.status(400).json({ error: (e as Error).message }); }
     if (from === to) return res.json({ ok: true, unchanged: true });
     const binding = db
       .prepare('SELECT id FROM platform_accounts WHERE user_id = ? AND platform = ? AND handle = ?')

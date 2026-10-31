@@ -21,32 +21,32 @@ export interface TokenPair {
 
 export const TOKEN_PAIRS = {
   /** 品牌主色 */
-  brand: { cssVar: '--brand', dark: '#86a8ff', light: '#6b8eef' },
+  brand: { cssVar: '--brand', dark: '#45b8c8', light: '#177c68' },
   /** 成功（antd colorSuccess ↔ --green） */
-  green: { cssVar: '--green', dark: '#69d7a5', light: '#2ba77e' },
+  green: { cssVar: '--green', dark: '#68bba1', light: '#188960' },
   /** 警告（antd colorWarning ↔ --amber） */
-  amber: { cssVar: '--amber', dark: '#f2c46d', light: '#d4961e' },
+  amber: { cssVar: '--amber', dark: '#f1cb79', light: '#b8781b' },
   /** 错误/危险（antd colorError ↔ --red） */
   red: { cssVar: '--red', dark: '#ff7b84', light: '#e5505a' },
   /** 信息（antd colorInfo ↔ --blue） */
   blue: { cssVar: '--blue', dark: '#58a3ff', light: '#2f6fb5' },
   /** 正文与层级文本 */
-  text: { cssVar: '--text', dark: '#f5f7fb', light: '#23272f' },
-  text2: { cssVar: '--text-2', dark: '#c4cad4', light: '#4a5260' },
-  text3: { cssVar: '--text-3', dark: '#8993a2', light: '#656e7e' },
+  text: { cssVar: '--text', dark: '#ecedef', light: '#212b2a' },
+  text2: { cssVar: '--text-2', dark: '#c5c6ca', light: '#334541' },
+  text3: { cssVar: '--text-3', dark: '#929397', light: '#5a6764' },
   /** 容器/布局底色（colorBgContainer ↔ --surface；模态暗色抬一档 ↔ --surface-2） */
-  surface: { cssVar: '--surface', dark: '#181b22', light: '#f6f8fb' },
-  surface2: { cssVar: '--surface-2', dark: '#1d212a', light: '#edf0f5' },
-  bg: { cssVar: '--bg', dark: '#111318', light: '#e7ebf1' },
+  surface: { cssVar: '--surface', dark: '#19191b', light: '#fff' },
+  surface2: { cssVar: '--surface-2', dark: '#202125', light: '#eaece9' },
+  bg: { cssVar: '--bg', dark: '#090a0b', light: '#f5f5f2' },
   /** 描边 */
-  line: { cssVar: '--line', dark: '#2a3039', light: '#d3d9e3' },
-  lineSoft: { cssVar: '--line-soft', dark: '#222831', light: '#e4e8ef' },
+  line: { cssVar: '--line', dark: '#303135', light: '#d5dbd7' },
+  lineSoft: { cssVar: '--line-soft', dark: '#26272b', light: '#e6eae7' },
   /** 侧栏/顶栏底（Layout siderBg/headerBg、亮色 colorBgBase 同源） */
-  siderBg: { cssVar: '--sider-bg', dark: '#12151a', light: '#eef1f6' },
+  siderBg: { cssVar: '--sider-bg', dark: '#090a0b', light: '#f5f5f2' },
   /** 悬停底色（Menu darkItemHoverBg、Table rowHoverBg） */
-  hoverBg: { cssVar: '--hover-bg', dark: '#20242c', light: '#e7ebf2' },
+  hoverBg: { cssVar: '--hover-bg', dark: '#242529', light: '#e1e8e3' },
   /** 主色浅底（Menu darkItemSelectedBg） */
-  brandSoft: { cssVar: '--brand-soft', dark: 'rgba(134, 168, 255, 0.13)', light: 'rgba(107, 142, 239, 0.1)' },
+  brandSoft: { cssVar: '--brand-soft', dark: '#45b8c818', light: '#177c6815' },
 } as const satisfies Record<string, TokenPair>
 
 export type TokenPairKey = keyof typeof TOKEN_PAIRS

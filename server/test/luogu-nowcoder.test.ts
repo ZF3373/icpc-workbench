@@ -28,6 +28,8 @@ function router(
         return new Response(JSON.stringify(v), { status: 200 });
       }
     }
+    if (u.includes('submission-history')) return Response.json({ code: 0, data: { records: [] } });
+    if (u.includes('contest-joined-history')) return Response.json({ code: 0, data: { dataList: [], pageInfo: { pageCount: 0 } } });
     return new Response(JSON.stringify({ message: 'not found' }), { status: 404 });
   };
 }
@@ -707,15 +709,12 @@ test('nowcoder: HTTP failure throws', async () => {
   );
 });
 
-test('nowcoder: first page with no rows throws (structure changed / risk control)', async () => {
+test('nowcoder: recognized empty table is a legitimate empty history', async () => {
   const fetchFn = router({
     'practice-coding': () => ncPage([]),
   });
   const adapter = createNowcoderAdapter(fetchFn);
-  await assert.rejects(
-    () => adapter.fetchUserSubmissions('87654321', {}),
-    /未解析到提交记录/,
-  );
+  assert.deepEqual(await adapter.fetchUserSubmissions('87654321', {}), []);
 });
 
 test('nowcoder: unknown result maps to SKIPPED, short rows skipped', async () => {
@@ -862,3 +861,146 @@ test('luogu: 题目详情风控失败 → 退避后重试补全，而非进程�
   assert.equal(second[0].problem.title, 'A+B Problem');
 });
 
+// ---------- 牛客：请求总量总闸 / 窗口早停 / 参赛超限降级 ----------
+
+/**
+ * 回归：页内扇出把「页预算」放大成「页预算 × 参赛场次」。
+ * 旧实现 50 场参赛 × 3 页 = 156 次请求（同一份练习数据旧实现仅 4 次），
+ * 50 场 × 90 页可到 4592 次；ac.nowcoder.com 全局下限 2000ms → 约 2.5 小时串行等待。
+ */
+test('nowcoder: 整轮请求总量有总闸，参赛场次不能把请求量放大成乘法', async () => {
+  let requests = 0;
+  const fetchFn: typeof fetch = async (input) => {
+    requests += 1;
+    const u = String(input);
+    if (u.includes('contest-joined-history')) {
+      const page = Number(new URL(u).searchParams.get('page'));
+      const dataList = Array.from({ length: 10 }, (_, i) => ({ contestId: page * 100 + i }));
+      return Response.json({ code: 0, data: { dataList, pageInfo: { pageCount: 6 } } });
+    }
+    if (u.includes('submission-history')) {
+      return Response.json({
+        code: 0,
+        data: { records: Array.from({ length: 20 }, (_, i) => ({
+          problem: { questionUuid: 'a'.repeat(31) + (i % 10), title: 'T' + i },
+          submission: { id: 7000 + i, createdDate: Date.now() - i * 1000 },
+          language: 'C++', status: { desc: '答案正确' },
+        })) },
+      });
+    }
+    if (u.includes('practice-coding')) {
+      return new Response(ncPage(Array.from({ length: 10 }, (_, i) =>
+        [String(9000 + i), '1000' + i, 'P' + i, '答案正确', 'C++', '2026-08-02 20:29:23'] as [string, string, string, string, string, string])), { status: 200 });
+    }
+    if (u.includes('status-list')) {
+      return Response.json({ code: 0, data: { data: [], basicInfo: { pageCount: 99 } } });
+    }
+    return new Response('{}', { status: 404 });
+  };
+
+  const adapter = createNowcoderAdapter(fetchFn);
+  await adapter.fetchUserSubmissions('87654321', { pageDelayMs: 0 });
+
+  // 关键性质：请求量有上界，且**不随参赛场次线性放大**。
+  // 上界 = 页数预算 90 × 每页固定来源 2 + 竞赛额度 60 = 240。
+  assert.ok(requests <= 250, `整轮请求总量必须被总闸封住，实际 ${requests} 次`);
+  assert.ok(requests >= 40, `总闸不能小到连正常分页都跑不动，实际 ${requests} 次`);
+});
+
+/** 同一场景的对照：参赛从 10 场涨到 50 场，请求量不应跟着涨（修复前是 990 → 4590） */
+test('nowcoder: 请求量不随参赛场次线性增长（10 场 vs 50 场同量级）', async () => {
+  const countWith = async (contestPages: number): Promise<number> => {
+    let requests = 0;
+    const fetchFn: typeof fetch = async (input) => {
+      requests += 1;
+      const u = String(input);
+      if (u.includes('contest-joined-history')) {
+        const page = Number(new URL(u).searchParams.get('page'));
+        return Response.json({ code: 0, data: { dataList: Array.from({ length: 10 }, (_, i) => ({ contestId: page * 100 + i })), pageInfo: { pageCount: contestPages } } });
+      }
+      if (u.includes('submission-history')) return Response.json({ code: 0, data: { records: [] } });
+      if (u.includes('practice-coding')) {
+        const page = Number(new URL(u).searchParams.get('page'));
+        return new Response('<table><thead><tr><th>运行ID</th><th>题目</th><th>运行结果</th></tr></thead><tbody>' + (page === 1
+          ? Array.from({ length: 10 }, (_, i) =>
+              `<tr><td><a href="x?submissionId=${9000 + i}">${9000 + i}</a></td><td><a href="/acm/problem/1000${i}">P${i}</a></td><td>答案正确</td><td>30</td><td>1000</td><td>0</td><td>528</td><td>C++</td><td>2026-08-02 20:29:23</td></tr>`).join('')
+          : '') + '</tbody></table>', { status: 200 });
+      }
+      if (u.includes('status-list')) {
+        const page = Number(new URL(u).searchParams.get('page'));
+        return Response.json({ code: 0, data: { data: [], basicInfo: { pageCount: page < 90 ? 90 : 1 } } });
+      }
+      return new Response('{}', { status: 404 });
+    };
+    await createNowcoderAdapter(fetchFn).fetchUserSubmissions('87654321', { pageDelayMs: 0 });
+    return requests;
+  };
+
+  const small = await countWith(1); // 10 场
+  const large = await countWith(5); // 50 场
+  assert.ok(large <= 250, `50 场也必须被总闸封住，实际 ${large} 次（修复前 4590 次）`);
+  assert.ok(large - small <= 60, `参赛从 10 场涨到 50 场，请求量增量必须落在竞赛额度内，实际增量 ${large - small}`);
+});
+
+/** 回归：windowSince 早停丢失 —— 7 天窗口、数据全在窗口外时曾打满 542 次请求且 truncated 为空 */
+test('nowcoder: windowSince 让窗口外的数据提前收尾，不再打满页预算', async () => {
+  let requests = 0;
+  const fetchFn: typeof fetch = async (input) => {
+    requests += 1;
+    const u = String(input);
+    if (u.includes('practice-coding')) {
+      return new Response(ncPage(Array.from({ length: 10 }, (_, i) =>
+        [String(9000 + i), '1000' + i, 'P' + i, '答案正确', 'C++', '2020-01-01 10:00:00'] as [string, string, string, string, string, string])), { status: 200 });
+    }
+    if (u.includes('submission-history')) {
+      return Response.json({ code: 0, data: { records: Array.from({ length: 20 }, (_, i) => ({
+        problem: { questionUuid: 'b'.repeat(31) + (i % 10), title: 'T' + i },
+        submission: { id: 5000 + i, createdDate: Date.parse('2020-01-01T00:00:00Z') },
+        language: 'C++', status: { desc: '答案正确' },
+      })) } });
+    }
+    if (u.includes('contest-joined-history')) return Response.json({ code: 0, data: { dataList: [], pageInfo: { pageCount: 0 } } });
+    return new Response('{}', { status: 404 });
+  };
+  const adapter = createNowcoderAdapter(fetchFn);
+  const opts: { pageDelayMs?: number; windowSince?: string; truncated?: boolean } = {
+    pageDelayMs: 0,
+    windowSince: '2026-08-01T00:00:00.000Z',
+  };
+  const rows = await adapter.fetchUserSubmissions('87654321', opts);
+  assert.equal(rows.length, 0, '窗口外的行不应入库');
+  assert.ok(requests <= 3, `窗口早停应只打首页就收尾，实际 ${requests} 次`);
+  assert.equal(opts.truncated, undefined, '窗口早停不属于截断（同步中心不应显示待补全）');
+});
+
+/** 回归：参赛数 > 200 时整次同步失败（旧实现在第 20 页抛 manual_required，练习/社区结果一起丢） */
+test('nowcoder: 参赛超过扫描上限时降级为只扫最近若干场，不整体失败', async () => {
+  let joinPages = 0;
+  const fetchFn: typeof fetch = async (input) => {
+    const u = String(input);
+    if (u.includes('contest-joined-history')) {
+      joinPages += 1;
+      const page = Number(new URL(u).searchParams.get('page'));
+      const dataList = Array.from({ length: 10 }, (_, i) => ({ contestId: page * 100 + i }));
+      return Response.json({ code: 0, data: { dataList, pageInfo: { pageCount: 40 } } });
+    }
+    if (u.includes('practice-coding')) {
+      const page = new URL(u).searchParams.get('page');
+      return new Response(page === '1'
+        ? ncPage([['5001', '10001', 'A+B', '答案正确', 'C++', '2026-08-02 20:29:23']])
+        : ncPage([]), { status: 200 });
+    }
+    if (u.includes('submission-history')) return Response.json({ code: 0, data: { records: [] } });
+    if (u.includes('status-list')) return Response.json({ code: 0, data: { data: [], basicInfo: { pageCount: 1 } } });
+    return new Response('{}', { status: 404 });
+  };
+  const adapter = createNowcoderAdapter(fetchFn);
+  const opts: { pageDelayMs?: number; directScanNote?: string } = { pageDelayMs: 0 };
+  const rows = await adapter.fetchUserSubmissions('87654321', opts);
+
+  assert.equal(rows.length, 1, '练习段的结果必须保留（旧实现会连同练习一起丢掉）');
+  assert.equal(rows[0].externalId, '5001');
+  assert.ok(joinPages <= 20, `参赛列表扫描应封顶，实际翻到第 ${joinPages} 页`);
+  assert.ok(joinPages >= 2, '应至少扫到填满上限为止');
+  assert.match(opts.directScanNote ?? '', /只同步最近/, '被跳过的场次应通过 note 告知，而不是静默或报错');
+});

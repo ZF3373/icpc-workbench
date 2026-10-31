@@ -21,6 +21,7 @@ import { BellOutlined, FileMarkdownOutlined, ImportOutlined, LinkOutlined, PlusO
 import dayjs from 'dayjs'
 import type { PlatformId } from '../../../shared/src/index.ts'
 import { PLATFORMS, cookieFieldsOf } from '../../../shared/src/index.ts'
+import BackgroundSettings from '../components/BackgroundSettings'
 import PageHeader from '../components/PageHeader'
 import AiCustomPromptsCard from '../components/AiCustomPromptsCard'
 import PageSkeleton from '../components/PageSkeleton'
@@ -730,7 +731,7 @@ export default function Settings() {
         <div style={{ marginBottom: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 2 }}>账号名</div>
           <Input
-            placeholder={p.id === 'codeforces' ? 'CF handle' : '用户名 / uid'}
+            placeholder={p.id === 'codeforces' ? 'CF handle' : p.id === 'nowcoder' ? '数字 UID / 个人主页链接' : p.id === 'vjudge' ? '用户名 / 个人主页链接' : '用户名 / uid'}
             value={draftHandle}
             onChange={(e) => setDraftHandle(e.target.value)}
             onPressEnter={() => void submitAcctEditor(p.id, handle)}
@@ -862,6 +863,7 @@ export default function Settings() {
         }
       />
       <div className="settings-body">
+      <BackgroundSettings />
       <Row gutter={[16, 24]}>
       <Col xs={24} lg={12} id="settings-ai">
         {/* AI 配置表单是独立子组件：form 实例必须在**表单本身挂载时**创建。

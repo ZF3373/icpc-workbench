@@ -1,0 +1,67 @@
+/* Fantasy Music Player reference: redesign.css + personalization.css + background.css. */
+html, body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+body { background: var(--bg); }
+.page-title { color: var(--text); background: none; -webkit-text-fill-color: currentColor; font-size: 27px; font-weight: 700; letter-spacing: -.5px; }
+.page-description { color: var(--text-3); font-size: 12px; }
+.page-breadcrumb { color: var(--text-3); letter-spacing: .4px; }
+.sider-logo { min-height: 84px; padding: 16px 18px; }
+.sider-logo-badge { border-color: var(--line); border-radius: 10px; box-shadow: none; }
+.sider-logo-badge img { filter: grayscale(1) brightness(1.6); }
+html[data-theme='light'] .sider-logo-badge img { filter: grayscale(1) brightness(.55); }
+.sider-logo-text { font-size: 14px; font-weight: 700; letter-spacing: -.2px; }
+.sider-logo-sub { font-size: 11px; letter-spacing: 1px; }
+.app-sider .ant-menu { background: transparent !important; }
+.app-sider .ant-menu-item { font-size: 13px; border-radius: 9px; }
+.app-sider .ant-menu-item-selected { background: #23272a !important; color: #ecedef !important; }
+.app-sider .ant-menu-item-selected .anticon { color: #68bba1; }
+html[data-theme='light'] .app-sider .ant-menu-item-selected { background: #cce6dc !important; color: #17614d !important; }
+.sider-footer { border-top: 1px solid var(--line); }
+.ant-card { border: 1px solid var(--line); border-radius: 12px; box-shadow: none; background: var(--surface); }
+.ant-card:hover { box-shadow: none; }
+.ant-card > .ant-card-head { border-color: var(--line-soft); min-height: 46px; }
+.ant-card-head-title { font-size: 14px; font-weight: 600; }
+.ant-btn { font-size: 13px; box-shadow: none; border-radius: 8px; }
+.ant-btn-primary { color: var(--text-on-brand); font-weight: 600; }
+.ant-btn-default:hover { border-color: var(--brand); color: var(--brand); }
+.ant-table-wrapper .ant-table { background: var(--surface); }
+.mastery-tag { background: var(--surface-2); border-color: var(--line); border-radius: 8px; padding: 12px; }
+.mastery-tag:hover { background: var(--hover-bg); transform: none; }
+.mastery-tag-meta { color: var(--text-3); }
+.background-settings-card { margin-bottom: 24px; }
+.background-strength { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; font-size: 13px; }
+.background-strength .ant-slider { flex: 1; min-width: 100px; max-width: 360px; margin-inline: 6px; }
+.background-strength output { min-width: 4ch; font-variant-numeric: tabular-nums; color: var(--text-3); }
+.background-file { font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
+.background-status { font-size: 12px; color: var(--brand); min-height: 18px; }
+.fantasy-background { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; background: #090a0b; visibility: hidden; }
+.fantasy-background-media { position: absolute; inset: 0; opacity: var(--background-opacity, .6); }
+.fantasy-background-media > :is(img, video) { display: block; position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; }
+html[data-background='active'] .fantasy-background { visibility: visible; }
+#root { position: relative; z-index: 1; }
+html[data-background='active'] {
+  --background-panel: color-mix(in srgb, var(--surface) var(--background-surface-opacity), transparent);
+  --background-control: color-mix(in srgb, var(--surface-2) var(--background-control-opacity), transparent);
+}
+html[data-background='active'] :is(.ant-app, .ant-layout, .app-content, .page-content, .content-container) { background: transparent !important; }
+html[data-background='active'] .app-sider { background: transparent !important; }
+html[data-background='active'] :is(.ant-card, .ant-collapse, .ant-table, .ant-table-cell, .dash-module, .mastery-tag) { background: var(--background-panel) !important; }
+html[data-background='active'] :is(.ant-input, .ant-input-affix-wrapper, .ant-input-number, .ant-select-selector, .ant-btn-default, .ant-segmented) { background: var(--background-control) !important; }
+html[data-background='active'] :is(.ant-modal-content, .ant-modal-header, .ant-drawer-content, .ant-dropdown-menu, .ant-select-dropdown, .ant-popover-inner) { background: var(--surface) !important; }
+/* 压在背景图上的文字：按图片实际亮度选色，而不是无条件写死浅色。
+   原实现固定 #ecedef —— 亮色主题压亮图实测只有 1.07:1，几乎不可读。
+   亮度由 appearance.tsx 用 canvas 量出后写到 data-background-tone。 */
+:is(html[data-background='active'][data-background-tone]) :is(.page-title, .page-description, .page-breadcrumb, .sider-logo-text, .sider-logo-sub, .app-sider .ant-menu-item:not(.ant-menu-item-selected), .app-sider .ant-menu-item-group-title) {
+  text-shadow: 0 0 3px rgb(0 0 0 / 55%), 0 0 8px rgb(0 0 0 / 35%);
+}
+html[data-background='active'][data-background-tone='dark'] :is(.page-title, .page-description, .page-breadcrumb, .sider-logo-text, .sider-logo-sub, .app-sider .ant-menu-item:not(.ant-menu-item-selected), .app-sider .ant-menu-item-group-title) {
+  color: #f4f6f5 !important;
+}
+html[data-background='active'][data-background-tone='light'] :is(.page-title, .page-description, .page-breadcrumb, .sider-logo-text, .sider-logo-sub, .app-sider .ant-menu-item:not(.ant-menu-item-selected), .app-sider .ant-menu-item-group-title) {
+  color: #10201c !important;
+  text-shadow: 0 0 3px rgb(255 255 255 / 70%), 0 0 8px rgb(255 255 255 / 45%);
+}
+/* 视频或量不出亮度：保持中性 —— 只加描边不强制换色，避免赌错方向 */
+html[data-theme='light'][data-background='active']:not([data-background-tone]) :is(.page-title, .page-description, .page-breadcrumb, .sider-logo-text, .sider-logo-sub, .app-sider .ant-menu-item:not(.ant-menu-item-selected), .app-sider .ant-menu-item-group-title) {
+  color: #ecedef !important;
+}
+@media (max-width: 600px) { .page-title { font-size: 23px; } .background-strength { gap: 8px; } }

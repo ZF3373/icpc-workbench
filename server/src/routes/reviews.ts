@@ -13,10 +13,21 @@ import { localToday } from '../dates.ts';
 import { problemIdentity } from '../problems/identity.ts';
 import { reviewPlanTasks } from '../reviews/planTasks.ts';
 import { reviewHistory } from '../reviews/history.ts';
+import { addReviewFromUrl } from '../reviews/fromUrl.ts';
 
 export function reviewsRoutes(db: Db): Router {
   const r = Router();
   const todayStr = localToday;
+
+  r.post('/from-url', (req, res) => {
+    try {
+      res.json(addReviewFromUrl(db, req.body?.url, req.body?.title));
+    } catch (error) {
+      console.error('[reviews/from-url]', error);
+      res.status(400).json({ error: error instanceof Error && !/sqlite|SQL|constraint|column|table/i.test(error.message)
+        ? error.message : '添加失败，请稍后重试' });
+    }
+  });
 
   // POST /api/reviews  body: { platform, problemKey } → 加入复习队列（已存在则幂等返回现有排期）
   r.post('/', (req, res) => {

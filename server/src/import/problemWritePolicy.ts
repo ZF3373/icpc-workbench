@@ -56,7 +56,15 @@ export function problemUpsertSql(source: DifficultySource): string {
     ON CONFLICT(platform, problem_key) DO UPDATE SET
       title = CASE WHEN excluded.title != '' AND excluded.title != problems.problem_key
                    THEN excluded.title ELSE problems.title END,
-      url = COALESCE(excluded.url, problems.url),
+      -- url 与 title 走**同一个守卫**：退化响应（title 退化成题号/兜底串）里的 url
+      -- 往往也是降级的（牛客竞赛行给的是 /acm/contest/{cid}/{index} 而不是 /acm/problem/{id}）。
+      -- 既然不采信那次响应的标题，就不该采信它的地址；已有地址保留，
+      -- 没有地址时仍可填入（不因为守卫把新题变成无链接）。
+      url = CASE
+        WHEN excluded.url IS NULL THEN problems.url
+        WHEN excluded.title != '' AND excluded.title != problems.problem_key THEN excluded.url
+        ELSE COALESCE(problems.url, excluded.url)
+      END,
       tags = CASE WHEN excluded.tags != '[]' THEN excluded.tags ELSE problems.tags END,
       difficulty = CASE
         WHEN excluded.difficulty IS NULL THEN problems.difficulty

@@ -1,4 +1,5 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
+import { normalizeOjProblemKey, vjudgeOjPlatform } from '../adapters/vjudgeIdentity.ts';
 
 /**
  * 题单文本解析（issue #4 题单整理）：用户从平台题单页复制的题目列表粘贴进来，
@@ -27,6 +28,7 @@ interface UrlPattern {
 }
 
 const URL_PATTERNS: UrlPattern[] = [
+  { re: /(?:www\.)?nowcoder\.com\/practice\/([a-f0-9]{32})/i, platform: 'nowcoder', key: m => 'practice:' + m[1].toLowerCase() },
   {
     re: /luogu\.com\.cn\/problem\/([A-Za-z0-9_]+)/,
     platform: 'luogu',
@@ -64,43 +66,30 @@ const URL_PATTERNS: UrlPattern[] = [
 /**
  * VJudge 转发链接：vjudge.net/problem/{OJ}-{ID}
  * 将 VJudge 的 OJ 标识映射回应用支持的平台：
+ * - CodeForces-1234A / CF-1234A → codeforces / 1234A
  * - Gym-104821A → codeforces / 104821A
- * - CF-1234A → codeforces / 1234A
  * - 洛谷-P1001 → luogu / P1001
  * - AtCoder-abc300_a → atcoder / abc300_a
  * - QOJ-9242 → qoj / 9242
+ * 映射表唯一真源是 adapters/vjudgeIdentity.ts（与 VJudge 同步适配器共用，
+ * 避免「同步落一种身份、URL 导入落另一种身份」）。
  * 其他不支持的 OJ（如 SPOJ 等）返回 null 跳过。
  */
 function parseVJudgeUrl(line: string): { platform: PlatformId; problemKey: string; url?: string; rest: string } | null {
-  // OJ 标识可为英文（Gym/CF/AtCoder）或中文（洛谷）；ID 为字母数字下划线
-  const m = line.match(/vjudge\.net\/problem\/([A-Za-z\u4e00-\u9fff]+)-([A-Za-z0-9_]+)/);
+  // 先解码再匹配：vjudge.ts 的 problemUrl 用 encodeURIComponent 生成链接，
+  // 洛谷键会写成 problem/%E6%B4%9B%E8%B0%B7-P1001，正则若只认原字符，
+  // 「应用自己生成的链接粘回『通过链接添加』」就会识别失败（往返断裂）。
+  let decoded = line;
+  try { decoded = decodeURIComponent(line); } catch { /* 非法编码按原样匹配 */ }
+  // OJ 标识可为英文（CodeForces/Gym/AtCoder）或中文（洛谷/牛客）；ID 为字母数字下划线
+  const m = decoded.match(/vjudge\.net\/problem\/([A-Za-z\u4e00-\u9fff]+)-([A-Za-z0-9_]+)/);
   if (!m) return null;
-  const oj = m[1].toLowerCase();
-  const id = m[2];
-  let platform: PlatformId | null = null;
-  let problemKey = '';
-  if (oj === 'gym') {
-    // Gym-104821A → codeforces 104821A
-    platform = 'codeforces';
-    problemKey = id.toUpperCase();
-  } else if (oj === 'cf') {
-    // CF-1234A → codeforces 1234A
-    platform = 'codeforces';
-    problemKey = id.toUpperCase();
-  } else if (oj === '洛谷' || oj === 'luogu') {
-    platform = 'luogu';
-    problemKey = /^AT_/i.test(id) ? id.toLowerCase() : id.toUpperCase();
-  } else if (oj === 'atcoder') {
-    platform = 'atcoder';
-    problemKey = id.toLowerCase();
-  } else if (oj === 'nowcoder') {
-    platform = 'nowcoder';
-    problemKey = id;
-  } else if (oj === 'qoj') {
-    platform = 'qoj';
-    problemKey = id;
-  }
+  // 真实 oj 字面量见 vjudgeIdentity 的映射表（线上是 CodeForces / Gym / AtCoder …，
+  // 其中 CodeForces 是 VJudge 的实际写法，CF 是它并不使用的简写，两者都要认）
+  const platform = vjudgeOjPlatform(m[1]);
   if (!platform) return null;
+  const problemKey = normalizeOjProblemKey(platform, m[2]);
+  if (!problemKey) return null;
   // 还原完整 URL
   const urlsInLine = [...line.matchAll(/https?:\/\/[^\s，,；;]+/g)].map((x) => x[0]);
   const url = urlsInLine.find((u) => u.includes(m[0])) ?? `https://${m[0]}`;

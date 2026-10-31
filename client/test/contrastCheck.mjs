@@ -94,6 +94,12 @@ const CHECKS = [
   // 换底色再量一遍，避免"只在某一个底色上达标"
   { name: '高亮（surface 底）', fg: 'mark-text', bg: 'amber-soft', base: 'surface', min: 4.5 },
   { name: '粗体（surface 底）', fg: 'strong-text', bg: null, base: 'surface', min: 4.5 },
+  // 辅助文字（--text-3）承载真实信息（平台标签、日期、说明），必须按 AA 正文量。
+  // 此前不在 CHECKS 里 → #667572 在 surface-2/3 上跌破 4.5 也没人发现。
+  { name: '辅助文字 --text-3（surface 底）', fg: 'text-3', bg: null, base: 'surface', min: 4.5 },
+  { name: '辅助文字 --text-3（surface-2 底）', fg: 'text-3', bg: null, base: 'surface-2', min: 4.5 },
+  { name: '辅助文字 --text-3（surface-3 底）', fg: 'text-3', bg: null, base: 'surface-3', min: 4.5 },
+  { name: '辅助文字 --text-3（页面底 bg）', fg: 'text-3', bg: null, base: 'bg', min: 4.5 },
 ]
 
 let failures = 0

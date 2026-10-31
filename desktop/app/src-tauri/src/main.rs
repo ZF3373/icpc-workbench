@@ -23,6 +23,23 @@ use std::os::windows::process::CommandExt;
 // WebviewUrl 仅在建窗（setup）使用，run 回调路径不需要
 #[allow(unused_imports)]
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+#[tauri::command]
+fn background_visible(app: tauri::AppHandle) -> bool {
+    app.get_webview_window("main")
+        .map(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false))
+        .unwrap_or(false)
+}
 
 const PORT_MIN: u16 = 3001;
 const PORT_MAX: u16 = 3020;
@@ -415,6 +432,7 @@ fn main() {
     );
 
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![background_visible])
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 二次启动 → 还原并聚焦已有窗口。窗口可能处于最小化/隐藏态：只 set_focus 的
@@ -429,6 +447,26 @@ fn main() {
         .setup(|app| {
             app.manage::<CoreHandle>(Mutex::new(None));
             app.manage::<PortState>(Mutex::new(None));
+
+            let open = MenuItem::with_id(app, "open", "打开算法工作台", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open, &quit])?;
+            TrayIconBuilder::with_id("workbench-tray")
+                .icon(app.default_window_icon().expect("application icon").clone())
+                .tooltip("ICPC 备赛工作台")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => show_main(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        show_main(tray.app_handle());
+                    }
+                })
+                .build(app)?;
 
             // 先建窗显示启动页，再异步拉核心/探活（避免阻塞 setup）
             let win = tauri::WebviewWindowBuilder::new(
@@ -451,9 +489,9 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
-            // 关窗 = 退出软件：回收核心子进程（与网页版「关闭窗口即退出」语义一致）
-            tauri::WindowEvent::CloseRequested { .. } => {
-                kill_core(window.app_handle());
+            // 主窗口关闭时驻留托盘，登录等辅助窗口仍正常关闭。
+            tauri::WindowEvent::CloseRequested { api, .. } if window.label() == "main" => {
+                if window.hide().is_ok() { api.prevent_close(); }
             }
             // 主窗口已销毁而进程仍存活（实测：更新后关窗可能留下无窗口的僵尸进程）：
             // 强制退出。否则进程占着单实例锁，之后每次手动启动都被拦截——表现为「软件打不开」

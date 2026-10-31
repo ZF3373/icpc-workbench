@@ -22,7 +22,7 @@ export interface TombstoneMatcher {
  * 与 SQL `LOWER(REPLACE(x, ' ', ''))` 同口径：SQLite 的 LOWER 只对 ASCII 生效，
  * 这里也只做 ASCII 折叠，否则同一题号会在两侧算出不同的键。
  */
-function normalizedKey(problemKey: string): string {
+export function normalizedKey(problemKey: string): string {
   return problemKey.replace(/ /g, '').replace(/[A-Z]/g, (c) => c.toLowerCase());
 }
 

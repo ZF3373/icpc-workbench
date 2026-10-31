@@ -49,6 +49,7 @@ import { templatesRoutes } from './routes/templates.ts';
 import { todayRoutes } from './routes/today.ts';
 import { updateRoutes, APP_VERSION } from './routes/update.ts';
 import { uploadsRoutes } from './routes/uploads.ts';
+import { appearanceRoutes } from './routes/appearance.ts';
 import { widgetRoutes, setWidgetPublicDir } from './routes/widget.ts';
 import { mcpRoutes } from './routes/mcp.ts';
 import { setSchemaSql } from './db/index.ts';
@@ -185,6 +186,7 @@ export function startServer(
   app.use('/api/history', historyRoutes(db));
   app.use('/api/reviews', reviewsRoutes(db));
   app.use('/api/uploads', uploadsRoutes({ uploadsDir: path.join(config.dataDir, 'uploads') }));
+  app.use('/api/appearance', appearanceRoutes(config.dataDir));
   app.use('/api/today', todayRoutes(db));
   app.use('/api/templates', templatesRoutes(db, { dataDir: config.dataDir }));
   app.use('/api/contests', contestsRoutes(db));
@@ -634,6 +636,11 @@ function openBrowser(url: string): void {
 
 function banner(url: string, version: string): string {
   const line = '='.repeat(54);
+  // 桌面壳（Tauri）里关窗是**隐藏到托盘**而不是退出，控制台文案必须与之相符 ——
+  // 旧文案「关闭窗口 = 退出软件」在壳里是错的，照做的用户会以为进程已结束，
+  // 而它其实还在后台跑，再次双击只会唤回同一个窗口。
+  // 纯 SEA 双击（无壳）没有托盘，关控制台窗口确实会结束进程，那一档保留原说法。
+  const embedded = process.env.ICPC_EMBEDDED === '1';
   return [
     '',
     line,
@@ -643,7 +650,9 @@ function banner(url: string, version: string): string {
     '   （浏览器没有自动打开？把上面网址复制到浏览器即可）',
     '',
     `   当前版本：${version}（可在 设置 → 软件更新 中检查新版本）`,
-    '   [1] 使用期间请保留本窗口，可以最小化；关闭窗口 = 退出软件',
+    embedded
+      ? '   [1] 关闭窗口只会隐藏到托盘；要完全退出请右键托盘图标选「退出」'
+      : '   [1] 使用期间请保留本窗口，可以最小化；关闭本窗口 = 退出软件',
     '   [2] 练习数据保存在本软件旁的 data 文件夹，请勿删除',
     `   [3] widget 挂件页面：${url}/widget`,
     line,

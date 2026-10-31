@@ -32,3 +32,84 @@ jobs:
 
       - name: Test (server + client)
         run: npm test
+
+  windows-preview:
+    name: Windows PR 安装包
+    if: github.event_name == 'pull_request'
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/app/src-tauri
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建 Windows 安装包与便携版
+        run: node server/scripts/build-desktop.mjs
+
+      - name: 附带许可和更新说明
+        shell: pwsh
+        run: |
+          Copy-Item -LiteralPath LICENSE -Destination server/release/LICENSE
+          # 取 docs/updates 里**最新一份**更新说明，而不是写死某个 PR 的文件名。
+          # 写死时：该文件一旦改名/删除，Actions 的 pwsh 默认 $ErrorActionPreference='Stop'
+          # 会让这一步直接红；而且这个 job 是常驻的（if: pull_request），
+          # 之后每个 PR 的测试包都会附上这份过期的更新说明。
+          $note = Get-ChildItem -Path docs/updates -Filter *.md -File |
+            Sort-Object Name -Descending | Select-Object -First 1
+          if ($null -eq $note) {
+            Write-Host 'docs/updates 下没有更新说明，跳过（不阻塞打包）'
+          } else {
+            Copy-Item -LiteralPath $note.FullName -Destination server/release/更新说明.md
+            Write-Host "更新说明：$($note.Name)"
+          }
+
+      - name: 校验 MSVC 静态 WebView2 Loader
+        shell: pwsh
+        run: |
+          $bytes = [IO.File]::ReadAllBytes('server/release/icpc-workbench.exe')
+          if ([Text.Encoding]::ASCII.GetString($bytes) -match 'WebView2Loader\.dll') {
+            throw '壳依赖外部 WebView2Loader.dll，不能作为安装包分发'
+          }
+
+      - name: 生成 SHA256 校验文件
+        shell: pwsh
+        run: |
+          Get-ChildItem -LiteralPath server/release -File |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $($_.Name)"
+            } | Set-Content -LiteralPath server/release/checksums.sha256 -Encoding utf8
+
+      - name: 上传 PR 测试安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-preview-pr-${{ github.event.number }}-${{ github.event.pull_request.head.sha }}
+          path: |
+            server/release/icpc-workbench.exe
+            server/release/icpc-core.exe
+            server/release/*-setup.exe
+            server/release/使用说明.txt
+            server/release/更新说明.md
+            server/release/LICENSE
+            server/release/checksums.sha256
+          if-no-files-found: error
+          retention-days: 14

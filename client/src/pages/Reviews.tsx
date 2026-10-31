@@ -12,7 +12,7 @@ import NoteEditor from '../components/NoteEditor'
 import NoteCardButton from '../components/NoteCardButton'
 import ReviewHistoryDrawer from '../components/ReviewHistoryDrawer'
 import { difficultyColor, platformName } from '../ui'
-import { del, get, patch } from '../api'
+import { del, get, patch, post } from '../api'
 import { useReviewFeedback } from '../useReviewFeedback'
 import { FEEDBACK_META, dueText, filterReviewItems } from '../reviewDue'
 import type { ReviewItem } from '../types'
@@ -31,6 +31,10 @@ export default function Reviews() {
   const abortRef = useRef<AbortController | null>(null)
   const [editing, setEditing] = useState<ReviewItem | null>(null)
   const [noteDraft, setNoteDraft] = useState('')
+  const [addOpen, setAddOpen] = useState(false)
+  const [urlDraft, setUrlDraft] = useState('')
+  const [titleDraft, setTitleDraft] = useState('')
+  const [adding, setAdding] = useState(false)
 
   const load = useCallback((f: 'due' | 'all') => {
     abortRef.current?.abort()
@@ -89,6 +93,24 @@ export default function Reviews() {
   const hasFilters = query.trim() !== '' || platform !== 'all'
   const clearFilters = () => { setQuery(''); setPlatform('all') }
 
+  const addFromUrl = async () => {
+    if (adding || !urlDraft.trim()) return
+    setAdding(true)
+    try {
+      const result = await post<{ alreadyInQueue: boolean; nextDueOn: string; title: string }>('/api/reviews/from-url', {
+        url: urlDraft.trim(), title: titleDraft.trim(),
+      })
+      message.success(`「${result.title}」${result.alreadyInQueue ? '已在复习库' : '已加入复习库'}，下次到期 ${result.nextDueOn}`)
+      setAddOpen(false)
+      setUrlDraft('')
+      setTitleDraft('')
+      clearFilters()
+      setFilter('all')
+      load('all')
+    } catch (error) { message.error((error as Error).message) }
+    finally { setAdding(false) }
+  }
+
   return (
     <div>
       <PageHeader
@@ -96,6 +118,7 @@ export default function Reviews() {
         description="AC 不等于从此记住 —— 间隔复习把短暂理解变成稳定能力"
         extra={
           <Space>
+            <Button type="primary" onClick={() => setAddOpen(true)}>通过链接添加</Button>
             <Button type={filter === 'due' ? 'primary' : 'default'} onClick={() => setFilter('due')}>
               到期复习{dueCount > 0 ? ` · ${dueCount}` : ''}
             </Button>
@@ -268,6 +291,19 @@ export default function Reviews() {
       )}
 
       <ReviewHistoryDrawer key={historyItem?.id ?? 'closed'} item={historyItem} onClose={() => setHistoryItem(null)} />
+
+      <Modal title="通过题目链接加入复习库" open={addOpen} onCancel={() => { if (!adding) setAddOpen(false) }}
+        onOk={addFromUrl} okText="加入复习库" cancelText="取消" confirmLoading={adding}
+        okButtonProps={{ disabled: !urlDraft.trim() }} closable={!adding} maskClosable={!adding}>
+        <p>支持洛谷、Codeforces（含 Gym）、AtCoder、代码源、牛客、力扣、计蒜客、QOJ，以及对应的 VJudge 链接。</p>
+        <label htmlFor="review-url">题目链接</label>
+        <Input id="review-url" autoFocus value={urlDraft} onChange={e => setUrlDraft(e.target.value)}
+          disabled={adding} maxLength={2048} placeholder="https://www.luogu.com.cn/problem/P1001" style={{ margin: '8px 0 16px' }} />
+        <label htmlFor="review-title">题目标题（可选）</label>
+        <Input id="review-title" value={titleDraft} onChange={e => setTitleDraft(e.target.value)} disabled={adding}
+          maxLength={300} placeholder="已有题目保留原信息；新题留空时显示题号" style={{ marginTop: 8 }} />
+        <p className="muted-note">只添加复习题，不生成提交或 AC 记录。新题不会自动抓取题面；加入后可在全部队列中查看。</p>
+      </Modal>
 
       <Modal
         title={`复习笔记 · ${editing?.problemKey ?? ''}`}
