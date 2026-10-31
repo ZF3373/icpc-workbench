@@ -58,6 +58,17 @@ const CSS_VAR = {
   overlay2: '--overlay-2',
   chartGrid: '--chart-grid',
   chartCursor: '--chart-cursor',
+  /** 图表中性色阶：极简主题下「未通过 / 提交量」用明度阶梯而非第二第三种彩色 */
+  chartNeutral1: '--chart-neutral-1',
+  chartNeutral2: '--chart-neutral-2',
+  /** 图表绿色明度阶梯：浅 → 中 → 深（弱项柱 / 需要分档的绿色数据） */
+  chartGreenSoft: '--chart-green-soft',
+  chartGreenMid: '--chart-green-mid',
+  chartGreenDeep: '--chart-green-deep',
+  /** 图表柱体填充（比文字色更柔一档，只用于大面积色块） */
+  chartFillPositive: '--chart-fill-positive',
+  chartFillWarn: '--chart-fill-warn',
+  chartFillDanger: '--chart-fill-danger',
 } as const
 
 export type TokenName = keyof typeof CSS_VAR
@@ -86,6 +97,14 @@ const TOKEN_FALLBACK: Record<TokenName, string> = {
   overlay2: 'rgba(255, 255, 255, 0.04)',
   chartGrid: 'rgba(255, 255, 255, 0.06)',
   chartCursor: 'rgba(134, 168, 255, 0.05)',
+  chartNeutral1: '#3a414b',
+  chartNeutral2: '#4d5561',
+  chartGreenSoft: '#8fc0a8',
+  chartGreenMid: '#5f9d7e',
+  chartGreenDeep: '#2f7a58',
+  chartFillPositive: '#5f9d7e',
+  chartFillWarn: '#d08a5c',
+  chartFillDanger: '#c9705f',
 }
 
 /** 读取当前主题下某个 CSS 变量的计算值 */

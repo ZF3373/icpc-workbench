@@ -8,7 +8,7 @@
  */
 import { useState } from 'react'
 import { Card, Space, Tooltip, Typography } from 'antd'
-import { DownOutlined, HistoryOutlined, UpOutlined } from '@ant-design/icons'
+import { IconChevronDown, IconChevronUp, IconHistory } from './icons'
 import { useSyncProgress } from '../syncProgressCore'
 import { summaryText, wrapUpVisible } from '../syncProgress'
 import { lastSyncSummary } from '../syncStatus'
@@ -54,6 +54,7 @@ export default function SyncStatusCard() {
     <>
       <Card
         size="small"
+        className="sync-status-card"
         style={{ marginBottom: 16 }}
         title={
           <Space size={8} wrap>
@@ -65,12 +66,20 @@ export default function SyncStatusCard() {
           <Space size={12}>
             <Tooltip title="查看最近 50 次同步的明细（平台 / 模式 / 耗时 / 错误原因）">
               <a onClick={() => setHistoryOpen(true)} style={{ fontSize: 13 }}>
-                <HistoryOutlined /> 上次同步结果
+                <IconHistory size={13} /> 上次同步结果
               </a>
             </Tooltip>
             <Tooltip title={collapsed ? '展开各平台详情' : '收起详情（摘要仍显示）'}>
               <a onClick={toggle} style={{ fontSize: 13 }}>
-                {collapsed ? <>展开 <DownOutlined style={{ fontSize: 10 }} /></> : <>收起 <UpOutlined style={{ fontSize: 10 }} /></>}
+                {collapsed ? (
+                  <>
+                    展开 <IconChevronDown size={11} />
+                  </>
+                ) : (
+                  <>
+                    收起 <IconChevronUp size={11} />
+                  </>
+                )}
               </a>
             </Tooltip>
           </Space>

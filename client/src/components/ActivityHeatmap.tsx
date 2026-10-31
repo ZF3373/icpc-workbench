@@ -7,8 +7,8 @@
  * 纯 CSS grid 实现，零新依赖。
  */
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
-import { Card, Empty, Segmented, Spin, Tooltip, theme } from 'antd'
-import { HolderOutlined } from '@ant-design/icons'
+import { Card, Empty, Segmented, Spin, Tooltip } from 'antd'
+import { IconGrip } from './icons'
 import dayjs from 'dayjs'
 import { get } from '../api'
 import type { AccountScope } from '../accountScope'
@@ -32,10 +32,25 @@ const GAP = 3
 const CELL_MIN = 8
 const CELL_MAX = 24
 
-/** 实格四档配色（浅→深，GitHub 贡献图同款）；空格用主题 colorBorderSecondary */
+/**
+ * 实格四档配色（浅→深）；空格用主题 colorBorderSecondary。
+ *
+ * 亮色主题走**低饱和灰绿**：极简扁平化下热力图是唯一保留的彩色图表，
+ * 但饱和度压到与白底融为一体的程度（色相 150° 左右，明度阶梯均匀），
+ * 让"哪几天在练"的密度信息比颜色本身更突出；暗色保持 GitHub 同款亮绿。
+ */
 const LEVEL_COLORS = {
-  light: ['#9be9a8', '#40c463', '#30a14e', '#216e39'],
-  dark: ['#0e4429', '#006d32', '#26a641', '#39d353'],
+  /**
+   * 亮色四档：低饱和灰绿，刻意**拉大深浅跨度**（明度从 0.92 一路压到 0.19），
+   * 让"每天练了多少"一眼可辨 —— 旧版四档都挤在浅灰绿区间里，几乎分不出来。
+   */
+  light: ['#cfe2d6', '#9dc4ad', '#5f9678', '#2f6b4f'],
+  /**
+   * 暗色四档：**霓虹绿**。深底上低饱和绿会糊成一团，所以改用高饱和、高亮度的
+   * 亮绿阶梯（明度 0.056 → 0.811，相邻档对比 ≥ 1.39:1，最亮档对卡片底 14.2:1）。
+   * 第一档刻意压到很暗，与空格（--heatmap-empty #26262b）明确分开。
+   */
+  dark: ['#166b46', '#22a866', '#45dd97', '#8bffc6'],
 } as const
 
 function cellTitle(c: HeatmapCell): string {
@@ -59,7 +74,6 @@ export default function ActivityHeatmap({
   const [data, setData] = useState<HeatmapResult | null>(null)
   const [loading, setLoading] = useState(true)
   const { resolved } = useTheme()
-  const { token } = theme.useToken()
 
   useEffect(() => {
     let alive = true
@@ -103,8 +117,15 @@ export default function ActivityHeatmap({
   }, [plotWidth, grid.weeks.length])
 
   const step = cell + GAP
-  const radius = Math.max(3, Math.round(cell / 4))
-  const emptyColor = token.colorBorderSecondary
+  /* 热力方格统一小圆角：按格子尺寸取 1/5，下限 3px、上限 5px ——
+     格子放大时不至于变成圆片，缩小时仍读得出"方块" */
+  const radius = Math.max(3, Math.min(5, Math.round(cell / 5)))
+  /**
+   * 空格配色：必须比第一档绿**明显更淡/更暗**，否则"没练"和"练了一点"分不开。
+   * 走 --heatmap-empty 这个语义 Token 而不是 antd 的 colorFillQuaternary ——
+   * 后者在亮色下是 2% 黑，叠在白卡上几乎不可见，格子会像"掉了一块"。
+   */
+  const emptyColor = resolved === 'dark' ? '#26262b' : '#f0f0f2'
   const filledColors = LEVEL_COLORS[resolved]
   const cellColor = (solved: number) =>
     solved <= 0 ? emptyColor : filledColors[levelFor(solved, thresholds) - 1]
@@ -115,7 +136,7 @@ export default function ActivityHeatmap({
     <Card
       title={
         <>
-          <HolderOutlined className="module-drag-handle" />
+          <IconGrip size={14} className="module-drag-handle" />
           刷题热力图
         </>
       }
@@ -136,31 +157,62 @@ export default function ActivityHeatmap({
         <Empty description="所选范围内没有提交记录" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : (
         <>
-          <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 6 }}>
+          <div className="heatmap-summary">
             {rangeLabel}
             {rangeLabel ? '共 ' : ''}
-            AC <strong style={{ color: 'var(--green)' }}>{data.totalSolved}</strong> 题 · 提交{' '}
-            <strong>{data.totalAttempts}</strong> 次
+            AC <strong>{data.totalSolved}</strong> 题 · 提交 <strong>{data.totalAttempts}</strong> 次
           </div>
           <div ref={setPlotEl} style={{ overflowX: 'auto', paddingBottom: 4 }}>
             <div style={{ width: 'fit-content', margin: '0 auto' }}>
-              {/* 月份标签行（绝对定位到对应周列上方） */}
-              <div style={{ position: 'relative', height: 16, marginLeft: LABEL_COL }}>
-                {grid.monthLabels.map((m) => (
-                  <span
-                    key={`${m.col}-${m.label}`}
-                    style={{
-                      position: 'absolute',
-                      left: m.col * step,
-                      top: 0,
-                      fontSize: 11,
-                      lineHeight: '16px',
-                      color: 'var(--text-3)',
-                    }}
-                  >
-                    {m.label}
-                  </span>
-                ))}
+              {/* 月份标签行 + 图例同处一行：左边是时间刻度，右边是"少→多"色阶。
+                  两者同一基线（height 14 / line-height 14），视觉上是一条完整的表头。 */}
+              <div className="heatmap-head" style={{ display: 'flex', alignItems: 'center', gap: 12, height: 14 }}>
+                <div
+                  className="heatmap-months"
+                  style={{ position: 'relative', flex: '1 1 auto', height: 14, marginLeft: LABEL_COL }}
+                >
+                  {grid.monthLabels.map((m) => (
+                    <span
+                      key={`${m.col}-${m.label}`}
+                      style={{
+                        position: 'absolute',
+                        left: m.col * step,
+                        top: 0,
+                        /* 月份标签压缩到 10px：它只是"时间刻度"，不该与数据争字号 */
+                        fontSize: 10,
+                        fontWeight: 500,
+                        lineHeight: '14px',
+                        letterSpacing: '0.04em',
+                        color: 'var(--text-3)',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {m.label}
+                    </span>
+                  ))}
+                </div>
+                {/* 图例：与月份行对齐（同一行的右端），方格与热力图同样是小圆角 */}
+                <div
+                  className="heatmap-legend"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    flex: '0 0 auto',
+                    gap: 4,
+                    fontSize: 10,
+                    fontWeight: 500,
+                    lineHeight: '14px',
+                    letterSpacing: '0.04em',
+                    color: 'var(--text-3)',
+                  }}
+                >
+                  <span>少</span>
+                  <span style={{ width: 11, height: 11, borderRadius: 3, background: emptyColor }} />
+                  {filledColors.map((c) => (
+                    <span key={c} style={{ width: 11, height: 11, borderRadius: 3, background: c }} />
+                  ))}
+                  <span>多</span>
+                </div>
               </div>
               <div style={{ display: 'flex' }}>
                 {/* 星期标注列 */}
@@ -211,25 +263,6 @@ export default function ActivityHeatmap({
                     ),
                   )}
                 </div>
-              </div>
-              {/* 图例 */}
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'flex-end',
-                  gap: 4,
-                  marginTop: 6,
-                  fontSize: 11,
-                  color: 'var(--text-3)',
-                }}
-              >
-                <span>少</span>
-                <span style={{ width: 12, height: 12, borderRadius: 3, background: emptyColor }} />
-                {filledColors.map((c) => (
-                  <span key={c} style={{ width: 12, height: 12, borderRadius: 3, background: c }} />
-                ))}
-                <span>多</span>
               </div>
             </div>
           </div>

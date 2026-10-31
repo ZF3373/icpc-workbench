@@ -13,7 +13,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent, KeyboardEvent } from 'react'
 import { App as AntdApp, Button, Tooltip } from 'antd'
-import { ArrowDownOutlined, ArrowUpOutlined, UndoOutlined } from '@ant-design/icons'
+import { IconArrowDown, IconArrowUp, IconUndo } from './icons'
 import {
   MENU_GROUPS,
   MENU_FIXED_BOTTOM,
@@ -96,7 +96,7 @@ export default function SiderMenu({ selected, collapsed, onNavigate }: SiderMenu
           <Button
             type="link"
             size="small"
-            icon={<UndoOutlined />}
+            icon={<IconUndo size={13} />}
             onClick={() => {
               message.destroy(key)
               setMenuOrder(before)
@@ -200,7 +200,7 @@ export default function SiderMenu({ selected, collapsed, onNavigate }: SiderMenu
               aria-label={`上移「${label}」`}
               onClick={() => handleMove(groupKey, key, -1)}
             >
-              <ArrowUpOutlined />
+              <IconArrowUp size={13} />
             </button>
             <button
               type="button"
@@ -210,7 +210,7 @@ export default function SiderMenu({ selected, collapsed, onNavigate }: SiderMenu
               aria-label={`下移「${label}」`}
               onClick={() => handleMove(groupKey, key, 1)}
             >
-              <ArrowDownOutlined />
+              <IconArrowDown size={13} />
             </button>
           </span>
         )}
@@ -254,7 +254,7 @@ export default function SiderMenu({ selected, collapsed, onNavigate }: SiderMenu
           <Button
             type="text"
             size="small"
-            icon={<UndoOutlined />}
+            icon={<IconUndo size={13} />}
             onClick={() => {
               resetMenuOrder()
               message.success('已恢复默认导航排序')

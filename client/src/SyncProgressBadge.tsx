@@ -9,7 +9,7 @@
  */
 import { useState } from 'react'
 import { Card, Space, Tag, Tooltip, Typography } from 'antd'
-import { DownOutlined, LoadingOutlined, UpOutlined } from '@ant-design/icons'
+import { IconChevronDown, IconChevronUp, IconSpinner } from './components/icons'
 import { useSyncProgress } from './syncProgressCore'
 import { elapsedText, heartbeatText, heartbeatTone, jobLineText, modeText, summaryText } from './syncProgress'
 import { platformName } from './ui'
@@ -76,9 +76,9 @@ export default function SyncProgressBadge() {
             boxShadow: 'var(--shadow)',
           }}
         >
-          <LoadingOutlined />
+          <IconSpinner size={13} className="icon-spin" />
           {pill}
-          <UpOutlined style={{ fontSize: 10 }} />
+          <IconChevronUp size={11} />
         </button>
       </Tooltip>
     )
@@ -101,7 +101,7 @@ export default function SyncProgressBadge() {
         extra={
           <Tooltip title="收缩为一行（仍会继续显示进度）">
             <a onClick={toggle} style={{ fontSize: 12 }}>
-              收缩 <DownOutlined style={{ fontSize: 10 }} />
+              收缩 <IconChevronDown size={11} />
             </a>
           </Tooltip>
         }
@@ -110,7 +110,7 @@ export default function SyncProgressBadge() {
           {snapshot.jobs.map((j) => (
             <div key={j.platform}>
               <Space size={6} align="center">
-                <LoadingOutlined />
+                <IconSpinner size={13} className="icon-spin" />
                 <Typography.Text strong>{platformName(j.platform)}</Typography.Text>
                 <Tag color="blue" style={{ marginInlineEnd: 0 }}>
                   {modeText(j)}

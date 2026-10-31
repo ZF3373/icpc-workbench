@@ -1,5 +1,5 @@
 import { Button } from 'antd'
-import { ReloadOutlined, WarningOutlined } from '@ant-design/icons'
+import { IconAlert, IconReset } from './icons'
 
 /**
  * 局部错误 + 重试。
@@ -36,14 +36,14 @@ export default function InlineError({
       style={{ padding: compact ? '20px 16px' : '28px 16px' }}
       role="alert"
     >
-      <WarningOutlined className="inline-error-icon" />
+      <IconAlert size={22} className="inline-error-icon" />
       <div className="inline-error-title">加载失败</div>
       <div className="inline-error-message">{message}</div>
       {hint && <div className="inline-error-hint">{hint}</div>}
       {onRetry && (
         <Button
           size="small"
-          icon={<ReloadOutlined />}
+          icon={<IconReset size={13} />}
           loading={retrying}
           onClick={onRetry}
           style={{ marginTop: 12 }}
