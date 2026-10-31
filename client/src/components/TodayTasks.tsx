@@ -52,7 +52,13 @@ export default function TodayTasks({ tasks, busyIds, onToggle, onConfirmAc }: {
                   <Tag color={color} style={{ fontSize: 11, margin: 0, lineHeight: '18px' }}>
                     {label}
                   </Tag>
-                  <span style={{ color: allChecked ? 'var(--green)' : 'var(--text-2)' }}>
+                  <span
+                    style={{
+                      color: allChecked ? 'var(--green)' : 'var(--text-2)',
+                      fontWeight: allChecked ? 600 : 500,
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
                     {allChecked ? '已完成' : `${checkedCount}/${group.length} 已打卡`}
                   </span>
                 </span>

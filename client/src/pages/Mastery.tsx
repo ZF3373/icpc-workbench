@@ -288,22 +288,32 @@ export default function Mastery() {
       ) : (
         <>
           <Card size="small" style={{ marginBottom: 16 }}>
-            <Space wrap size="large">
-              <Typography.Text strong>知识点 {total}</Typography.Text>
+            {/* 概览：赛事中心 contest-stat 同款层级（标签 11px 灰上 + 数值 15px/700 下），
+                总数 = core 靛蓝、掌握率 = positive 绿，各档计数靠 Tag 色区分 */}
+            <div className="contest-statgrid" style={{ rowGap: 10 }}>
+              <div className="contest-stat">
+                <span className="contest-stat-label">知识点</span>
+                <span className="contest-stat-value" style={{ color: 'var(--accent-core)' }}>{total}</span>
+              </div>
               {LEVEL_ORDER.map((lv) => {
                 const n = points.filter((p) => p.level === lv).length
                 return (
-                  <span key={lv}>
-                    <Tag color={LEVEL_META[lv].color}>{MASTERY_LEVEL_LABELS[lv as 0 | 1 | 2 | 3 | 4]}</Tag>
-                    <Typography.Text strong>{n}</Typography.Text>
-                  </span>
+                  <div className="contest-stat" key={lv}>
+                    <span className="contest-stat-label">{MASTERY_LEVEL_LABELS[lv as 0 | 1 | 2 | 3 | 4]}</span>
+                    <span className="contest-stat-value contest-stat-value-dim">
+                      <Tag color={LEVEL_META[lv].color} style={{ marginInlineEnd: 6 }}>{n}</Tag>
+                    </span>
+                  </div>
                 )
               })}
-              <Typography.Text type="secondary">
-                {masteredCount > 0 && '🏆 '}
-                达到「掌握」及以上 {masteredCount} 个（{pct(masteredCount / total)}）
-              </Typography.Text>
-            </Space>
+              <div className="contest-stat">
+                <span className="contest-stat-label">{masteredCount > 0 ? '🏆 掌握及以上' : '掌握及以上'}</span>
+                <span className="contest-stat-value" style={{ color: 'var(--green)' }}>
+                  {masteredCount}
+                  <span className="contest-stat-denom">（{pct(masteredCount / total)}）</span>
+                </span>
+              </div>
+            </div>
           </Card>
 
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -414,20 +424,27 @@ export default function Mastery() {
             )}
 
             <Card size="small">
-              <Space wrap size="large">
-                <span>
-                  通过 <b>{active.solved}</b> 题
-                </span>
-                <span>
-                  提交 <b>{active.attempts}</b> 次
-                </span>
-                <span>
-                  AC 率 <b>{active.attempts > 0 ? pct(active.acRate) : '—'}</b>
-                </span>
-                <span>
-                  近 8 周 <b>{active.recentSolved}</b> 题
-                </span>
-              </Space>
+              {/* contest-stat 手法：标签灰上 + 数值 15px/700 下；通过数=core、AC 率=positive 绿 */}
+              <div className="contest-statgrid" style={{ rowGap: 10 }}>
+                <div className="contest-stat">
+                  <span className="contest-stat-label">通过（题）</span>
+                  <span className="contest-stat-value" style={{ color: 'var(--accent-core)' }}>{active.solved}</span>
+                </div>
+                <div className="contest-stat">
+                  <span className="contest-stat-label">提交（次）</span>
+                  <span className="contest-stat-value contest-stat-value-dim">{active.attempts}</span>
+                </div>
+                <div className="contest-stat">
+                  <span className="contest-stat-label">AC 率</span>
+                  <span className="contest-stat-value" style={{ color: 'var(--green)' }}>
+                    {active.attempts > 0 ? pct(active.acRate) : '—'}
+                  </span>
+                </div>
+                <div className="contest-stat">
+                  <span className="contest-stat-label">近 8 周（题）</span>
+                  <span className="contest-stat-value contest-stat-value-dim">{active.recentSolved}</span>
+                </div>
+              </div>
               {active.evidence && (
                 <div style={{ marginTop: 8 }}>
                   <Typography.Text type="secondary">

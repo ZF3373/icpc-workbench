@@ -297,9 +297,10 @@ export default function Today() {
         </Card>
       ) : (
         <>
-          {/* 能力概览条 */}
+          {/* 能力概览条：数值语义色与 Dashboard 指标卡同一套 data-value-tone 机制
+              （core=靛蓝核心 / warn=琥珀待办 / positive=绿正向 / neutral=主文字） */}
           <div className="stats-strip" style={{ marginBottom: 16 }}>
-            <div className="stat-item">
+            <div className="stat-item" data-value-tone="core">
               <span className="stat-strip-icon stat-icon-cyan">
                 <BulbOutlined />
               </span>
@@ -308,7 +309,7 @@ export default function Today() {
                 <strong>{plan.level}</strong>
               </div>
             </div>
-            <div className="stat-item">
+            <div className="stat-item" data-value-tone={plan.dueReviews > 0 ? 'warn' : 'neutral'}>
               <span className="stat-strip-icon stat-icon-amber">
                 <ReadOutlined />
               </span>
@@ -317,7 +318,7 @@ export default function Today() {
                 <strong>{plan.dueReviews}</strong>
               </div>
             </div>
-            <div className="stat-item">
+            <div className="stat-item" data-value-tone="neutral">
               <span className="stat-strip-icon stat-icon-blue">
                 <FireOutlined />
               </span>
@@ -329,7 +330,7 @@ export default function Today() {
                 </strong>
               </div>
             </div>
-            <div className="stat-item">
+            <div className="stat-item" data-value-tone="positive">
               <span className="stat-strip-icon stat-icon-green">
                 <CheckCircleOutlined />
               </span>
@@ -359,7 +360,8 @@ export default function Today() {
                 <Space>
                   <ReadOutlined style={{ color: 'var(--brand)' }} />
                   <span>
-                    到期复习 · <b>{plan.dueReviews}</b> 道
+                    到期复习 ·{' '}
+                    <b style={{ color: 'var(--amber)', fontVariantNumeric: 'tabular-nums' }}>{plan.dueReviews}</b> 道
                   </span>
                 </Space>
               }

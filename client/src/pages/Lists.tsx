@@ -945,8 +945,8 @@ export default function Lists() {
                   <div className="list-card-meta">
                     <span className="mono">{l.item_count} 题</span>
                     <span className="mono">{l.category_count} 个分类</span>
-                    <span className="mono">
-                      已掌握 {l.solved_count}/{l.item_count} · {pct}%
+                    <span className="mono list-card-mastered">
+                      已掌握 <b>{l.solved_count}/{l.item_count}</b> · {pct}%
                     </span>
                   </div>
                   {/* 进度条只是上面那行数字的可视化，读屏不必重复读一次 */}

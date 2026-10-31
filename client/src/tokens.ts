@@ -39,7 +39,8 @@ export const TOKEN_PAIRS = {
   /** 正文与层级文本 */
   text: { cssVar: '--text', dark: '#f6f7f9', light: '#111111' },
   text2: { cssVar: '--text-2', dark: '#c6cad2', light: '#3f4247' },
-  text3: { cssVar: '--text-3', dark: '#8f949e', light: '#686b70' },
+  /** 辅助文字：曾按 4.5:1 卡线（#8f949e/#686b70），小字观感偏淡，整体提亮/加深一档 */
+  text3: { cssVar: '--text-3', dark: '#9aa0ab', light: '#5a5d63' },
   /** 容器/布局底色（colorBgContainer ↔ --surface；模态暗色抬一档 ↔ --surface-2） */
   surface: { cssVar: '--surface', dark: '#1a1a1d', light: '#ffffff' },
   surface2: { cssVar: '--surface-2', dark: '#212124', light: '#f6f6f7' },

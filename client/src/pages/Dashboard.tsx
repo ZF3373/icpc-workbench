@@ -1112,7 +1112,8 @@ export default function Dashboard() {
               stroke={chartColors.rate}
               strokeWidth={2}
               fill={chartColors.rate}
-              fillOpacity={0.08}
+              // 曲线下面积：0.08 曾淡到与卡片底几乎无差，提到 0.12 让"覆盖范围"可辨
+              fillOpacity={0.12}
               isAnimationActive={false}
             />
           </ComposedChart>

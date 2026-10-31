@@ -56,7 +56,9 @@ export default function DueReviewList({
                   >
                     <span className="due-review-meta">
                       第 {item.stage + 1} 档 / {item.intervalDays} 天
-                      {item.lapseCount > 0 ? ` · 失手 ${item.lapseCount} 次` : ''}
+                      {item.lapseCount > 0 && (
+                        <span style={{ color: 'var(--amber)' }}> · 失手 {item.lapseCount} 次</span>
+                      )}
                     </span>
                   </Tooltip>
                 )}

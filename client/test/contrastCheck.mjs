@@ -83,7 +83,8 @@ const { dark, light } = themeBlocks()
 
 /** 每种主题要检查的组合：前景 Token / 底色 Token（底色可能是半透明，叠在 surface-2 上） */
 const CHECKS = [
-  { name: '高亮 ==重点== 文字', fg: 'mark-text', bg: 'amber-soft', base: 'surface-2', min: 4.5 },
+  // 高亮底是专用 --mark-bg（比徽章底 --amber-soft 实一档），校验跟随实际用量
+  { name: '高亮 ==重点== 文字', fg: 'mark-text', bg: 'mark-bg', base: 'surface-2', min: 4.5 },
   { name: '粗体 **重点** 文字', fg: 'strong-text', bg: null, base: 'surface-2', min: 4.5 },
   { name: '正文（参照基线）', fg: 'text-2', bg: null, base: 'surface-2', min: 4.5 },
   // Markdown 链接（.markdown-body a → --link-text）：亮色 --brand 只有 ~2.7:1，
@@ -92,7 +93,7 @@ const CHECKS = [
   { name: 'Markdown 链接（surface 底）', fg: 'link-text', bg: null, base: 'surface', min: 4.5 },
   // 高亮还可能落在 surface（页面底）与 surface-inset（代码卡相邻）上，
   // 换底色再量一遍，避免"只在某一个底色上达标"
-  { name: '高亮（surface 底）', fg: 'mark-text', bg: 'amber-soft', base: 'surface', min: 4.5 },
+  { name: '高亮（surface 底）', fg: 'mark-text', bg: 'mark-bg', base: 'surface', min: 4.5 },
   { name: '粗体（surface 底）', fg: 'strong-text', bg: null, base: 'surface', min: 4.5 },
   // 辅助文字（--text-3）承载真实信息（平台标签、日期、说明），必须按 AA 正文量。
   // 此前不在 CHECKS 里 → #667572 在 surface-2/3 上跌破 4.5 也没人发现。

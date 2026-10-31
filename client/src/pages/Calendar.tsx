@@ -226,6 +226,8 @@ export default function CalendarPage() {
               ),
               icon: <FireOutlined />,
               tone: 'amber',
+              // 核心激励数字：core 靛蓝 + 加粗（valueTone 机制，见 StatStrip）
+              valueTone: 'core',
             },
             {
               label: '最长连续打卡',

@@ -1747,7 +1747,9 @@ export default function Problems() {
           <div style={{ marginBottom: 12 }}>
             <Space wrap size={16}>
               <span>
-                覆盖 <strong>{coverage.annotated}</strong> / {coverage.total} 题（{coverage.coverage.toFixed(1)}%）
+                覆盖 <strong style={{ color: 'var(--accent-core)', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{coverage.annotated}</strong>
+                <span style={{ color: 'var(--text-3)' }}> / {coverage.total} 题</span>
+                <strong style={{ color: 'var(--green)', fontWeight: 700 }}>（{coverage.coverage.toFixed(1)}%）</strong>
               </span>
               <span>
                 规则 {coverage.bySource.rule ?? 0} · 题源标签 {coverage.bySource.tag ?? 0} · 人工 {coverage.bySource.manual ?? 0}

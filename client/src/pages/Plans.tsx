@@ -331,7 +331,10 @@ export default function Plans() {
               <div key={g.date} className="plan-day-group">
                 <div className="plan-day-header">
                   <span className="mono">{g.date}</span>
-                  <span className="plan-day-count">
+                  <span
+                    className="plan-day-count"
+                    style={g.tasks.length > 0 && g.tasks.every((t) => t.checked) ? { color: 'var(--green)', fontWeight: 600 } : undefined}
+                  >
                     {g.tasks.filter((t) => t.checked).length}/{g.tasks.length} 已打卡
                   </span>
                 </div>

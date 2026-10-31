@@ -29,9 +29,10 @@
   --line-soft: #202024;
   --text: #f6f7f9;
   --text-2: #c6cad2;
-  /* 辅助文字。四档底色都要达标（surface-3 是最严的一档）：
-     surface 5.70 / surface-2 5.27 / surface-3 4.70 / bg 6.38 —— 见 check:contrast。 */
-  --text-3: #8f949e;
+  /* 辅助文字。四档底色都要达标（surface-3 是最严的一档）——
+     曾按 4.5:1 卡线校准，但 11-12px 小字观感仍偏淡，整体提亮一档：
+     surface 6.5+ / surface-2 6.1 / surface-3 5.4 / bg 7.2 —— 见 check:contrast。 */
+  --text-3: #9aa0ab;
   /* 空值占位 / 装饰性图标（拖拽把手等）：比 --text-3 更弱，不用于承载正文信息 */
   --text-dim: #5c6068;
   /* 强调色 = 亮紫蓝。同一个色相拆成两个明度，因为"当文字读"和"当底衬白字"
@@ -59,9 +60,11 @@
   /* 图表专用 Token：recharts 把颜色写进 SVG 属性，必须取计算后的具体色值（见 ui.ts useTokenColors） */
   --chart-grid: rgba(255, 255, 255, 0.07);
   --chart-cursor: rgba(154, 161, 255, 0.07);
-  /* 图表中性色阶（明度阶梯，用于"未通过 / 提交量"这类次级数据） */
-  --chart-neutral-1: #3a3d45;
-  --chart-neutral-2: #52565f;
+  /* 图表中性色阶（明度阶梯，用于"未通过 / 提交量"这类次级数据）——
+     曾按"白底上极淡"校准（#e4e5e7/#bcbec2），柱体对白底仅 ~1.2:1 几乎隐形；
+     加深一档让灰色柱肉眼可辨，仍明显弱于 AC 绿 */
+  --chart-neutral-1: #454a54;
+  --chart-neutral-2: #5d626c;
   /* 图表绿色明度阶梯：暗色下的**霓虹绿**三档（相邻档明度差 ≥ 0.15，热力图"哪几天在练"一眼可辨） */
   --chart-green-soft: #1b8552;
   --chart-green-mid: #2fc47f;
@@ -88,7 +91,7 @@
     'Microsoft YaHei UI', sans-serif;
   --sider-bg: #17171a;
   --sider-hover-bg: #232327;
-  --sider-group-title: #6b7078;
+  --sider-group-title: #9aa0ab;
   --sider-border: #26262a;
   --scrollbar-thumb: #2c2c31;
   --scrollbar-thumb-hover: #3a3a41;
@@ -103,8 +106,10 @@
   --text-on-brand: #10101a;
   --logo-badge-bg: #91adff;
   --pitfall: #e8b4a4;
-  /* Markdown 重点着色专用（暗色）。成对声明，让"重点色"在两套主题里都有单一来源 */
+  /* Markdown 重点着色专用（暗色）。成对声明，让"重点色"在两套主题里都有单一来源。
+     --mark-bg 是高亮专用底（比 --amber-soft 徽章底实一档：长文本里的高亮要看得见） */
   --mark-text: #f0c274;
+  --mark-bg: rgba(240, 194, 116, 0.22);
   --strong-text: #b3b8ff;
   /* 代码编辑器配色（CodeEditor.tsx 消费），按暗色底校准对比度 */
   --code-text: #d8dbe4;
@@ -126,8 +131,9 @@
   --violet: #b3b8ff;
   --cyan: #4fd18b;
   --accent-bg: rgba(127, 176, 255, 0.12);
-  /* 核心数据的强调色：只给"最重要的一两个大数字"用，不铺到控件上 */
-  --accent-core: #a8b0ff;
+  /* 核心数据的强调色：取 --brand 同款紫蓝中**饱和度最高**的一档（对卡片底 7.38:1），
+     让核心大数字是页面里最"跳"的颜色，而不是一团接近白字的淡蓝 */
+  --accent-core: #9aa1ff;
   --accent-core-soft: rgba(154, 161, 255, 0.14);
   /* 连接状态点光晕（.conn-dot-*）：扁平化下不投影，这几个环只作残留兼容 */
   --ring-ok: rgba(79, 209, 139, 0.18);
@@ -205,9 +211,10 @@
   --line-soft: #f0f0f2;
   --text: #111111;
   --text-2: #3f4247;
-  /* 辅助文字/标签：中性浅灰，四档底色都 ≥ 4.5:1（surface-3 是最严的一档）：
-     surface 5.35 / surface-2 4.95 / surface-3 4.70 / bg 4.90 —— 见 check:contrast。 */
-  --text-3: #686b70;
+  /* 辅助文字/标签：中性浅灰，四档底色都 ≥ 4.5:1（surface-3 是最严的一档）。
+     曾按 4.5:1 卡线校准（#686b70 白底 5.35），但 11-12px 小字观感仍偏淡，
+     整体加深一档 → #5a5d63 白底 ~6.4:1。 */
+  --text-3: #5a5d63;
   --text-dim: #b4b7bb;
   /* 强调色 = 纯黑：主按钮、选中态、核心图标全部走黑白，不再引入品牌蓝 */
   --brand: #111111;
@@ -237,9 +244,11 @@
   --green-line: rgba(47, 122, 88, 0.28);
   --violet-soft: rgba(17, 17, 17, 0.06);
   --cyan-soft: #eaf3ee;
-  /* 核心数据的强调色（品牌蓝）：只给"最重要的一两个大数字"用，不铺到控件上 */
-  --accent-core: #1b4a94;
-  --accent-core-soft: #edf2f9;
+  /* 核心数据的强调色（品牌靛蓝 = --brand-fill 同值，白底 5.47:1，30px 大字远超 AA）：
+     此前与 --blue 同值（石墨蓝），读起来像次要链接；换成实心主按钮同款的高饱和靛蓝，
+     核心数字在黑白页面上"跳"出来。soft 底用同色相极淡底，徽章底色自动跟随 */
+  --accent-core: #4c55ee;
+  --accent-core-soft: rgba(76, 85, 238, 0.08);
   /* 图表填充专用：比上面的"文字色"更柔一档（明度更高、饱和度更低），
      因为柱体是大面积色块，用文字色会显得刺眼。柱体只需 2.5:1 即可辨认，
      文字仍走上面的 --green/--amber/--red（≥4.5:1）。 */
@@ -249,9 +258,10 @@
   --chart-fill-core: #6b8cbb;
   --chart-grid: rgba(17, 17, 17, 0.07);
   --chart-cursor: rgba(17, 17, 17, 0.03);
-  /* 图表中性色阶：白底上要看得见又不抢 AC 的绿，取浅中灰两档 */
-  --chart-neutral-1: #e4e5e7;
-  --chart-neutral-2: #bcbec2;
+  /* 图表中性色阶：白底上要看得见又不抢 AC 的绿（#ced1d5 ≈ 1.5:1 为柱体底限可辨，
+     两档明度差保持阶梯关系） */
+  --chart-neutral-1: #ced1d5;
+  --chart-neutral-2: #a9adb4;
   /* 图表绿色明度阶梯（亮色：低饱和灰绿三档，与热力图同色系） */
   --chart-green-soft: #8fc0a8;
   --chart-green-mid: #5f9d7e;
@@ -270,7 +280,7 @@
   /* 侧栏：纯白浮起，靠 1px 描边与内容区区分 */
   --sider-bg: #ffffff;
   --sider-hover-bg: #f2f2f3;
-  --sider-group-title: #a2a5a9;
+  --sider-group-title: #5a5d63;
   --sider-border: #ececee;
   --scrollbar-thumb: #d8d8db;
   --scrollbar-thumb-hover: #c2c2c6;
@@ -285,9 +295,14 @@
   --text-on-brand: #ffffff;
   --logo-badge-bg: #91adff;
   --pitfall: #a86a55;
-  /* Markdown 重点着色专用（亮色）。正文重点必须过 AA，故取深色档，不走品牌色 */
-  --mark-text: #7a4f00;
-  --strong-text: #111111;
+  /* Markdown 重点着色专用（亮色）。正文重点必须过 AA。
+     --mark-text：深琥珀（配合加实的 --mark-bg，白底上"看得见的高亮"）；
+     --strong-text：品牌靛蓝（= --accent-core 同值，白底 5.47:1）。
+     曾用 #111111 —— 与正文 --text 完全同色，"强调靠颜色"的设计等于失效，
+     长回复里的粗体术语全部糊进正文。 */
+  --mark-text: #6b4400;
+  --mark-bg: #f6e3c4;
+  --strong-text: #4c55ee;
   /* 链接：纯黑 + 下划线，极简界面里不再用蓝色链接 */
   --link-text: #111111;
   /* 亮色代码配色：相对 --surface-inset(#f6f6f7) 校准对比度（正文/主要记号 ≥ 4.5:1） */
@@ -516,10 +531,11 @@ body {
 .sider-logo-sub {
   display: block;
   margin-top: 2px;
-  font-size: 10px;
+  /* 基础层历史值（3px 字距会把中文撑散），生效值见文件末尾结构层同名规则 */
+  font-size: 10.5px;
   font-weight: 500;
   color: var(--text-3);
-  letter-spacing: 3px;
+  letter-spacing: 0.08em;
 }
 
 /* 折叠态：徽标居中、隐藏文字 */
@@ -541,13 +557,14 @@ body {
 }
 
 /* 分组标题（折叠态不显示文字，改由下方 .sider-nav-group + .sider-nav-group 的分隔线保留分组间距） */
+/* 中文分组标题：uppercase 无效，宽字距会把汉字撑散 —— 只留一点点呼吸。
+   生效值见文件末尾结构层同名规则（--text-3）；此处跟随主题 token 保持一致 */
 .sider-nav-group-title {
   padding: 14px 20px 4px;
-  color: var(--sider-group-title);
-  font-size: 10.5px;
+  color: var(--text-3);
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 .ant-layout-sider-collapsed .sider-nav-group-title {
@@ -793,9 +810,9 @@ body {
   padding: 1px 4px;
   border: 1px solid var(--line);
   border-radius: 4px;
-  color: var(--text-dim);
+  color: var(--text-3);
   font-family: inherit;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .sider-footer-version {
@@ -804,7 +821,7 @@ body {
   gap: 7px;
   min-width: 0;
   color: var(--text-3);
-  font-size: 10.5px;
+  font-size: 11px;
   letter-spacing: 0.3px;
   white-space: nowrap;
   overflow: hidden;
@@ -1330,7 +1347,7 @@ body {
 .taxonomy-footer {
   padding: 10px 8px 2px;
   color: var(--text-3);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 /* 分类项 + 键盘排序控件的一行（P6-1）。
@@ -1402,7 +1419,7 @@ body {
 }
 
 .page-breadcrumb-sep {
-  color: var(--text-dim);
+  color: var(--text-3);
 }
 
 /* ---------- 题单卡片化（P6-3）与拖拽视觉反馈（P6-2） ---------- */
@@ -1543,6 +1560,18 @@ body {
   font-size: 11.5px;
 }
 
+/* 题单卡的核心进度：绿字 + 同色系绿底胶囊。
+   亮色 --green 是低饱和深绿（AA 校准档），裸字在白底上"有颜色但无存在感"；
+   套上 --green-soft 底（与 ant-tag-success / semantic-pill 同组合）后两主题都有色块可辨 */
+.list-card-mastered b {
+  color: var(--green);
+  background: var(--green-soft);
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 /* 拖拽中的落点占位（虚线框）与被拖起的行。
    注意 `.list-item-row:hover` 的规则在后面、特异性相同（0,2,0 vs 0,2,0），
    所以这里必须写成 `.list-item-row.is-drop-target` 并放在它**后面**，
@@ -1598,7 +1627,7 @@ body {
   margin-bottom: 2px;
   color: var(--brand-mute);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0.1em;
 }
 
@@ -1619,7 +1648,9 @@ body {
 }
 
 .result-count strong {
-  color: var(--text);
+  /* 题库总数 = 当前筛选口径的核心数字：core 靛蓝 + 700（与赛事中心 stat-value 同级） */
+  color: var(--accent-core);
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   font-size: 15px;
 }
@@ -2177,15 +2208,15 @@ button.dist-row:hover {
    `**粗体**` 标术语与定义（只换颜色，不加底色，密度可以高一些）。
    两者都刻意不改变字号与行高 —— 强调靠颜色，不靠"变大变粗"，否则版面会被撑乱。 */
 
-/* 高亮：琥珀色文字 + 同色系淡底。选琥珀而不是品牌蓝，是因为蓝底与链接、行内公式的
-   品牌色系撞在一起。文字色走 --mark-text：亮色主题下 --amber(#d4961e) 放到淡琥珀底上
-   只有 2.05:1，必须换成更深的一档（见 index.css 的 --mark-text 注释与 contrastCheck）。 */
+/* 高亮：琥珀色文字 + 同色系实底。选琥珀而不是品牌蓝，是因为蓝底与链接、行内公式的
+   品牌色系撞在一起。底色走专用 --mark-bg（比徽章用的 --amber-soft 实一档）——
+   长文本里的高亮是"扫读锚点"，底色必须肉眼可辨；文字色 --mark-text 校准过对比度。 */
 .markdown-body mark,
 .markdown-body .md-mark {
   padding: 1px 4px;
   margin-inline: 1px;
   border-radius: 4px;
-  background: var(--amber-soft);
+  background: var(--mark-bg);
   color: var(--mark-text);
   font-weight: 600;
   /* 高亮内部的公式/行内代码跟随高亮文字色，避免一个标记里出现三种颜色 */
@@ -2207,11 +2238,12 @@ button.dist-row:hover {
 
 /* 粗体：品牌色 + 加粗。`font-weight` 用 650 而不是 700：中文在 700 下容易糊成一团，
    颜色已经承担了"这是重点"的信号，字重只做辅助。
-   文字色走 --strong-text：亮色主题的 --brand-text(#5a7de0) 在正文底色上只有 3.38:1，
-   低于 WCAG AA，需要更深的一档。 */
+   文字色走 --strong-text：暗色 = 浅紫蓝（--brand-strong 档）；亮色 = 品牌靛蓝 #4c55ee
+   （与 --accent-core 同值，白底 5.47:1 过 AA）——曾经是 #111111，与正文同色，
+   导致"强调靠颜色"的设计在亮色下完全失效。 */
 .markdown-body strong {
   color: var(--strong-text);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 /* 高亮里的粗体不要被品牌色盖掉（高亮自身的颜色优先） */
@@ -2781,7 +2813,7 @@ button.dist-row:hover {
   border-radius: 999px;
   background: var(--surface-2);
   color: var(--text-3);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: 0;
   font-variant-numeric: tabular-nums;
@@ -2861,7 +2893,7 @@ button.dist-row:hover {
 
 .template-viewer-kicker {
   color: var(--text-3);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.12em;
 }
@@ -2872,7 +2904,7 @@ button.dist-row:hover {
   white-space: nowrap;
   color: var(--text);
   font-size: 17px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.01em;
 }
 
@@ -2951,7 +2983,7 @@ button.dist-row:hover {
   white-space: nowrap;
   color: var(--text);
   font-size: 15.5px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .template-writer-outline-label {
@@ -3154,7 +3186,7 @@ button.dist-row:hover {
 
 .template-writer-pane-meta {
   color: var(--text-3);
-  font-size: 10.5px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -3163,7 +3195,7 @@ button.dist-row:hover {
   align-items: center;
   gap: 6px;
   color: var(--green);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .template-writer-live i {
@@ -3356,7 +3388,7 @@ button.dist-row:hover {
 }
 
 .weak-tag {
-  font-size: 10px;
+  font-size: 11px;
   margin-inline-end: 0;
 }
 
@@ -3932,7 +3964,7 @@ button.dist-row:hover {
 }
 
 .cell-review {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--brand);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -4819,7 +4851,7 @@ html.app-hidden *::after {
 }
 
 .chat-cmd-arg {
-  color: var(--text-dim);
+  color: var(--text-3);
   font-weight: 400;
 }
 
@@ -4880,7 +4912,7 @@ html.app-hidden *::after {
   width: 22px;
   height: 22px;
   border-radius: 6px;
-  color: var(--text-dim);
+  color: var(--text-3);
   cursor: help;
   transition: color var(--dur-1) var(--ease-standard), background var(--dur-1) var(--ease-standard);
 }
@@ -5234,10 +5266,9 @@ html.app-hidden *::after {
 .cmdk-group-title {
   padding: 8px 16px 4px;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .cmdk-item {
@@ -5999,8 +6030,9 @@ body {
 .ant-card > .ant-card-head {
   border-bottom: 1px solid var(--line-soft);
   padding: 0 var(--card-pad);
-  min-height: 58px;
-  font-weight: 650;
+  /* 54px：15px 字号 + 上下 19px 呼吸即可，58px 在小卡上明显空旷 */
+  min-height: 54px;
+  font-weight: 600;
   font-size: 15px;
   letter-spacing: -0.01em;
   color: var(--text);
@@ -6024,7 +6056,7 @@ body {
 }
 
 .ant-card-small > .ant-card-head {
-  min-height: 58px;
+  min-height: 54px;
 }
 
 .ant-card-small > .ant-card-body {
@@ -6067,18 +6099,19 @@ body {
 
 .sider-logo-text {
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--text);
 }
 
 .sider-logo-sub {
   margin-top: 3px;
-  font-size: 9.5px;
+  /* 中文「备赛工作台」：9.5px + 0.28em 的英文小盖头写法在中文上既读不清又散，
+     收敛为正常中文小字，靠 --text-3 的弱化承担次要感 */
+  font-size: 10.5px;
   font-weight: 500;
-  letter-spacing: 0.28em;
+  letter-spacing: 0.08em;
   color: var(--text-3);
-  text-transform: uppercase;
 }
 
 .sider-nav.sider-menu {
@@ -6087,10 +6120,11 @@ body {
 
 .sider-nav-group-title {
   padding: 18px 22px 6px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.16em;
-  color: var(--text-dim);
+  letter-spacing: 0.06em;
+  /* 导航结构信息：曾用 --text-dim（亮色 #b4b7bb 对白底仅 ~2:1，几乎隐形） */
+  color: var(--text-3);
 }
 
 .sider-nav-row {
@@ -6169,11 +6203,11 @@ body {
 .sider-footer-search kbd {
   border-radius: 6px;
   border-color: var(--line);
-  color: var(--text-dim);
+  color: var(--text-3);
 }
 
 .sider-footer-version {
-  color: var(--text-dim);
+  color: var(--text-3);
   letter-spacing: 0.02em;
 }
 
@@ -6186,7 +6220,7 @@ body {
 
 .page-title {
   font-size: 27px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.035em;
   color: var(--text);
 }
@@ -6201,14 +6235,14 @@ body {
 
 .page-breadcrumb {
   margin-bottom: 8px;
-  font-size: 11.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-dim);
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  /* 位置信息，不是装饰：从 --text-dim 提到 --text-3 */
+  color: var(--text-3);
 }
 
 .page-breadcrumb-sep {
-  color: var(--text-dim);
+  color: var(--text-3);
 }
 
 /* ---------- 统计带 → 四张独立卡片（大留白、无竖线分隔） ---------- */
@@ -6253,16 +6287,15 @@ body {
 }
 
 .stat-label {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   color: var(--text-3);
-  text-transform: uppercase;
 }
 
 .stat-text strong {
   font-size: 30px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.035em;
   line-height: 1.05;
   color: var(--text);
@@ -6354,7 +6387,7 @@ body {
 
 .platform-stat-num strong {
   font-size: 21px;
-  font-weight: 680;
+  font-weight: 600;
   line-height: 1.05;
   letter-spacing: -0.03em;
   color: var(--text);
@@ -6375,7 +6408,7 @@ body {
 .platform-stat-head .is-rate {
   margin-left: auto;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
 }
@@ -6461,6 +6494,26 @@ body {
 
 .ant-btn-text:not(:disabled):hover {
   background: var(--hover-bg);
+}
+
+/* ---------- Compact 组合里的 split-button：主按钮 + 相邻次按钮同色一体 ----------
+   「同步数据 ▾」这类 主按钮+下拉箭头 的组合，次按钮曾是默认白底/黑字，
+   与实心主按钮一黑一白视觉割裂；统一成主按钮同款底色，中间留 1px 分隔缝。 */
+.ant-space-compact .ant-btn-primary + .ant-btn-default:not(:disabled) {
+  background: var(--brand-fill);
+  border-color: var(--brand-fill);
+  border-inline-start: 1px solid rgba(255, 255, 255, 0.28);
+  color: var(--text-on-fill);
+}
+
+.ant-space-compact .ant-btn-primary + .ant-btn-default:not(:disabled):hover {
+  background: var(--brand-fill-hover);
+  border-color: var(--brand-fill-hover);
+}
+
+.ant-space-compact .ant-btn-primary + .ant-btn-default:not(:disabled):active {
+  background: var(--brand-fill-active);
+  border-color: var(--brand-fill-active);
 }
 
 /* ---------- 标签 / 分段控件 / 输入框：圆角 + 中性底 ---------- */
@@ -6558,9 +6611,10 @@ body {
 
 .ant-table-thead .ant-table-cell {
   font-weight: 600;
-  font-size: 11.5px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  /* 表头以中文为主（"题目 / 难度 / 标签"），uppercase 无效且 0.05em 会把中文撑散；
+     AC / Rating 这类已大写的英文缩写不受影响 */
+  font-size: 12px;
+  letter-spacing: 0;
 }
 
 /* ---------- 通用小组件 ---------- */
@@ -6594,8 +6648,18 @@ body {
 
 .heatmap-summary strong {
   margin: 0 2px;
-  font-weight: 650;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
   color: var(--text);
+}
+
+/* 语义色标注摘要行两个数字（顺序由 ActivityHeatmap JSX 固定）：AC 题数=正向绿，提交量=核心靛蓝 */
+.heatmap-summary strong:nth-of-type(1) {
+  color: var(--green);
+}
+
+.heatmap-summary strong:nth-of-type(2) {
+  color: var(--accent-core);
 }
 
 .heatmap-summary strong + strong {
@@ -6637,11 +6701,10 @@ body {
 
 .focus-strip-label {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-dim);
+  letter-spacing: 0.02em;
+  color: var(--text-3);
 }
 
 .focus-strip-text {
@@ -6652,7 +6715,7 @@ body {
 .focus-strip-tag {
   margin: 0 6px;
   font-size: 13.5px;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--text);
 }
 
@@ -6904,17 +6967,20 @@ body {
    关键数据的语义化配色
    ------------------------------------------------------------
    规则只有一条：**颜色只用于读数，不用于装饰**。
-   · 核心量（总提交）        → 强调色（亮色=深蓝 / 暗色=亮紫蓝）
+   · 核心量（总提交）        → 品牌靛蓝（亮色 #4c55ee / 暗色 #9aa1ff）+ 加粗一档
    · 正向（AC 率 / 已解题目）→ 绿
    · 警示（补强缺口 / 待办） → 橙
    · 中性（活跃平台等规模数）→ 主文字色
-   大数字同时保留 30px/650 的字号字重，颜色是第二重强调而非唯一手段
-   （色觉障碍用户仍能靠字号与标签读出层级）。
+   大数字同时保留 30px 的字号，颜色之外 core 档再加一档字重 —— 颜色是强调之一
+   而非唯一手段（色觉障碍用户仍能靠字号字重与标签读出层级）。
    ============================================================ */
 
 /* ---------- 指标卡数值 ---------- */
+/* core 档在颜色之外再加一档字重（600 → 700）：四张卡里唯一加粗的数字，
+   「只在一处用力」——中文字体没有 650/680 档，700 是实打实可渲染的加粗 */
 .stat-item[data-value-tone='core'] .stat-text strong {
   color: var(--accent-core);
+  font-weight: 700;
 }
 
 .stat-item[data-value-tone='positive'] .stat-text strong {
@@ -7006,7 +7072,7 @@ body {
 /* ---------- 弱项标签：缺口越大越偏橙红 ---------- */
 .weak-gap.is-strong {
   color: var(--red);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .weak-gap.is-mild {
