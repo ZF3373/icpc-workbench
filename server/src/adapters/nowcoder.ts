@@ -248,8 +248,13 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
               // 同时把 url 从 /acm/problem/10 换成竞赛页地址。
               // 竞赛与练习共享题号空间，这条是常态路径而非边角。
               rows.push({ externalId: String(row.submissionId), submittedAt, verdict, language: row.language,
+                // 题目地址统一用**题库地址** /acm/problem/{id}，不用 /acm/contest/{cid}/{index}。
+                // 竞赛与练习共享同一题号空间，同一个 problemId 在两条路径下会给出两个不同 URL，
+                // 而 problemUrl({problemKey}) 只能按题号生成前者 —— 两处口径不一致时，
+                // 库内地址取决于「哪条路径先写入」，同一道题在不同用户/时点会拿到不同链接。
+                // 题库地址是稳定形态（竞赛页在赛后往往失效），故统一用它。
                 problem: { platform: 'nowcoder', problemKey: String(row.problemId), title: row.problemName || String(row.problemId),
-                  url: API + '/acm/contest/' + contest + '/' + encodeURIComponent(row.index), tags: [] } });
+                  url: API + '/acm/problem/' + row.problemId, tags: [] } });
             }
             if (page < data.basicInfo.pageCount) more = true; else ended.add(contest);
           }

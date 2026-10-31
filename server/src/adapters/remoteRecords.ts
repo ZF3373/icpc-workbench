@@ -22,7 +22,10 @@ export function numericUid(handle: string, platform: 'nowcoder' | 'lanqiao'): st
     const match = platform === 'nowcoder' ? /^\/(?:users|acm\/contest\/profile|acm\/home)\/(\d+)\/?$/ : /^\/users\/(\d+)\/?$/;
     if (url.protocol === 'https:' && hosts.includes(url.hostname) && match.test(url.pathname)) return match.exec(url.pathname)![1];
   } catch { /* Show a useful binding error below. */ }
-  throw new SyncError('schema_changed', `${platform === 'nowcoder' ? '牛客' : '蓝桥云课'}需要数字 UID 或个人主页链接，请在设置中修改账号`);
+  // 用 invalid_account 而不是 schema_changed：这是**用户可自行修复**的输入问题。
+  // 归到「页面结构变化」会让用户在同步中心看到「页面结构变化」，
+  // 从而去怀疑站点改版，而不是去设置里改账号。
+  throw new SyncError('invalid_account', `${platform === 'nowcoder' ? '牛客' : '蓝桥云课'}需要数字 UID 或个人主页链接，请在设置中修改账号`);
 }
 
 export function recordTime(value: unknown): string | null {

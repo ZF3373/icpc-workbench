@@ -62,6 +62,7 @@ function deriveStatus(latest: SyncRun | undefined): PlatformSyncStatus {
     case 'rate_limited': return 'rate_limited';
     case 'schema_changed': return 'schema_changed';
     case 'manual_required': return 'manual_required';
+    case 'invalid_account': return 'invalid_account';
     default: return 'degraded';
   }
 }

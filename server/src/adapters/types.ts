@@ -18,6 +18,7 @@ export type SyncErrorCode =
   | 'rate_limited' // HTTP 429/503 限流或风控
   | 'schema_changed' // 页面或接口结构变化导致解析失败
   | 'manual_required' // 平台无公开提交 API，需手动导入
+  | 'invalid_account' // 账号输入格式不对（昵称当 UID 等）——用户可自行修复，与「页面结构变化」不同
   | 'network' // DNS/连接/超时等网络层错误
   | 'unknown';
 

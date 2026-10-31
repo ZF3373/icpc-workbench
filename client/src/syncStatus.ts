@@ -61,6 +61,8 @@ export function healthText(status: PlatformSyncStatus | string): string {
       return '页面结构变化'
     case 'manual_required':
       return '需手动导入'
+    case 'invalid_account':
+      return '账号需修改'
     case 'degraded':
       return '异常'
     default:
@@ -76,6 +78,9 @@ export function healthColor(status: PlatformSyncStatus | string): string {
     case 'never':
       return 'default'
     case 'manual_required':
+      return 'warning'
+    // 账号格式错是用户可自行修复的，用 warning 而不是 error —— 它不是同步故障
+    case 'invalid_account':
       return 'warning'
     default:
       return 'error'

@@ -1,6 +1,7 @@
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { parseProblemListText } from '../problems/parseProblemList.ts';
+import { normalizedKey } from '../import/tombstones.ts';
 import { dateAfterDays, firstReviewDelayDays } from './schedule.ts';
 import { localToday } from '../dates.ts';
 
@@ -33,8 +34,12 @@ export function addReviewFromUrl(db: Db, raw: unknown, title?: unknown) {
       const result = db.prepare('INSERT INTO problems (platform, problem_key, title, url) VALUES (?, ?, ?, ?)')
         .run(parsed.platform, parsed.problemKey, name, url.href);
       problem = { id: Number(result.lastInsertRowid), title: name };
+      // 与 SQL 侧 `LOWER(REPLACE(x, ' ', ''))` 同一口径：SQLite 的 LOWER 只折叠 ASCII，
+      // 而 JS 的 toLowerCase() 会连非 ASCII 一起折（如土耳其语 İ、全角字母），
+      // 两侧算出不同键时墓碑清不掉 —— 用户「删过的题」加回来会被静默挡住。
+      // 复用 tombstones.ts 的 normalizedKey 保证唯一真源。
       db.prepare('DELETE FROM deleted_problems WHERE platform = ? AND normalized_key = ?')
-        .run(parsed.platform, parsed.problemKey.replace(/\s/g, '').toLowerCase());
+        .run(parsed.platform, normalizedKey(parsed.problemKey));
     }
     const existing = db.prepare('SELECT next_due_on FROM review_items WHERE user_id = ? AND problem_id = ?')
       .get(DEFAULT_USER_ID, problem.id) as { next_due_on: string } | undefined;
