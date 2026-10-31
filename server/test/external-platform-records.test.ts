@@ -178,3 +178,54 @@ test('VJudge 提交记在 VJudge 名下，题目归原 OJ（来源与题目身�
     assert.ok(vj && vj.attempts > 0, 'VJudge 必须出现在平台分布里且有数据');
   } finally { db.close(); }
 });
+
+/**
+ * 回归（P1-6）：竞赛行把好标题覆盖成「牛客 <id>」。
+ *
+ * problemWritePolicy 的守卫是 `excluded.title != problems.problem_key`，
+ * 而兜底标题 `'牛客 ' + problemId` 既不等于键也不像真标题 → 通过守卫，
+ * 把练习行先落下的好标题覆盖掉，url 也从 /acm/problem/10 换成竞赛页地址。
+ * 竞赛与练习共享题号空间，这条是常态路径而非边角。
+ */
+test('Nowcoder 竞赛行缺题名时不覆盖练习行已落的好标题', async () => {
+  const fetchFn: typeof fetch = async input => {
+    const url = String(input);
+    if (url.includes('contest-joined-history')) return Response.json({ code: 0, data: { dataList: [{ contestId: 100 }], pageInfo: { pageCount: 1 } } });
+    if (url.includes('submission-history')) return Response.json({ code: 0, data: { records: [] } });
+    if (url.includes('practice-coding')) return new Response('<table><tr><td><a href="?submissionId=5001">5001</a></td><td><a href="/acm/problem/10">A+B Problem</a></td><td>答案正确</td><td>0</td><td>0</td><td>0</td><td>0</td><td>C++</td><td>2026-08-01 10:00:00</td></tr></table>');
+    if (url.includes('status-list')) {
+      // 竞赛行：problemName 缺失（实测常态）
+      return Response.json({ code: 0, data: { data: [
+        { submissionId: 6002, userId: 123, problemId: 10, index: 'A', statusMessage: '答案错误', submitTime: timestamp },
+      ], basicInfo: { pageCount: 1 } } });
+    }
+    throw new Error(url);
+  };
+  const rows = await createNowcoderAdapter(fetchFn).fetchUserSubmissions('123');
+  const db = createDb(':memory:');
+  try {
+    // 先落练习行（有真标题），再落竞赛行（无题名）
+    insertNormalized(db, 1, [rows.find(r => r.externalId === '5001')!], { account: '123' });
+    insertNormalized(db, 1, [rows.find(r => r.externalId === '6002')!], { account: '123' });
+    const prob = db.prepare("SELECT title, url FROM problems WHERE platform='nowcoder' AND problem_key='10'").get() as { title: string; url: string };
+    assert.equal(prob.title, 'A+B Problem', '缺题名的竞赛行不得覆盖已有好标题');
+    assert.equal(prob.url, 'https://ac.nowcoder.com/acm/problem/10', 'url 同样不得被换成竞赛页地址');
+  } finally { db.close(); }
+});
+
+test('Nowcoder 竞赛行有真实题名时照常写入（守卫不是一刀切）', async () => {
+  const fetchFn: typeof fetch = async input => {
+    const url = String(input);
+    if (url.includes('contest-joined-history')) return Response.json({ code: 0, data: { dataList: [{ contestId: 100 }], pageInfo: { pageCount: 1 } } });
+    if (url.includes('submission-history')) return Response.json({ code: 0, data: { records: [] } });
+    if (url.includes('practice-coding')) return new Response('<table><tr><th>运行ID</th></tr></table>');
+    if (url.includes('status-list')) {
+      return Response.json({ code: 0, data: { data: [
+        { submissionId: 6003, userId: 123, problemId: 20, index: 'B', statusMessage: '答案正确', submitTime: timestamp, problemName: '最长上升子序列' },
+      ], basicInfo: { pageCount: 1 } } });
+    }
+    throw new Error(url);
+  };
+  const rows = await createNowcoderAdapter(fetchFn).fetchUserSubmissions('123');
+  assert.equal(rows[0]!.problem.title, '最长上升子序列', '真实题名必须原样保留');
+});

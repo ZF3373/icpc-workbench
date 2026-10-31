@@ -241,8 +241,14 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
               const submittedAt = recordTime(row.submitTime);
               const verdict = RESULT_MAP[row.statusMessage];
               if (String(row.userId) !== uid || !submittedAt || !verdict || !row.submissionId || !row.problemId) continue;
+              // 标题兜底必须**等于 problem_key 本身**，不能是 `'牛客 ' + id`。
+              // problemWritePolicy 的守卫是 `excluded.title != problems.problem_key`：
+              // `'牛客 10'` 既不等于键 `'10'`，也不是真标题 → 它会通过守卫，
+              // 把练习行先落下的好标题（如「A+B Problem」）覆盖成「牛客 10」，
+              // 同时把 url 从 /acm/problem/10 换成竞赛页地址。
+              // 竞赛与练习共享题号空间，这条是常态路径而非边角。
               rows.push({ externalId: String(row.submissionId), submittedAt, verdict, language: row.language,
-                problem: { platform: 'nowcoder', problemKey: String(row.problemId), title: row.problemName || '牛客 ' + row.problemId,
+                problem: { platform: 'nowcoder', problemKey: String(row.problemId), title: row.problemName || String(row.problemId),
                   url: API + '/acm/contest/' + contest + '/' + encodeURIComponent(row.index), tags: [] } });
             }
             if (page < data.basicInfo.pageCount) more = true; else ended.add(contest);
