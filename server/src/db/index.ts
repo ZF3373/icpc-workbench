@@ -6,6 +6,7 @@ import { problemSetMatchesContest } from '../contests/problemSetShape.ts';
 import { atcoderProblemIdCandidates } from '../adapters/problemKey.ts';
 import { SERVER_ROOT } from '../server-root.ts';
 import { IDENTITY_COLUMN_EXPR } from '../problems/identity.ts';
+import { fixVjudgeProblemIdentities } from './vjudgeIdentityFix.ts';
 
 // 走 server 根 + src 相对路径（而不是 __dirname/schema.sql）：esbuild bundle 后本模块
 // 落在 server/dist/sea.cjs，__dirname 变成 server/dist，资源路径必须与「源码目录布局」解耦
@@ -158,6 +159,8 @@ function migrate(db: Db): void {
   dedupeReviewItems(db);
   // v0.10 数据修复：作废「题号形态不可信」的难度定论（见下）
   invalidateUnreliableGapVerdicts(db);
+  // v0.13 数据修复：VJudge 记录映射回原 OJ 身份（见 db/vjudgeIdentityFix.ts）
+  fixVjudgeProblemIdentities(db);
 }
 
 /**
