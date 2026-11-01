@@ -26,11 +26,11 @@ const RANGES = [
 const WEEKDAY_NAMES = ['日', '一', '二', '三', '四', '五', '六']
 /** 左侧星期标注：GitHub 同款只标一/三/五（行 0 = 周一） */
 const WEEKDAY_LABELS: Record<number, string> = { 0: '一', 2: '三', 4: '五' }
-/** 星期标注列宽 26px + 右距 4px */
-const LABEL_COL = 30
+/** 星期标注列宽 22px + 右距 4px（紧凑版收窄 4px） */
+const LABEL_COL = 26
 const GAP = 3
 const CELL_MIN = 8
-const CELL_MAX = 24
+const CELL_MAX = 20
 
 /**
  * 实格四档配色（浅→深）；空格用主题 colorBorderSecondary。
@@ -158,14 +158,37 @@ export default function ActivityHeatmap({
       ) : (
         <>
           <div className="heatmap-summary">
-            {rangeLabel}
-            {rangeLabel ? '共 ' : ''}
-            AC <strong>{data.totalSolved}</strong> 题 · 提交 <strong>{data.totalAttempts}</strong> 次
+            <span>
+              {rangeLabel}
+              {rangeLabel ? '共 ' : ''}
+              AC <strong>{data.totalSolved}</strong> 题 · 提交 <strong>{data.totalAttempts}</strong> 次
+            </span>
+            {/* 色阶图例挂到摘要行右端：原先挂在月份轴那一行，而月份标签是绝对定位的，
+                末尾的「10月/11月」会被图例压住 —— 两段文字抢同一段宽度 */}
+            <span
+              className="heatmap-legend"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                fontSize: 10,
+                fontWeight: 500,
+                lineHeight: '14px',
+                letterSpacing: '0.04em',
+                color: 'var(--text-3)',
+              }}
+            >
+              <span>少</span>
+              <span style={{ width: 11, height: 11, borderRadius: 3, background: emptyColor }} />
+              {filledColors.map((c) => (
+                <span key={c} style={{ width: 11, height: 11, borderRadius: 3, background: c }} />
+              ))}
+              <span>多</span>
+            </span>
           </div>
           <div ref={setPlotEl} style={{ overflowX: 'auto', paddingBottom: 4 }}>
             <div style={{ width: 'fit-content', margin: '0 auto' }}>
-              {/* 月份标签行 + 图例同处一行：左边是时间刻度，右边是"少→多"色阶。
-                  两者同一基线（height 14 / line-height 14），视觉上是一条完整的表头。 */}
+              {/* 月份标签行：只放时间刻度，整行宽度留给月份标签（图例已上移到摘要行右端） */}
               <div className="heatmap-head" style={{ display: 'flex', alignItems: 'center', gap: 12, height: 14 }}>
                 <div
                   className="heatmap-months"
@@ -190,28 +213,6 @@ export default function ActivityHeatmap({
                       {m.label}
                     </span>
                   ))}
-                </div>
-                {/* 图例：与月份行对齐（同一行的右端），方格与热力图同样是小圆角 */}
-                <div
-                  className="heatmap-legend"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    flex: '0 0 auto',
-                    gap: 4,
-                    fontSize: 10,
-                    fontWeight: 500,
-                    lineHeight: '14px',
-                    letterSpacing: '0.04em',
-                    color: 'var(--text-3)',
-                  }}
-                >
-                  <span>少</span>
-                  <span style={{ width: 11, height: 11, borderRadius: 3, background: emptyColor }} />
-                  {filledColors.map((c) => (
-                    <span key={c} style={{ width: 11, height: 11, borderRadius: 3, background: c }} />
-                  ))}
-                  <span>多</span>
                 </div>
               </div>
               <div style={{ display: 'flex' }}>

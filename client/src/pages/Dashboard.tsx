@@ -152,8 +152,8 @@ const LEGEND_STYLE = {
   iconSize: 8,
   verticalAlign: 'top',
   align: 'right',
-  // 顶部图例与绘图区之间留一点空气，避免贴住柱顶
-  wrapperStyle: { paddingBottom: 12 },
+  // 顶部图例与绘图区之间留一点空气，避免贴住柱顶（紧凑版收到 8px）
+  wrapperStyle: { paddingBottom: 8 },
 } as const
 
 /**
@@ -995,9 +995,9 @@ export default function Dashboard() {
         collapsed={collapsedSet.has('difficulty')}
         onHeadMouseDown={(e) => handleModuleMouseDown(e, 'difficulty')}
       >
-        <ResponsiveContainer width="100%" height={300}>
-          {/* 顶部留 44px 给图例（图例移到顶部右侧后需要额外垂直空间） */}
-          <BarChart data={diffData} margin={{ top: 44, right: 8, left: 0, bottom: 0 }} barCategoryGap="32%">
+        <ResponsiveContainer width="100%" height={260}>
+          {/* 顶部留 32px 给图例（紧凑版图例与柱顶的间距也压了一档） */}
+          <BarChart data={diffData} margin={{ top: 32, right: 8, left: 0, bottom: 0 }} barCategoryGap="32%">
             {/* 横向虚线网格已移除（规范：移除或淡化 Y 轴数值与横向虚线网格）。
                 竖向网格本来就没有，这里整块不渲染 CartesianGrid */}
             <XAxis
@@ -1033,7 +1033,7 @@ export default function Dashboard() {
       >
         {weakData.length > 0 ? (
           <>
-          <ResponsiveContainer width="100%" height={320}>
+          <ResponsiveContainer width="100%" height={280}>
             <BarChart data={weakData} layout="vertical" margin={{ top: 8, right: 24, left: 40, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={gridStroke} />
               <XAxis type="number" tick={axisTick} axisLine={false} tickLine={false} />
@@ -1086,7 +1086,7 @@ export default function Dashboard() {
         collapsed={collapsedSet.has('trend')}
         onHeadMouseDown={(e) => handleModuleMouseDown(e, 'trend')}
       >
-        <ResponsiveContainer width="100%" height={320}>
+        <ResponsiveContainer width="100%" height={280}>
           <ComposedChart data={trendData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
             {/* 扁平化：AC 率面积不再用自上而下的渐变，改为单一低透明度实色 */}
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={gridStroke} />
@@ -1247,9 +1247,9 @@ export default function Dashboard() {
 
       {/* 模块卡片：按住标题栏拖拽可排序，或用头部右上角的按钮键盘排序；
           两条路径都持久化到 localStorage，折叠态单独存一份 */}
-      {/* gutter：[横向 24, 纵向 32]。纵向就是"三大区块之间的垂直间距"，
+      {/* gutter：[横向 16, 纵向 20]。纵向就是"三大区块之间的垂直间距"，
           与 --grid-gap / --section-gap 同源（亮暗共用同一组几何值） */}
-      <Row gutter={[24, 32]} className="dash-grid">
+      <Row gutter={[16, 20]} className="dash-grid">
         {orderedModules.map((id, index) => {
           const collapsed = collapsedSet.has(id)
           // 热力图展开态的卡片头带范围切换器，键盘控件右移让开它

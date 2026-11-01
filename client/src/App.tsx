@@ -72,8 +72,8 @@ export default function App() {
       <SyncProgressBadge />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={nav} />
       <Sider
-        width={222}
-        collapsedWidth={68}
+        width={198}
+        collapsedWidth={60}
         collapsed={collapsed}
         breakpoint="md"
         onBreakpoint={setCollapsed}

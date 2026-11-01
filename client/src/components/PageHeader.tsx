@@ -29,7 +29,7 @@ export default function PageHeader({ title, description, extra, breadcrumb }: Pa
         alignItems: 'flex-end',
         flexWrap: 'wrap',
         gap: 12,
-        marginBottom: crumbs.length > 0 ? 16 : 24,
+        marginBottom: crumbs.length > 0 ? 12 : 16,
       }}
     >
       <div style={{ minWidth: 0 }}>

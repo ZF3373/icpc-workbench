@@ -82,7 +82,8 @@ const darkTheme = {
     borderRadius: 12,
     borderRadiusLG: 16,
     borderRadiusSM: 8,
-    controlHeight: 34,
+    // 紧凑密度：控件高度 34 → 30，按钮/输入框/选择器整排同步变矮
+    controlHeight: 30,
     wireframe: false,
   },
   components: {
@@ -99,18 +100,19 @@ const darkTheme = {
       darkItemSelectedColor: TOKEN_PAIRS.brand.dark,
       darkItemColor: TOKEN_PAIRS.text3.dark,
       itemBorderRadius: 12,
-      itemMarginInline: 10,
-      itemMarginBlock: 2,
-      itemHeight: 40,
-      iconSize: 17,
+      itemMarginInline: 8,
+      itemMarginBlock: 1,
+      itemHeight: 34,
+      iconSize: 16,
       activeBarBorderWidth: 0,
     },
     Card: {
       colorBgContainer: TOKEN_PAIRS.surface.dark,
-      borderRadiusLG: 18,
+      // 与 index.css 的 --card-radius / --card-pad 对齐（紧凑密度 14 / 16）
+      borderRadiusLG: 14,
       headerBg: 'transparent',
       headerFontSize: 14,
-      paddingLG: 24,
+      paddingLG: 16,
     },
     Button: {
       borderRadius: 10,
@@ -172,7 +174,8 @@ const lightTheme = {
     borderRadius: 12,
     borderRadiusLG: 16,
     borderRadiusSM: 8,
-    controlHeight: 34,
+    // 紧凑密度：与暗色一致，控件高度 34 → 30
+    controlHeight: 30,
     wireframe: false,
   },
   components: {
@@ -183,18 +186,19 @@ const lightTheme = {
     },
     Menu: {
       itemBorderRadius: 12,
-      itemMarginInline: 10,
-      itemMarginBlock: 2,
-      itemHeight: 40,
-      iconSize: 17,
+      itemMarginInline: 8,
+      itemMarginBlock: 1,
+      itemHeight: 34,
+      iconSize: 16,
       activeBarBorderWidth: 0,
     },
     Card: {
       colorBgContainer: TOKEN_PAIRS.surface.light,
-      borderRadiusLG: 18,
+      // 与 index.css 的 --card-radius / --card-pad 对齐（紧凑密度 14 / 16）
+      borderRadiusLG: 14,
       headerBg: 'transparent',
       headerFontSize: 14,
-      paddingLG: 24,
+      paddingLG: 16,
     },
     Button: {
       borderRadius: 10,

@@ -187,15 +187,18 @@
      这一组只有尺寸没有颜色：圆角、内边距、区块间距。
      亮暗两套主题都写同一组值，保证"仅切换色彩变量、排版结构不变"。
      ============================================================ */
-  --card-radius: 18px;
-  --card-pad: 24px;
+  /* 紧凑密度（compact density）：这一版把整套留白在旧值基础上下压 ~30%，
+     信息密度更高但不至于挤 —— 卡片内 16px、区块间 20px、卡间距 16px。
+     改这里等于全站同步收紧，组件层不要再各自硬编码间距。 */
+  --card-radius: 14px;
+  --card-pad: 16px;
   /* 三大区块（热力图 / 平台分布 / 难度分布）之间的垂直间距 */
-  --section-gap: 32px;
+  --section-gap: 20px;
   /* 卡片网格的 gutter（与 --section-gap 分开：前者是块间、后者是卡间） */
-  --grid-gap: 24px;
+  --grid-gap: 16px;
   /* 内嵌卡（平台卡片）统一尺寸，保证网格规整 */
-  --tile-radius: 14px;
-  --tile-pad: 18px;
+  --tile-radius: 12px;
+  --tile-pad: 12px;
 }
 
 /* 亮色主题变量覆盖 —— 极简现代扁平化：纯白 + 浅灰白底，黑白高对比度强调，低饱和绿保留给图表 */
@@ -343,12 +346,12 @@
   --mask-bg: rgba(17, 17, 17, 0.24);
   --heatmap-empty: #f0f0f2;
   /* 排版尺度：与暗色**逐项相同**（这组是几何值，不该随主题变） */
-  --card-radius: 18px;
-  --card-pad: 24px;
-  --section-gap: 32px;
-  --grid-gap: 24px;
-  --tile-radius: 14px;
-  --tile-pad: 18px;
+  --card-radius: 14px;
+  --card-pad: 16px;
+  --section-gap: 20px;
+  --grid-gap: 16px;
+  --tile-radius: 12px;
+  --tile-pad: 12px;
 }
 
 html {
@@ -437,7 +440,7 @@ body {
   align-items: flex-end;
   flex-wrap: wrap;
   gap: 12px;
-  margin-bottom: 22px;
+  margin-bottom: 16px;
 }
 
 .page-header.has-crumbs {
@@ -497,26 +500,26 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 16px 14px 12px;
+  padding: 14px 12px 10px;
   white-space: nowrap;
   overflow: hidden;
 }
 
 .sider-logo-badge {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   flex-shrink: 0;
   display: grid;
   place-items: center;
-  border-radius: 11px;
+  border-radius: 10px;
   border: 1px solid rgba(176, 195, 255, 0.5);
   background: var(--logo-badge-bg);
   box-shadow: 0 8px 22px rgba(71, 102, 188, 0.22);
 }
 
 .sider-logo-badge img {
-  width: 21px;
-  height: 21px;
+  width: 19px;
+  height: 19px;
 }
 
 .sider-logo-text {
@@ -541,7 +544,7 @@ body {
 /* 折叠态：徽标居中、隐藏文字 */
 .ant-layout-sider-collapsed .sider-logo {
   justify-content: center;
-  padding: 20px 0 14px;
+  padding: 14px 0 10px;
 }
 
 .ant-layout-sider-collapsed .sider-logo-text {
@@ -585,22 +588,31 @@ body {
   gap: 2px;
   margin: 2px 10px;
   min-width: 0;
+  /* 紧凑版：排序控件改为「行内绝对定位」，行高只由导航条目决定 */
+  position: relative;
 }
 
+/*
+ * 紧凑版布局变更（旧版把两枚按钮竖排，一行被撑到 50px）。
+ * 现在改成**横向并排 + 绝对定位到行的右端**：
+ *   · 命中区仍是 24×24（WCAG 2.2 目标尺寸，按钮本体即命中区，不改几何）；
+ *   · 两枚按钮横排总高 24px，小于行高，纵向不再越出行，相邻两行不会互相抢点击；
+ *   · 横向 24 + 2 + 24 = 50px 的通道由 .sider-nav-item 的右侧内边距预留，
+ *     平时 opacity: 0 不可见，hover / 键盘 focus-within 才显形。
+ */
 .sider-nav-row .reorder-controls {
-  flex-direction: column;
-  /* 纵向 gap 2px：两枚 24×24 的按钮贴太紧会互相抢点击，2px 是间距与密度的折中
-     （命中区就是按钮本身，只有 2px 的缝不属于任何目标） */
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  flex-direction: row;
+  /* 两枚 24×24 的按钮贴太紧会互相抢点击，2px 是间距与密度的折中 */
   gap: 2px;
 }
 
 /* 侧栏排序按钮走「幽灵」样式：无框无底。侧栏是切页必经的 hover 通道，
    带框按钮每次路过都闪出两个方块，太抢眼 —— 平时只显 45% 的淡箭头，
-   悬停按钮本体才点亮成品牌色 + 软底。
-   命中区仍是按钮本体 24×24（§2.3 U1），透明不改几何；行高 50 的取舍见下方历史注释：
-   两枚 24×24 + 2px 缝 = 50px，比 40px 的导航条目高 10px。试过用负外边距压回 40px，
-   但相邻两行排序按钮的命中区会互相重叠 8px（点击落在缝里可能触发上一行的下移）
-   —— 宁可让侧栏高一点，也不要一个会误触的目标。 */
+   悬停按钮本体才点亮成品牌色 + 软底。 */
 .sider-nav-row .reorder-btn {
   width: 24px;
   height: 24px;
@@ -5711,6 +5723,10 @@ html.app-hidden *::after {
   justify-content: space-between;
   gap: var(--space-3);
   min-width: 0;
+  /* antd 的关闭 X 是绝对定位在内容区右上角、**不占标题栏流宽**的，
+     标题里的工具组一旦变宽就会钻到 X 底下（实测重叠 19–27px）。
+     这里按 X 的 30px 命中区 + 4px 间隙把位置留出来，工具组再也压不上去。 */
+  padding-right: 34px;
 }
 
 .note-card-title {
@@ -5742,6 +5758,14 @@ html.app-hidden *::after {
   align-items: center;
   gap: var(--space-2);
   flex-shrink: 0;
+}
+
+/* 窄屏：三个控件（笔记文字 / 全屏 / 编辑）挤在同一行会把标题压没。
+   全屏按钮只留图标（aria-label 与 title 仍然完整），标题至少还能露出一截。 */
+@media (max-width: 640px) {
+  .note-card-fs-btn-label {
+    display: none;
+  }
 }
 
 .note-card-meta {
@@ -5789,6 +5813,139 @@ html.app-hidden *::after {
   max-width: 100%;
   border-radius: 6px;
   border: 1px solid var(--line-soft);
+}
+
+/* ---------- 全屏沉浸阅读（issue #52 方案 B：隐藏标题栏，仅正文 + Esc 退出） ----------
+   与上面卡片态共用同一个 .note-card-body，只改外层容器：铺满整个应用窗口，
+   去掉标题栏 / meta / 编辑入口，只留一条「退出全屏」通道。
+   宽度取 --app-viewport-width 而不是 100vw：整页缩放（--app-zoom）后 100vw 会溢出。
+   复用模板全屏写作（.template-writer-modal.is-fullscreen）的同一套做法。 */
+
+.note-card-modal.is-fullscreen {
+  top: 0 !important;
+  width: var(--app-viewport-width) !important;
+  max-width: var(--app-viewport-width) !important;
+  margin: 0 !important;
+  padding-bottom: 0;
+  height: var(--app-viewport-height);
+}
+
+.note-card-modal.is-fullscreen .ant-modal-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0;
+  /* 沉浸阅读面用最底层底色（不是卡片色）：整屏就是一张"纸"，
+     卡片态那层描边/圆角在铺满屏幕时反而割裂 */
+  background: var(--bg);
+  border: none;
+  border-radius: 0;
+}
+
+/* antd 在 .ant-modal 与 .ant-modal-content 之间还有一层无类名的焦点容器；
+   它默认 auto 高度会把 100% 截断，必须一起撑满 */
+.note-card-modal.is-fullscreen > div {
+  height: 100%;
+}
+
+/* 标题在全屏态只作无障碍名称（aria-labelledby 指向它），视觉上整条隐藏；
+   用 clip 而不是 display:none —— display:none 会让节点脱离无障碍树，
+   对话框就又没有名字了。 */
+.note-card-modal.is-fullscreen .ant-modal-header {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 顶部只留一条退出通道：没有可见标题、没有 meta、没有编辑按钮。
+   退出按钮靠右（与卡片态右上角的工具组位置一致，肌肉记忆不用改） */
+.note-card-fsbar {
+  flex: none;
+  align-self: stretch;
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px var(--card-pad);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+/* 退出通道：唯一常驻控件，做轻（--text-3）但命中区足 28px 高 */
+.note-card-exit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color var(--dur-2) var(--ease-standard),
+    border-color var(--dur-2) var(--ease-standard),
+    background var(--dur-2) var(--ease-standard);
+}
+
+.note-card-exit:hover {
+  color: var(--brand);
+  border-color: var(--brand-line);
+  background: var(--brand-soft);
+}
+
+.note-card-exit:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.note-card-exit kbd {
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text-3);
+  font-family: inherit;
+  font-size: 10.5px;
+  line-height: 16px;
+}
+
+/* 注意 antd 的 DOM：除 title 外的所有子节点都塞进同一个 .ant-modal-body，
+   所以退出栏与正文在这里是**兄弟**，必须显式排成纵向 —— 默认 flex 行会把
+   退出栏挤到正文左边、拉成一整列空白。 */
+.note-card-modal.is-fullscreen .ant-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-5) var(--card-pad);
+  /* 滚动交给正文自己：否则外层与正文各出一条滚动条 */
+  overflow: hidden;
+}
+
+/* 全屏下正文不再受 62vh 限制，改成吃满剩余高度；行长收在 980px，
+   否则 1440p 宽屏上一行 100+ 字，读长笔记反而更累 */
+.note-card-modal.is-fullscreen .note-card-body {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 980px;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+}
+
+/* 窄屏：全屏阅读的左右留白再收一档，正文宽度全部让给文字 */
+@media (max-width: 640px) {
+  .note-card-modal.is-fullscreen .ant-modal-body {
+    padding: 16px 12px;
+  }
 }
 
 /* entry 形态：紧凑入口行 */
@@ -6001,8 +6158,9 @@ body {
 /* ---------- 布局骨架：更大的留白 ---------- */
 
 .app-content {
-  /* 左侧 28px：侧栏已自带 12px 外边距，视觉间距与右侧 40px 对齐 */
-  padding: 32px 40px 56px 28px;
+  /* 紧凑密度：外框留白也同步收紧（原 32/40/56/28）——
+     左侧 18px 与侧栏 10px 外边距相加 ≈ 28px，仍然是"内容不贴侧栏"的舒适间距 */
+  padding: 20px 28px 28px 18px;
 }
 
 .content-container {
@@ -6030,10 +6188,10 @@ body {
 .ant-card > .ant-card-head {
   border-bottom: 1px solid var(--line-soft);
   padding: 0 var(--card-pad);
-  /* 54px：15px 字号 + 上下 19px 呼吸即可，58px 在小卡上明显空旷 */
-  min-height: 54px;
+  /* 42px：14px 字号 + 上下 14px 呼吸；紧凑版比旧 54px 再省一行信息的高度 */
+  min-height: 42px;
   font-weight: 600;
-  font-size: 15px;
+  font-size: 14px;
   letter-spacing: -0.01em;
   color: var(--text);
 }
@@ -6056,7 +6214,7 @@ body {
 }
 
 .ant-card-small > .ant-card-head {
-  min-height: 54px;
+  min-height: 42px;
 }
 
 .ant-card-small > .ant-card-body {
@@ -6069,26 +6227,26 @@ body {
 .app-sider {
   background: var(--sider-bg) !important;
   border: 1px solid var(--card-border) !important;
-  border-radius: 20px;
+  border-radius: 16px;
   box-shadow: none !important;
-  margin: 12px 0 12px 12px;
-  height: calc(var(--app-viewport-height) - 24px);
+  margin: 10px 0 10px 10px;
+  height: calc(var(--app-viewport-height) - 20px);
   overflow: hidden;
 }
 
 .app-sider .ant-layout-sider-children {
-  border-radius: 20px;
+  border-radius: 16px;
   overflow: hidden;
 }
 
 /* 折叠态的图标轨同样保持圆角，宽度收窄 */
 .ant-layout-sider-collapsed.app-sider {
-  border-radius: 18px;
+  border-radius: 14px;
 }
 
 .sider-logo {
-  padding: 22px 18px 16px;
-  gap: 11px;
+  padding: 14px 14px 10px;
+  gap: 9px;
 }
 
 /* Logo 徽标保持原样式（浅蓝底 + 品牌图形），只把投影压平 ——
@@ -6115,11 +6273,12 @@ body {
 }
 
 .sider-nav.sider-menu {
-  padding: 6px 0 12px;
+  padding: 2px 0 6px;
 }
 
 .sider-nav-group-title {
-  padding: 18px 22px 6px;
+  padding: 11px 18px 3px;
+  /* 字号守住 11px 下限：这行是导航结构信息，--text-3 的对比度基线按 11–12px 校准 */
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -6128,21 +6287,23 @@ body {
 }
 
 .sider-nav-row {
-  margin: 2px 12px;
+  margin: 1px 10px;
 }
 
 .sider-nav-item {
-  height: 38px;
-  padding: 0 12px;
-  gap: 11px;
-  border-radius: 11px;
+  height: 32px;
+  /* 右侧 52px 是键盘排序控件的通道（见 .sider-nav-row .reorder-controls）：
+     两枚 24px 按钮横排 50px，标签再长也不会被压住 */
+  padding: 0 52px 0 10px;
+  gap: 9px;
+  border-radius: 9px;
   color: var(--text-2);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 500;
 }
 
 .sider-nav-item .sider-nav-icon {
-  font-size: 17px;
+  font-size: 16px;
   color: var(--text-3);
   transition: color var(--dur-2) var(--ease-standard);
 }
@@ -6180,7 +6341,7 @@ body {
 
 .sider-footer {
   border-top: 1px solid var(--line-soft);
-  padding: 12px 14px 16px;
+  padding: 10px 12px 10px;
 }
 
 .sider-footer-toggle {
@@ -6219,22 +6380,22 @@ body {
 /* ---------- 页头：左对齐、大字号 + 字重拉开层级 ---------- */
 
 .page-title {
-  font-size: 27px;
+  font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.035em;
   color: var(--text);
 }
 
 .page-description {
-  margin-top: 8px;
-  font-size: 13px;
+  margin-top: 4px;
+  font-size: 12.5px;
   font-weight: 400;
   color: var(--text-3);
   letter-spacing: 0;
 }
 
 .page-breadcrumb {
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   font-size: 12px;
   letter-spacing: 0.01em;
   /* 位置信息，不是装饰：从 --text-dim 提到 --text-3 */
@@ -6249,8 +6410,8 @@ body {
 
 .stats-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: 12px;
   border: none;
   border-radius: 0;
   background: transparent;
@@ -6261,7 +6422,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 14px;
+  gap: 10px;
   min-width: 0;
   padding: var(--card-pad);
   border: 1px solid var(--card-border);
@@ -6272,9 +6433,9 @@ body {
 
 /* 线性图标块：内嵌一档的圆角方块 + 细线图标 */
 .stat-strip-icon {
-  width: 34px;
-  height: 34px;
-  border-radius: 11px;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
   background: var(--surface-2) !important;
   color: var(--text) !important;
   font-size: 16px;
@@ -6287,14 +6448,14 @@ body {
 }
 
 .stat-label {
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 500;
   letter-spacing: 0;
   color: var(--text-3);
 }
 
 .stat-text strong {
-  font-size: 30px;
+  font-size: 26px;
   font-weight: 600;
   letter-spacing: -0.035em;
   line-height: 1.05;
@@ -6314,7 +6475,7 @@ body {
 /* 固定响应式网格：列宽下限写死 + 每格等高，卡片尺寸随列宽统一缩放，
    不会因为数值长短而参差（"统一卡片尺寸"是这一节的硬要求） */
 .platform-card-grid {
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
   gap: var(--grid-gap);
   align-items: stretch;
 }
@@ -6530,7 +6691,7 @@ body {
 .ant-segmented {
   border-radius: 10px;
   background: var(--surface-2);
-  padding: 3px;
+  padding: 2px;
 }
 
 .ant-segmented .ant-segmented-item {
@@ -6609,6 +6770,12 @@ body {
   border-radius: 14px;
 }
 
+/* 紧凑密度：单元格上下留白压一档（antd 默认 16px），长列表一屏多读两行 */
+.ant-table-wrapper .ant-table-thead > tr > th,
+.ant-table-wrapper .ant-table-tbody > tr > td {
+  padding: 9px 12px;
+}
+
 .ant-table-thead .ant-table-cell {
   font-weight: 600;
   /* 表头以中文为主（"题目 / 难度 / 标签"），uppercase 无效且 0.05em 会把中文撑散；
@@ -6640,7 +6807,13 @@ body {
 
 /* 热力图摘要行：标签辅助色、数值主色，靠字重区分 */
 .heatmap-summary {
-  margin-bottom: 14px;
+  /* 左：范围与读数；右：色阶图例 —— 一行两段，图例不再去抢月份标签的宽度 */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
   font-size: 12px;
   letter-spacing: 0.02em;
   color: var(--text-3);
@@ -6684,8 +6857,8 @@ body {
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 14px 24px;
-  padding: 18px var(--card-pad);
+  gap: 8px 16px;
+  padding: 12px var(--card-pad);
   border: 1px solid var(--card-border);
   border-radius: var(--card-radius);
   background: var(--surface);
@@ -6875,8 +7048,8 @@ body {
 
 /* 同步状态栏：压成"一条状态线"，与下方的数据卡区分开（它是操作反馈，不是数据主角） */
 .sync-status-card > .ant-card-head {
-  min-height: 46px;
-  padding: 0 20px;
+  min-height: 38px;
+  padding: 0 var(--card-pad);
   border-bottom-color: var(--line-soft);
 }
 
@@ -6888,7 +7061,7 @@ body {
 }
 
 .sync-status-card > .ant-card-body {
-  padding: 16px 20px;
+  padding: 10px var(--card-pad);
 }
 
 /* 同一行的模块卡等高：难度分布 / 弱项标签并排时高度对齐，

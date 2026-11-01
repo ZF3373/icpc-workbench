@@ -55,7 +55,6 @@ export default function SyncStatusCard() {
       <Card
         size="small"
         className="sync-status-card"
-        style={{ marginBottom: 16 }}
         title={
           <Space size={8} wrap>
             <span>{title}</span>
