@@ -248,9 +248,19 @@ export function createNewSession(): void {
     // 置顶会话永远保留（pinned 优先于位置序）。
     const rest = prev.sessions.filter((x) => x.pinned)
     const unpinned = prev.sessions.filter((x) => !x.pinned)
+    // 从最旧开始淘汰，但**绝不淘汰当前活跃会话**：旧写法先 pop() 再判断，发现 victim 是
+    // 活跃会话时它已被弹出数组，该会话的消息随之静默丢失。改为先定位最旧的「非活跃」会话
+    // 再移除；只剩活跃会话时宁可暂超上限也不丢数据（与置顶会话可超上限同口径）。
     while (rest.length + unpinned.length >= MAX_SESSIONS) {
-      const victim = unpinned.pop()
-      if (!victim || victim.id === prev.activeId) break
+      let idx = -1
+      for (let i = unpinned.length - 1; i >= 0; i--) {
+        if (unpinned[i].id !== prev.activeId) {
+          idx = i
+          break
+        }
+      }
+      if (idx === -1) break
+      unpinned.splice(idx, 1)
     }
     return { ...prev, sessions: [s, ...rest, ...unpinned], activeId: s.id, input: '' }
   })
