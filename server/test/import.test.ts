@@ -42,6 +42,21 @@ test('parseManualRow: tags string split by |', () => {
   assert.deepEqual(sub.problem.tags, ['图论', '最短路']);
 });
 
+test('parseManualRow: difficulty 为 null/空串/空白按缺省处理，不得写成 0', () => {
+  // Number(null)=0、Number('')=0 会绕过 isFinite 校验，以 manual 最高优先级写入
+  // difficulty=0，永久挡住难度回填并污染低分桶。这些缺省值必须不写入 difficulty。
+  for (const v of [null, '', '   ']) {
+    const sub = parseManualRow('luogu', { problemKey: 'P1', verdict: 'AC', difficulty: v } as never, 0);
+    assert.ok(!('difficulty' in sub.problem), `difficulty=${JSON.stringify(v)} 不应写入`);
+  }
+  // 合法数字仍正常写入
+  const ok = parseManualRow('luogu', { problemKey: 'P1', verdict: 'AC', difficulty: 1500 } as never, 0);
+  assert.equal(ok.problem.difficulty, 1500);
+  // 非数字串按缺省（NaN）处理，不抛错
+  const nan = parseManualRow('luogu', { problemKey: 'P1', verdict: 'AC', difficulty: 'abc' } as never, 0);
+  assert.ok(!('difficulty' in nan.problem));
+});
+
 test('parseCsv: quotes, commas, escaped quotes, CRLF', () => {  const rows = parseCsv('a,b\r\n"x,y","say ""hi"""\r\nz,w\n');
   assert.deepEqual(rows, [
     ['a', 'b'],

@@ -38,7 +38,13 @@ export function parseManualRow(
         .split('|')
         .map((t) => t.trim())
         .filter(Boolean);
-  const difficulty = row.difficulty !== undefined ? Number(row.difficulty) : NaN;
+  // null/空串/纯空白一律按缺省（NaN）：Number(null)=0、Number('')=0 会绕过 isFinite
+  // 校验，以 manual 最高优先级写入 difficulty=0，永久挡住难度回填并污染低分桶。
+  const difficultyRaw = row.difficulty;
+  const difficulty =
+    difficultyRaw === undefined || difficultyRaw === null || String(difficultyRaw).trim() === ''
+      ? NaN
+      : Number(difficultyRaw);
   // 缺省 externalId：稳定组合（平台+题号+结果），重复导入同一条记录自动去重；
   // 同一题不同结果（WA/AC）会保留多条
   const externalId =
