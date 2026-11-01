@@ -4,7 +4,7 @@ import { cpp } from '@codemirror/lang-cpp'
 import { markdown as markdownLang } from '@codemirror/lang-markdown'
 import { HighlightStyle, indentUnit, syntaxHighlighting } from '@codemirror/language'
 import { EditorView, keymap } from '@codemirror/view'
-import type { Extension } from '@codemirror/state'
+import { EditorState, type Extension } from '@codemirror/state'
 import { tags as t } from '@lezer/highlight'
 import { useMemo } from 'react'
 import { useIndentSize } from '../editorSettings'
@@ -98,6 +98,10 @@ export default function CodeEditor({
       appTheme,
       syntaxHighlighting(highlight),
       ...(extraExtensions ?? []),
+      // 在编辑器内限长：仅靠 onChange 截断时，若截断后的值与上一帧相同（value prop 不变），
+      // CodeMirror 文档不会回滚，出现「显示全文、保存被截」的不一致。changeFilter 直接
+      // 拒绝会让文档超限的变更，文档本身永不超长，显示与保存始终一致。
+      ...(maxLength ? [EditorState.changeFilter.of((tr) => tr.newDoc.length <= maxLength)] : []),
       ...(readOnly
         ? [
             EditorView.editable.of(false),
@@ -113,7 +117,7 @@ export default function CodeEditor({
         : [keymap.of([indentWithTab])]),
       EditorView.lineWrapping,
     ],
-    [language, indentSize, readOnly, extraExtensions],
+    [language, indentSize, readOnly, extraExtensions, maxLength],
   )
   return (
     <div className={`code-editor${fill ? ' code-editor-fill' : ''}`}>
