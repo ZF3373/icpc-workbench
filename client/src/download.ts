@@ -45,11 +45,13 @@ async function saveViaPicker(
 /** 降级路径：Blob + 触发浏览器默认下载 */
 function saveViaBlob(filename: string, data: string | Blob, mime: string): void {
   const blob = data instanceof Blob ? data : new Blob([data], { type: mime })
+  const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
+  a.href = url
   a.download = filename
   a.click()
-  URL.revokeObjectURL(a.href)
+  // 延迟释放：Firefox 下 click 后同步 revoke 会在浏览器读取 blob 前取消下载
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 export interface SaveUrlOptions {
