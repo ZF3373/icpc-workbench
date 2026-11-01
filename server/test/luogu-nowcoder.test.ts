@@ -1004,3 +1004,84 @@ test('nowcoder: 参赛超过扫描上限时降级为只扫最近若干场，不�
   assert.ok(joinPages >= 2, '应至少扫到填满上限为止');
   assert.match(opts.directScanNote ?? '', /只同步最近/, '被跳过的场次应通过 note 告知，而不是静默或报错');
 });
+
+/** 回归：合并来源日期不对齐——练习全在窗口外时，曾把同页/后续页窗口内的在线编程提交一起丢掉（0 入库） */
+test('nowcoder: 练习全在窗口外不得丢掉窗口内的在线编程提交（按来源各自判窗口）', async () => {
+  const DAY = 86400000;
+  const windowSince = new Date(Date.now() - 7 * DAY).toISOString();
+  const fetchFn: typeof fetch = async (input, init) => {
+    const u = String(input);
+    if (u.includes('contest-joined-history')) return Response.json({ code: 0, data: { dataList: [], pageInfo: { pageCount: 0 } } });
+    if (u.includes('practice-coding')) {
+      const page = Number(new URL(u).searchParams.get('page'));
+      // 练习只有 1 页，且全部远在窗口外（2020 年）
+      return new Response(page === 1
+        ? ncPage(Array.from({ length: 10 }, (_, i) =>
+            [String(9000 + i), '1000' + i, 'P' + i, '答案正确', 'C++', '2020-01-01 10:00:00'] as [string, string, string, string, string, string]))
+        : ncPage([]), { status: 200 });
+    }
+    if (u.includes('submission-history')) {
+      const pageNo = Number(JSON.parse(String(init?.body ?? '{}')).pageNo ?? 1);
+      // 在线编程 3 页 × 20 条，全部在窗口内（1 天前）
+      const records = pageNo <= 3 ? Array.from({ length: 20 }, (_, i) => ({
+        problem: { questionUuid: String(pageNo).padStart(2, '0') + 'c'.repeat(28) + String(i).padStart(2, '0'), title: `C${pageNo}-${i}` },
+        submission: { id: pageNo * 1000 + i, createdDate: Date.now() - DAY - pageNo * 1000 },
+        language: 'C++', status: { desc: '答案正确' },
+      })) : [];
+      return Response.json({ code: 0, data: { records } });
+    }
+    return new Response('{}', { status: 404 });
+  };
+  const adapter = createNowcoderAdapter(fetchFn);
+  const opts: { pageDelayMs?: number; windowSince?: string; truncated?: boolean } = { pageDelayMs: 0, windowSince };
+  const rows = await adapter.fetchUserSubmissions('87654321', opts);
+  assert.equal(rows.length, 60, '窗口内的 60 条在线编程提交必须全部入库（修复前被靠前的旧练习行挡死，0 入库）');
+  assert.ok(rows.every((r) => r.problem.problemKey.startsWith('practice:')), '入库的应全是在线编程提交');
+  assert.equal(opts.truncated, undefined, '窗口被完整覆盖，属自然结束而非截断');
+});
+
+/** 回归：请求总闸耗尽曾被返回 rawCount:0 判成「自然到底」，truncated=false → 尾部历史永不补全 */
+test('nowcoder: 请求预算耗尽且仍有历史时如实报截断 + 续拉游标', async () => {
+  const DAY = 86400000;
+  const contests = Array.from({ length: 20 }, (_, i) => ({ contestId: 50000 + i }));
+  const fetchFn: typeof fetch = async (input, init) => {
+    const u = String(input);
+    if (u.includes('contest-joined-history')) {
+      const page = Number(new URL(u).searchParams.get('page'));
+      return Response.json({ code: 0, data: { dataList: page === 1 ? contests.slice(0, 10) : contests.slice(10), pageInfo: { pageCount: 2 } } });
+    }
+    if (u.includes('practice-coding')) {
+      const page = Number(new URL(u).searchParams.get('page'));
+      // 练习 90 页全新提交（窗口内），第 91 页才空
+      return new Response(page <= 90
+        ? ncPage(Array.from({ length: 10 }, (_, i) =>
+            [String(page * 1000 + i), String(9000 + page * 1000 + i), 'P' + i, '答案正确', 'C++', '2026-08-02 20:29:23'] as [string, string, string, string, string, string]))
+        : ncPage([]), { status: 200 });
+    }
+    if (u.includes('submission-history')) {
+      const pageNo = Number(JSON.parse(String(init?.body ?? '{}')).pageNo ?? 1);
+      const records = pageNo <= 90 ? Array.from({ length: 20 }, (_, i) => ({
+        problem: { questionUuid: String(pageNo).padStart(2, '0') + 'd'.repeat(28) + String(i).padStart(2, '0'), title: `C${pageNo}-${i}` },
+        submission: { id: pageNo * 1000 + i, createdDate: Date.now() - DAY - pageNo * 1000 },
+        language: 'C++', status: { desc: '答案正确' },
+      })) : [];
+      return Response.json({ code: 0, data: { records } });
+    }
+    if (u.includes('status-list')) {
+      const p = new URL(u).searchParams;
+      const page = Number(p.get('page'));
+      const cid = Number(p.get('id'));
+      const data = Array.from({ length: 20 }, (_, i) => ({
+        submissionId: cid * 100000 + page * 100 + i, userId: 87654321, problemId: 7000 + i,
+        index: 'A', statusMessage: '答案正确', submitTime: Date.now() - DAY - page * 3600000, problemName: `K${i}`,
+      }));
+      return Response.json({ code: 0, data: { data, basicInfo: { pageCount: 90 } } });
+    }
+    return new Response('{}', { status: 404 });
+  };
+  const adapter = createNowcoderAdapter(fetchFn);
+  const opts: { pageDelayMs?: number; truncated?: boolean; backfillReachedPage?: number } = { pageDelayMs: 0 };
+  await adapter.fetchUserSubmissions('87654321', opts);
+  assert.equal(opts.truncated, true, '预算耗尽但历史未尽必须报截断（修复前误报自然到底，尾部永不补全）');
+  assert.ok(typeof opts.backfillReachedPage === 'number' && opts.backfillReachedPage > 0, '应记下续拉游标供补全模式接续');
+});

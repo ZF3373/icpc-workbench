@@ -181,16 +181,20 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
       }
       const ended = new Set<string>();
       const seen = new Set<string>();
+      // 「仅同步最近 N 天」窗口起点（ISO UTC）。**不交给 pagedFetch 的 since 早停**：
+      // 牛客一页合并练习/在线编程/竞赛三个各自降序、日期不对齐的来源，pagedFetch 见到第一条
+      // 窗口外行就终止，会把同页靠后来源里仍在窗口内的提交一起丢掉（实测：练习全在窗口外时，
+      // 窗口内的在线编程提交 0 入库）。窗口在 fetchPage 内**按来源各自**判定，全部出窗才收尾。
+      const windowSince = opts?.windowSince;
       return pagedFetch<NormalizedSubmission | null>({
         pageSize: PAGE_SIZE, perSyncMax: PER_SYNC_MAX_PAGES,
         knownExternalIds: opts?.knownExternalIds, maxSubmissions: opts?.maxSubmissions,
         backfill: opts?.backfill, backfillFromPage: opts?.backfillFromPage, opts,
         pageDelayMs: opts?.pageDelayMs ?? PAGE_DELAY_MS,
-        // 「仅同步最近 N 天」窗口起点：降序分页遇到早于该时刻的行即收尾，不再翻更旧的页。
-        // 注意必须传 windowSince 而不是 since —— opts.since 是**增量**语义，
-        // 而牛客存在「提交早于上次同步时刻、却晚出现在列表」的真实场景（见 types.ts），
-        // 常规增量只能靠 knownExternalIds 判重，绝不做时间截断。
-        since: opts?.windowSince,
+        // 窗口早停由 fetchPage 按来源各自判定（见 windowSince 注释），不走 pagedFetch 的 since：
+        // 合并页里各来源日期不对齐，全局「见旧即停」会误伤仍在窗口内的其它来源。
+        // opts.since 是**增量**语义，牛客存在「提交早于上次同步、却晚出现在列表」的真实场景
+        // （见 types.ts），常规增量只靠 knownExternalIds 判重，绝不做时间截断。
         async fetchPage(page) {
           const rows: NormalizedSubmission[] = [];
           let more = false;
@@ -206,12 +210,16 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
             for (const row of parsed) {
               const submittedAt = recordTime(parseTime(row.timeText));
               if (!submittedAt || PENDING_RESULTS.has(row.result)) continue;
+              // 练习页降序：遇到窗口外行即本来源出窗（其余行更旧），不影响同页其它来源
+              if (windowSince && submittedAt < windowSince) { ended.add('practice'); break; }
               rows.push({ externalId: row.submissionId, submittedAt, verdict: RESULT_MAP[row.result] ?? 'SKIPPED', language: row.language,
                 problem: { platform: 'nowcoder', problemKey: row.pid, title: row.title || row.pid, ...difficultyFields('nowcoder', null), url: API + '/acm/problem/' + row.pid, tags: [] } });
             }
             const rawCount = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)]
               .filter(m => /<td[\s>]/i.test(m[1])).length;
-            if (rawCount >= PAGE_SIZE) more = true; else ended.add('practice');
+            if (!ended.has('practice')) {
+              if (rawCount >= PAGE_SIZE) more = true; else ended.add('practice');
+            }
           }
           if (!ended.has('community') && !takeRequest()) ended.add('community');
           if (!ended.has('community')) {
@@ -222,6 +230,8 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
             if (!Array.isArray(data.records)) throw new SyncError('schema_changed', '牛客在线编程记录结构发生变化');
             for (const row of data.records) {
               const submittedAt = recordTime(row.submission?.createdDate);
+              // 在线编程同样降序：窗口外行只结束本来源，不拖累练习/竞赛
+              if (submittedAt && windowSince && submittedAt < windowSince) { ended.add('community'); break; }
               const verdict = RESULT_MAP[row.status?.desc];
               const uuid = row.problem?.questionUuid;
               if (!submittedAt || !verdict || !row.submission?.id || !/^[a-f0-9]{32}$/i.test(uuid)) continue;
@@ -229,7 +239,9 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
                 problem: { platform: 'nowcoder', problemKey: 'practice:' + uuid, title: row.problem.title || row.problem.questionNum || uuid,
                   url: 'https://www.nowcoder.com/practice/' + uuid, tags: [] } });
             }
-            if (data.records.length >= 20) more = true; else ended.add('community');
+            if (!ended.has('community')) {
+              if (data.records.length >= 20) more = true; else ended.add('community');
+            }
           }
           for (const contest of contestList) {
             if (ended.has(contest)) continue;
@@ -239,6 +251,8 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
             if (!Array.isArray(data.data) || !data.basicInfo) throw new SyncError('schema_changed', '牛客竞赛提交记录结构发生变化');
             for (const row of data.data) {
               const submittedAt = recordTime(row.submitTime);
+              // 竞赛提交按 submitTime 降序：窗口外行只结束本场，不影响其它来源/场次
+              if (submittedAt && windowSince && submittedAt < windowSince) { ended.add(contest); break; }
               const verdict = RESULT_MAP[row.statusMessage];
               if (String(row.userId) !== uid || !submittedAt || !verdict || !row.submissionId || !row.problemId) continue;
               // 标题兜底必须**等于 problem_key 本身**，不能是 `'牛客 ' + id`。
@@ -256,22 +270,36 @@ export function createNowcoderAdapter(fetchFn: HttpInit = fetch): PlatformAdapte
                 problem: { platform: 'nowcoder', problemKey: String(row.problemId), title: row.problemName || String(row.problemId),
                   url: API + '/acm/problem/' + row.problemId, tags: [] } });
             }
-            if (page < data.basicInfo.pageCount) more = true; else ended.add(contest);
+            if (!ended.has(contest)) {
+              if (page < data.basicInfo.pageCount) more = true; else ended.add(contest);
+            }
           }
           // Independent streams do not have globally aligned page dates, so rows are merged
           // from several sources per page and deduped here by submission id.
-          // 注意：这里**不再**按 windowSince 过滤。pagedFetch 的 since 判定既要丢弃窗口外的行、
-          // 又要据此提前终止分页；若在 fetchPage 里先把它们滤掉，pagedFetch 永远看不到「更旧的行」，
-          // 窗口早停就失效了（7 天窗口会打满整个页预算）。
+          // 窗口外的行已在上面**按来源各自**剔除并标记该来源出窗（ended），这里不再做全局过滤。
           const unique = rows.filter(r => {
             if (seen.has(r.externalId)) return false;
             seen.add(r.externalId);
             return true;
           });
+          // 全部来源都出窗 / 到底 → 本轮收尾（自然结束，不截断）。只要还有一个来源没完，
+          // 就得继续翻页，否则会把仍在窗口内 / 仍有历史的来源漏掉。
+          const allEnded = ended.has('practice') && ended.has('community')
+            && contestList.every((c) => ended.has(c));
           // A page of pending, duplicate or out-of-window rows must not end another source.
           // 预算耗尽时必须真正收尾：若仍返回 [null] 占位，pagedFetch 会一路翻到页预算尽头，
           // 而每一页都发不出请求（纯空转），既浪费时间又让「请求总量」失去意义。
-          if (requestBudget <= 0) return { rows: unique, rawCount: 0 };
+          if (requestBudget <= 0) {
+            // 但「预算耗尽」≠「自然到底」：仍有来源未完结说明更早历史没拉完。若此时返回
+            // rawCount:0 被 pagedFetch 判 naturalEnd、truncated=false，尾部历史将不再触发补全、
+            // 永久漏拉。故如实置截断 + 续拉游标（sync 层读取 fetchOpts，pagedFetch 不会清掉它们）。
+            if (!allEnded && opts) {
+              opts.truncated = true;
+              opts.backfillReachedPage = page;
+            }
+            return { rows: unique, rawCount: 0 };
+          }
+          if (allEnded) return { rows: unique, rawCount: 0 };
           return { rows: unique.length ? unique : more ? [null] : [], rawCount: more ? PAGE_SIZE : 0 };
         },
         externalIdOf: row => row?.externalId ?? '',
