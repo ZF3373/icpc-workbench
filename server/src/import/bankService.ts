@@ -65,7 +65,10 @@ export function upsertBankProblems(
     );
     for (const [platform, keys] of byPlatform) {
       let existed = 0;
-      for (const key of keys) {
+      // 按**去重**后的 key 统计存在数：与下方 uniqueKeys 同口径。此前按出现次数累加，
+      // 批内重复 key 会把 existed 算多，inserted/updated 随之错（如 A,A,B 且 A 已存在
+      // 会算成 inserted=0/updated=2，正确应是 1/1）。
+      for (const key of new Set(keys)) {
         if ((countExisting.get(platform, key) as { c: number }).c > 0) existed += 1;
       }
       existedByPlatform.set(platform, existed);

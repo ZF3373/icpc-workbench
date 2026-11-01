@@ -710,6 +710,23 @@ test('upsertBankProblems: inserts new, updates existing, keeps manual difficulty
   assert.equal(rows[1].difficulty, 1700);
 });
 
+test('upsertBankProblems: 批内重复 key 只算一次，inserted/updated 不失真', () => {
+  db.prepare(
+    "INSERT INTO problems (platform, problem_key, title, difficulty, difficulty_source, url, tags) VALUES ('luogu', 'P1001', '旧', 1800, 'manual', 'https://x', '[]')",
+  ).run();
+  const row = (problemKey: string, title: string) => ({
+    platform: 'luogu' as const, problemKey, title, difficulty: 1300,
+    nativeDifficulty: null, difficultyScale: null, url: null, tags: [],
+  });
+  // P1001 已存在且批内出现两次，P2002 新增：应 inserted=1 / updated=1。
+  // 修复前 existed 按出现次数累加（P1001 算 2），uniqueKeys=2 → inserted=0/updated=2。
+  const r = upsertBankProblems(db, [row('P1001', 'A'), row('P1001', 'A 重复'), row('P2002', 'B')]);
+  assert.equal(r[0].inserted, 1, '重复 key 不得把 existed 算多而吞掉新增计数');
+  assert.equal(r[0].updated, 1);
+  const count = db.prepare('SELECT COUNT(*) AS c FROM problems').get() as { c: number };
+  assert.equal(count.c, 2, '重复 key 只落一行');
+});
+
 test('upsertBankProblems: 题库难度不覆盖同步来的难度（bank(1) < sync(2)）', () => {
   db.prepare(
     "INSERT INTO problems (platform, problem_key, title, difficulty, difficulty_source, url, tags) VALUES ('luogu', 'P3003', '旧标题', 2000, 'sync', 'https://x', '[]')",
