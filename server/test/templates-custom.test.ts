@@ -379,3 +379,56 @@ test('templates list still exposes built-in curriculum invariants', async () => 
     assert.equal(list.categories.length, CURRICULUM.length);
   });
 });
+
+test('custom templates: PATCH 部分更新只改传入字段，不清掉未传的 idea/tags/url', async () => {
+  await withServer(async (base) => {
+    const categoryKey = CURRICULUM[0].key;
+    const created = await fetch(`${base}/custom`, {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({
+        categoryKey, name: '原模板', difficulty: 3, tags: ['dp'],
+        code: '// v1', idea: '手写思路', complexity: 'O(n)', url: 'https://notes.example/a',
+      }),
+    });
+    assert.equal(created.status, 200);
+    const { id } = (await created.json()) as { id: string };
+    const numericId = id.replace(/^c-/, '');
+
+    interface CustomShape { id: string; name: string; code: string; idea: string; complexity: string; url: string | null; tags: string[]; custom?: boolean }
+    const readBack = async (): Promise<CustomShape> => {
+      const list = (await (await fetch(base)).json()) as { categories: Array<{ templates: CustomShape[] }> };
+      for (const c of list.categories) {
+        const hit = c.templates.find((t) => t.custom && t.id === id);
+        if (hit) return hit;
+      }
+      throw new Error('custom template not found');
+    };
+
+    // 只改 name（省略 idea/complexity/url/tags/code）：其余必须保留。
+    // 修复前复用全量校验 + 全列 UPDATE，会把 idea/complexity/url 清空、tags 置 []。
+    const patch = await fetch(`${base}/custom/${numericId}`, {
+      method: 'PATCH',
+      headers: jsonHeaders,
+      body: JSON.stringify({ name: '改名后' }),
+    });
+    assert.equal(patch.status, 200);
+    const after = await readBack();
+    assert.equal(after.name, '改名后');
+    assert.equal(after.idea, '手写思路', '未传的 idea 必须保留');
+    assert.equal(after.complexity, 'O(n)', '未传的 complexity 必须保留');
+    assert.equal(after.url, 'https://notes.example/a', '未传的 url 必须保留');
+    assert.deepEqual(after.tags, ['dp'], '未传的 tags 必须保留');
+    assert.equal(after.code, '// v1', '未传的 code 必须保留');
+
+    // 显式传空串仍可清空对应字段
+    await fetch(`${base}/custom/${numericId}`, {
+      method: 'PATCH',
+      headers: jsonHeaders,
+      body: JSON.stringify({ idea: '' }),
+    });
+    const cleared = await readBack();
+    assert.equal(cleared.idea, '', '显式空串清空 idea');
+    assert.equal(cleared.name, '改名后', '清空 idea 不影响 name');
+  });
+});

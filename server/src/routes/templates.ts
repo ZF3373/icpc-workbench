@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
+import type { SQLInputValue } from 'node:sqlite';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { asyncHandler } from '../asyncHandler.ts';
@@ -662,25 +663,62 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
       .prepare('SELECT id FROM custom_templates WHERE id = ? AND user_id = ?')
       .get(dbId, DEFAULT_USER_ID);
     if (!existing) return res.status(404).json({ error: '自建模板不存在' });
-    const v = validateCustomBody(req.body ?? {});
-    if ('error' in v) return res.status(400).json({ error: v.error });
+    const body = req.body ?? {};
+    // 真正的部分更新：只校验并覆盖本次**显式传入**的字段，未传的保留库内原值。
+    // 此前复用 validateCustomBody（为 POST 全量新建计）再全列 UPDATE，带了 name/
+    // categoryKey/difficulty 但省略 idea/tags 等的 PATCH 会把已有可选内容清成默认值。
+    const sets: string[] = [];
+    const params: SQLInputValue[] = [];
+    if ('name' in body) {
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!name || name.length > 100) return res.status(400).json({ error: 'name 必填且不超过 100 字' });
+      sets.push('name = ?');
+      params.push(name);
+    }
+    if ('categoryKey' in body) {
+      const categoryKey = body.categoryKey;
+      if (typeof categoryKey !== 'string' || !categoryExists(db, categoryKey)) {
+        return res.status(400).json({ error: 'categoryKey 需为有效分类' });
+      }
+      sets.push('category_key = ?');
+      params.push(categoryKey);
+    }
+    if ('difficulty' in body) {
+      const difficulty = Number(body.difficulty);
+      if (!Number.isInteger(difficulty) || difficulty < 1 || difficulty > 5) {
+        return res.status(400).json({ error: 'difficulty 需为 1-5 整数' });
+      }
+      sets.push('difficulty = ?');
+      params.push(difficulty);
+    }
+    if ('tags' in body) {
+      const tags = Array.isArray(body.tags) ? body.tags.map(String).filter(Boolean).slice(0, 12) : [];
+      sets.push('tags = ?');
+      params.push(JSON.stringify(tags));
+    }
+    if ('code' in body) {
+      const code = typeof body.code === 'string' ? body.code : '';
+      if (code.length > 20000) return res.status(400).json({ error: 'code 过长（> 20000 字符）' });
+      sets.push('code = ?');
+      params.push(code);
+    }
+    if ('idea' in body) {
+      sets.push('idea = ?');
+      params.push(typeof body.idea === 'string' ? body.idea.slice(0, 5000) || null : null);
+    }
+    if ('complexity' in body) {
+      sets.push('complexity = ?');
+      params.push(typeof body.complexity === 'string' ? body.complexity.slice(0, 200) || null : null);
+    }
+    if ('url' in body) {
+      sets.push('url = ?');
+      params.push(typeof body.url === 'string' && body.url.trim() !== '' ? body.url.trim() : null);
+    }
+    if (sets.length === 0) return res.json({ ok: true });
+    sets.push("updated_at = datetime('now')");
     db.prepare(
-      `UPDATE custom_templates
-          SET category_key = ?, name = ?, difficulty = ?, tags = ?, code = ?, idea = ?, complexity = ?, url = ?,
-              updated_at = datetime('now')
-        WHERE id = ? AND user_id = ?`,
-    ).run(
-      v.categoryKey,
-      v.name,
-      v.difficulty,
-      JSON.stringify(v.tags),
-      v.code,
-      v.idea || null,
-      v.complexity || null,
-      v.url,
-      dbId,
-      DEFAULT_USER_ID,
-    );
+      `UPDATE custom_templates SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`,
+    ).run(...params, dbId, DEFAULT_USER_ID);
     res.json({ ok: true });
   });
 
