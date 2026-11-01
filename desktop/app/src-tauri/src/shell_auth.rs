@@ -111,12 +111,27 @@ fn spec_of(platform: &str) -> Option<&'static LoginSpec> {
     LOGIN_SPECS.iter().find(|s| s.platform == platform)
 }
 
-/// 隐藏保活窗（QOJ 专用：其余平台凭据长效，无续签语义）
-const WORKER_LABEL: &str = "qoj-worker";
+/// WebView 同源代理平台表：(platform, 隐藏助手窗 label, 站点首页 URL)。
+/// 这些站点前置 Cloudflare 且按客户端 TLS 指纹放行——Node 直连必被拦，唯一稳健通道
+/// 是壳内 WebView 同源抓取（QOJ 2026-10 / VJudge 2026-11 实测）。每个平台一个隐藏助手窗
+/// + 注入守护脚本，周期导航续签 Cloudflare 凭据。
+const AGENT_PLATFORMS: &[(&str, &str, &str)] = &[
+    ("qoj", "qoj-worker", "https://qoj.ac/"),
+    ("vjudge", "vjudge-worker", "https://vjudge.net/"),
+];
 
-/// QOJ 守护脚本：注入到 qoj.ac 页面上下文（与页面同源 → 同源 fetch 自动携带完美客户端
+/// 平台展示名（保活/提示文案用）
+fn platform_label(platform: &str) -> &'static str {
+    match platform {
+        "vjudge" => "VJudge",
+        _ => "QOJ",
+    }
+}
+
+/// QOJ 守护脚本：注入到目标站页面上下文（与页面同源 → 同源 fetch 自动携带完美客户端
 /// 指纹与真实登录态，Cloudflare 无法区分）。自轮询领任务 → 同源抓取 → 回传。
-/// 幂等（window 标记）；导航换文档后由壳的下一次注入重建。__PORT__ 由注入时替换为核心端口。
+/// 幂等（window 标记）；导航换文档后由壳的下一次注入重建。
+/// __PORT__ / __PLATFORM__ 由注入时替换为核心端口与平台 ID。
 const AGENT_DAEMON_SCRIPT: &str = r#"(function () {
   if (window.__icpcAgent) return;
   window.__icpcAgent = true;
@@ -130,7 +145,7 @@ const AGENT_DAEMON_SCRIPT: &str = r#"(function () {
     var PORT = "__PORT__";
     for (;;) {
       try {
-        var r = await fetch('http://127.0.0.1:' + PORT + '/api/qoj-agent/next');
+        var r = await fetch('http://127.0.0.1:' + PORT + '/api/qoj-agent/next?platform=__PLATFORM__');
         var j = await r.json();
         if (j && j.job) {
           var res = await fetch(j.job.url, { credentials: 'include' });
@@ -170,6 +185,12 @@ const KEEPALIVE_FAIL_SHOW: u32 = 2;
 /// 抓到的凭据：字段 key → 裸值（key 按 LoginSpec.fields 归并，取先到的非空值）
 type Creds = Vec<(String, String)>;
 
+/// 单个代理平台的保活状态（上次续签时刻 + 连续失败计数）
+struct KeepaliveState {
+    last: tokio::time::Instant,
+    fails: u32,
+}
+
 /// 启动保活任务（setup 里调用一次）
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -180,8 +201,14 @@ pub fn spawn(app: AppHandle) {
 async fn run(app: AppHandle) {
     crate::logln("[shell-auth] 凭据任务启动");
     let mut last_heartbeat = tokio::time::Instant::now() - HEARTBEAT_EVERY; // 启动即发一跳
-    let mut last_keepalive = tokio::time::Instant::now() - KEEPALIVE_EVERY + FIRST_KEEPALIVE_DELAY;
-    let mut keepalive_fails: u32 = 0;
+    // 每个代理平台独立保活节奏；首次延迟 FIRST_KEEPALIVE_DELAY 拉起助手窗（首屏检测依赖代理在线）
+    let mut keepalive: Vec<KeepaliveState> = AGENT_PLATFORMS
+        .iter()
+        .map(|_| KeepaliveState {
+            last: tokio::time::Instant::now() - KEEPALIVE_EVERY + FIRST_KEEPALIVE_DELAY,
+            fails: 0,
+        })
+        .collect();
     loop {
         tokio::time::sleep(POLL_TICK).await;
         let Some(port) = current_port(&app) else { continue };
@@ -192,20 +219,24 @@ async fn run(app: AppHandle) {
             post_status(port, &json!({ "kind": "heartbeat", "ok": true, "at": now_secs() })).await;
         }
 
-        // 前端动作：login = 打开该平台可见登录窗并盯到取齐凭据；pull = QOJ 隐藏窗静默续签
+        // 前端动作：login = 打开该平台可见登录窗并盯到取齐凭据；pull = 代理平台隐藏窗静默续签
         if let Some(req) = pop_pending(port).await {
             match req.action.as_str() {
                 "login" => handle_login(&app, port, &req).await,
-                "pull" if req.platform == "qoj" => handle_qoj_pull(&app, port, req.id).await,
+                "pull" if AGENT_PLATFORMS.iter().any(|(p, _, _)| *p == req.platform) => {
+                    handle_pull(&app, port, &req).await
+                }
                 _ => post_failure(port, "login", Some(req.id), &format!("不支持的平台: {}", req.platform)).await,
             }
             continue;
         }
 
-        // 周期保活（仅 QOJ）
-        if last_keepalive.elapsed() >= KEEPALIVE_EVERY {
-            last_keepalive = tokio::time::Instant::now();
-            keepalive_tick(&app, port, &mut keepalive_fails).await;
+        // 周期保活（各代理平台独立）
+        for (i, (platform, worker, url)) in AGENT_PLATFORMS.iter().enumerate() {
+            if keepalive[i].last.elapsed() >= KEEPALIVE_EVERY {
+                keepalive[i].last = tokio::time::Instant::now();
+                keepalive_tick(&app, port, platform, worker, url, &mut keepalive[i].fails).await;
+            }
         }
     }
 }
@@ -242,7 +273,7 @@ async fn handle_login(app: &AppHandle, port: u16, req: &PendingRequest) {
                 }
             }
             // 幂等注入：登录过程会多次跳转换文档，守护脚本随文档重建
-            inject_agent(app, &label, port);
+            inject_agent(app, &label, port, spec.platform);
             if tokio::time::Instant::now() >= deadline {
                 break;
             }
@@ -252,14 +283,14 @@ async fn handle_login(app: &AppHandle, port: u16, req: &PendingRequest) {
             // 若此刻代理还没就绪，那次检测会超时变红，用户就会以为「登录了还是失败」
             let wait_start = tokio::time::Instant::now();
             while tokio::time::Instant::now() < wait_start + Duration::from_secs(15) {
-                if get_json(port, "/api/qoj-agent/alive")
+                if get_json(port, "/api/qoj-agent/alive?platform=qoj")
                     .await
                     .and_then(|v| v.get("alive").and_then(|a| a.as_bool()))
                     .unwrap_or(false)
                 {
                     break;
                 }
-                inject_agent(app, &label, port);
+                inject_agent(app, &label, port, spec.platform);
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
             crate::logln("[shell-auth] qoj 登录态已就绪（同源代理模式）");
@@ -318,31 +349,37 @@ async fn handle_login(app: &AppHandle, port: u16, req: &PendingRequest) {
     }
 }
 
-/// QOJ「立即续签」：刷新助手窗口（重导航续签 Cloudflare 凭据 + 重建守护脚本）
-async fn handle_qoj_pull(app: &AppHandle, port: u16, id: u64) {
-    match renew_qoj_agent(app, port).await {
+/// 代理平台「立即续签」：刷新助手窗口（重导航续签 Cloudflare 凭据 + 重建守护脚本）
+async fn handle_pull(app: &AppHandle, port: u16, req: &PendingRequest) {
+    let Some(&(platform, worker, url)) = AGENT_PLATFORMS.iter().find(|(p, _, _)| *p == req.platform) else {
+        post_failure(port, "pull", Some(req.id), &format!("不支持的平台: {}", req.platform)).await;
+        return;
+    };
+    let label = platform_label(platform);
+    match renew_agent(app, port, platform, worker, url).await {
         Some(message) => {
-            crate::logln(&format!("[shell-auth] qoj 助手窗口已刷新（{message}）"));
-            post_result(port, "pull", Some(id), true, &message).await;
+            crate::logln(&format!("[shell-auth] {label} 助手窗口已刷新（{message}）"));
+            post_result(port, "pull", Some(req.id), true, &message).await;
         }
         None => {
-            post_failure(port, "pull", Some(id), "助手窗口未就绪：请稍候重试，或在设置页点「在应用内登录 QOJ」").await;
+            post_failure(port, "pull", Some(req.id), &format!("{label} 助手窗口未就绪：请稍候重试，或在设置页点「刷新 {label} 助手窗口」")).await;
         }
     }
 }
 
-/// QOJ 周期保活：刷新助手窗口（重导航续签 Cloudflare 凭据 + 重建守护脚本）；
+/// 代理平台周期保活：刷新助手窗口（重导航续签 Cloudflare 凭据 + 重建守护脚本）；
 /// 连续失败多半是挑战需要人工交互，弹窗请人工过盾
-async fn keepalive_tick(app: &AppHandle, port: u16, fails: &mut u32) {
-    if !qoj_configured(port).await {
+async fn keepalive_tick(app: &AppHandle, port: u16, platform: &str, worker: &str, url: &str, fails: &mut u32) {
+    if !platform_configured(port, platform).await {
         *fails = 0;
         return;
     }
-    crate::logln("[shell-auth] 保活：刷新 QOJ 助手窗口（续签 Cloudflare 凭据 + 重建守护脚本）");
-    match renew_qoj_agent(app, port).await {
+    let label = platform_label(platform);
+    crate::logln(&format!("[shell-auth] 保活：刷新 {label} 助手窗口（续签 Cloudflare 凭据 + 重建守护脚本）"));
+    match renew_agent(app, port, platform, worker, url).await {
         Some(message) => {
             *fails = 0;
-            crate::logln(&format!("[shell-auth] 保活完成（{message}）"));
+            crate::logln(&format!("[shell-auth] {label} 保活完成（{message}）"));
             post_result(port, "keepalive", None, true, &message).await;
             return;
         }
@@ -353,24 +390,24 @@ async fn keepalive_tick(app: &AppHandle, port: u16, fails: &mut u32) {
     if *fails >= KEEPALIVE_FAIL_SHOW {
         // 连续失败多半是挑战需要人工交互：弹出可见窗口，用户点一下即恢复
         *fails = 0;
-        crate::logln("[shell-auth] 保活连续失败，弹出登录窗口请人工完成验证");
+        crate::logln(&format!("[shell-auth] {label} 保活连续失败，弹出登录窗口请人工完成验证"));
         let _ = ensure_window(
             app,
-            "login-qoj",
-            "https://qoj.ac/",
-            "QOJ 验证 · 请完成人机验证（完成后同步自动恢复）",
+            &format!("login-{platform}"),
+            url,
+            &format!("{label} 验证 · 请完成人机验证（完成后同步自动恢复）"),
             true,
         )
         .await;
         post_status(
             port,
             &json!({ "kind": "keepalive", "ok": false, "pushed": false,
-                     "message": "自动续签未成功：已打开 QOJ 窗口，请完成人机验证（完成后同步自动恢复）", "at": now_secs() }),
+                     "message": format!("自动续签未成功：已打开 {label} 窗口，请完成人机验证（完成后同步自动恢复）"), "at": now_secs() }),
         )
         .await;
     } else {
         let message = "助手窗口刷新失败（窗口可能被系统关闭），下轮自动重试";
-        crate::logln(&format!("[shell-auth] 保活未完成（{message}）"));
+        crate::logln(&format!("[shell-auth] {label} 保活未完成（{message}）"));
         post_status(
             port,
             &json!({ "kind": "keepalive", "ok": false, "pushed": false, "message": message, "at": now_secs() }),
@@ -379,25 +416,27 @@ async fn keepalive_tick(app: &AppHandle, port: u16, fails: &mut u32) {
     }
 }
 
-/// 刷新 QOJ 助手窗口：复用/创建隐藏窗 → 重新导航（触发 Cloudflare 重评估续签凭据）→
+/// 刷新代理平台助手窗口：复用/创建隐藏窗 → 重新导航（触发 Cloudflare 重评估续签凭据）→
 /// 注入守护脚本并轮询核心的 /alive 端点，脚本一上线就提前返回（把代理不可用窗口压到几秒，
 /// 否则导航重建的 30 秒里用户触发的凭据检测会撞上超时变红）。成功返回展示消息。
-async fn renew_qoj_agent(app: &AppHandle, port: u16) -> Option<String> {
-    if !ensure_window(app, WORKER_LABEL, "https://qoj.ac/", "QOJ 助手", false).await {
+async fn renew_agent(app: &AppHandle, port: u16, platform: &str, worker: &str, url: &str) -> Option<String> {
+    let label = platform_label(platform);
+    if !ensure_window(app, worker, url, &format!("{label} 助手"), false).await {
         return None;
     }
-    if !navigate_window(app, WORKER_LABEL, "https://qoj.ac/") {
+    if !navigate_window(app, worker, url) {
         return None;
     }
+    let alive_path = format!("/api/qoj-agent/alive?platform={platform}");
     let deadline = tokio::time::Instant::now() + PULL_WAIT;
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        if app.get_webview_window(WORKER_LABEL).is_none() {
+        if app.get_webview_window(worker).is_none() {
             return None;
         }
-        inject_agent(app, WORKER_LABEL, port);
+        inject_agent(app, worker, port, platform);
         // 守护脚本一旦开始轮询核心（alive=true）即视为就绪，提前收工
-        if get_json(port, "/api/qoj-agent/alive")
+        if get_json(port, &alive_path)
             .await
             .and_then(|v| v.get("alive").and_then(|a| a.as_bool()))
             .unwrap_or(false)
@@ -408,14 +447,16 @@ async fn renew_qoj_agent(app: &AppHandle, port: u16) -> Option<String> {
             break;
         }
     }
-    Some("QOJ 助手窗口已就绪（Cloudflare 验证已随导航续签，守护脚本已重建）".to_string())
+    Some(format!("{label} 助手窗口已就绪（Cloudflare 验证已随导航续签，守护脚本已重建）"))
 }
 
-/// 幂等注入 QOJ 守护脚本：脚本在 qoj.ac 页面上下文里自轮询 /api/qoj-agent/next 领任务，
-/// 同源 fetch 提交页（完美客户端指纹 + 真实登录态）后回传。重复注入由 window 标记挡掉。
-fn inject_agent(app: &AppHandle, label: &str, port: u16) {
+/// 幂等注入守护脚本：脚本在目标站页面上下文里自轮询 /api/qoj-agent/next?platform=X 领任务，
+/// 同源 fetch 记录页（完美客户端指纹 + 真实登录态）后回传。重复注入由 window 标记挡掉。
+fn inject_agent(app: &AppHandle, label: &str, port: u16, platform: &str) {
     if let Some(w) = app.get_webview_window(label) {
-        let script = AGENT_DAEMON_SCRIPT.replace("__PORT__", &port.to_string());
+        let script = AGENT_DAEMON_SCRIPT
+            .replace("__PORT__", &port.to_string())
+            .replace("__PLATFORM__", platform);
         let _ = w.eval(&script);
     }
 }
@@ -566,21 +607,32 @@ async fn post_cookies(port: u16, spec: &LoginSpec, handle: Option<&str>, creds: 
     post_json(port, "/api/settings/cookies", &body).await
 }
 
-/// 核心侧 QOJ 是否已配置凭据（有账号槽位或平台级影子值）——未配置则保活静默跳过
-async fn qoj_configured(port: u16) -> bool {
+/// 核心侧某代理平台是否已配置（有已绑定账号、账号槽位或平台级影子值）——未配置则保活静默跳过。
+/// VJudge 无需 Cookie，只看是否有已绑定账号；QOJ 另看凭据槽位/平台级影子值。
+async fn platform_configured(port: u16, platform: &str) -> bool {
     let Some(s) = get_json(port, "/api/settings").await else {
         return false;
     };
+    let has_account = s
+        .get("accounts")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter().any(|a| {
+                a.get("platform").and_then(|p| p.as_str()) == Some(platform)
+                    && a.get("enabled").and_then(|e| e.as_i64()).unwrap_or(1) != 0
+            })
+        })
+        .unwrap_or(false);
     let acct = s
-        .pointer("/accountCreds/qoj")
+        .pointer(&format!("/accountCreds/{platform}"))
         .and_then(|v| v.as_object())
         .map(|o| !o.is_empty())
         .unwrap_or(false);
-    let platform = s
-        .pointer("/cookies/qoj/configured")
+    let shadow = s
+        .pointer(&format!("/cookies/{platform}/configured"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    acct || platform
+    has_account || acct || shadow
 }
 
 // ---------- 基础设施 ----------

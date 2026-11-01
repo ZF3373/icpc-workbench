@@ -72,19 +72,21 @@ export function shellAuthRoutes(db: Db): Router {
 
   // POST /api/settings/shell-auth/request  body: { action, platform?, handle? }
   // 前端发起动作。同一时刻只保留最后一个请求（后按覆盖先按——窗口/续签都幂等，覆盖无碍）。
-  // pull（静默续签）目前只有 QOJ 需要（cf_clearance 30 分钟过期）；其余平台会话长效，
-  // 登录一次即可，没有续签语义。
+  // pull（助手窗口刷新）用于 QOJ / VJudge：两者前置 Cloudflare 且凭据/指纹短时效，需周期静默续签。
   r.post('/request', (req, res) => {
     const { action, platform, handle } = req.body ?? {};
     if (action !== 'login' && action !== 'pull') {
       return res.status(400).json({ error: "action 需为 'login' 或 'pull'" });
     }
     const pid = typeof platform === 'string' && platform !== '' ? platform : 'qoj';
-    if (!isCookiePlatform(pid)) {
-      return res.status(400).json({ error: `平台 ${pid} 无需 Cookie 凭据，不支持登录抓取` });
-    }
-    if (action === 'pull' && pid !== 'qoj') {
-      return res.status(400).json({ error: "pull（静默续签）仅支持 QOJ（唯一短时效凭据平台）" });
+    if (action === 'login') {
+      if (!isCookiePlatform(pid)) {
+        return res.status(400).json({ error: `平台 ${pid} 无需 Cookie 凭据，不支持登录抓取` });
+      }
+    } else if (pid !== 'qoj' && pid !== 'vjudge') {
+      // pull = 刷新 WebView 助手窗口（静默过 Cloudflare）：QOJ 与 VJudge 都前置 Cloudflare
+      // 且凭据/指纹短时效，需要周期续签；其余平台无此语义
+      return res.status(400).json({ error: 'pull（助手窗口刷新）仅支持 QOJ / VJudge' });
     }
     const rawHandle = typeof handle === 'string' ? handle.trim() : '';
     if (handle !== undefined && rawHandle === '') {

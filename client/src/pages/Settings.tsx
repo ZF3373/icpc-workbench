@@ -242,7 +242,7 @@ export default function Settings() {
       message.info(
         action === 'login'
           ? `已打开${PLATFORMS.find((x) => x.id === platform)?.name ?? platform}登录窗口：请在窗口里完成登录，凭据会自动保存`
-          : '正在后台续签 QOJ 验证…',
+          : `正在后台刷新 ${PLATFORMS.find((x) => x.id === platform)?.name ?? platform} 助手窗口…`,
       )
       const st = await waitShellAuthResult(id, action === 'login' ? 10 * 60_000 : 120_000)
       if (!st) {
@@ -280,6 +280,9 @@ export default function Settings() {
 
   /** QOJ 专属「立即续签验证」：隐藏窗静默过盾一轮（cf_clearance 约 30 分钟过期） */
   const startQojPull = () => void runShellAuth('pull', 'qoj')
+
+  /** VJudge 专属「刷新助手窗口」：隐藏窗静默过 Cloudflare（站点按浏览器指纹放行，Node 直连被拦） */
+  const startVjudgePull = () => void runShellAuth('pull', 'vjudge')
 
   // 进入设置页时自动检测每个「已配置凭据账号」的登录态，驱动平台连接状态点与账号框状态点。
   // 只对有凭据槽位且尚未检测过的账号触发，未配置凭据的账号不请求（点了账号框才检测）。
@@ -1069,6 +1072,24 @@ export default function Settings() {
                         也可整段 Cookie 粘进任一框自动分派）；cf_clearance 约 30 分钟过期，过期后重贴该项即可。
                         浏览器 UA 在账号卡片里填写，全部账号共用。
                       </p>
+                    )}
+                    {p.id === 'vjudge' && shellOnline && (
+                      <div style={{ margin: '4px 0 0' }}>
+                        <Space wrap size={6}>
+                          <Button
+                            size="small"
+                            loading={shellBusy === 'pull:vjudge:'}
+                            disabled={!!shellBusy && shellBusy !== 'pull:vjudge:'}
+                            onClick={startVjudgePull}
+                          >
+                            刷新 VJudge 助手窗口
+                          </Button>
+                          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                            桌面版：VJudge 同步自动经内嵌窗口完成，每 20 分钟自动续签验证，无需登录或复制 Cookie（站点
+                            Cloudflare 按浏览器指纹放行，Node 直连会被拦）。若提示助手未就绪，点上方按钮立即打开。
+                          </span>
+                        </Space>
+                      </div>
                     )}
                   </>
                 ),

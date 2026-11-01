@@ -10,6 +10,7 @@ import {
   popJob,
   resetAgentForTests,
   resolveJob,
+  agentAlive,
 } from '../src/adapters/qojAgent.ts';
 import { qojAgentRoutes } from '../src/routes/qojAgent.ts';
 import { createQojAdapter } from '../src/adapters/qoj.ts';
@@ -226,4 +227,84 @@ test('qoj 适配器：agent 传输下 checkAuth 不再要求已存 Cookie', asyn
   assert.match(r.message, /凭据有效/);
   resetAgentForTests();
   popJob(); // 点亮活跃：fetchPageViaAgent 先等守护脚本上线
+});
+
+// ---------- 多平台隔离（VJudge 接入同源代理） ----------
+
+test('qojAgent：平台队列互相隔离，守护脚本只领本平台任务', async () => {
+  resetAgentForTests();
+  popJob('qoj');
+  popJob('vjudge');
+  const pq = fetchPageViaAgent('https://qoj.ac/submissions?submitter=x', 5000, 'qoj');
+  const pv = fetchPageViaAgent('https://vjudge.net/status/data?un=x', 5000, 'vjudge');
+  // vjudge 守护脚本领不到 qoj 任务，只领自己的
+  const vj = popJob('vjudge');
+  assert.ok(vj);
+  assert.match(vj.url, /vjudge\.net/);
+  assert.equal(popJob('vjudge'), null);
+  const qj = popJob('qoj');
+  assert.ok(qj);
+  assert.match(qj.url, /qoj\.ac/);
+  resolveJob(vj.id, 200, '{"data":[]}');
+  resolveJob(qj.id, 200, '<html></html>');
+  assert.equal((await pv).body, '{"data":[]}');
+  assert.equal((await pq).body, '<html></html>');
+  resetAgentForTests();
+});
+
+test('qojAgent：活跃判定按平台独立', async () => {
+  resetAgentForTests();
+  popJob('vjudge');
+  assert.equal(agentAlive('vjudge'), true);
+  assert.equal(agentAlive('qoj'), false);
+  resetAgentForTests();
+});
+
+test('qojAgent：VJudge 守护脚本不在线 → 引导文案指向 VJudge 助手', async () => {
+  resetAgentForTests();
+  popJob('qoj'); // 只点亮 qoj，vjudge 仍不在线
+  await assert.rejects(
+    () => fetchPageViaAgent('https://vjudge.net/status/data?un=x', 30000, 'vjudge'),
+    (e: Error) => /VJudge 助手窗口/.test(e.message),
+  );
+  resetAgentForTests();
+});
+
+test('qoj-agent 端点：platform 路由 + CORS 反射 vjudge.net + 回传源校验', async () => {
+  const b = await startAgentEndpoint();
+  try {
+    resetAgentForTests();
+    popJob('vjudge'); // 点亮 vjudge 活跃
+    const pending = fetchPageViaAgent('https://vjudge.net/status/data?un=hieZF123', 5000, 'vjudge');
+
+    // 预检反射 vjudge.net 源
+    const pre = await fetch(`${b.url}/next?platform=vjudge`, { method: 'OPTIONS', headers: { Origin: 'https://vjudge.net' } });
+    assert.equal(pre.status, 204);
+    assert.equal(pre.headers.get('access-control-allow-origin'), 'https://vjudge.net');
+
+    // qoj 守护脚本领不到 vjudge 任务
+    const wrongPlatform = await (await fetch(`${b.url}/next?platform=qoj`)).json() as { job: unknown };
+    assert.equal(wrongPlatform.job, null);
+
+    // vjudge 守护脚本领到自己的任务
+    const next = await (await fetch(`${b.url}/next?platform=vjudge`, { headers: { Origin: 'https://vjudge.net' } })).json() as { job: { id: number; url: string } | null };
+    assert.ok(next.job);
+    assert.match(next.job.url, /un=hieZF123/);
+
+    // 跨源回传被拒（qoj.ac 页面注入不了 vjudge 任务的结果）
+    const cross = await (await fetch(`${b.url}/result`, { method: 'POST', headers: { 'content-type': 'application/json', Origin: 'https://qoj.ac' }, body: JSON.stringify({ id: next.job.id, status: 200, body: 'evil' }) })).json() as { ok: boolean };
+    assert.equal(cross.ok, false);
+
+    // 同源回传兑现
+    const ok = await (await fetch(`${b.url}/result`, { method: 'POST', headers: { 'content-type': 'application/json', Origin: 'https://vjudge.net' }, body: JSON.stringify({ id: next.job.id, status: 200, body: '{"data":[]}' }) })).json() as { ok: boolean };
+    assert.equal(ok.ok, true);
+    assert.equal((await pending).body, '{"data":[]}');
+
+    // 非法 platform → 400
+    const bad = await fetch(`${b.url}/next?platform=evil`);
+    assert.equal(bad.status, 400);
+    resetAgentForTests();
+  } finally {
+    await b.close();
+  }
 });

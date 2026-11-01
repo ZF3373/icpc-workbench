@@ -33,7 +33,48 @@ export function vjudgeHandle(handle: string): string {
   throw new SyncError('schema_changed', 'VJudge 需要用户名或个人主页链接');
 }
 
-export function createVjudgeAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
+/**
+ * 记录接口抓取通道。生产环境注入 WebView 同源代理（qojAgent.ts）：vjudge.net 前置的
+ * Cloudflare 按 TLS 指纹拦截非浏览器客户端——Node（OpenSSL）直连即便带浏览器 UA / 完整
+ * 头部 / 强制 HTTP/1.1 也恒定 403 挑战（2026-11 实测，curl 的 Schannel 指纹可过），
+ * 故记录接口一律经壳内 WebView 同源抓取。缺省（测试 / 无壳环境）走 legacy http 路径。
+ */
+export interface VjudgePageTransport {
+  fetchPage(url: string, timeoutMs: number): Promise<{ status: number; body: string; finalUrl?: string }>;
+}
+
+/** Cloudflare 托管挑战页特征（助手窗口内偶发交互式质询时返回） */
+function isChallengeBody(body: string): boolean {
+  return /just a moment|challenge-platform|cf-chl-|turnstile/i.test(body);
+}
+
+/** 取一页记录 JSON：agent 路径与 legacy 路径共用后续解析 */
+async function fetchRecords(
+  http: ReturnType<typeof asHttpClient>,
+  url: string,
+  handle: string,
+  pageTransport?: VjudgePageTransport,
+): Promise<{ data: Row[] }> {
+  if (pageTransport) {
+    const r = await pageTransport.fetchPage(url, 25000);
+    if (isChallengeBody(r.body)) {
+      throw new SyncError(
+        'auth_expired',
+        'VJudge 助手窗口被 Cloudflare 拦截：请在设置页点「刷新 VJudge 助手窗口」完成一次人机验证后重试同步。',
+      );
+    }
+    if (r.status !== 200) {
+      const code = r.status === 401 || r.status === 403 ? 'auth_expired'
+        : r.status === 429 || r.status === 503 ? 'rate_limited' : 'network';
+      throw new SyncError(code, `记录接口 HTTP ${r.status}（经助手窗口），请稍后重试`);
+    }
+    try { return JSON.parse(r.body) as { data: Row[] }; }
+    catch { throw new SyncError('schema_changed', '记录接口未返回 JSON，可能需要完成网站验证'); }
+  }
+  return recordsJson<{ data: Row[] }>(http, url, { headers: { Referer: `https://vjudge.net/user/${encodeURIComponent(handle)}` } });
+}
+
+export function createVjudgeAdapter(fetchFn: HttpInit = fetch, pageTransport?: VjudgePageTransport): PlatformAdapter {
   const http = asHttpClient(fetchFn);
   return {
     platform: 'vjudge', knownIdsFilter: true,
@@ -46,7 +87,7 @@ export function createVjudgeAdapter(fetchFn: HttpInit = fetch): PlatformAdapter 
         pageDelayMs: opts?.pageDelayMs ?? 1000,
         async fetchPage(page) {
           const params = new URLSearchParams({ draw: String(page), start: String((page - 1) * 20), length: '20', un: handle, res: '0' });
-          const data = await recordsJson<{ data: Row[] }>(http, `https://vjudge.net/status/data?${params}`, { headers: { Referer: `https://vjudge.net/user/${encodeURIComponent(handle)}` } });
+          const data = await fetchRecords(http, `https://vjudge.net/status/data?${params}`, handle, pageTransport);
           if (!Array.isArray(data.data)) throw new SyncError('schema_changed', 'VJudge 提交记录结构发生变化');
           // VJudge totals are placeholders (9999999); rely on actual rows.
           const rows = data.data.filter(r => r.userName?.toLowerCase() === handle.toLowerCase());
