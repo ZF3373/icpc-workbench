@@ -20,6 +20,8 @@ import {
   MIN_REQUEST_INTERVAL_SCALE,
   getRequestIntervalScale,
   setRequestIntervalScale,
+  bucketOf,
+  intervalForHost,
 } from '../src/net/hostThrottle.ts';
 
 /** 可控时钟 + 假睡眠（不真正等待，睡眠即推进时钟），并记录每次睡眠时长 */
@@ -370,4 +372,17 @@ test('hostThrottle: 倍率 >1 时空闲桶首请求也按节奏；1× 首请求�
   } finally {
     setRequestIntervalScale(DEFAULT_REQUEST_INTERVAL_SCALE);
   }
+});
+
+test('hostThrottle: 主机名为原型键（constructor/toString 等）不命中原型、节流不被绕过', () => {
+  const table = { 'codeforces.com': 2000 };
+  // 表是普通对象，裸 table[host] 会取到 Object.prototype 上的函数（!== undefined），
+  // 被误判为已登记域名、间隔变成函数 → 算术 NaN → 节流静默绕过。hasOwn 守卫后落兜底。
+  for (const host of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+    assert.equal(intervalForHost(host, table, 1200), 1200, `${host} 应落兜底间隔而非原型函数`);
+    assert.equal(bucketOf(host, table), host, `${host} 应自成桶而非被误判已登记`);
+  }
+  // 正常域名仍精确命中，不受守卫影响
+  assert.equal(intervalForHost('codeforces.com', table, 1200), 2000);
+  assert.equal(bucketOf('codeforces.com', table), 'codeforces.com');
 });

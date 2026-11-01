@@ -140,7 +140,9 @@ export function hostOf(input: string | URL | Request): string {
  */
 export function bucketOf(host: string, table: Record<string, number>): string {
   if (host === '') return '';
-  if (table[host] !== undefined) return host;
+  // 用 hasOwn 而非 table[host] !== undefined：表是普通对象，主机名为 constructor /
+  // toString 等时会命中原型属性（一个函数），被误判为「已登记域名」。
+  if (Object.hasOwn(table, host)) return host;
   for (const key of Object.keys(table)) {
     if (host.endsWith(`.${key}`)) return key;
   }
@@ -154,8 +156,9 @@ export function intervalForHost(
   fallback: number,
 ): number {
   if (host === '') return fallback;
-  const exact = table[host];
-  if (exact !== undefined) return exact;
+  // hasOwn 守卫：否则主机名为 constructor / toString 时 exact 取到原型上的函数，
+  // 当作间隔返回 → 后续算术变 NaN，该域名的节流被静默绕过。
+  if (Object.hasOwn(table, host)) return table[host];
   for (const key of Object.keys(table)) {
     if (host.endsWith(`.${key}`)) return table[key]!;
   }
