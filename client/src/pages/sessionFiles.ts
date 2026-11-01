@@ -25,10 +25,20 @@ let cache: SessionFiles | null = null
 
 function load(): SessionFiles {
   if (cache) return cache
-  const data = readJson<Record<string, Record<string, string>>>(STORAGE_KEY) ?? {}
+  const raw = readJson<unknown>(STORAGE_KEY)
   const out: SessionFiles = new Map()
-  for (const [sid, files] of Object.entries(data)) {
-    out.set(sid, new Map(Object.entries(files)))
+  // 逐层校验结构：localStorage 可能被旧版本/手工改库写入脏值（如 {"sid":null}）。
+  // 此前直接 Object.entries(files) 遇到 null 会抛 TypeError，而调用点在 send() 的
+  // try 之外，异常变成未处理 rejection——消息发不出且无任何提示。脏条目跳过即可。
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    for (const [sid, files] of Object.entries(raw)) {
+      if (!files || typeof files !== 'object' || Array.isArray(files)) continue
+      const fc: FileCache = new Map()
+      for (const [fid, text] of Object.entries(files)) {
+        if (typeof text === 'string') fc.set(fid, text)
+      }
+      out.set(sid, fc)
+    }
   }
   cache = out
   return out

@@ -553,6 +553,8 @@ export default function Assistant() {
     if (!files || files.length === 0) return
     // 记录上传开始时的活跃会话 id：图片上传是异步的，如果用户在此期间切换会话，
     // 完成后的 setPendingAtts 不应把附件写到新会话（否则串会话）。
+    // 注意：下方守卫必须读**实时**的 chatState.activeId，而非闭包里的 activeId——
+    // 两者在本异步函数里是同一个渲染闭包常量，比较恒相等，守卫会形同虚设。
     const uploadSessionId = activeId
     const all = Array.from(files)
     // 分流：图片走 Files API，文本直接读取内容，PDF + 文档走服务端提取
@@ -598,7 +600,7 @@ export default function Assistant() {
         if (picked.length > 0) {
           usedSlots += picked.length
           // 会话已切换：丢弃这些附件（避免串到别的会话）
-          if (activeId !== uploadSessionId) return
+          if (chatState.activeId !== uploadSessionId) return
           setPendingAtts((prev) => [...prev, ...picked])
           message.success(`已添加 ${picked.length} 个文本文件`)
         }
@@ -638,7 +640,7 @@ export default function Assistant() {
           if (picked.length < docAtts.length) message.warning('每条消息最多附带 8 个文件')
           if (picked.length > 0) {
             usedSlots += picked.length
-            if (activeId !== uploadSessionId) return
+            if (chatState.activeId !== uploadSessionId) return
             setPendingAtts((prev) => [...prev, ...picked])
             message.success(`已提取 ${picked.length} 个文档文件`)
           }
@@ -693,7 +695,7 @@ export default function Assistant() {
       }
       if (uploaded.length > 0) {
         usedSlots += uploaded.length
-        if (activeId !== uploadSessionId) return
+        if (chatState.activeId !== uploadSessionId) return
         setPendingAtts((prev) => [...prev, ...uploaded])
         message.success(`已上传 ${uploaded.length} 个图片`)
       }
@@ -703,7 +705,7 @@ export default function Assistant() {
         if (pickedInline.length < inlined.length) message.warning('每条消息最多附带 8 个文件')
         if (pickedInline.length > 0) {
           usedSlots += pickedInline.length
-          if (activeId !== uploadSessionId) return
+          if (chatState.activeId !== uploadSessionId) return
           setPendingAtts((prev) => [...prev, ...pickedInline])
           message.info(`当前 AI 网关不支持文件上传，已改用内联方式附图（${pickedInline.length} 张）`)
         }
@@ -1226,8 +1228,13 @@ export default function Assistant() {
 
     // 发送给服务端的附件（含 textContent）：剥离本地预览的 blob URL（请求只需 fileId）
     const attsForSend = atts.map(({ previewUrl: _p, ...rest }) => rest)
-    // 附件全文入会话级缓存：后续任意轮次发送时从缓存回填，AI 不会"忘记"已上传文件
-    rememberSessionFiles(sessionId, attsForSend)
+    // 附件全文入会话级缓存：后续任意轮次发送时从缓存回填，AI 不会"忘记"已上传文件。
+    // 缓存是尽力而为：即便异常（存储脏值/配额等）也绝不能阻断本次发送。
+    try {
+      rememberSessionFiles(sessionId, attsForSend)
+    } catch {
+      /* 缓存失败只影响后续轮次的全文回填，不影响本次发送 */
+    }
     // 存入会话历史的附件（剥离 textContent 避免 localStorage 爆满；previewUrl 同样不入库）
     const attsForStore = atts.map(({ textContent: _tc, previewUrl: _p, ...rest }) => rest)
     const userMsg: ChatMsg = {
