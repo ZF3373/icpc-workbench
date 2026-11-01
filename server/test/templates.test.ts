@@ -219,3 +219,47 @@ test('templates API: 只填思路（代码留空）也必须读得回来，再�
     assert.equal(second?.idea, '关键思路：二分答案', '二次保存不得把思路写成 NULL');
   });
 });
+
+/**
+ * 回归：PUT /content 曾是全列覆盖 UPSERT，未传字段一律落 NULL。AI「完善已有模板」
+ * 只发 {code}（aiBlocks 缺省省略 idea/complexity/url），会把用户先手写的思路/复杂度/链接
+ * 一并清掉。改为部分更新：只覆盖显式传入的字段，缺省保留原值；显式空串仍可清空。
+ */
+test('templates API: 部分更新只覆盖传入字段，不得清掉未传的 idea/complexity/url', async () => {
+  await withServer(async (base) => {
+    const target = CURRICULUM[0].templates[0];
+    interface ContentShape { code: string | null; idea: string | null; complexity: string | null; url: string | null }
+    const readContent = async (): Promise<ContentShape | null> => {
+      const body = (await (await fetch(base)).json()) as {
+        categories: Array<{ templates: Array<{ id: string; content: ContentShape | null }> }>;
+      };
+      for (const c of body.categories) {
+        const hit = c.templates.find((x) => x.id === target.id);
+        if (hit) return hit.content;
+      }
+      return null;
+    };
+    const put = (payload: Record<string, unknown>) =>
+      fetch(`${base}/${target.id}/content`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+    // 用户先手写全部内容
+    await put({ code: '// v1', idea: '手写思路', complexity: 'O(n)', url: 'https://notes.example/a' });
+    // AI 只补代码（模拟 aiBlocks 缺省省略其它字段 → 请求体只有 code）
+    await put({ code: '// v2 by AI' });
+    const after = await readContent();
+    assert.equal(after?.code, '// v2 by AI', '传入的 code 应被更新');
+    assert.equal(after?.idea, '手写思路', '未传的 idea 必须保留（修复前被清成 NULL）');
+    assert.equal(after?.complexity, 'O(n)', '未传的 complexity 必须保留');
+    assert.equal(after?.url, 'https://notes.example/a', '未传的 url 必须保留');
+
+    // 显式传空串仍可清空对应字段（与「缺省保留」区分）
+    await put({ idea: '' });
+    const cleared = await readContent();
+    assert.equal(cleared?.idea, null, '显式空串应清空 idea');
+    assert.equal(cleared?.code, '// v2 by AI', '清空 idea 不影响 code');
+  });
+});

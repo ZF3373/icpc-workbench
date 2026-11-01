@@ -827,12 +827,20 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
     const complexity = typeof body.complexity === 'string' ? body.complexity.slice(0, 200) : '';
     const url = typeof body.url === 'string' && body.url.trim() !== '' ? body.url.trim().slice(0, 500) : null;
     const hasContent = code.trim() !== '' || idea.trim() !== '';
+    // 部分更新：只覆盖本次**显式传入**的字段，未传的保留库内原值。此前全列覆盖会把未传
+    // 字段一律落 NULL —— AI「完善已有模板」只发 code 时，用户先手写的 idea/complexity/url
+    // 被一并清掉（数据丢失）。显式传空串仍清空对应字段（typeof 为 string），与「缺省保留」区分。
+    const sets: string[] = [];
+    if (typeof body.code === 'string') sets.push('code = excluded.code');
+    if (typeof body.idea === 'string') sets.push('idea = excluded.idea');
+    if (typeof body.complexity === 'string') sets.push('complexity = excluded.complexity');
+    if (typeof body.url === 'string') sets.push('url = excluded.url');
+    sets.push("updated_at = datetime('now')");
     db.prepare(
       `INSERT INTO template_progress (template_id, user_id, status, code, idea, complexity, url, updated_at)
        VALUES (?, ?, 'todo', ?, ?, ?, ?, datetime('now'))
        ON CONFLICT (user_id, template_id)
-       DO UPDATE SET code = excluded.code, idea = excluded.idea, complexity = excluded.complexity,
-                     url = excluded.url, updated_at = datetime('now')`,
+       DO UPDATE SET ${sets.join(', ')}`,
     ).run(id, DEFAULT_USER_ID, code || null, idea || null, complexity || null, url);
     res.json({ ok: true, hasContent });
   });
