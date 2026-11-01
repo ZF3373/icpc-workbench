@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { hasNoteText, noteKindLabel, noteSummary } from '../src/noteView'
+import { hasNoteText, noteCardWidth, noteKindLabel, noteSummary } from '../src/noteView'
 
 test('noteKindLabel: 三类笔记各有独立名称', () => {
   assert.equal(noteKindLabel('review'), '复习笔记')
@@ -58,6 +58,15 @@ test('noteSummary: 超长截断为 max-1 + …', () => {
   assert.ok(result.endsWith('…'))
   // 不超长不截断
   assert.equal(noteSummary('短内容', 20), '短内容')
+})
+
+test('noteCardWidth: 卡片态 860 定宽，全屏态铺满视口（跟随 --app-zoom）', () => {
+  // 卡片态是固定像素：宽屏下读长笔记的字行长度已经够用，再宽反而不好读
+  assert.equal(noteCardWidth(false), 860)
+  // 全屏态必须是视口变量而不是 100vw：整页缩放后 100vw 会溢出，
+  // --app-viewport-width 已经除过 --app-zoom（见 index.css 顶部）
+  assert.equal(noteCardWidth(true), 'var(--app-viewport-width)')
+  assert.notEqual(noteCardWidth(true), noteCardWidth(false))
 })
 
 test('noteSummary: max 下限保护，不会截到 <1', () => {

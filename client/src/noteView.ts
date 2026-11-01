@@ -15,6 +15,18 @@ export function noteKindLabel(kind: NoteKind): string {
   }
 }
 
+/**
+ * 笔记卡片的两种尺寸（对应 index.css 的 .note-card-modal 与 .is-fullscreen）：
+ * - card：默认弹卡，860px 定宽（窄屏由全局 .ant-modal 的 max-width 收口）
+ * - fullscreen：沉浸全屏，铺满整个应用窗口、只留正文（Esc 退出）
+ *
+ * 宽度的真源放在这里而不是组件里，是为了能直接单测 —— 全屏态一旦被写成
+ * 固定像素，整页缩放（--app-zoom）后就会溢出视口。
+ */
+export function noteCardWidth(fullscreen: boolean): number | string {
+  return fullscreen ? 'var(--app-viewport-width)' : 860
+}
+
 /** 笔记是否「有内容」：空串 / 只有空白都算没有，这种条目不渲染入口 */
 export function hasNoteText(text: string | null | undefined): boolean {
   return typeof text === 'string' && text.trim().length > 0
