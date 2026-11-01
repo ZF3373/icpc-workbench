@@ -1554,6 +1554,9 @@ export default function Assistant() {
     draftIndex: number,
   ): Promise<boolean> => {
     const key = tplKey(msgIndex, draftIndex)
+    // 捕获目标消息的稳定 id：写入是异步的，期间用户「再次编辑」会截断历史，
+    // 完成后若仍按 msgIndex 定位会把 appliedTpl 标记打到错位的消息上。按 id 定位不受增删影响。
+    const targetMsgId = chatState.sessions.find((s) => s.id === activeId)?.messages[msgIndex]?.id
     setTplWriting((prev) => new Set(prev).add(key))
     try {
       if (draft.templateId) {
@@ -1578,8 +1581,8 @@ export default function Assistant() {
         })
       }
       patchActiveSessionMessages(activeId, (msgs) =>
-        msgs.map((m, i) =>
-          i === msgIndex ? { ...m, appliedTpl: [...(m.appliedTpl ?? []), draftIndex] } : m,
+        msgs.map((m) =>
+          m.id === targetMsgId ? { ...m, appliedTpl: [...(m.appliedTpl ?? []), draftIndex] } : m,
         ),
       )
       return true
