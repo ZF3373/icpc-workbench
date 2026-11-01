@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { App as AntdApp, Button, Segmented, Tooltip } from 'antd'
 import {
@@ -87,6 +87,25 @@ export default function NoteEditor({ value, onChange, height = 400, placeholder,
   const fileRef = useRef<HTMLInputElement>(null)
   const [mode, setMode] = useState<'edit' | 'split' | 'preview'>('split')
 
+  // 受控 value/onChange 的实时引用：上传是异步的，完成时编辑器可能已卸载（切预览/关弹窗），
+  // 占位符替换必须能落到父级 value 上，不能只依赖可能已销毁的 CodeMirror 视图。
+  const valueRef = useRef(value)
+  valueRef.current = value
+  const onChangeRef = useRef(onChange)
+  onChangeRef.current = onChange
+
+  // 编辑器卸载时清空 viewRef：onCreateEditor 只在创建时赋值，切预览/关弹窗销毁视图后
+  // 它仍指向死视图，withView 守卫会误判存活。这里在预览态及卸载/切换时置空。
+  useEffect(() => {
+    if (mode === 'preview') {
+      viewRef.current = null
+      return
+    }
+    return () => {
+      viewRef.current = null
+    }
+  }, [mode])
+
   /** 编辑操作一律过这个守卫：预览态编辑器已卸载，viewRef 为空时忽略点击 */
   const withView = useCallback((fn: (view: EditorView) => void) => {
     if (viewRef.current) fn(viewRef.current)
@@ -164,6 +183,22 @@ export default function NoteEditor({ value, onChange, height = 400, placeholder,
     view.dispatch({ changes: { from: idx, to: idx + search.length, insert: replace } })
   }, [])
 
+  /** 替换上传占位符：视图存活就 dispatch（顺带触发 onChange）；已卸载则直接改受控 value。
+   *  占位符是唯一 token，按串替换不会误伤上传期间用户的其它编辑。 */
+  const replacePlaceholder = useCallback(
+    (search: string, replace: string) => {
+      const view = viewRef.current
+      if (view) {
+        replaceText(view, search, replace)
+        return
+      }
+      const cur = valueRef.current
+      const idx = cur.indexOf(search)
+      if (idx !== -1) onChangeRef.current(cur.slice(0, idx) + replace + cur.slice(idx + search.length))
+    },
+    [replaceText],
+  )
+
   /** 上传并在光标处落引用；占位符先占位、成功后原地替换，失败撤除。
    *  光标不在空行时先另起一段：避免图片引用紧跟表格/文字行，被 GFM 解析进上一行结构（洛谷同款问题） */
   const uploadAndInsert = useCallback(
@@ -186,14 +221,14 @@ export default function NoteEditor({ value, onChange, height = 400, placeholder,
         })
         try {
           const { url } = await uploadImage(blob)
-          withView((view) => replaceText(view, ph, `![图片](${url})`))
+          replacePlaceholder(ph, `![图片](${url})`)
         } catch (e) {
-          withView((view) => replaceText(view, ph, ''))
+          replacePlaceholder(ph, '')
           message.error(`图片上传失败：${(e as Error).message}`)
         }
       }
     },
-    [message, replaceText, withView],
+    [message, replacePlaceholder],
   )
 
   // 粘贴 / 拖拽图片：挂进 CodeMirror 的 DOM 事件扩展；无图片时返回 false 放行普通粘贴。
