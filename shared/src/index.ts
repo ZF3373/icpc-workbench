@@ -645,6 +645,19 @@ export {
   type TagSynonymGroup,
 } from './tags.ts';
 
+// ---------- 外部学习资源（cp-algorithms 延伸阅读，见 readingRefs.ts 头注） ----------
+
+export {
+  CP_ALGORITHMS,
+  READING_REFS,
+  readingRefsOf,
+  readingRefCount,
+  buildArticleAskText,
+  type ReadingSite,
+  type ReadingArticle,
+  type ReadingRefMap,
+} from './readingRefs.ts';
+
 export {
   TEMPLATE_TIER_LABELS,
   TEMPLATE_TIER_OPTIONS,

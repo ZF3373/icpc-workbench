@@ -10,6 +10,8 @@ import {
 import PageHeader from '../components/PageHeader'
 import { get } from '../api'
 import { openExternal } from '../externalLinks'
+import { CP_ALGORITHMS, readingRefCount } from '../../../shared/src/readingRefs.ts'
+import { ReadOutlined } from '@ant-design/icons'
 import { useSoftwareUpdate } from '../updateCore'
 
 const GITHUB_REPO_URL = 'https://github.com/ZF3373/icpc-workbench'
@@ -83,6 +85,44 @@ export default function About() {
                 发布页面
               </Button>
             </div>
+          </Card>
+        </Col>
+
+        {/* 学习资源：外部延伸阅读（外链，不镜像不入库） */}
+        <Col span={24}>
+          <Card
+            title={
+              <span className="settings-section-title">
+                <ReadOutlined />
+                学习资源
+              </span>
+            }
+            size="small"
+          >
+            <div className="resource-item">
+              <div className="resource-head">
+                <b className="resource-name">{CP_ALGORITHMS.name}</b>
+                <span className="resource-badge">英文</span>
+                <span className="resource-badge">{readingRefCount()} 篇已索引</span>
+                <span className="resource-badge">{CP_ALGORITHMS.license}</span>
+              </div>
+              <p className="resource-desc">{CP_ALGORITHMS.tagline}。</p>
+              <p className="resource-desc">
+                模板库每个课程分类的详情页底部都有「延伸阅读」，按分类列出对应文章；
+                点「中文讲解」可让 AI 助手读原文后用中文讲，并对照你的弱项画像。
+              </p>
+              <div className="resource-actions">
+                <Button icon={<LinkOutlined />} onClick={() => openExternal(CP_ALGORITHMS.url)}>
+                  打开网站
+                </Button>
+                <Button icon={<ReadOutlined />} onClick={() => openExternal(CP_ALGORITHMS.url + 'navigation.html')}>
+                  按目录浏览
+                </Button>
+              </div>
+            </div>
+            <p className="muted-note" style={{ margin: '12px 0 0' }}>
+              本站内容授权为 {CP_ALGORITHMS.license}；工作台只做外链引用，不收录、不镜像原文。
+            </p>
           </Card>
         </Col>
 

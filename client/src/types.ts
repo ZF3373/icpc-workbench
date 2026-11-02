@@ -1,4 +1,5 @@
 // 前端 API 响应类型（与 server/src/analysis/*、plans/*、routes/* 对齐）
+import type { ReadingArticle } from '../../shared/src/readingRefs.ts'
 import type { PlatformId, SyncResult, WeaknessProfile } from '../../shared/src/index.ts'
 
 export interface CountStat {
@@ -245,8 +246,13 @@ export interface TemplateCategoryInfo {
   description: string
   /** 用户自建分类 */
   custom?: boolean
+  /** 延伸阅读（cp-algorithms，按课程分类聚合；自建分类为空数组） */
+  refs?: ReadingArticleInfo[]
   templates: TemplateItemInfo[]
 }
+
+/** 外部延伸阅读：shared/src/readingRefs.ts 的 ReadingArticle 在 API 响应里的形态 */
+export type ReadingArticleInfo = ReadingArticle
 
 export interface TemplatesResponse {
   customCount: number

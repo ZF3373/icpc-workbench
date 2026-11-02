@@ -952,6 +952,15 @@ export default function Assistant() {
       if (Number.isInteger(v) && v > 0) updateActiveSessionPlanId(v)
       setSearchParams({}, { replace: true })
     }
+    // ?ask=<预填文本>：外部学习资源（cp-algorithms 等）的「让 AI 中文讲解」入口。
+    // 不建会话、不绑上下文——它只是一段现成的提问，用户仍可改完再发。
+    const urlAsk = searchParams.get('ask')
+    if (urlAsk !== null) {
+      setSearchParams({}, { replace: true })
+      const text = urlAsk.trim()
+      // 输入框已有草稿时不覆盖：用户手写到一半的内容比深链预填更该保留
+      if (text) setChatState((prev) => (prev.input.trim() ? prev : { ...prev, input: text }))
+    }
     const urlContest = searchParams.get('contest')
     if (urlContest === null) return
     setSearchParams({}, { replace: true })

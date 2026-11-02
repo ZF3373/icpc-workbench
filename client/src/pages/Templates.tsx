@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   App as AntdApp,
   Button,
@@ -10,6 +10,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Popover,
   Select,
   Space,
   Tag,
@@ -35,7 +36,9 @@ import {
   LinkOutlined,
   PlayCircleOutlined,
   PlusOutlined,
+  ReadOutlined,
   RightOutlined,
+  RobotOutlined,
   SyncOutlined,
   UndoOutlined,
 } from '@ant-design/icons'
@@ -58,7 +61,10 @@ import { del, get, patch, post, put } from '../api'
 import { TEMPLATE_EXPORT_OPTIONS, type TemplateExportFormat } from '../templateExport'
 import { readJson, writeJson } from '../persistence.ts'
 import { readTemplateViewState, writeTemplateViewState } from '../templateView.ts'
+import { CP_ALGORITHMS, buildArticleAskText } from '../../../shared/src/readingRefs.ts'
+import { openExternal } from '../externalLinks'
 import type { TemplateCategoryInfo, TemplateContentInfo, TemplateExampleInfo, TemplateItemInfo, TemplatesResponse, TemplateStatus } from '../types'
+import type { ReadingArticleInfo } from '../types'
 
 const STATUS_META: Array<{ key: TemplateStatus; label: string; icon: typeof CheckCircleOutlined }> = [
   { key: 'todo', label: '未学', icon: PlayCircleOutlined },
@@ -120,9 +126,65 @@ const downloadTemplates = async (
   }
 }
 
+/**
+ * 分类的延伸阅读面板（Popover 内容）。
+ *
+ * 为什么挂在**分类行**而不是模板弹窗：延伸阅读是按分类聚合的（数据结构 10 篇覆盖 26 讲），
+ * 放进弹窗会把用户自己写的模板挤到下面；放在分类行右侧，随手点开、随手关，不占版面。
+ */
+function ReadingRefsPanel({
+  articles,
+  onAsk,
+}: {
+  articles: ReadingArticleInfo[]
+  onAsk: (article: ReadingArticleInfo) => void
+}) {
+  return (
+    <div className="reading-panel">
+      <div className="reading-panel-list">
+        {articles.map((article) => (
+          <div className="reading-panel-row" key={article.url}>
+            <button
+              type="button"
+              className="reading-panel-link"
+              onClick={() => void openExternal(article.url)}
+              title={`在系统浏览器打开原文：${article.titleEn}`}
+            >
+              <LinkOutlined />
+              <span className="reading-panel-title">{article.title}</span>
+              <span className="reading-panel-en">{article.titleEn}</span>
+            </button>
+            <Tooltip title="让 AI 读原文后用中文讲解，可结合你的弱项画像">
+              <button
+                type="button"
+                className="reading-panel-ask"
+                aria-label={`让 AI 讲解${article.title}`}
+                onClick={() => onAsk(article)}
+              >
+                <RobotOutlined />
+                <span>AI 讲解</span>
+              </button>
+            </Tooltip>
+            {article.note && <span className="reading-panel-note">{article.note}</span>}
+          </div>
+        ))}
+      </div>
+      <p className="reading-panel-foot">
+        英文原文 · 内容授权 {CP_ALGORITHMS.license}；只做外链引用，不收录原文。
+      </p>
+    </div>
+  )
+}
+
 export default function Templates() {
   // React 19 下 antd 静态 message 静默失效，必须用 App 上下文实例
   const { message, modal } = AntdApp.useApp()
+  const nav = useNavigate()
+
+  /** 让 AI 读原文并用中文讲解：复用 /ai 的 ?ask= 深链（与赛事中心 ?contest= 同一套机制） */
+  const askArticle = (article: ReadingArticleInfo): void => {
+    nav(`/ai?ask=${encodeURIComponent(buildArticleAskText(article))}`)
+  }
   const [data, setData] = useState<TemplatesResponse | null>(null)
   const [loading, setLoading] = useState(true)
   /** 首屏取数失败原因：与「模板库本来就是空的」严格区分（失败给 InlineError，空给 EmptyState） */
@@ -660,6 +722,9 @@ export default function Templates() {
     return null
   }, [data, viewingId])
 
+
+
+
   // 首屏骨架屏占住「统计带 → 分类导航 → 条目列表」的真实结构，避免整页 Spin 的布局跳动
   if (loading && !data) return <PageSkeleton stats={false} blocks={3} blockHeight={220} />
   if (!data) {
@@ -777,6 +842,19 @@ export default function Templates() {
               return { value: c.key, label: `${c.name}（${mastered}/${c.templates.length}）` }
             })}
           />
+          {/* 窄屏没有左侧分类列表，延伸阅读入口要在这里补一个（否则小屏用户完全没有入口） */}
+          {(cat?.refs?.length ?? 0) > 0 && (
+            <Popover
+              trigger="click"
+              placement="bottomRight"
+              title={`延伸阅读 · ${CP_ALGORITHMS.name}`}
+              content={<ReadingRefsPanel articles={cat!.refs!} onAsk={askArticle} />}
+            >
+              <Button size="small" type="text" icon={<ReadOutlined />}>
+                延伸阅读 {cat!.refs!.length}
+              </Button>
+            </Popover>
+          )}
           <Button size="small" type="text" icon={<PlusOutlined />} onClick={openCategoryCreate}>
             新建标签
           </Button>
@@ -813,6 +891,24 @@ export default function Templates() {
                         {mastered}/{c.templates.length}
                       </span>
                     </button>
+                    {/* 延伸阅读按钮：只给有映射的分类（自建标签没有），点了在右侧弹出阅读链接 */}
+                    {(c.refs?.length ?? 0) > 0 && (
+                      <Popover
+                        trigger="click"
+                        placement="rightTop"
+                        title={`延伸阅读 · ${CP_ALGORITHMS.name}`}
+                        content={<ReadingRefsPanel articles={c.refs!} onAsk={askArticle} />}
+                      >
+                        <button
+                          type="button"
+                          className="taxonomy-reads-btn"
+                          title={`${c.name}的延伸阅读（${c.refs!.length} 篇 cp-algorithms 英文原文）`}
+                          aria-label={`${c.name}的延伸阅读`}
+                        >
+                          <ReadOutlined />
+                        </button>
+                      </Popover>
+                    )}
                     <span className="reorder-controls">
                       <button
                         type="button"

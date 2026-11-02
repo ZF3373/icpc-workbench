@@ -19,6 +19,7 @@ import { upsertBankProblems } from '../import/bankService.ts';
 import { syncPlatform } from '../adapters/sync.ts';
 import type { PlatformId, SyncResult } from '../../../shared/src/index.ts';
 import { platformMeta, templateTierBadge } from '../../../shared/src/index.ts';
+import { readingRefsOf } from '../../../shared/src/readingRefs.ts';
 import { compileTypstToPdf, renderTemplatesTypst } from '../templates/typst.ts';
 
 interface ProgressRow {
@@ -456,6 +457,10 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
         name: cat.name,
         description: cat.description,
         custom: false,
+        // 延伸阅读（cp-algorithms）挂在**分类**上而不是逐讲挂：课程 181 讲与站点 163 篇
+        // 并非一一对应（数据结构只有 10 篇却覆盖 26 讲），逐讲配对必然错配。
+        // 自建分类不注入——用户建的标签与外部大纲没有对应关系。
+        refs: readingRefsOf(cat.key),
         templates: [
           ...cat.templates.map((t) => ({
             custom: false,
@@ -476,6 +481,7 @@ export function templatesRoutes(db: Db, options: TemplatesRouteOptions = {}): Ro
         name: category.name,
         description: category.description,
         custom: true,
+        refs: [],
         templates: (customByCategory.get(category.key) ?? []).map((row) =>
           mapCustomTemplate(row, progress, exampleInfos(customId(row.id))),
         ),
