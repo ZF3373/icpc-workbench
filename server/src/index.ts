@@ -12,6 +12,7 @@ import { setRequestIntervalScale } from './net/hostThrottle.ts';
 import { compressionMiddleware, errorHandler, hostGuard, securityHeaders } from './middleware.ts';
 import { backupsRoutes } from './routes/backups.ts';
 import { checkinsRoutes } from './routes/checkins.ts';
+import { notesRoutes } from './routes/notes.ts';
 import { contestsRoutes } from './routes/contests.ts';
 import { aiRoutes } from './routes/ai.ts';
 import { exportRoutes } from './routes/export.ts';
@@ -100,6 +101,7 @@ app.use('/api/today', todayRoutes(db));
 app.use('/api/templates', templatesRoutes(db, { dataDir: config.dataDir }));
 app.use('/api/contests', contestsRoutes(db));
 app.use('/api/checkins', checkinsRoutes(db));
+app.use('/api/notes', notesRoutes(db));
 app.use('/api/settings', settingsRoutes(db, config));
 // 桌面壳凭据桥：登录窗口抓取 Cookie / QOJ 保活的中转（挂载在 /api/settings 之前，路径更深不受 settingsRoutes 影响）
 app.use('/api/settings/shell-auth', shellAuthRoutes(db));

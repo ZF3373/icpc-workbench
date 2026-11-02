@@ -2,14 +2,16 @@ import { useCallback, useEffect, useState } from 'react'
 import { App as AntdApp, Button, Checkbox, Space } from 'antd'
 import type { PlatformId } from '../../../../shared/src/index.ts'
 import { get, post } from '../../api'
+import { BACKFILL_TASK_KEY } from '../../backgroundRuns'
+import { startBackgroundTask, useBackgroundTask, useBackgroundTaskSettled } from '../../backgroundTasks'
 import { platformName } from '../../ui'
 import { progressText, resultText, type BackfillResponse, type BackfillRunStatus } from '../../backfillProgress'
 
-export function BackfillDifficultyCard() {
+export function BackfillDifficultyCard({ onStarted }: { onStarted: () => void }) {
   const { message } = AntdApp.useApp()
-  const [busy, setBusy] = useState(false)
+  const task = useBackgroundTask<BackfillResponse>(BACKFILL_TASK_KEY)
+  const busy = task?.status === 'running'
   const [stopping, setStopping] = useState(false)
-  const [result, setResult] = useState<string>()
   /** 服务端运行状态：刷新 / 换个标签页回来时，据此继续显示「回填进行中 N/M」并给出停止入口 */
   const [run, setRun] = useState<BackfillRunStatus | null>(null)
   /**
@@ -66,26 +68,31 @@ export function BackfillDifficultyCard() {
     if (stopping && !busy && run !== null && !run.running) setStopping(false)
   }, [stopping, busy, run])
 
-  const runBackfill = async () => {
-    setBusy(true)
-    setResult(undefined)
+  const runBackfill = () => {
     setStopping(false)
-    try {
-      const r = await post<BackfillResponse>('/api/problems/backfill-difficulty', {
-        ...(force ? { includeNativeOnly: true } : {}),
-        // 服务端默认也是开启；这里显式传，用户取消勾选时才真的不会打第三方
-        clistFallback: useClist,
-      })
-      setResult(resultText(r, nameOf))
-      message.success(r.stopped ? '已停止回填（已落库的不受影响，再点一次继续）' : '难度回填完成')
-    } catch (e) {
-      message.error((e as Error).message)
-    } finally {
-      setBusy(false)
-      setStopping(false)
+    const body = {
+      ...(force ? { includeNativeOnly: true } : {}),
+      // 服务端默认也是开启；这里显式传，用户取消勾选时才真的不会打第三方
+      clistFallback: useClist,
+    }
+    const started = startBackgroundTask<BackfillResponse>({
+      key: BACKFILL_TASK_KEY,
+      title: '回填题目难度',
+      href: '/problems',
+      run: () => post<BackfillResponse>('/api/problems/backfill-difficulty', body),
+      describe: (r) => resultText(r, nameOf),
+    })
+    if (started) {
+      message.info('已开始回填，可以切换页面，进度见右下角')
       void refreshRun()
+      onStarted()
     }
   }
+
+  useBackgroundTaskSettled(BACKFILL_TASK_KEY, () => {
+    setStopping(false)
+    void refreshRun()
+  })
 
   /**
    * 停止 = 让**服务端**中止（在途上游请求被立即打断、已提交的批次留在库里）。
@@ -161,7 +168,8 @@ export function BackfillDifficultyCard() {
         </Checkbox>
       </div>
       {progress && <p style={{ marginTop: 12, color: 'var(--text-3)' }}>{progress}</p>}
-      {result && <p style={{ marginTop: 12 }}>{result}</p>}
+      {task?.status === 'done' && task.resultText && <p style={{ marginTop: 12 }}>{task.resultText}</p>}
+      {task?.status === 'error' && <p style={{ marginTop: 12, color: 'var(--red)' }}>回填失败：{task.error}</p>}
     </div>
   )
 }

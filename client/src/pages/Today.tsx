@@ -17,6 +17,7 @@ import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
 import DueReviewList from '../components/DueReviewList'
 import TodayTasks from '../components/TodayTasks'
+import { useTaskNotes } from '../useTaskNotes'
 import { syncTargets, type TrainingAccount } from '../trainingAccounts'
 import { difficultyColor, tagColor } from '../ui'
 import { sortDueItems } from '../reviewDue'
@@ -90,9 +91,7 @@ export default function Today() {
   const [accounts, setAccounts] = useState<TrainingAccount[]>([])
   const [accountSelection, setAccountSelection] = useState('*')
   const [syncResults, setSyncResults] = useState<string[]>([])
-  const [busyTaskIds, setBusyTaskIds] = useState<Set<number>>(new Set())
   const syncBusy = useRef(false)
-  const checkingTasks = useRef(new Set<number>())
 
   // 只认最新一次请求：连点「换一批」会有多个 rotate 请求在途，旧响应晚到会把新一批盖掉
   const reqSeq = useRef(0)
@@ -147,40 +146,18 @@ export default function Today() {
     get<StreakInfo>('/api/checkins/streak').then(setStreak).catch(() => undefined)
   }
 
-  const toggleTask = async (task: TodayPlanTask) => {
-    if (checkingTasks.current.has(task.id)) return
-    checkingTasks.current.add(task.id)
-    setBusyTaskIds(new Set(checkingTasks.current))
-    try {
-      if (task.checked) await del(`/api/checkins/${task.id}`)
-      else await post('/api/checkins', { taskId: task.id })
-      refreshProgress()
-    } catch (e) {
-      message.error((e as Error).message)
-    } finally {
-      checkingTasks.current.delete(task.id)
-      setBusyTaskIds(new Set(checkingTasks.current))
-    }
-  }
+  const taskNotes = useTaskNotes(refreshProgress)
 
+  /** 打卡必须写笔记：确认后逐条打开笔记弹窗，中途取消的任务保持未打卡 */
   const confirmAcTasks = async () => {
     try {
       const preview = await post<{ taskIds: number[]; tasks: TodayPlanTask[] }>('/api/checkins/auto-today', {})
       if (preview.taskIds.length === 0) return
       modal.confirm({
         title: `发现 ${preview.taskIds.length} 项今日已 AC 的练习任务`,
-        content: <div><p>确认完成后将为以下任务打卡：</p>{preview.tasks.map((t) => <p key={t.id}>{t.plan_title} · {t.title}</p>)}</div>,
-        okText: '确认并打卡', cancelText: '稍后处理',
-        onOk: async () => {
-          try {
-            const result = await post<{ checked: number }>('/api/checkins/auto-today', { taskIds: preview.taskIds })
-            message.success(`已为 ${result.checked} 项任务打卡`)
-            refreshProgress()
-          } catch (e) {
-            message.error((e as Error).message)
-            throw e
-          }
-        },
+        content: <div><p>接下来逐项写笔记完成打卡：</p>{preview.tasks.map((t) => <p key={t.id}>{t.plan_title} · {t.title}</p>)}</div>,
+        okText: '写笔记并打卡', cancelText: '稍后处理',
+        onOk: () => taskNotes.openQueue(preview.tasks),
       })
     } catch (e) {
       message.error((e as Error).message)
@@ -350,7 +327,8 @@ export default function Today() {
             </div>
           </div>
 
-          <TodayTasks tasks={plan.planTasks ?? []} busyIds={busyTaskIds} onToggle={(task) => void toggleTask(task)} onConfirmAc={() => void confirmAcTasks()} />
+          <TodayTasks tasks={plan.planTasks ?? []} onOpenNote={taskNotes.open} onConfirmAc={() => void confirmAcTasks()} />
+          {taskNotes.modal}
 
           {plan.dueReviewItems.length > 0 && (
             <Card

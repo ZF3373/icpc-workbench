@@ -4,6 +4,8 @@ import { CloudDownloadOutlined } from '@ant-design/icons'
 import type { PlatformId } from '../../../../shared/src/index.ts'
 import { PLATFORMS } from '../../../../shared/src/index.ts'
 import { post } from '../../api'
+import { bankTaskKey } from '../../backgroundRuns'
+import { startBackgroundTask, useBackgroundTask } from '../../backgroundTasks'
 import { platformName } from '../../ui'
 import { BackfillDifficultyCard } from './BackfillDifficultyCard'
 
@@ -21,8 +23,31 @@ function defaultBankMax(p: PlatformId): number {
   return p === 'codeforces' ? 10000 : p === 'leetcode' ? 3500 : p === 'atcoder' ? 5000 : p === 'dashoj' ? 5000 : 1000
 }
 
+interface BankResponse {
+  ok: boolean
+  platform: string
+  total: number | null
+  fetched: number
+  inserted: number
+  updated: number
+  tagScanned?: number
+  tagMatched?: number
+  tagWithTags?: number
+  tagSkipped?: number
+}
+
+function bankResultText(r: BankResponse): string {
+  const totalPart = r.total ? `（题库共 ${r.total} 题）` : ''
+  // 标签桥统计只在真的开了桥时由服务端下发（未开时无这些键）
+  const tagPart =
+    r.tagScanned === undefined
+      ? ''
+      : `；洛谷镜像补标签：扫描 ${r.tagScanned} 题、命中题号 ${r.tagMatched ?? 0}、其中带标签 ${r.tagWithTags ?? 0}`
+  return `拉取 ${r.fetched} 题${totalPart}：新增 ${r.inserted}，更新 ${r.updated}${tagPart}`
+}
+
 /** 「拉取题库」页签：从公开题库批量入库，扩充训练计划待选题池（无需账号）。 */
-export function BankTab({ onDone }: { onDone: () => void }) {
+export function BankTab({ onStarted }: { onStarted: () => void }) {
   const { message } = AntdApp.useApp()
   // 平台列表来自共享定义的题库能力（PLATFORMS.hasBank），不硬编码：QOJ 无公开题库接口，故不在此提供
   const bankPlatforms = useMemo(() => PLATFORMS.filter((p) => p.hasBank), [])
@@ -31,40 +56,32 @@ export function BankTab({ onDone }: { onDone: () => void }) {
   const [luoguMin, setLuoguMin] = useState(3)
   // AtCoder：用洛谷 AT 镜像题补算法标签（默认关，覆盖有限）。仅该平台时随请求下发 atcoderTags
   const [atcoderTags, setAtcoderTags] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<string>()
+  const task = useBackgroundTask(bankTaskKey(platform))
+  const busy = task?.status === 'running'
 
   const switchPlatform = (v: PlatformId) => {
     setPlatform(v)
     setMax(defaultBankMax(v))
   }
 
-  const run = async () => {
-    setBusy(true)
-    setResult(undefined)
-    try {
-      const r = await post<{
-        ok: boolean; platform: string; total: number | null; fetched: number; inserted: number; updated: number
-        tagScanned?: number; tagMatched?: number; tagWithTags?: number; tagSkipped?: number
-      }>('/api/problems/bank', {
-        platform,
-        max,
-        ...(platform === 'luogu' ? { luoguMinDifficulty: luoguMin } : {}),
-        ...(platform === 'atcoder' && atcoderTags ? { atcoderTags: true } : {}),
-      })
-      const totalPart = r.total ? `（题库共 ${r.total} 题）` : ''
-      // 标签桥统计只在真的开了桥时由服务端下发（未开时无这些键）
-      const tagPart =
-        r.tagScanned === undefined
-          ? ''
-          : `；洛谷镜像补标签：扫描 ${r.tagScanned} 题、命中题号 ${r.tagMatched ?? 0}、其中带标签 ${r.tagWithTags ?? 0}`
-      setResult(`拉取 ${r.fetched} 题${totalPart}：新增 ${r.inserted}，更新 ${r.updated}${tagPart}`)
-      message.success(`${platformName(platform)}题库已入库，训练计划选题池已扩充`)
-      onDone()
-    } catch (e) {
-      message.error((e as Error).message)
-    } finally {
-      setBusy(false)
+  const run = () => {
+    const body = {
+      platform,
+      max,
+      ...(platform === 'luogu' ? { luoguMinDifficulty: luoguMin } : {}),
+      ...(platform === 'atcoder' && atcoderTags ? { atcoderTags: true } : {}),
+    }
+    const started = startBackgroundTask<BankResponse>({
+      key: bankTaskKey(platform),
+      title: `拉取题库 · ${platformName(platform)}`,
+      href: '/problems',
+      run: () => post<BankResponse>('/api/problems/bank', body),
+      describe: bankResultText,
+    })
+    if (started) {
+      message.info('已开始拉取，可以切换页面，进度见右下角')
+      // 弹窗遮罩会挡住侧边栏：任务开始就关掉，用户才切得了页面
+      onStarted()
     }
   }
 
@@ -116,8 +133,9 @@ export function BankTab({ onDone }: { onDone: () => void }) {
           </Space>
         </div>
       )}
-      {result && <p style={{ marginTop: 12 }}>{result}</p>}
-      <BackfillDifficultyCard />
+      {task?.status === 'done' && task.resultText && <p style={{ marginTop: 12 }}>{task.resultText}</p>}
+      {task?.status === 'error' && <p style={{ marginTop: 12, color: 'var(--red)' }}>拉取失败：{task.error}</p>}
+      <BackfillDifficultyCard onStarted={onStarted} />
     </div>
   )
 }

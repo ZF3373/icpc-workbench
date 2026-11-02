@@ -43,6 +43,7 @@ import CardSkeleton from '../components/CardSkeleton'
 import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
 import { del, get, patch, post } from '../api'
+import { startBackgroundTask, useBackgroundTask, useBackgroundTaskSettled } from '../backgroundTasks'
 import { fmtDateTime } from '../formatTime.ts'
 import { difficultyColor } from '../ui'
 import { mergeSuggestedOrder } from '../listOrder'
@@ -221,6 +222,16 @@ const ListRow = memo(function ListRow({
   )
 })
 
+const aiClassifyKey = (listId: number): string => `list-ai-classify:${listId}`
+const aiSuggestKey = (listId: number): string => `list-ai-suggest:${listId}`
+
+interface ListSuggestResponse {
+  reply: string
+  order?: number[] | null
+  cached?: boolean
+  cachedAt?: string
+}
+
 export default function Lists() {
   // React 19 下 antd 静态 message 静默失效，必须用 App 上下文实例
   const { message } = AntdApp.useApp()
@@ -230,7 +241,9 @@ export default function Lists() {
   const [detail, setDetail] = useState<ListDetail | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
-  const [busy, setBusy] = useState<string | null>(null) // 正在进行的操作（classify/ai-classify/ai-suggest）
+  const [busy, setBusy] = useState<string | null>(null) // 正在进行的短操作（import/add-items/classify 等）
+  const aiClassifying = useBackgroundTask(aiClassifyKey(detail?.id ?? 0))?.status === 'running'
+  const aiSuggesting = useBackgroundTask(aiSuggestKey(detail?.id ?? 0))?.status === 'running'
   const [suggest, setSuggest] = useState<string | null>(null) // AI 建议内容
   const [suggestOrder, setSuggestOrder] = useState<number[] | null>(null) // AI 建议的练习顺序（条目 id，来自缓存或本次生成）
   const [suggestOpen, setSuggestOpen] = useState(false)
@@ -359,11 +372,12 @@ export default function Lists() {
     }
   }
 
-  const runClassify = async (mode: 'rule' | 'ai') => {    if (!detail) return
-    setBusy(mode === 'rule' ? 'classify' : 'ai-classify')
+  const runClassify = async () => {
+    if (!detail) return
+    setBusy('classify')
     try {
-      const r = await post<{ updated: number; total: number }>(`/api/lists/${detail.id}/${mode === 'rule' ? 'classify' : 'ai-classify'}`, {})
-      message.success(mode === 'rule' ? `按题库分类完成：更新 ${r.updated}/${r.total} 道` : `AI 分类完成：更新 ${r.updated}/${r.total} 道`)
+      const r = await post<{ updated: number; total: number }>(`/api/lists/${detail.id}/classify`, {})
+      message.success(`按题库分类完成：更新 ${r.updated}/${r.total} 道`)
       reloadDetail()
     } catch (e) {
       message.error((e as Error).message)
@@ -372,30 +386,49 @@ export default function Lists() {
     }
   }
 
-  const runSuggest = async (force = false) => {
+  // AI 分类/建议耗时较长：放进后台任务，切走再回来按钮状态还在，进度见右下角
+  const runAiClassify = () => {
+    if (!detail) return
+    const id = detail.id
+    startBackgroundTask<{ updated: number; total: number }>({
+      key: aiClassifyKey(id),
+      title: `AI 分类 · ${detail.title}`,
+      href: '/lists',
+      run: () => post(`/api/lists/${id}/ai-classify`, {}),
+      describe: (r) => `AI 分类完成：更新 ${r.updated}/${r.total} 道`,
+    })
+  }
+
+  const runSuggest = (force = false) => {
     if (!detail) return
     // 有缓存且非强制刷新：直接打开 Modal 显示缓存内容，不重新请求
     if (!force && suggest) {
       setSuggestOpen(true)
       return
     }
-    setBusy('ai-suggest')
+    const id = detail.id
     setSuggestOpen(true)
     setSuggest(null)
-    try {
-      const r = await post<{ reply: string; order?: number[] | null; cached?: boolean; cachedAt?: string }>(
-        `/api/lists/${detail.id}/ai-suggest`,
-        force ? { force: true } : {},
-      )
-      setSuggest(r.reply)
-      setSuggestOrder(r.order ?? null)
-    } catch (e) {
-      if (!force) setSuggestOpen(false)
-      message.error((e as Error).message)
-    } finally {
-      setBusy(null)
-    }
+    startBackgroundTask<ListSuggestResponse>({
+      key: aiSuggestKey(id),
+      title: `AI 练习建议 · ${detail.title}`,
+      href: '/lists',
+      run: () => post<ListSuggestResponse>(`/api/lists/${id}/ai-suggest`, force ? { force: true } : {}),
+      describe: () => '练习建议已生成',
+    })
   }
+
+  useBackgroundTaskSettled(aiClassifyKey(detail?.id ?? 0), (task) => {
+    if (task.status === 'done') reloadDetail()
+  })
+  useBackgroundTaskSettled<ListSuggestResponse>(aiSuggestKey(detail?.id ?? 0), (task) => {
+    if (task.status === 'done' && task.result) {
+      setSuggest(task.result.reply)
+      setSuggestOrder(task.result.order ?? null)
+    } else {
+      setSuggestOpen(false)
+    }
+  })
 
   const removeList = async (id: number) => {
     try {
@@ -1071,13 +1104,13 @@ export default function Lists() {
             <Button size="small" icon={<PlusOutlined />} loading={busy === 'add-items'} onClick={() => setAddItemOpen(true)}>
               添加题目
             </Button>
-            <Button size="small" icon={<TagsOutlined />} loading={busy === 'classify'} onClick={() => void runClassify('rule')}>
+            <Button size="small" icon={<TagsOutlined />} loading={busy === 'classify'} onClick={() => void runClassify()}>
               按题库分类
             </Button>
-            <Button size="small" icon={<ExperimentOutlined />} loading={busy === 'ai-classify'} onClick={() => void runClassify('ai')}>
+            <Button size="small" icon={<ExperimentOutlined />} loading={aiClassifying} onClick={runAiClassify}>
               AI 分类
             </Button>
-            <Button size="small" type="primary" ghost icon={<BulbOutlined />} loading={busy === 'ai-suggest'} onClick={() => void runSuggest()}>
+            <Button size="small" type="primary" ghost icon={<BulbOutlined />} loading={aiSuggesting} onClick={() => runSuggest()}>
               AI 建议
             </Button>
             {/* 清空题目：题单本身保留（与「删除」严格区分），故用 Popconfirm 二次确认而不是直接删 */}
@@ -1265,13 +1298,13 @@ export default function Lists() {
                   size="small"
                   type="primary"
                   icon={<SortAscendingOutlined />}
-                  loading={busy === 'ai-suggest'}
+                  loading={aiSuggesting}
                   onClick={() => void applySuggestedOrder()}
                 >
                   按建议重排
                 </Button>
               )}
-              <Button size="small" loading={busy === 'ai-suggest'} onClick={() => void runSuggest(true)}>
+              <Button size="small" loading={aiSuggesting} onClick={() => runSuggest(true)}>
                 重新生成
               </Button>
             </Space>

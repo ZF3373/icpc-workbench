@@ -2,6 +2,8 @@ import { Button, Card, Space, Tag } from 'antd'
 import { Link } from 'react-router-dom'
 import { CheckOutlined } from '@ant-design/icons'
 import NoteCardButton from './NoteCardButton'
+import TaskCheckinButtons from './TaskCheckinButtons'
+import type { TaskNoteMode } from './TaskNotesModal'
 import type { TodayPlanTask } from '../../../shared/src/index.ts'
 
 const KINDS = [
@@ -11,10 +13,9 @@ const KINDS = [
   { kind: 'contest', label: '模拟赛', color: 'volcano' },
 ] as const
 
-export default function TodayTasks({ tasks, busyIds, onToggle, onConfirmAc }: {
+export default function TodayTasks({ tasks, onOpenNote, onConfirmAc }: {
   tasks: TodayPlanTask[]
-  busyIds: Set<number>
-  onToggle: (task: TodayPlanTask) => void
+  onOpenNote: (task: TodayPlanTask, mode: TaskNoteMode) => void
   onConfirmAc: () => void
 }) {
   const ready = tasks.filter((t) => !t.checked && t.kind === 'practice' && t.solvedToday)
@@ -32,7 +33,7 @@ export default function TodayTasks({ tasks, busyIds, onToggle, onConfirmAc }: {
           style={{ marginBottom: 12 }}
           icon={<CheckOutlined />}
         >
-          确认 {ready.length} 项已 AC 任务并打卡
+          为 {ready.length} 项已 AC 任务写笔记并打卡
         </Button>
       )}
       {tasks.length === 0 ? (
@@ -97,15 +98,7 @@ export default function TodayTasks({ tasks, busyIds, onToggle, onConfirmAc }: {
                             外观沿用原备注样式（12px / 次要色），不挤压列表观感 */}
                         {t.note && <NoteCardButton kind="task" variant="text" subject={t.title} text={t.note} />}
                       </div>
-                      <Button
-                        size="small"
-                        type={t.checked ? 'default' : 'primary'}
-                        icon={t.checked ? <CheckOutlined /> : undefined}
-                        loading={busyIds.has(t.id)}
-                        onClick={() => onToggle(t)}
-                      >
-                        {t.checked ? '取消' : '打卡'}
-                      </Button>
+                      <TaskCheckinButtons checked={Boolean(t.checked)} onOpen={(mode) => onOpenNote(t, mode)} />
                     </div>
                   </Card>
                 )

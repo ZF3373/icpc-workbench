@@ -112,6 +112,7 @@ function mergeIntoExisting(
   db.prepare('UPDATE submissions SET problem_id = ? WHERE problem_id = ?').run(toId, fromId);
   db.prepare('UPDATE submission_intents SET problem_id = ? WHERE problem_id = ?').run(toId, fromId);
   db.prepare('UPDATE plan_tasks SET problem_id = ? WHERE problem_id = ?').run(toId, fromId);
+  db.prepare('UPDATE problem_notes SET problem_id = ? WHERE problem_id = ?').run(toId, fromId);
   // 唯一约束 (user_id, problem_id)：保留行已有同一用户的条目时丢弃旧行侧
   db.prepare(
     `UPDATE review_items SET problem_id = ? WHERE problem_id = ?

@@ -19,7 +19,7 @@ import {
   Tag,
   Tooltip,
 } from 'antd'
-import { CheckOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import type { ColumnsType } from 'antd/es/table'
 import { KIND_COLOR, KIND_LABEL, KIND_OPTIONS } from '../ui'
@@ -28,7 +28,10 @@ import PageSkeleton from '../components/PageSkeleton'
 import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
 import NoteCardButton from '../components/NoteCardButton'
-import { del, get, patch, post } from '../api'
+import TaskCheckinButtons from '../components/TaskCheckinButtons'
+import { useTaskNotes } from '../useTaskNotes'
+import { api, del, get, patch, post } from '../api'
+import { removeBackgroundTask, startBackgroundTask, useBackgroundTask, useBackgroundTaskSettled } from '../backgroundTasks'
 import type { GenerateResult, PlanDetail, PlanListItem, PlanTask } from '../types'
 
 function sourceTag(s: PlanListItem['source']) {
@@ -49,6 +52,8 @@ type PlanGenerationRequest = {
   requirements?: string
 }
 
+const PLAN_TASK_KEY = 'plan-generate'
+
 export default function Plans() {
   // React 19 下 antd 静态 message 静默失效，必须用 App 上下文实例
   const { message } = AntdApp.useApp()
@@ -66,8 +71,11 @@ export default function Plans() {
   const [shiftDays, setShiftDays] = useState(1)
   const [skipWeekends, setSkipWeekends] = useState(false)
   const [dailyLimit, setDailyLimit] = useState<number | null>(null)
-  const [generationNotice, setGenerationNotice] = useState<GenerateResult | null>(null)
-  const [generationRequest, setGenerationRequest] = useState<PlanGenerationRequest | null>(null)
+  // 生成状态在页面之外（切走再回来仍在）：是否在跑、模板回退提示都从任务读
+  const genTask = useBackgroundTask<GenerateResult>(PLAN_TASK_KEY)
+  const generating = genTask?.status === 'running'
+  const generationNotice = genTask?.status === 'done' ? genTask.result : null
+  const generationRequest = (genTask?.meta ?? null) as PlanGenerationRequest | null
   const [editing, setEditing] = useState<PlanTask | null>(null)
   const [editForm] = Form.useForm()
   const [genForm] = Form.useForm()
@@ -97,6 +105,12 @@ export default function Plans() {
     load()
   }, [load])
 
+  useBackgroundTaskSettled<GenerateResult>(PLAN_TASK_KEY, (task) => {
+    if (task.status !== 'done') return
+    if (task.result?.source === 'ai') genForm.resetFields()
+    load()
+  })
+
   const [detailLoading, setDetailLoading] = useState(false)
 
   // useCallback：cols 的 useMemo 引用它（否则 memo 每帧失效）
@@ -114,18 +128,10 @@ export default function Plans() {
     }
   }, [message])
 
-  const toggleCheckin = async (task: PlanTask) => {
-    try {
-      if (task.checked) {
-        await del(`/api/checkins/${task.id}`)
-      } else {
-        await post('/api/checkins', { taskId: task.id })
-      }
-      if (detail) openDetail(detail.id)
-    } catch (e) {
-      message.error((e as Error).message)
-    }
-  }
+  const taskNotes = useTaskNotes(() => {
+    if (detail) void openDetail(detail.id)
+    load()
+  })
 
   // useCallback：cols 的 useMemo 引用它（否则 memo 每帧失效）
   const removePlan = useCallback(async (id: number) => {
@@ -261,8 +267,8 @@ export default function Plans() {
         description="AI 生成（需在设置中配置 API Key）；未配置时自动生成模板计划。也可到「设置 → 导出提示词」手动喂给任意 AI。"
         extra={
           <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setGenOpen(true)}>
-            生成新计划
+          <Button type="primary" icon={<PlusOutlined />} loading={generating} onClick={() => setGenOpen(true)}>
+            {generating ? '正在生成…' : '生成新计划'}
           </Button>
           </Space>
         }
@@ -274,7 +280,7 @@ export default function Plans() {
           if (generationRequest) genForm.setFieldsValue({ ...generationRequest, startDate: dayjs(generationRequest.startDate) })
           setGenOpen(true)
         }}>按原参数重新生成</Button>}
-        onClose={() => setGenerationNotice(null)} />}
+        onClose={() => removeBackgroundTask(PLAN_TASK_KEY)} />}
       {/* 分支顺序与 Today.tsx 一致：loading（且屏上还没有任何行）→ 骨架 ｜ 有行 → 表格
           ｜ loadError → 可重试错误态 ｜ 空 → 空态。
           用 `loading && plans.length === 0` 而不是「只认首次加载」的 loadedOnce：
@@ -374,14 +380,7 @@ export default function Plans() {
                           )}
                         </div>
                         <div className="task-actions">
-                          <Button
-                            size="small"
-                            type={t.checked ? 'default' : 'primary'}
-                            icon={t.checked ? <CheckOutlined /> : undefined}
-                            onClick={() => toggleCheckin(t)}
-                          >
-                            {t.checked ? '已打卡' : '打卡'}
-                          </Button>
+                          <TaskCheckinButtons checked={Boolean(t.checked)} onOpen={(mode) => taskNotes.open(t, mode)} />
                           <Tooltip title="编辑任务">
                             <Button size="small" type="text" icon={<EditOutlined />} aria-label="编辑任务" onClick={() => openEdit(t)} />
                           </Tooltip>
@@ -406,6 +405,8 @@ export default function Plans() {
           </div>
         )}
       </Drawer>
+
+      {taskNotes.modal}
 
       <Modal title="调整剩余训练任务" open={shiftOpen && detailOpen} onCancel={() => { if (!shiftBusy) setShiftOpen(false) }}
         onOk={() => void shiftRemaining()} okText="确认调整" cancelText="取消" confirmLoading={shiftBusy}>
@@ -454,21 +455,13 @@ export default function Plans() {
         open={genOpen}
         form={genForm}
         onClose={() => setGenOpen(false)}
-        onDone={(result, request) => {
-          setGenOpen(false)
-          setGenerationNotice(result)
-          setGenerationRequest(request)
-          if (result.source === 'ai') genForm.resetFields()
-          load()
-        }}
       />
     </div>
   )
 }
 
-function GenerateModal({ open, form, onClose, onDone }: { open: boolean; form: ReturnType<typeof Form.useForm>[0]; onClose: () => void; onDone: (result: GenerateResult, request: PlanGenerationRequest) => void }) {
+function GenerateModal({ open, form, onClose }: { open: boolean; form: ReturnType<typeof Form.useForm>[0]; onClose: () => void }) {
   const { message } = AntdApp.useApp()
-  const [busy, setBusy] = useState(false)
   const submit = async () => {
     const v = (await form
       .validateFields()
@@ -482,19 +475,22 @@ function GenerateModal({ open, form, onClose, onDone }: { open: boolean; form: R
       // 用户手写的训练要求（可选）
       requirements: v.requirements?.trim() || undefined,
     }
-    setBusy(true)
-    try {
-      const r = await post<GenerateResult>('/api/plans/generate', request)
-      message.success(`已生成「${r.title}」（${r.source === 'ai' ? 'AI' : '模板'}）`)
-      onDone(r, request)
-    } catch (e) {
-      message.error((e as Error).message)
-    } finally {
-      setBusy(false)
-    }
+    const started = startBackgroundTask<GenerateResult>({
+      key: PLAN_TASK_KEY,
+      title: '生成训练计划',
+      href: '/plans',
+      meta: request,
+      abortable: true,
+      // 请求断开时服务端随之中止 AI 调用，所以「停止」只需 abort 这个请求
+      run: ({ signal }) => api<GenerateResult>('/api/plans/generate', { method: 'POST', body: JSON.stringify(request), signal }),
+      describe: (r) => `已生成「${r.title}」（${r.source === 'ai' ? 'AI' : '模板'}）`,
+    })
+    if (started) message.info('已开始生成，可以切换页面，进度见右下角')
+    else message.warning('已有计划正在生成，请等待完成')
+    onClose()
   }
   return (
-    <Modal title="生成训练计划" open={open} onCancel={onClose} onOk={submit} okText="生成" confirmLoading={busy}>
+    <Modal title="生成训练计划" open={open} onCancel={onClose} onOk={submit} okText="生成">
       <Form form={form} layout="vertical">
         <Form.Item name="days" label="周期（天）" rules={[{ required: true }]}>
           <InputNumber min={1} max={90} style={{ width: '100%' }} />

@@ -92,6 +92,31 @@
       border-color: var(--ok);
       color: #0b1a10;
     }
+    .task.done button { cursor: default; }
+    .task.done button:hover { transform: none; }
+    .note-box { margin: -2px 0 6px; padding: 8px 10px; border-radius: 10px; background: var(--card); }
+    .note-box textarea {
+      width: 100%;
+      resize: vertical;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      background: transparent;
+      color: var(--fg);
+      font: inherit;
+      font-size: 12px;
+    }
+    .note-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+    .note-actions button {
+      padding: 2px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      background: transparent;
+      color: var(--fg);
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .note-error { flex: 1; min-width: 0; color: #ff8f8f; font-size: 11px; }
     .empty { text-align: center; color: var(--dim); padding: 28px 0; }
     footer {
       padding: 6px 14px;
@@ -179,9 +204,11 @@
         }
 
         var btn = document.createElement('button');
-        btn.title = t.checked ? '取消打卡' : '打卡';
+        btn.title = t.checked ? '已打卡' : '写笔记并打卡';
         btn.textContent = t.checked ? '✓' : '';
-        btn.onclick = function () { toggle(t.id, !t.checked); };
+        // 打卡必须写笔记且完成后不可取消：已打卡的按钮只作状态展示
+        btn.disabled = !!t.checked;
+        btn.onclick = function () { openNote(row, t.id); };
 
         row.appendChild(body);
         row.appendChild(btn);
@@ -189,19 +216,52 @@
       });
     }
 
-    function toggle(id, check) {
-      if (check) {
+    /** 正在写笔记时暂停定时刷新：重绘列表会把输入框连同内容一起清掉 */
+    var writing = false;
+
+    function openNote(row, id) {
+      if (writing) return;
+      writing = true;
+      var box = document.createElement('div');
+      box.className = 'note-box';
+      var input = document.createElement('textarea');
+      input.rows = 3;
+      input.placeholder = '写一条笔记后完成打卡（打卡后不可取消）';
+      var actions = document.createElement('div');
+      actions.className = 'note-actions';
+      var error = document.createElement('span');
+      error.className = 'note-error';
+      var cancel = document.createElement('button');
+      cancel.textContent = '取消';
+      cancel.onclick = function () { writing = false; load(); };
+      var save = document.createElement('button');
+      save.textContent = '保存并打卡';
+      save.onclick = function () {
+        if (!input.value.trim()) { error.textContent = '笔记不能为空'; return; }
+        save.disabled = true;
         fetch('/api/checkins', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ taskId: id }),
-        }).then(load, load);
-      } else {
-        fetch('/api/checkins/' + id, { method: 'DELETE' }).then(load, load);
-      }
+          body: JSON.stringify({ taskId: id, note: { content: input.value } }),
+        }).then(function (r) {
+          if (r.ok || r.status === 409) { writing = false; load(); return; }
+          return r.json().then(function (b) { throw new Error(b.error); });
+        }).catch(function (e) {
+          save.disabled = false;
+          error.textContent = e.message || '打卡失败，请重试';
+        });
+      };
+      actions.appendChild(error);
+      actions.appendChild(cancel);
+      actions.appendChild(save);
+      box.appendChild(input);
+      box.appendChild(actions);
+      row.parentNode.insertBefore(box, row.nextSibling);
+      input.focus();
     }
 
     function load() {
+      if (writing) return;
       Promise.all([
         fetch('/api/checkins/date/' + todayStr()),
         fetch('/api/checkins/streak'),
@@ -209,6 +269,7 @@
         if (!rs[0].ok || !rs[1].ok) throw new Error('HTTP error');
         return Promise.all([rs[0].json(), rs[1].json()]);
       }).then(function (data) {
+        if (writing) return; // 请求在途时用户开始写笔记：丢弃这次刷新
         renderHeader(data[1]);
         render(data[0]);
         var d = new Date();

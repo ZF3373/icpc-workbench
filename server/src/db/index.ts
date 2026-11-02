@@ -66,6 +66,9 @@ function migrate(db: Db): void {
   for (const col of ['code', 'idea', 'complexity', 'url']) {
     if (!progressCols.has(col)) db.exec(`ALTER TABLE template_progress ADD COLUMN ${col} TEXT`);
   }
+  // 题目笔记改为条目结构：早期建的表补 blocks 列（旧行留 NULL，读取时按单个 Markdown 框处理）
+  const noteCols = columnsOf('problem_notes');
+  if (!noteCols.has('blocks')) db.exec('ALTER TABLE problem_notes ADD COLUMN blocks TEXT');
   // v0.5: problem_lists 增加 AI 建议缓存列（避免每次点击都重新调 AI）
   const listCols = columnsOf('problem_lists');
   if (!listCols.has('ai_suggestion')) db.exec('ALTER TABLE problem_lists ADD COLUMN ai_suggestion TEXT');
@@ -317,6 +320,7 @@ function mergeSlashedCfKeys(db: Db): void {
     'UPDATE submissions SET problem_id = ? WHERE problem_id = ?',
   );
   const repointPlanTasks = db.prepare('UPDATE plan_tasks SET problem_id = ? WHERE problem_id = ?');
+  const repointNotes = db.prepare('UPDATE problem_notes SET problem_id = ? WHERE problem_id = ?');
   // 卡点同样要并入保留行：submission_intents.problem_id 是 NOT NULL 外键且无 ON DELETE，
   // 漏掉它会让这次合并的 DELETE 直接报外键错 —— 迁移回滚、createDb 抛错，应用再也起不来
   const repointIntents = db.prepare('UPDATE submission_intents SET problem_id = ? WHERE problem_id = ?');
@@ -373,6 +377,7 @@ function mergeSlashedCfKeys(db: Db): void {
       }
       repointSubmissions.run(keep.id, row.id);
       repointPlanTasks.run(keep.id, row.id);
+      repointNotes.run(keep.id, row.id);
       repointIntents.run(keep.id, row.id);
       repointReviews.run(keep.id, row.id, keep.id);
       repointReviewEvents.run(keep.id, row.id, keep.id);

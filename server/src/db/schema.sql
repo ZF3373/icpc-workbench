@@ -256,6 +256,30 @@ CREATE TABLE IF NOT EXISTS checkins (
 );
 CREATE INDEX IF NOT EXISTS idx_checkins_date ON checkins(task_date);
 
+-- 题目笔记：一题可多条、每条可带标注。打卡写的笔记同时记 task_id（来源任务）；
+-- 专题/模拟赛等没有题目的任务 problem_id 为空，此时笔记只挂在任务上。
+CREATE TABLE IF NOT EXISTS problem_notes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id),
+  problem_id INTEGER REFERENCES problems(id) ON DELETE SET NULL,
+  task_id    INTEGER REFERENCES plan_tasks(id) ON DELETE SET NULL,
+  labels     TEXT NOT NULL DEFAULT '[]',       -- 标注（JSON 字符串数组）
+  content    TEXT NOT NULL,                    -- blocks 拼成的 Markdown（供搜索/导出等纯文本场景）
+  blocks     TEXT,                             -- 笔记结构（JSON 条目数组）；NULL = 旧笔记，整段 content 视为一个 Markdown 框
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_problem_notes_problem ON problem_notes(user_id, problem_id);
+CREATE INDEX IF NOT EXISTS idx_problem_notes_task ON problem_notes(task_id);
+-- 删任务（含删计划的级联）不丢题目笔记：先把任务的题目关联固化到笔记上；
+-- 既无题目也无任务的笔记没有任何入口能看到，随任务删除。
+CREATE TRIGGER IF NOT EXISTS trg_plan_tasks_keep_notes
+BEFORE DELETE ON plan_tasks
+BEGIN
+  UPDATE problem_notes SET problem_id = OLD.problem_id WHERE task_id = OLD.id AND problem_id IS NULL;
+  DELETE FROM problem_notes WHERE task_id = OLD.id AND problem_id IS NULL;
+END;
+
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL

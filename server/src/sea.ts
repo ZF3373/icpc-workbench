@@ -31,6 +31,7 @@ import { initAdapters } from './adapters/index.ts';
 import { compressionMiddleware, errorHandler, hostGuard, securityHeaders } from './middleware.ts';
 import { spaStaticRoutes } from './spa-static.ts';
 import { checkinsRoutes } from './routes/checkins.ts';
+import { notesRoutes } from './routes/notes.ts';
 import { contestsRoutes } from './routes/contests.ts';
 import { exportRoutes } from './routes/export.ts';
 import { historyRoutes } from './routes/history.ts';
@@ -191,6 +192,7 @@ export function startServer(
   app.use('/api/templates', templatesRoutes(db, { dataDir: config.dataDir }));
   app.use('/api/contests', contestsRoutes(db));
   app.use('/api/checkins', checkinsRoutes(db));
+  app.use('/api/notes', notesRoutes(db));
   app.use('/api/settings', settingsRoutes(db, config));
   // 桌面壳凭据桥：登录窗口抓取 Cookie / QOJ 保活的中转。⚠ 服务器装配代码在 index.ts（dev）
   // 与本文件（SEA 打包）各有一份，新增路由必须两处同步——守卫见 test/dual-entry-api-parity.test.ts

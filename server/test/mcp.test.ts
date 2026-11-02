@@ -131,7 +131,7 @@ test('tools/call 写工具：checkin_task 全链路落库（MCP → 回环 REST 
     db.prepare(
       "INSERT INTO plan_tasks (plan_id, task_date, title, kind) VALUES (1, ?, 't', 'practice')",
     ).run(today);
-    const { isError, text } = await callTool(base, 'checkin_task', { taskId: 1 });
+    const { isError, text } = await callTool(base, 'checkin_task', { taskId: 1, note: '思路笔记', labels: ['思路'] });
     assert.equal(isError, false, text);
     const n = db.prepare('SELECT COUNT(*) AS n FROM checkins').get() as { n: number };
     assert.equal(n.n, 1, '打卡应已写入 checkins 表');

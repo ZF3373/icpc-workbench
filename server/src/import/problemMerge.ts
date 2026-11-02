@@ -62,6 +62,7 @@ export function mergeProblemRow(db: Db, opts: MergeProblemOpts): void {
   db.prepare('UPDATE submissions SET problem_id = ? WHERE problem_id = ?').run(toId, fromId);
   db.prepare('UPDATE submission_intents SET problem_id = ? WHERE problem_id = ?').run(toId, fromId);
   db.prepare('UPDATE plan_tasks SET problem_id = ? WHERE problem_id = ?').run(toId, fromId);
+  db.prepare('UPDATE problem_notes SET problem_id = ? WHERE problem_id = ?').run(toId, fromId);
   // 复习条目 (user_id, problem_id) 唯一：保留行已有同一用户的复习条目时丢弃旧行侧
   db.prepare(
     `UPDATE review_items SET problem_id = ? WHERE problem_id = ?

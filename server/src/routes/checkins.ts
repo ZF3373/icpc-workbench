@@ -1,8 +1,9 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { localToday } from '../dates.ts';
 import { listTodayTasks } from '../plans/todayTasks.ts';
+import { checkinWithNote, NoteInputError, parseNoteInput, type NoteInput } from '../notes/problemNotes.ts';
 
 export interface StreakInfo {
   current: number;
@@ -35,6 +36,17 @@ export function computeStreak(dates: string[], todayStr: string): StreakInfo {
     cursor -= 1;
   }
   return { current, longest, totalDays: days.length };
+}
+
+/** 解析打卡必带的笔记；不合法时已回 400，返回 null */
+function readNote(raw: unknown, res: Response): NoteInput | null {
+  try {
+    return parseNoteInput(raw);
+  } catch (e) {
+    if (!(e instanceof NoteInputError)) throw e;
+    res.status(400).json({ error: `打卡需要先写笔记：${e.message}` });
+    return null;
+  }
 }
 
 export function checkinsRoutes(db: Db): Router {
@@ -87,8 +99,8 @@ export function checkinsRoutes(db: Db): Router {
     res.json(tasks);
   });
 
-  // POST /api/checkins  body: { taskId } → 打卡
-  // 预览不写入；确认时重新核对当日 AC、任务类型和归属。旧 AC 不代替本次训练。
+  // POST /api/checkins/auto-today  body: { taskIds?, note? }
+  // 预览不写入；确认时重新核对当日 AC、任务类型和归属，并给每项任务写入 note。旧 AC 不代替本次训练。
   r.post('/auto-today', (req, res) => {
     const ids = req.body?.taskIds;
     if (ids !== undefined && (!Array.isArray(ids) || ids.length > 1000 || ids.some((id) => !Number.isInteger(id) || id <= 0))) {
@@ -97,12 +109,13 @@ export function checkinsRoutes(db: Db): Router {
     const tasks = listTodayTasks(db, DEFAULT_USER_ID, localToday())
       .filter((t) => t.kind === 'practice' && !t.checked && t.solvedToday);
     if (ids === undefined) return res.json({ taskIds: tasks.map((t) => t.id), tasks });
+    const note = readNote(req.body?.note, res);
+    if (!note) return;
     const selected = new Set<number>(ids);
-    const write = db.prepare('INSERT OR IGNORE INTO checkins (user_id, task_id, task_date) VALUES (?, ?, ?)');
     let checked = 0;
     db.exec('BEGIN');
     try {
-      for (const t of tasks) if (selected.has(t.id)) checked += Number(write.run(DEFAULT_USER_ID, t.id, t.task_date).changes);
+      for (const t of tasks) if (selected.has(t.id) && checkinWithNote(db, DEFAULT_USER_ID, t, note)) checked += 1;
       db.exec('COMMIT');
     } catch (e) {
       db.exec('ROLLBACK');
@@ -111,35 +124,34 @@ export function checkinsRoutes(db: Db): Router {
     res.json({ checked });
   });
 
+  // POST /api/checkins  body: { taskId, note: { content, labels? } } → 写入笔记并打卡（同一事务）
   r.post('/', (req, res) => {
     const taskId = Number(req.body?.taskId);
     if (!Number.isInteger(taskId)) {
       return res.status(400).json({ error: 'taskId 必填' });
     }
+    const note = readNote(req.body?.note, res);
+    if (!note) return;
     const task = db.prepare('SELECT id, task_date FROM plan_tasks WHERE id = ?').get(taskId) as
       | { id: number; task_date: string }
       | undefined;
     if (!task) return res.status(404).json({ error: '任务不存在' });
-    db.prepare(
-      'INSERT OR IGNORE INTO checkins (user_id, task_id, task_date) VALUES (?, ?, ?)',
-    ).run(DEFAULT_USER_ID, taskId, task.task_date);
+    db.exec('BEGIN');
+    let done: boolean;
+    try {
+      done = checkinWithNote(db, DEFAULT_USER_ID, task, note);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+    if (!done) return res.status(409).json({ error: '该任务已打卡；需要补充内容请「再写一条」' });
     res.json({ ok: true });
   });
 
-  // DELETE /api/checkins/:taskId → 取消打卡
-  r.delete('/:taskId', (req, res) => {
-    const taskId = Number(req.params.taskId);
-    // 非法 id 400（与 POST 的校验一致）：避免 Number('abc') = NaN 静默匹配不到任何行
-    if (!Number.isInteger(taskId)) return res.status(400).json({ error: 'taskId 非法' });
-    db.prepare('DELETE FROM checkins WHERE task_id = ? AND user_id = ?').run(
-      taskId,
-      DEFAULT_USER_ID,
-    );
-    // 取消打卡是**幂等**操作：目标状态（未打卡）已达成即视为成功，故不回 404。
-    // 任务本身不存在时才报 404 —— 让前端能区分「任务没了」与「本来就没打卡」。
-    const exists = db.prepare('SELECT 1 AS hit FROM plan_tasks WHERE id = ?').get(taskId);
-    if (!exists) return res.status(404).json({ error: '任务不存在' });
-    res.json({ ok: true });
+  // 打卡完成后不可取消：显式回 405，让旧版挂件/外部调用方拿到原因而不是路由 404
+  r.delete('/:taskId', (_req, res) => {
+    res.status(405).json({ error: '打卡完成后不可取消；可以编辑笔记或再写一条' });
   });
 
   return r;

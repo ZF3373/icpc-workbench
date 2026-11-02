@@ -18,10 +18,10 @@ test('AC checkin preview requires current-day evidence and explicit confirmation
     assert.equal(preview.status, 200);
     assert.deepEqual((await preview.json() as { taskIds: number[] }).taskIds, [taskId]);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM checkins').get()!.n, 0);
-    const confirm = await fetch(`${base}/auto-today`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskIds: [taskId] }) });
+    const confirm = await fetch(`${base}/auto-today`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskIds: [taskId], note: { content: 'AC 笔记' } }) });
     assert.equal(confirm.status, 200);
     assert.equal((await confirm.json() as { checked: number }).checked, 1);
-    const repeat = await fetch(`${base}/auto-today`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskIds: [taskId] }) });
+    const repeat = await fetch(`${base}/auto-today`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskIds: [taskId], note: { content: 'AC 笔记' } }) });
     assert.equal((await repeat.json() as { checked: number }).checked, 0);
   });
 });
@@ -71,7 +71,7 @@ test('AC preview excludes old evidence, other days, non-practice and foreign tas
     assert.deepEqual((await preview.json() as { taskIds: number[] }).taskIds, []);
     const bad = await fetch(`${base}/auto-today`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskIds: ['1'] }) });
     assert.equal(bad.status, 400);
-    const forged = await fetch(`${base}/auto-today`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskIds: [1, 2, 3, 4, 5] }) });
+    const forged = await fetch(`${base}/auto-today`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskIds: [1, 2, 3, 4, 5], note: { content: 'x' } }) });
     assert.equal((await forged.json() as { checked: number }).checked, 0);
   });
 });

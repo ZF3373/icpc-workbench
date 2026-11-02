@@ -60,6 +60,8 @@ interface ProblemRow {
    * （intentFactor 最小者，弱项口径与今日推荐/复习排序一致），没记过为 null。
    */
   intent_count?: number;
+  /** 笔记条数（列表接口由 attachNoteCounts 附加） */
+  note_count?: number;
   worst_intent?: string | null;
   /**
    * 负缓存两列（上游确认给不出的缺口维度 + 查证时刻，见 analysis/difficultyBackfill.ts）。
@@ -296,6 +298,8 @@ function parseFilters(query: Record<string, unknown>): ProblemFilters {
  */
 export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): Router {
   const r = Router();
+  /** 进行中的题库拉取（按平台）：同平台并发拉取只是重复打上游，直接拒绝 */
+  const bankRuns = new Map<string, { platform: string; fetched: number; total: number | null; startedAt: string }>();
 
   /** 共享的 SELECT/GROUP BY 骨架：标注侧先聚合成 pk 派生表，再 LEFT JOIN（消逐行子查询） */
   const coreFrom = `
@@ -360,6 +364,22 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     }
   };
 
+  /** 给列表行附加笔记条数（题目管理的行角标）；口径与 GET /api/notes?problemId= 一致 */
+  const attachNoteCounts = (rows: ProblemRow[]): void => {
+    if (rows.length === 0) return;
+    const counts = db
+      .prepare(
+        `SELECT COALESCE(n.problem_id, t.problem_id) AS problem_id, COUNT(*) AS cnt
+           FROM problem_notes n
+           LEFT JOIN plan_tasks t ON t.id = n.task_id
+          WHERE n.user_id = ?
+          GROUP BY 1`,
+      )
+      .all(DEFAULT_USER_ID) as Array<{ problem_id: number | null; cnt: number }>;
+    const byId = new Map(counts.map((c) => [c.problem_id, c.cnt]));
+    for (const r of rows) r.note_count = byId.get(r.id) ?? 0;
+  };
+
   /**
    * GET /api/problems?platform=&difficulty=&tag=&q=&bank=1&intent=1
    * intent=1 = 只看记过「卡在哪」的题
@@ -382,6 +402,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       ' ORDER BY p.difficulty IS NULL, p.difficulty DESC, p.id DESC';
     const rows = db.prepare(sql).all(DEFAULT_USER_ID, ...params) as unknown as ProblemRow[];
     attachIntentStats(rows);
+    attachNoteCounts(rows);
     res.json(rows.map(toApiProblem));
   });
 
@@ -429,6 +450,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     const total = (db.prepare(countSql).get(DEFAULT_USER_ID, ...params) as { c: number }).c;
 
     attachIntentStats(items);
+    attachNoteCounts(items);
     res.json({
       items: items.map(toApiProblem),
       total,
@@ -493,6 +515,11 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
   // luoguTypes：洛谷题库类型（'P' 普通题 / 'CF'、'AT' 镜像题 / 'B' 入门与面试 / 'SP'、'UVA'），
   //   默认 ['P']；镜像题用来批量补齐 CF/AtCoder 题面上的中文标签。
   // atcoderTags：用洛谷 AT 镜像题给 AtCoder 题补算法标签（覆盖有限，命中计数随响应回传）。
+  // GET /api/problems/bank/runs → 进行中的题库拉取（右下角进度卡轮询；拉取由服务端跑，刷新页面不会中断）
+  r.get('/bank/runs', (_req, res) => {
+    res.json({ runs: [...bankRuns.values()] });
+  });
+
   r.post('/bank', asyncHandler(async (req, res) => {
     const { platform, max, luoguMinDifficulty, luoguTypes, atcoderTags, full } = req.body ?? {};
     // QOJ 没有公开题库页（站点在 Cloudflare 挑战之后，且平台数据模型里没有难度字段）：
@@ -543,6 +570,11 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       typeof luoguMinDifficulty === 'number' && Number.isFinite(luoguMinDifficulty)
         ? luoguMinDifficulty
         : undefined;
+    if (bankRuns.has(platform)) {
+      return res.status(409).json({ error: '该平台的题库正在拉取中，请等待完成' });
+    }
+    const run = { platform: platform as string, fetched: 0, total: null as number | null, startedAt: new Date().toISOString() };
+    bankRuns.set(platform, run);
     try {
       const fetcher =
         platform === 'luogu'
@@ -586,6 +618,10 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
         ...(minDiff !== undefined ? { luoguMinDifficulty: minDiff } : {}),
         ...(types !== undefined ? { luoguTypes: types } : {}),
         ...(atcoderTags === true ? { atcoderTagsFromLuogu: true } : {}),
+        onProgress: ({ count, total }) => {
+          run.fetched = count;
+          run.total = total;
+        },
       });
       const imported = upsertBankProblems(db, result.problems);
       // 持久化本次游标供下次增量（仅产出 cursor 的平台，如 DashOJ）
@@ -614,6 +650,8 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     } catch (e) {
       // 引擎/DB 细节只进日志；上游 HTTP 状态码（403/429 等）保留给前端做可操作提示
       sendRouteError(res, 502, e, `题库拉取失败`);
+    } finally {
+      bankRuns.delete(platform);
     }
   }));
 
@@ -678,6 +716,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     const updSubmissions = db.prepare('UPDATE submissions SET problem_id = ? WHERE problem_id = ?');
     const updIntents = db.prepare('UPDATE submission_intents SET problem_id = ? WHERE problem_id = ?');
     const updPlanTasks = db.prepare('UPDATE plan_tasks SET problem_id = ? WHERE problem_id = ?');
+    const updNotes = db.prepare('UPDATE problem_notes SET problem_id = ? WHERE problem_id = ?');
     const updRecos = db.prepare(
       `UPDATE today_recommendations SET problem_id = ? WHERE problem_id = ?
          AND NOT EXISTS (SELECT 1 FROM today_recommendations t WHERE t.user_id = today_recommendations.user_id AND t.problem_id = ?)`,
@@ -717,6 +756,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
           updSubmissions.run(g.keep.id, dup.id);
           updIntents.run(g.keep.id, dup.id);
           updPlanTasks.run(g.keep.id, dup.id);
+          updNotes.run(g.keep.id, dup.id);
           // today_recommendations (user_id, problem_id) 唯一、外键无级联：与 problemMerge 同款——
           // 保留行已有同一用户的推荐条目时丢弃重复行；漏了它整个去重事务会因外键失败 500
           updRecos.run(g.keep.id, dup.id, g.keep.id);
@@ -1074,6 +1114,9 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       db.prepare('DELETE FROM review_events WHERE problem_id = ?').run(id);
       db.prepare('DELETE FROM review_items WHERE problem_id = ?').run(id);
       db.prepare('UPDATE plan_tasks SET problem_id = NULL WHERE problem_id = ?').run(id);
+      // 题目笔记随题删除；打卡时写的笔记还挂着任务，解除题目关联后留在任务上
+      db.prepare('DELETE FROM problem_notes WHERE problem_id = ? AND task_id IS NULL').run(id);
+      db.prepare('UPDATE problem_notes SET problem_id = NULL WHERE problem_id = ?').run(id);
       // today_recommendations 外键无级联（problem_id NOT NULL）：漏删会让删除直接抛
       // FOREIGN KEY constraint failed——凡被「今日训练」推荐过的题永远删不掉（500，重试无效）
       db.prepare('DELETE FROM today_recommendations WHERE problem_id = ?').run(id);
@@ -1265,7 +1308,7 @@ function findDuplicateGroups(db: Db): DuplicateGroup[] {
  * shared/src/difficulty.ts 一份，路由层不做任何本地换算）；原生难度未知 → label 也是 null
  * （**未知一律 null，不猜**：绝不退回用 CF rating 反推一个「档位名」）。
  */
-function toApiProblem(r: ProblemRow): Omit<ProblemRow, 'tags' | 'native_difficulty' | 'difficulty_scale' | 'difficulty_source' | 'review_item_id' | 'gap_state' | 'gap_checked_at' | 'intent_count' | 'worst_intent'> & {
+function toApiProblem(r: ProblemRow): Omit<ProblemRow, 'tags' | 'native_difficulty' | 'difficulty_scale' | 'difficulty_source' | 'review_item_id' | 'gap_state' | 'gap_checked_at' | 'intent_count' | 'worst_intent' | 'note_count'> & {
   tags: string[];
   nativeDifficulty: string | null;
   difficultyScale: string | null;
@@ -1279,13 +1322,15 @@ function toApiProblem(r: ProblemRow): Omit<ProblemRow, 'tags' | 'native_difficul
   /** 卡点聚合（「卡在哪」可见可管：行角标用；见 attachIntentStats） */
   intentCount: number;
   worstIntent: string | null;
+  noteCount: number;
 } {
-  const { native_difficulty, difficulty_scale, difficulty_source, review_item_id, gap_state, gap_checked_at, ...rest } = r;
+  const { native_difficulty, difficulty_scale, difficulty_source, review_item_id, gap_state, gap_checked_at, note_count, ...rest } = r;
   return {
     ...rest,
     reviewItemId: review_item_id ?? null,
     intentCount: r.intent_count ?? 0,
     worstIntent: r.worst_intent ?? null,
+    noteCount: note_count ?? 0,
     tags: safeTags(r.tags),
     nativeDifficulty: native_difficulty,
     difficultyScale: difficulty_scale,

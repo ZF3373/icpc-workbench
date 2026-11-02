@@ -38,6 +38,12 @@ interface Props {
   /** 成功提示回调（沿用调用方的 AntdApp.useApp() 实例，避免脱离 ConfigProvider） */
   onSuccess?: (msg: string) => void
   onError?: (msg: string) => void
+  /**
+   * 受控模式：由外部（如「更多」菜单的一项）决定开合，组件不渲染按钮，
+   * 只放一个不占位的锚点供气泡定位。
+   */
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
 }
 
 export default function IntentPopover({
@@ -48,8 +54,16 @@ export default function IntentPopover({
   onChanged,
   onSuccess,
   onError,
+  open: controlledOpen,
+  onOpenChange,
 }: Props) {
-  const [open, setOpen] = useState(false)
+  const controlled = controlledOpen !== undefined
+  const [innerOpen, setInnerOpen] = useState(false)
+  const open = controlled ? controlledOpen : innerOpen
+  const setOpen = (next: boolean): void => {
+    if (!controlled) setInnerOpen(next)
+    onOpenChange?.(next)
+  }
   const [outcome, setOutcome] = useState<IntentOutcome>('wrong_approach')
   const [code, setCode] = useState<string | undefined>()
   const [saving, setSaving] = useState(false)
@@ -165,8 +179,19 @@ export default function IntentPopover({
   )
 
   return (
-    <Popover content={content} title="卡在哪" trigger="click" open={open} onOpenChange={setOpen}>
-      <Button size="small" type="text">卡在哪</Button>
+    <Popover
+      content={content}
+      title="卡在哪"
+      trigger="click"
+      placement={controlled ? 'left' : undefined}
+      open={open}
+      onOpenChange={setOpen}
+    >
+      {controlled ? (
+        <span aria-hidden style={{ display: 'inline-block', width: 0, height: 24 }} />
+      ) : (
+        <Button size="small" type="text">卡在哪</Button>
+      )}
     </Popover>
   )
 }

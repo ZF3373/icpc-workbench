@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, Calendar, Card, Col, Row, Space, Tag, App as AntdApp } from 'antd'
-import { CheckOutlined, FieldTimeOutlined, FireOutlined, ReadOutlined, TrophyOutlined } from '@ant-design/icons'
+import { Calendar, Card, Col, Row, Space, Tag, App as AntdApp } from 'antd'
+import { FieldTimeOutlined, FireOutlined, ReadOutlined, TrophyOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
@@ -12,8 +12,10 @@ import InlineError from '../components/InlineError'
 import DueReviewList from '../components/DueReviewList'
 import NoteCardButton from '../components/NoteCardButton'
 import { sortDueItems } from '../reviewDue'
-import { get, post, del } from '../api'
+import { get } from '../api'
 import { KIND_COLOR, KIND_LABEL } from '../ui'
+import TaskCheckinButtons from '../components/TaskCheckinButtons'
+import { useTaskNotes } from '../useTaskNotes'
 import type { DayPlanInfo, DayTask, ReviewCalendarDay, ReviewItem, StreakInfo } from '../types'
 
 export default function CalendarPage() {
@@ -114,22 +116,11 @@ export default function CalendarPage() {
     loadDay(selected)
   }, [selected, loadDay])
 
-  const toggle = async (t: DayTask) => {
-    try {
-      if (t.checked) {
-        await del(`/api/checkins/${t.id}`)
-        message.success('已取消打卡')
-      } else {
-        await post('/api/checkins', { taskId: t.id })
-        message.success('打卡成功 ✓')
-      }
-      loadDay(selected)
-      loadMonth(month)
-      loadStreak()
-    } catch (e) {
-      message.error((e as Error).message)
-    }
-  }
+  const taskNotes = useTaskNotes(() => {
+    loadDay(selected)
+    loadMonth(month)
+    loadStreak()
+  })
 
   const today = dayjs().format('YYYY-MM-DD')
 
@@ -213,6 +204,7 @@ export default function CalendarPage() {
   return (
     <div>
       <PageHeader title="日历打卡" description="每日训练打卡与连续记录" />
+      {taskNotes.modal}
       <div style={{ marginBottom: 16 }}>
         <StatStrip
           items={[
@@ -363,15 +355,7 @@ export default function CalendarPage() {
                               </a>
                             )}
                           </div>
-                          {done ? (
-                            <Button size="small" icon={<CheckOutlined />} onClick={() => toggle(t)}>
-                              已打卡
-                            </Button>
-                          ) : (
-                            <Button size="small" type="primary" onClick={() => toggle(t)}>
-                              打卡
-                            </Button>
-                          )}
+                          <TaskCheckinButtons checked={Boolean(done)} onOpen={(mode) => taskNotes.open(t, mode)} />
                         </div>
                       </Card>
                     )

@@ -9,7 +9,7 @@ import { tags as t } from '@lezer/highlight'
 import { useMemo } from 'react'
 import { useIndentSize } from '../editorSettings'
 
-export type CodeEditorLanguage = 'cpp' | 'markdown'
+export type CodeEditorLanguage = 'cpp' | 'markdown' | 'plain'
 
 interface CodeEditorProps {
   /** antd Form.Item 会注入 value/onChange，故为可选 */
@@ -92,7 +92,7 @@ export default function CodeEditor({
   const indentSize = useIndentSize()
   const extensions = useMemo(
     () => [
-      language === 'cpp' ? cpp() : markdownLang(),
+      ...(language === 'plain' ? [] : [language === 'cpp' ? cpp() : markdownLang()]),
       // 缩进偏好来自设置页（2/4 空格）；indentWithTab 与自动缩进均读取此 facet
       indentUnit.of(' '.repeat(indentSize)),
       appTheme,

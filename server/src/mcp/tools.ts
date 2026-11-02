@@ -471,33 +471,31 @@ export const MCP_TOOLS: McpToolDef[] = [
   ),
   tool(
     'checkin_task',
-    '给某条当日计划任务打卡（taskId 见 get_today_training 的 planTasks 或 get_plan 的 tasks）。',
-    { taskId: { type: 'number', description: '任务 id' } },
+    '写入笔记并给某条计划任务打卡（taskId 见 get_today_training 的 planTasks 或 get_plan 的 tasks）。笔记必填；打卡后不可取消。',
+    {
+      taskId: { type: 'number', description: '任务 id' },
+      note: { type: 'string', description: '笔记正文（Markdown，必填）' },
+      labels: { type: 'array', items: { type: 'string' }, description: '笔记标注（可选，最多 5 个）' },
+    },
     async (a, ctx) => {
       const taskId = num(a.taskId);
       if (taskId === undefined) throw new ToolError('缺少必填参数 taskId');
-      return ctx.post('/api/checkins', { taskId });
+      const content = str(a.note);
+      if (content === undefined) throw new ToolError('缺少必填参数 note');
+      return ctx.post('/api/checkins', { taskId, note: { content, labels: a.labels } });
     },
-    ['taskId'],
-  ),
-  tool(
-    'cancel_checkin',
-    '取消某条任务的打卡（幂等）。',
-    { taskId: { type: 'number', description: '任务 id' } },
-    async (a, ctx) => {
-      const taskId = num(a.taskId);
-      if (taskId === undefined) throw new ToolError('缺少必填参数 taskId');
-      return ctx.del(`/api/checkins/${taskId}`);
-    },
-    ['taskId'],
+    ['taskId', 'note'],
   ),
   tool(
     'auto_checkin_today',
-    '自动打卡今天已 AC 的计划练习任务。不传 taskIds = 只预览（列出可打卡项，不写库）；传入 taskIds（先预览拿到的）= 确认写库。旧 AC、回顾和模拟赛不会被自动打卡。',
-    { taskIds: { type: 'array', items: { type: 'number' }, description: '预览返回的任务 id 列表；省略 = 仅预览' } },
+    '打卡今天已 AC 的计划练习任务。不传 taskIds = 只预览（列出可打卡项，不写库）；传入 taskIds（先预览拿到的）和 note = 确认写库，每项任务都会写入这条笔记。旧 AC、回顾和模拟赛不会被自动打卡。',
+    {
+      taskIds: { type: 'array', items: { type: 'number' }, description: '预览返回的任务 id 列表；省略 = 仅预览' },
+      note: { type: 'string', description: '笔记正文（Markdown）；传 taskIds 时必填' },
+    },
     async (a, ctx) => {
       const ids = Array.isArray(a.taskIds) ? a.taskIds.map(Number).filter(Number.isInteger) : undefined;
-      return ctx.post('/api/checkins/auto-today', ids ? { taskIds: ids } : undefined);
+      return ctx.post('/api/checkins/auto-today', ids ? { taskIds: ids, note: { content: str(a.note) } } : undefined);
     },
   ),
 

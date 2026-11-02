@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { checkinWithNote, NoteInputError, parseNoteInput, type NoteInput } from '../notes/problemNotes.ts';
 import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { dateAfterDays, firstReviewDelayDays, scheduleNext } from '../reviews/schedule.ts';
@@ -200,11 +201,19 @@ export function reviewsRoutes(db: Db): Router {
     if (taskIds.some((taskId: number) => !allowed.has(taskId))) {
       return res.status(400).json({ error: '所选任务不是今天该题的复习任务，请刷新后重试' });
     }
-    const write = db.prepare('INSERT OR IGNORE INTO checkins(user_id,task_id,task_date) VALUES(?,?,?)');
+    let note: NoteInput;
+    try {
+      note = parseNoteInput(req.body?.note);
+    } catch (e) {
+      if (!(e instanceof NoteInputError)) throw e;
+      return res.status(400).json({ error: `打卡需要先写笔记：${e.message}` });
+    }
     let checked = 0;
     db.exec('BEGIN');
     try {
-      for (const taskId of new Set<number>(taskIds)) checked += Number(write.run(DEFAULT_USER_ID, taskId, date).changes);
+      for (const taskId of new Set<number>(taskIds)) {
+        if (checkinWithNote(db, DEFAULT_USER_ID, { id: taskId, task_date: date }, note)) checked += 1;
+      }
       db.exec('COMMIT');
     } catch (e) { db.exec('ROLLBACK'); throw e; }
     res.json({ checked });

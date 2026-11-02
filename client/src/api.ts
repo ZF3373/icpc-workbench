@@ -86,6 +86,30 @@ export async function uploadImage(file: Blob, signal?: AbortSignal): Promise<Upl
   return (await res.json()) as UploadedImage
 }
 
+/** 笔记附件单文件上限（服务端 /api/uploads/files 同限额） */
+export const MAX_NOTE_ATTACHMENT_BYTES = 50 * 1024 * 1024
+
+export interface UploadedAttachment {
+  url: string
+  name: string
+  size: number
+}
+
+/**
+ * 上传笔记附件。Content-Type 固定 octet-stream：.json 文件若带上自身类型，
+ * 会被全局 express.json() 先行解析，字节就到不了上传路由。
+ */
+export async function uploadAttachment(file: File): Promise<UploadedAttachment> {
+  if (file.size > MAX_NOTE_ATTACHMENT_BYTES) throw new Error('附件超过 50 MiB 上限')
+  const res = await fetch(`/api/uploads/files?name=${encodeURIComponent(file.name)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: file,
+  })
+  if (!res.ok) throw await parseErrorResponse(res)
+  return (await res.json()) as UploadedAttachment
+}
+
 // ---------- AI 助手（全局，含训练计划讨论/修改） ----------
 
 export interface PlanChatTurn {

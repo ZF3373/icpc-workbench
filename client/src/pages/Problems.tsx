@@ -20,11 +20,13 @@ import {
   Upload,
 } from 'antd'
 import type { TableProps, TreeSelectProps } from 'antd'
-import { ApartmentOutlined, CheckOutlined, ClearOutlined, DeleteOutlined, DownOutlined, EditOutlined, InboxOutlined, MoreOutlined, PlusOutlined, ReadOutlined, RestOutlined, TagsOutlined, UpOutlined } from '@ant-design/icons'
+import { AimOutlined, ApartmentOutlined, CheckOutlined, ClearOutlined, DeleteOutlined, DownOutlined, EditOutlined, FileTextOutlined, InboxOutlined, MoreOutlined, PlusOutlined, ReadOutlined, RestOutlined, TagsOutlined, UpOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useSearchParams } from 'react-router-dom'
 import type { KnowledgeCoverage, KnowledgePointEntry, PlatformId } from '../../../shared/src/index.ts'
 import { PLATFORMS } from '../../../shared/src/index.ts'
+import ProblemNotesDrawer from '../components/ProblemNotesDrawer'
+import { useBackgroundTaskSettled } from '../backgroundTasks'
 import IntentPopover from '../components/IntentPopover'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
@@ -123,6 +125,8 @@ interface ProblemRow {
   /** 「卡在哪」记录条数与最差卡点（服务端列表聚合，缺省 = 旧服务端/未记过，不显示角标） */
   intentCount?: number
   worstIntent?: string | null
+  /** 题目笔记条数（缺省 = 旧服务端/没写过，不显示角标） */
+  noteCount?: number
 }
 
 type StatusFilter = 'all' | 'ac' | 'tried' | 'none'
@@ -260,13 +264,11 @@ export default function Problems() {
   // 批量操作（P3-1）：选中行 key 受控；preserveSelectedRowKeys 让翻页后选择不丢
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
   const [batchBusy, setBatchBusy] = useState(false)
-  /**
-   * 操作列「更多」下拉：`open` 受控（同一时刻只开一行，也便于「卡在哪」那项不关闭菜单）。
-   * keepMenuOpenRef：rc-menu 先调菜单项自己的 onClick、再调菜单级 onClick（Dropdown 借此关闭），
-   * 于是「卡在哪」项里把标记置上，随后的关闭请求就被忽略——否则 Popover 会锚在已经隐藏的菜单上。
-   */
+  /** 操作列「更多」下拉：`open` 受控，同一时刻只开一行 */
   const [menuRowId, setMenuRowId] = useState<number | null>(null)
-  const keepMenuOpenRef = useRef(false)
+  /** 「卡在哪」气泡：锚在「更多」按钮旁，菜单收起后气泡还在，整行菜单项都能触发 */
+  const [intentRowId, setIntentRowId] = useState<number | null>(null)
+  const [notesProblem, setNotesProblem] = useState<ProblemRow | null>(null)
   /** 列表取数失败原因：与「一道题都没有」严格区分（失败渲染 InlineError 而不是空态） */
   const [loadError, setLoadError] = useState<string | null>(null)
 
@@ -816,12 +818,12 @@ export default function Problems() {
         <div style={{ fontSize: 13 }}>
           <p style={{ margin: '4px 0' }}>
             将一并删除该题的提交记录（{r.attempts} 条）、复习条目（{r.reviewItemId != null ? 1 : 0} 条）、
-            卡点与知识点标注，相关统计同步减少且<b>不可恢复</b>；训练计划里引用该题的任务仅解除关联。
+            卡点、题目笔记与知识点标注，相关统计同步减少且<b>不可恢复</b>；训练计划里引用该题的任务仅解除关联，打卡时写的笔记留在任务上。
           </p>
           <p style={{ margin: '4px 0', color: 'var(--text-3)' }}>
             仅用于清理重复 / 误导入的题目；如需隐藏题库未做题，关掉「含题库未做题」即可。
             删除后同步与题库拉取不再重建该题；题目行可在工具栏「回收站」恢复（提交 / 复习 /
-            卡点 / 人工知识点标注不会找回）。
+            卡点 / 笔记 / 人工知识点标注不会找回）。
           </p>
         </div>
       ),
@@ -1173,7 +1175,14 @@ export default function Problems() {
         // 「卡过 N 次 · 最差卡点」全文（只显示数字的话，类型仍要悬停才能看到）。
         // 跟在标签尾部而不新增列——它是辅助信号，不该占据一整列的布局预算。
         const summary = intentBadgeSummary(row.intentCount ?? 0, row.worstIntent)
-        return tags.length || summary ? (
+        const noteTag = (row.noteCount ?? 0) > 0 && (
+          <Tooltip title="查看题目笔记">
+            <Tag color="blue" style={{ marginInlineEnd: 0, cursor: 'pointer' }} onClick={() => setNotesProblem(row)}>
+              笔记 {row.noteCount}
+            </Tag>
+          </Tooltip>
+        )
+        return tags.length || summary || noteTag ? (
           <Space size={4} wrap>
             {tags.slice(0, 3).map((t) => (
               <Tag key={t}>{t}</Tag>
@@ -1186,6 +1195,7 @@ export default function Problems() {
                 </Tag>
               </Tooltip>
             )}
+            {noteTag}
           </Space>
         ) : (
           <span style={{ color: 'var(--text-dim)' }}>-</span>
@@ -1222,46 +1232,33 @@ export default function Problems() {
               <Button size="small">标记 AC</Button>
             </Popconfirm>
           )}
+          {intentRowId === r.id && (
+            <IntentPopover
+              open
+              onOpenChange={(next) => {
+                if (!next) setIntentRowId(null)
+              }}
+              platform={r.platform}
+              problemKey={r.problem_key}
+              codeOptions={codeOptionsFromTags(r.tags)}
+              onSuccess={(m) => message.success(m)}
+              onError={(m) => message.error(m)}
+              // 记录/撤销后刷新行数据（角标随最新聚合走）；Popover 不因此关闭
+              onChanged={() => loadRef.current()}
+            />
+          )}
           <Dropdown
             trigger={['click']}
             open={menuRowId === r.id}
-            onOpenChange={(next, info) => {
-              // 「卡在哪」那项自带 Popover（它必须自己当触发器）：它被点击后 rc-menu 还会通知
-              // Dropdown 关闭，若照办，Popover 就会锚在已隐藏的菜单上。这一项标记后忽略该次关闭。
-              if (!next && info.source === 'menu' && keepMenuOpenRef.current) {
-                keepMenuOpenRef.current = false
-                return
-              }
-              setMenuRowId(next ? r.id : null)
-            }}
+            onOpenChange={(next) => setMenuRowId(next ? r.id : null)}
             menu={{
               items: [
                 r.reviewItemId != null
                   ? { key: 'review-remove', label: '移出复习队列', icon: <CheckOutlined /> }
                   : { key: 'review-add', label: '加入复习队列', icon: <ReadOutlined /> },
                 { key: 'kp', label: '人工校正知识点', icon: <EditOutlined /> },
-                {
-                  key: 'intent',
-                  // IntentPopover 没有受控 open：它自己渲染触发按钮，所以这里把它整块作为菜单项 label
-                  // （用 span 包一层只是为了撑满菜单行，点击仍落在它自己的按钮上）
-                  label: (
-                    <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-                      <IntentPopover
-                        platform={r.platform}
-                        problemKey={r.problem_key}
-                        codeOptions={codeOptionsFromTags(r.tags)}
-                        onSuccess={(m) => message.success(m)}
-                        onError={(m) => message.error(m)}
-                        onDone={() => setMenuRowId(null)}
-                        // 记录/撤销后刷新行数据（角标随最新聚合走）；Popover 不因此关闭
-                        onChanged={() => loadRef.current()}
-                      />
-                    </span>
-                  ),
-                  onClick: () => {
-                    keepMenuOpenRef.current = true
-                  },
-                },
+                { key: 'notes', label: r.noteCount ? `题目笔记（${r.noteCount}）` : '题目笔记', icon: <FileTextOutlined /> },
+                { key: 'intent', label: '卡在哪', icon: <AimOutlined /> },
                 { type: 'divider' },
                 { key: 'delete', label: '删除题目（连带提交与复习记录）', icon: <DeleteOutlined />, danger: true },
               ],
@@ -1269,6 +1266,8 @@ export default function Problems() {
                 if (key === 'review-add') void addToReview(r)
                 else if (key === 'review-remove') void removeFromReview(r)
                 else if (key === 'kp') void openKpEditor(r)
+                else if (key === 'notes') setNotesProblem(r)
+                else if (key === 'intent') setIntentRowId(r.id)
                 // 删除不在菜单 onClick 里直接执行：removeProblem 内部先弹 Modal.confirm 讲清代价
                 else if (key === 'delete') removeProblem(r)
               },
@@ -1281,7 +1280,10 @@ export default function Problems() {
         </Space>
       ),
     },
-  ], [sort, menuRowId, message, markAc, addToReview, removeFromReview, removeProblem, openKpEditor, openDiffEditor])
+  ], [sort, menuRowId, intentRowId, message, markAc, addToReview, removeFromReview, removeProblem, openKpEditor, openDiffEditor])
+
+  // 拉取题库的弹窗可能早已关闭：任务结束时只要还在本页就刷新列表
+  useBackgroundTaskSettled((key) => key.startsWith('bank:'), () => loadRef.current())
 
   const diffDistMax = Math.max(1, ...diffDist.map((d) => d.count))
   const platMax = Math.max(1, ...platDist.map((d) => d.count))
@@ -1304,7 +1306,7 @@ export default function Problems() {
               </Button>
             </Tooltip>
             {trash !== null && trash.length > 0 && (
-              <Tooltip title="回收站：误删的题目可在此恢复题目行（提交/复习/卡点不找回）">
+              <Tooltip title="回收站：误删的题目可在此恢复题目行（提交/复习/卡点/笔记不找回）">
                 <Button icon={<RestOutlined />} onClick={() => setTrashOpen(true)}>
                   回收站 · {trash.length}
                 </Button>
@@ -1669,7 +1671,7 @@ export default function Problems() {
             {
               key: 'bank',
               label: '拉取题库',
-              children: <BankTab onDone={() => { setImportOpen(false); loadRef.current() }} />,
+              children: <BankTab onStarted={() => setImportOpen(false)} />,
             },
             {
               key: 'file',
@@ -1957,6 +1959,7 @@ export default function Problems() {
           ]}
         />
       </Modal>
+      <ProblemNotesDrawer problem={notesProblem} onClose={() => setNotesProblem(null)} onChanged={() => loadRef.current()} />
     </div>
   )
 }

@@ -65,7 +65,7 @@ test('checkins streak: 本机时区能区分 UTC 日界时，凌晨打卡按本�
       const planId = (db.prepare('SELECT id FROM plans ORDER BY id DESC LIMIT 1').get() as { id: number }).id;
       db.prepare("INSERT INTO plan_tasks (plan_id, task_date, title, kind) VALUES (?, ?, 't', 'practice')").run(planId, d);
       const taskId = (db.prepare('SELECT id FROM plan_tasks ORDER BY id DESC LIMIT 1').get() as { id: number }).id;
-      const r = await fetch(`${base}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ taskId }) });
+      const r = await fetch(`${base}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ taskId, note: { content: '笔记' } }) });
       assert.equal(r.status, 200);
     }
     const res = await fetch(`${base}/streak`);
@@ -77,7 +77,7 @@ test('checkins streak: 本机时区能区分 UTC 日界时，凌晨打卡按本�
   }
 });
 
-test('checkins DELETE: 非法 id 400、任务不存在 404、取消打卡本身幂等（B21 回归）', async () => {
+test('checkins DELETE: 打卡完成后不可取消，一律 405 且不改动打卡', async () => {
   const db: Db = createDb(':memory:');
   const app = express();
   app.use(express.json());
@@ -85,23 +85,18 @@ test('checkins DELETE: 非法 id 400、任务不存在 404、取消打卡本身�
   const srv = await listenForTest(app);
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/checkins`;
   try {
-    // 非数字 id：Number('abc') = NaN 会静默匹配不到任何行，必须显式 400
-    assert.equal((await fetch(`${base}/abc`, { method: 'DELETE' })).status, 400);
-    // 任务不存在 → 404（让前端能区分「任务没了」与「本来就没打卡」）
-    assert.equal((await fetch(`${base}/99999`, { method: 'DELETE' })).status, 404);
-
-    // 真实任务：未打卡时取消也返回 200（幂等），已打卡时取消成功
     db.prepare(
       "INSERT INTO plans (user_id, title, goal, start_date, end_date, source) VALUES (1, 'p', '', '2026-08-10', '2026-08-10', 'template')",
     ).run();
     const planId = (db.prepare('SELECT id FROM plans').get() as { id: number }).id;
     db.prepare("INSERT INTO plan_tasks (plan_id, task_date, title, kind) VALUES (?, '2026-08-10', 't', 'practice')").run(planId);
     const taskId = (db.prepare('SELECT id FROM plan_tasks').get() as { id: number }).id;
-
-    assert.equal((await fetch(`${base}/${taskId}`, { method: 'DELETE' })).status, 200, '幂等：未打卡也成功');
     db.prepare('INSERT INTO checkins (user_id, task_id, task_date) VALUES (1, ?, ?)').run(taskId, '2026-08-10');
-    assert.equal((await fetch(`${base}/${taskId}`, { method: 'DELETE' })).status, 200);
-    assert.equal((db.prepare('SELECT COUNT(*) AS c FROM checkins').get() as { c: number }).c, 0);
+
+    const res = await fetch(`${base}/${taskId}`, { method: 'DELETE' });
+    assert.equal(res.status, 405);
+    assert.match(((await res.json()) as { error: string }).error, /不可取消/);
+    assert.equal((db.prepare('SELECT COUNT(*) AS c FROM checkins').get() as { c: number }).c, 1);
   } finally {
     srv.close();
     db.close();

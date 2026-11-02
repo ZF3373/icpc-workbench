@@ -49,11 +49,13 @@ A **local web app** that analyzes your competitive programming weaknesses from s
 - **Template Library**: 181 built-in algorithm template lessons (11 major categories, ordered along the learning dependency chain from "Introductory Basics" to "STL & Misc"; difficulty shown as five contest tiers — Entry / Bronze / Silver / Gold / Championship), with study status/notes/progress tracking; create custom categories for your own organization (custom tags are deletable), and export the whole library to Markdown / PDF for archival or sharing; templates distilled from AI discussions can be written to a tag of your choice; custom templates support Tab-indent code editors (Tab indent, Shift+Tab outdent, Enter auto-indent, undo stack preserved); idea notes get a full Markdown editor (formatting toolbar, image paste, live preview) with complete rendering (GFM tables/strikethrough/code blocks + math formulas, inline `$...$` and block `$$...$$`, Obsidian-compatible syntax); header toggles indent width (2/4 spaces, locally persisted)
 - **Solving History**: query "which problems have I attempted on which platform" right from the dashboard—grouped by problem (submission/AC counts) or per-submission views, with platform filter and all-AC / not-AC filter, linking to the original problems
 - **Contest Center**: Aggregates contests from Codeforces / AtCoder / Luogu / Nowcoder / Jisuanke (upcoming / running / finished, auto-degrades on single-source failure); pre-contest selection, post-contest upsolving; a "My Contests" tab aggregates your participation records across platforms (local submission derivation + CF/AtCoder/Luogu/Nowcoder participation history, with rank and rating changes) with one-click jump to the AI assistant for a review of that contest. Participation is now fetched **per account**: every bound account on a platform has its own incremental cursor and its own status, so one account failing (an expired cookie on the alt) no longer masks the data another account just pulled. When several accounts entered the same contest, the list still shows one card — the score comes from the account with more local submissions and the card is labelled "multiple accounts", while the AI review timeline annotates each submission with its account (so the alt's warm-up attempts are not read as the main account's in-contest performance)
+- **Problem Notes**: Write multiple labeled notes per problem (Problems → More → Problem notes). Each note is built from independent Markdown, code, image and attachment boxes — any number, any order, all removable (attachments up to 50 MiB each, stored under `uploads/files/` in the data directory and not included in daily backups). In Plans, Calendar and Today, clicking "check in" opens the note editor; a check-in completes only once a note is saved and cannot be undone, after which the buttons become "edit notes" and "write another"
+- **Background Task Progress**: AI plan generation, problem-bank pulls, difficulty backfill, list AI actions and account sync share the bottom-right progress card, so switching pages loses nothing
 - **Calendar Check-ins**: Monthly calendar with daily training tasks, problem links, per-task check-ins; check-in data syncs with the Plans page; consecutive check-in streak tracking. The day's **due reviews** are merged into the view too (a "复习 N" cell badge and a separate review section in the day panel, with clickable problems and in-place feedback), but reviews **never count toward check-ins or the streak** — a cell's completion still reflects plan tasks only
 - **Check-in Reminders**: Configure a daily reminder time in Settings; while the app is open, if there are unchecked tasks for the day at the reminder time, a browser system notification + in-page notification appears—click to jump to the calendar; pre-contest reminders configurable N minutes before start (once per contest, click to jump to Contest Center)
 - **Software Update**: Dual-channel detection (stable release + GitHub latest commit build) + in-app one-click self-update (update driver is on a global Provider; switching modules after initiating an update won't interrupt download/replacement; refreshing the page auto-resumes update progress)
 - **Web Widget**: `http://localhost:3001/widget` is a zero-dependency single page (served directly by Express) for a always-on mini-window showing today's tasks, streak badge, with direct check-in/problem-jump
-- **MCP Interface (External AI Agent Access)**: A built-in MCP server (`http://127.0.0.1:3001/mcp`, Streamable HTTP) lets external agent apps — Claude Desktop, Cursor, Claude Code, etc. — operate the workbench directly: query stats profiles, search problems, manage training plans and problem lists, check in, trigger syncs, export summaries. 40 tools mapped 1:1 onto the REST API (see the "MCP Interface" section)
+- **MCP Interface (External AI Agent Access)**: A built-in MCP server (`http://127.0.0.1:3001/mcp`, Streamable HTTP) lets external agent apps — Claude Desktop, Cursor, Claude Code, etc. — operate the workbench directly: query stats profiles, search problems, manage training plans and problem lists, check in, trigger syncs, export summaries. 39 tools mapped 1:1 onto the REST API (see the "MCP Interface" section)
 
 ## Tech Stack
 
@@ -336,7 +338,11 @@ PATCH /api/problems/:platform/:key/difficulty # Set/clear a problem's difficulty
 GET  /api/checkins?month=YYYY-MM  # Monthly check-in view
 GET  /api/checkins/date/:date     # Tasks for a given date (reused by Web widget)
 GET  /api/checkins/streak         # Consecutive check-in stats (current/longest/totalDays)
-POST /api/checkins { taskId }     # Check in | DELETE /api/checkins/:taskId cancel
+POST /api/checkins { taskId, note: { blocks | content, labels? } } # Write a note and check in (one transaction; check-ins cannot be undone)
+GET  /api/notes?problemId=|taskId= # Problem notes (multiple per problem)
+POST /api/uploads/files?name=     # Upload a note attachment (raw bytes; always served as a download)
+POST /api/notes { problemId|taskId, blocks | content, labels? } # Add a note | PATCH /api/notes/:id edit | DELETE /api/notes/:id delete
+GET  /api/problems/bank/runs      # Problem-bank pulls in progress
 GET  /api/settings                # Settings (AI/accounts/adapter toggles/check-in reminders)
 POST /api/settings/reminder       # Check-in reminder config (body: enabled?, time? "HH:MM")
 POST /api/settings/cookies/check  # Verify cookie login state (same data page as sync: Luogu record/list self-check, Daimayuan by bound account)
@@ -357,7 +363,7 @@ POST /mcp                         # MCP endpoint (Streamable HTTP, external AI a
 The workbench embeds an MCP (Model Context Protocol) server. External agent applications — Claude Desktop, Cursor, Claude Code, Cline, etc. — can connect and operate the workbench directly: query practice profiles, search and pick problems, manage training plans and problem lists, check in, trigger syncs, export summaries — no manual clicking required.
 
 - **Endpoint**: `http://127.0.0.1:3001/mcp` (Streamable HTTP transport, stateless; the port follows your deployment — for the desktop build use the port shown in the startup banner)
-- **Tools**: 40 in total; each tool is a loopback call to an existing `/api/*` endpoint, defined in `server/src/mcp/tools.ts`
+- **Tools**: 39 in total; each tool is a loopback call to an existing `/api/*` endpoint, defined in `server/src/mcp/tools.ts`
 - **Prerequisite**: the workbench must be running (the MCP endpoint shares the server's process and port)
 
 ### Client Configuration Examples
@@ -387,7 +393,7 @@ claude mcp add --transport http icpc-workbench http://127.0.0.1:3001/mcp
 | Problems & submissions | `search_problems` · `list_submission_history` · `fetch_problem_bank` |
 | Today & plans | `get_today_training` · `list_plans` · `get_plan` · `import_ai_plan` · `export_plan_package` · `shift_plan` · `update_plan_task` · `delete_plan_task` · `delete_plan` |
 | Problem lists | `list_problem_lists` · `get_problem_list` · `import_problem_list` · `add_problems_to_list` · `classify_problem_list` |
-| Check-ins | `get_checkin_calendar` · `checkin_task` · `cancel_checkin` · `auto_checkin_today` |
+| Check-ins | `get_checkin_calendar` · `checkin_task` (note required) · `auto_checkin_today` |
 | Review queue | `list_review_queue` · `add_to_review_queue` · `review_feedback` · `remove_from_review_queue` |
 | Contests | `list_contests` · `list_participated_contests` |
 | Templates | `list_templates` |
