@@ -39,6 +39,7 @@ import { AiSettingsCard, type AiSettingsCardHandle, type SettingsAiData } from '
 import { ImportPlanModal } from './settings/ImportPlanModal'
 import { KnowledgePipelineCard } from './settings/KnowledgePipelineCard'
 import { BackupCard } from './settings/BackupCard'
+import { UploadCleanupCard } from './settings/UploadCleanupCard'
 import { ClistCard, type ClistSettingsView } from './settings/ClistCard'
 
 interface SettingsData {
@@ -1312,6 +1313,9 @@ export default function Settings() {
       <ImportPlanModal open={importOpen} onClose={() => setImportOpen(false)} />
       <Col span={24}>
         <BackupCard refreshKey={backupRefresh} />
+      </Col>
+      <Col span={24}>
+        <UploadCleanupCard />
       </Col>
       </Row>
       </div>

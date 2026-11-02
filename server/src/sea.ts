@@ -186,7 +186,7 @@ export function startServer(
   app.use('/api/problems', problemsRoutes(db));
   app.use('/api/history', historyRoutes(db));
   app.use('/api/reviews', reviewsRoutes(db));
-  app.use('/api/uploads', uploadsRoutes({ uploadsDir: path.join(config.dataDir, 'uploads') }));
+  app.use('/api/uploads', uploadsRoutes({ uploadsDir: path.join(config.dataDir, 'uploads'), db }));
   app.use('/api/appearance', appearanceRoutes(config.dataDir));
   app.use('/api/today', todayRoutes(db));
   app.use('/api/templates', templatesRoutes(db, { dataDir: config.dataDir }));

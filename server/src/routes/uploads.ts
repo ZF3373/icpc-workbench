@@ -2,6 +2,9 @@ import { Router, raw, static as expressStatic } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import type { Db } from '../db/index.ts';
+import { deleteUnusedUploads, scanUploads } from '../uploads/cleanup.ts';
+import { sendRouteError } from './routeError.ts';
 
 /**
  * 笔记图片上传与静态服务（复习笔记 / 学习笔记等 Markdown 编辑器共用）：
@@ -42,8 +45,32 @@ const EXT_BY_TYPE: Record<string, string> = {
   'image/webp': '.webp',
 };
 
-export function uploadsRoutes({ uploadsDir }: { uploadsDir: string }): Router {
+const SCAN_FAILED = '无法完成扫描：有恢复点或数据库读取失败。可在「备份与恢复点」删除损坏的恢复点后重试，详情见服务端日志';
+
+export function uploadsRoutes({ uploadsDir, db }: { uploadsDir: string; db: Db }): Router {
   const r = Router();
+
+  // GET /api/uploads/unused → 预览可清理的文件（只读）
+  r.get('/unused', (_req, res) => {
+    try {
+      res.json(scanUploads(db, { uploadsDir }));
+    } catch (e) {
+      sendRouteError(res, 500, e, SCAN_FAILED);
+    }
+  });
+
+  // POST /api/uploads/cleanup  body: { files } → 删除预览里确认过的文件（服务端重新判定一次）
+  r.post('/cleanup', (req, res) => {
+    const files = req.body?.files;
+    if (!Array.isArray(files) || files.some((f) => typeof f !== 'string')) {
+      return res.status(400).json({ error: 'files 需为文件名数组' });
+    }
+    try {
+      res.json(deleteUnusedUploads(db, files, { uploadsDir }));
+    } catch (e) {
+      sendRouteError(res, 500, e, SCAN_FAILED);
+    }
+  });
 
   // 附件内容不可信（可能是 HTML/SVG）：必须先于静态服务匹配，一律按下载返回，绝不在本站同源渲染
   r.get('/files/:id/:name', (req, res) => {

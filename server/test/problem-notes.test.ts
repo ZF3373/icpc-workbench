@@ -258,9 +258,10 @@ test('早期建的 problem_notes 表启动时补上 blocks 列', () => {
 
 test('附件：任意类型可传，下载强制 attachment，HTML 不会同源渲染；路径穿越与超限被拒', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'notes-upload-'));
+  const db = createDb(':memory:');
   const app = express();
   app.use(express.json());
-  app.use('/api/uploads', uploadsRoutes({ uploadsDir: dir }));
+  app.use('/api/uploads', uploadsRoutes({ uploadsDir: dir, db }));
   const srv = await listenForTest(app);
   const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/uploads`;
   const up = (name: string, body: BodyInit, type = 'application/octet-stream') =>
@@ -285,6 +286,7 @@ test('附件：任意类型可传，下载强制 attachment，HTML 不会同源�
     assert.equal((await up('big.bin', new Uint8Array(50 * 1024 * 1024 + 1))).status, 413);
   } finally {
     srv.close();
+    db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
