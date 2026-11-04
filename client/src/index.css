@@ -3599,7 +3599,7 @@ button.dist-row:hover {
 /* 这里原先有一条 `@media (max-width: 720px) { .review-item .ant-card-body { flex-direction: column } }`：
    720 是全站唯一的遗留断点，只覆盖 ≤720，721~768 区间的「内容 | 操作」仍是横排，
    与 ≤768 生效的 `.card-actions-row`（全站口径）语义重叠、数值却不一致。
-   规则本身已并入文件末尾的 `@media (max-width: 768px)` 段（口径见 docs/responsive-breakpoints.md §0）。 */
+   规则本身已并入文件末尾的 `@media (max-width: 768px)` 段。 */
 
 /* 同行卡片等高：Col 在 flex 行里已拉伸，Card 撑满后内容少的卡不再塌成短一截；
    最后一件（参赛卡的「去 AI 复盘」/日历卡的状态药丸）沉底，
@@ -5523,10 +5523,10 @@ html.app-hidden *::after {
    opacity:0 不会移除 Tab 焦点（visibility:hidden 才会），所以 Tab 到按钮时
    宿主的 :focus-within 生效 → 控件显形，键盘用户始终看得见自己在操作什么。
 
-   命中区（WCAG 2.2「目标尺寸（最小）」24×24，UI-Polish-Plan §2.3 U1）：
+   命中区（WCAG 2.2「目标尺寸（最小）」24×24）：
    按钮视觉尺寸统一 24×24；比这更小的（各列表原本为了密度压到 15~22px 的）
    一律靠 `.reorder-btn::before` 向外溢出补足，且溢出量必须让命中区 ≥24×24
-   且**互不重叠** —— 同排 gap ≥ 2px 是下限，改 gap 前先算一遍见 §验证脚本。
+   且**互不重叠** —— 同排 gap ≥ 2px 是下限。
    ============================================================ */
 
 .reorder-controls {
@@ -5832,7 +5832,7 @@ html.app-hidden *::after {
   }
 
   /* 复习库卡片「内容 | 操作」同理下沉：旧规则挂在 720 这个遗留断点上，
-     721~768 区间漏改（见 docs/responsive-breakpoints.md §4.1），此处收口到 768。
+     721~768 区间漏改，此处收口到 768。
      .review-item-actions 的 padding-top 是横排时给按钮组对齐用的，转纵向后不再需要。 */
   .review-item .ant-card-body {
     flex-direction: column;
@@ -6575,7 +6575,7 @@ html.app-hidden *::after {
 /* ============================================================
    赛时分析弹窗（赛事中心「我参加的」入口）
    （原 components/ContestAnalysis.css，2026-10-24 迁回本文件收口；
-   遗留 600px 断点归并到全站 640 口径，见 docs/responsive-breakpoints.md §4.5）
+   遗留 600px 断点归并到全站 640 口径）
    ============================================================ */
 
 .contest-analysis-modal-title {

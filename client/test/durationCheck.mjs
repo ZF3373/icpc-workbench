@@ -3,9 +3,9 @@
  * 禁止新写字面量时长（120ms / 0.15s / …）。
  *
  * 背景：2026-10-24 把全站散落的 120/130/140/150/160/180/250/450ms 收口为
- * 四个档位 Token（--dur-1..4，见 docs/UI-Design-Tokens.md §5）。此脚本防止收口成果回潮。
+ * 四个档位 Token（--dur-1..4）。此脚本防止收口成果回潮。
  *
- * 有意例外（白名单，改动需同步 docs/UI-Design-Tokens.md §5）：
+ * 有意例外（白名单）：
  *   - index.css 的 `width 0.6s`（.ant-progress-bg 进度条填充，刻意放慢的结构动画）
  *   - `@keyframes` 相关的 animation 时长不归本脚本管（骨架呼吸、流光、pageFadeIn）
  *
