@@ -51,7 +51,7 @@ import InlineError from '../components/InlineError'
 import Markdown from '../components/Markdown'
 import CodeEditor from '../components/CodeEditor'
 import TemplateDocument from '../components/TemplateDocument'
-import NoteEditor from '../components/NoteEditor'
+import NoteWriterModal from '../components/NoteWriterModal'
 import NoteCardButton from '../components/NoteCardButton'
 import IndentSwitch from '../components/IndentSwitch'
 import { tagColor } from '../ui'
@@ -196,6 +196,8 @@ export default function Templates() {
   const [viewingId, setViewingId] = useState<string>()
   const [noteDraft, setNoteDraft] = useState('')
   const [noteEditing, setNoteEditing] = useState<TemplateItemInfo | null>(null)
+  /** 学习笔记保存中：写作弹窗按钮进 loading，期间不允许关闭 */
+  const [savingNote, setSavingNote] = useState(false)
   const [customOpen, setCustomOpen] = useState(false)
   const [editingCustom, setEditingCustom] = useState<TemplateItemInfo | null>(null)
   const [customForm] = Form.useForm<CustomFormValues>()
@@ -379,7 +381,8 @@ export default function Templates() {
   }
 
   const saveNote = async () => {
-    if (!noteEditing) return
+    if (!noteEditing || savingNote) return
+    setSavingNote(true)
     try {
       await patch(`/api/templates/${noteEditing.id}/note`, { note: noteDraft })
       message.success('笔记已保存')
@@ -387,6 +390,8 @@ export default function Templates() {
       load()
     } catch (e) {
       message.error((e as Error).message)
+    } finally {
+      setSavingNote(false)
     }
   }
 
@@ -1265,28 +1270,42 @@ export default function Templates() {
         )}
       </Modal>
 
-      {/* 学习笔记弹窗：与复习笔记同款编辑器（Markdown 工具栏 + 粘贴图片 + 预览） */}
-      <Modal
-        title={`学习笔记 · ${noteEditing?.name ?? ''}`}
-        open={noteEditing !== null}
-        onCancel={() => setNoteEditing(null)}
-        onOk={saveNote}
-        okText="保存"
-        cancelText="取消"
-        width={880}
-      >
-        {noteEditing && (
-          <NoteEditor
-            key={noteEditing.id}
-            readingZoom
-            value={noteDraft}
-            onChange={setNoteDraft}
-            height={420}
-            maxLength={20000}
-            placeholder="自己的理解、踩过的坑、与哪些题联系紧密……（Markdown 语法，可直接粘贴 / 拖入截图）"
-          />
-        )}
-      </Modal>
+      {/* 学习笔记写作：与复习笔记共用同一套外壳（卡片 + 全屏三栏 + 视图持久化）。
+          右栏上下文放模板大纲要点，写的时候不用来回翻阅读卡片 */}
+      {noteEditing && (
+        <NoteWriterModal
+          key={noteEditing.id}
+          kind="template"
+          subject={noteEditing.name}
+          value={noteDraft}
+          onChange={setNoteDraft}
+          saving={savingNote}
+          onSave={saveNote}
+          onClose={() => setNoteEditing(null)}
+          maxLength={20000}
+          placeholder="自己的理解、踩过的坑、与哪些题联系紧密……（Markdown 语法，可直接粘贴 / 拖入截图）"
+          meta={(
+            <>
+              <span>{templateTierLabel(noteEditing.difficulty)}</span>
+              <span>{STATUS_META.find((s) => s.key === noteEditing.status)?.label ?? '未学'}</span>
+              {noteEditing.tags.length > 0 && <span>{noteEditing.tags.slice(0, 4).join(' / ')}</span>}
+            </>
+          )}
+          reference={noteEditing.outline ? { title: '模板大纲要点', text: noteEditing.outline } : undefined}
+          context={(
+            <div className="note-writer-context">
+              <ul className="note-writer-side-tips">
+                <li>写「什么时候用」：触发条件与适用边界比代码本身更值得记。</li>
+                <li>写「关键观察」：为什么这个做法成立，和哪些题是同一招。</li>
+                <li>代码块用三反引号 cpp 包裹，预览里会高亮；截图直接粘贴上传。</li>
+              </ul>
+              <p className="note-writer-context-foot">
+                写完可以到「复习库」用间隔复习保持手感 —— 掌握不等于记住。
+              </p>
+            </div>
+          )}
+        />
+      )}
 
       <Modal
         title={`添加例题 · ${examplesEditing?.name ?? ''}`}

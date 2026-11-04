@@ -3198,7 +3198,9 @@ button.dist-row:hover {
 }
 
 /* 全屏时 Modal 自身变成工作台：header / body / footer 三段固定，只有中间三栏吃满高度 */
-.template-writer-modal.is-fullscreen {
+/* 模板全屏写作与笔记全屏写作共用同一套外壳（同一个三栏工作台观感） */
+.template-writer-modal.is-fullscreen,
+.note-writer-modal.is-fullscreen {
   top: 0 !important;
   width: var(--app-viewport-width) !important;
   max-width: var(--app-viewport-width) !important;
@@ -3207,7 +3209,8 @@ button.dist-row:hover {
   height: var(--app-viewport-height);
 }
 
-.template-writer-modal.is-fullscreen .ant-modal-content {
+.template-writer-modal.is-fullscreen .ant-modal-content,
+.note-writer-modal.is-fullscreen .ant-modal-content {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -3217,21 +3220,25 @@ button.dist-row:hover {
 
 /* antd 在 .ant-modal 与 .ant-modal-content 之间还有一层无类名的焦点容器；
    它默认 auto 高度会把 100% 截断，必须一起撑满 */
-.template-writer-modal.is-fullscreen > div {
+.template-writer-modal.is-fullscreen > div,
+.note-writer-modal.is-fullscreen > div {
   height: 100%;
 }
 
-.template-writer-modal.is-fullscreen .ant-modal-header {
+.template-writer-modal.is-fullscreen .ant-modal-header,
+.note-writer-modal.is-fullscreen .ant-modal-header {
   flex: none;
   margin-bottom: 10px;
 }
 
-.template-writer-modal.is-fullscreen .ant-modal-body {
+.template-writer-modal.is-fullscreen .ant-modal-body,
+.note-writer-modal.is-fullscreen .ant-modal-body {
   flex: 1 1 auto;
   min-height: 0;
 }
 
-.template-writer-modal.is-fullscreen .ant-modal-footer {
+.template-writer-modal.is-fullscreen .ant-modal-footer,
+.note-writer-modal.is-fullscreen .ant-modal-footer {
   flex: none;
   margin-top: 10px;
   padding-top: 10px;
@@ -6110,6 +6117,388 @@ html.app-hidden *::after {
 @media (max-width: 640px) {
   .note-card-modal.is-fullscreen .ant-modal-body {
     padding: 16px 12px;
+  }
+}
+
+/* ---------- 笔记写作弹窗（复习笔记 / 学习笔记，issue #52 后续反馈） ----------
+   把模板库「全屏三栏写作」那套体验复刻给笔记：卡片态随手记一句，全屏态三栏并排
+   （写作 / 实时预览 / 上下文）。外壳（.is-fullscreen 的铺满、header 隐藏、
+   footer 固定）与模板写作共用上面那组选择器，这里只补笔记自己的内容区。 */
+
+/* 卡片态：标题行 + meta + 编辑器 + 一句去全屏的指引 */
+.note-writer-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  /* antd 的关闭 X 绝对定位在右上角、不占标题栏流宽，这里给它留出命中区 */
+  padding-right: 34px;
+}
+
+.note-writer-heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.note-writer-kicker {
+  flex-shrink: 0;
+  color: var(--brand);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.note-writer-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* meta 与阅读卡片的 .note-card-meta 同一套排版：一行小字 + 底部分隔 */
+.note-writer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) 14px;
+  margin-bottom: var(--space-3);
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.note-writer-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.note-writer-card-hint {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+/* 窄屏卡片态：不分栏（编辑器与预览各 ~190px 谁都不够用），
+   由 NoteWriterModal 按 BP.smDown 收起「分栏」档，这里把预览面板的高度收一档 */
+@media (max-width: 640px) {
+  .note-writer-card .note-editor-preview {
+    border-left: none;
+  }
+
+  .note-writer-footer {
+    gap: 8px;
+  }
+}
+
+/* 页脚：左「全屏写作」、中字数、右「取消 / 保存」。
+   窄屏折行时保存按钮始终留在最后一行的右侧（不跟取消挤成一列）。 */
+.note-writer-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.note-writer-footer-meta {
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.note-writer-footer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* 全屏态：标题只作无障碍名称，视觉上整条隐藏（用 clip 而非 display:none，
+   否则节点脱离无障碍树，对话框就没有名字了 —— 与 .note-card-modal 同一处理） */
+.note-writer-fs-title {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-writer-fs {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+}
+
+/* 全屏态的退出通道只保留顶栏那一个：页脚再放一个「退出全屏」就是同一个动作两个按钮 */
+.note-writer-modal.is-fullscreen .note-writer-footer .note-writer-toggle {
+  display: none;
+}
+
+/* 全屏顶栏：左边是「这是什么笔记」，右边是缩放 + 退出通道 */
+.note-writer-fsbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.note-writer-fsbar-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.note-writer-fsbar-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 三栏：写作 / 实时预览 / 上下文。列宽比例的真源在 noteWriterView.NOTE_WRITER_COLUMNS，
+   这里保持一致（改动需同步单测里的期望值）。 */
+.note-writer-grid {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.note-writer-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.note-writer-pane.is-preview {
+  border-color: var(--brand-line);
+  box-shadow: inset 0 1px 0 rgba(134, 168, 255, 0.08);
+}
+
+.note-writer-pane-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-2);
+}
+
+.note-writer-pane-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.note-writer-pane-index {
+  color: var(--brand);
+  font-family: 'Cascadia Code', ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.note-writer-pane.is-preview .note-writer-pane-index {
+  color: var(--green);
+}
+
+.note-writer-pane-meta {
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.note-writer-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--green);
+  font-size: 11px;
+}
+
+.note-writer-live i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-soft);
+  animation: template-live-pulse 2.4s var(--ease-standard) infinite;
+}
+
+/* 写作区：NoteEditor 撑满，工具栏留在顶部，正文滚动交给 .cm-scroller */
+.note-writer-pane-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--surface-inset);
+}
+
+.note-writer-pane-body .note-editor.is-fill {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.note-writer-pane-body .note-editor.is-fill .note-editor-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.note-writer-pane-body .note-editor.is-fill .note-editor-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.note-writer-pane-body .note-editor.is-fill .note-editor-pane > .code-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.note-writer-pane-body .note-editor.is-fill .code-editor-fill > div,
+.note-writer-pane-body .note-editor.is-fill .code-editor-fill .cm-editor {
+  height: 100%;
+}
+
+.note-writer-preview-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px 26px;
+  scrollbar-width: thin;
+}
+
+.note-writer-preview-empty {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+/* 右栏：上下文（复习节奏 / 大纲要点 / 写作提示）自己滚，不抢中间预览的高度 */
+.note-writer-side-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px 20px;
+  scrollbar-width: thin;
+}
+
+.note-writer-side-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) 12px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+.note-writer-side-block + .note-writer-side-block {
+  margin-top: 14px;
+}
+
+.note-writer-side-label {
+  margin-bottom: 6px;
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.note-writer-side-doc {
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--overlay-1);
+  scrollbar-width: thin;
+}
+
+.note-writer-side-tips {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+
+.note-writer-side-tips li + li {
+  margin-top: 4px;
+}
+
+.note-writer-context-lead {
+  margin: 0 0 10px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.note-writer-context-foot {
+  margin: 10px 0 0;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line-soft);
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+@media (max-width: 1180px) {
+  .note-writer-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr);
+  }
+}
+
+/* ≤920px：三栏改成单列纵向堆叠，各自限高（与模板写作同一口径） */
+@media (max-width: 920px) {
+  .note-writer-grid {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+
+  .note-writer-pane {
+    min-height: 300px;
+  }
+
+  .note-writer-preview-scroll {
+    max-height: 56vh;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .note-writer-live i {
+    animation: none;
   }
 }
 

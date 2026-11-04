@@ -18,6 +18,7 @@ import CodeEditor from './CodeEditor'
 import Markdown from './Markdown'
 import ZoomControl from './ZoomControl'
 import { uploadImage } from '../api'
+import type { NoteWriterMode } from '../noteWriterView'
 
 /**
  * 笔记编辑器（复习笔记 / 学习笔记共用）：洛谷题解式排版体验 ——
@@ -37,13 +38,30 @@ import { uploadImage } from '../api'
 interface NoteEditorProps {
   value: string
   onChange: (value: string) => void
-  /** 编辑区高度（px），预览面板同高 */
+  /** 编辑区高度（px），预览面板同高；fill=true 时忽略，改为撑满父容器 */
   height?: number
   placeholder?: string
   maxLength?: number
   /** 模板学习笔记的预览区复用笔记阅读字号，不改变编辑器和工具栏。 */
   readingZoom?: boolean
+  /** 受控的编辑模式（全屏写作要把「分栏」持久化，由外层持有）；省略则组件自管 */
+  mode?: NoteWriterMode
+  /** 模式变化回调：受控时外层据此落盘视图快照 */
+  onModeChange?: (mode: NoteWriterMode) => void
+  /** 撑满父容器高度（全屏三栏写作），父元素需有确定高度 */
+  fill?: boolean
+  /** 隐藏工具栏右侧的「编辑 / 分栏 / 预览」分段控件（全屏三栏里预览是独立一栏） */
+  hideModeSwitch?: boolean
+  /** 可选的编辑模式（窄屏卡片态没有「分栏」这一档）；省略则三档全给 */
+  availableModes?: readonly NoteWriterMode[]
 }
+
+/** 工具栏分段控件的三档；具体给哪几档由 availableModes 决定（窄屏没有「分栏」） */
+const MODE_OPTIONS: Array<{ label: string; value: NoteWriterMode }> = [
+  { label: '编辑', value: 'edit' },
+  { label: '分栏', value: 'split' },
+  { label: '预览', value: 'preview' },
+]
 
 /** 服务端 /api/uploads 的格式白名单（仅 PNG/JPEG/GIF/WebP） */
 const IMAGE_TYPE_EXT: Record<string, string> = {
@@ -81,11 +99,32 @@ function ToolButton({ title, onClick, children }: { title: string; onClick: () =
   )
 }
 
-export default function NoteEditor({ value, onChange, height = 400, placeholder, maxLength = 20000, readingZoom = false }: NoteEditorProps) {
+export default function NoteEditor({
+  value,
+  onChange,
+  height = 400,
+  placeholder,
+  maxLength = 20000,
+  readingZoom = false,
+  mode: controlledMode,
+  onModeChange,
+  fill = false,
+  hideModeSwitch = false,
+  availableModes,
+}: NoteEditorProps) {
   const { message } = AntdApp.useApp()
   const viewRef = useRef<EditorView | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const [mode, setMode] = useState<'edit' | 'split' | 'preview'>('split')
+  const [innerMode, setInnerMode] = useState<NoteWriterMode>('split')
+  // 受控优先：全屏写作把模式交给外层持久化，卡片态沿用组件自管（与改动前行为一致）
+  const mode = controlledMode ?? innerMode
+  const setMode = useCallback(
+    (next: NoteWriterMode) => {
+      if (controlledMode === undefined) setInnerMode(next)
+      onModeChange?.(next)
+    },
+    [controlledMode, onModeChange],
+  )
 
   // 受控 value/onChange 的实时引用：上传是异步的，完成时编辑器可能已卸载（切预览/关弹窗），
   // 占位符替换必须能落到父级 value 上，不能只依赖可能已销毁的 CodeMirror 视图。
@@ -270,8 +309,11 @@ export default function NoteEditor({ value, onChange, height = 400, placeholder,
     [uploadAndInsert],
   )
 
+  /** 正文面板高度：fill 时交给 CSS（父级已确定高度），否则沿用固定像素 */
+  const paneStyle = fill ? undefined : { height }
+
   return (
-    <div className="note-editor">
+    <div className={`note-editor${fill ? ' is-fill' : ''}`}>
       <div className="note-editor-toolbar">
         <ToolButton title="一级标题" onClick={() => linePrefix('# ')}>
           <span className="note-tool-glyph">H1</span>
@@ -331,16 +373,14 @@ export default function NoteEditor({ value, onChange, height = 400, placeholder,
         />
         <span className="note-editor-spacer" />
         {readingZoom && <ZoomControl kind="note" />}
-        <Segmented
-          size="small"
-          value={mode}
-          onChange={(v) => setMode(v as 'edit' | 'split' | 'preview')}
-          options={[
-            { label: '编辑', value: 'edit' },
-            { label: '分栏', value: 'split' },
-            { label: '预览', value: 'preview' },
-          ]}
-        />
+        {!hideModeSwitch && (
+          <Segmented
+            size="small"
+            value={mode}
+            onChange={(v) => setMode(v as NoteWriterMode)}
+            options={MODE_OPTIONS.filter((option) => !availableModes || availableModes.includes(option.value))}
+          />
+        )}
       </div>
       {mode !== 'preview' ? (
         <div className="note-editor-body">
@@ -350,6 +390,7 @@ export default function NoteEditor({ value, onChange, height = 400, placeholder,
               value={value}
               onChange={onChange}
               height={height}
+              fill={fill}
               placeholder={placeholder}
               maxLength={maxLength}
               onCreateEditor={(view) => {
@@ -359,13 +400,13 @@ export default function NoteEditor({ value, onChange, height = 400, placeholder,
             />
           </div>
           {mode === 'split' && (
-            <div className="note-editor-preview" data-note-zoom={readingZoom ? true : undefined} style={{ height }}>
+            <div className="note-editor-preview" data-note-zoom={readingZoom ? true : undefined} style={paneStyle}>
               <Markdown text={value} />
             </div>
           )}
         </div>
       ) : (
-        <div className="note-editor-preview note-editor-preview-full" data-note-zoom={readingZoom ? true : undefined} style={{ height }}>
+        <div className="note-editor-preview note-editor-preview-full" data-note-zoom={readingZoom ? true : undefined} style={paneStyle}>
           <Markdown text={value} />
         </div>
       )}

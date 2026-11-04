@@ -8,7 +8,7 @@ import PageSkeleton from '../components/PageSkeleton'
 import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
 import PlatformTag from '../components/PlatformTag'
-import NoteEditor from '../components/NoteEditor'
+import NoteWriterModal from '../components/NoteWriterModal'
 import NoteCardButton from '../components/NoteCardButton'
 import ReviewHistoryDrawer from '../components/ReviewHistoryDrawer'
 import { difficultyColor, platformName } from '../ui'
@@ -31,6 +31,8 @@ export default function Reviews() {
   const abortRef = useRef<AbortController | null>(null)
   const [editing, setEditing] = useState<ReviewItem | null>(null)
   const [noteDraft, setNoteDraft] = useState('')
+  /** 笔记保存中：写作弹窗按钮进 loading，期间不允许关闭（避免半截内容落盘） */
+  const [savingNote, setSavingNote] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
   const [urlDraft, setUrlDraft] = useState('')
   const [titleDraft, setTitleDraft] = useState('')
@@ -77,7 +79,8 @@ export default function Reviews() {
   }
 
   const saveNote = async () => {
-    if (!editing) return
+    if (!editing || savingNote) return
+    setSavingNote(true)
     try {
       await patch(`/api/reviews/${editing.id}`, { note: noteDraft })
       message.success('笔记已保存')
@@ -85,6 +88,8 @@ export default function Reviews() {
       load(filter)
     } catch (e) {
       message.error((e as Error).message)
+    } finally {
+      setSavingNote(false)
     }
   }
 
@@ -305,27 +310,49 @@ export default function Reviews() {
         <p className="muted-note">只添加复习题，不生成提交或 AC 记录。新题不会自动抓取题面；加入后可在全部队列中查看。</p>
       </Modal>
 
-      <Modal
-        title={`复习笔记 · ${editing?.problemKey ?? ''}`}
-        open={editing !== null}
-        onCancel={() => setEditing(null)}
-        onOk={saveNote}
-        okText="保存"
-        cancelText="取消"
-        width={880}
-      >
-        {editing && (
-          /* key 换条目时重挂编辑器：预览模式等界面状态回到默认，光标清零 */
-          <NoteEditor
-            key={editing.id}
-            value={noteDraft}
-            onChange={setNoteDraft}
-            height={420}
-            maxLength={20000}
-            placeholder="关键观察、易错点、下次复习先看什么……（Markdown 语法，可直接粘贴 / 拖入截图）"
-          />
-        )}
-      </Modal>
+      {/* 复习笔记写作：与模板库「全屏三栏写作」同一套外壳（issue #52 后续反馈）。
+          key 换条目时重挂：草稿与编辑器状态跟着条目走，不会串到下一道题 */}
+      {editing && (
+        <NoteWriterModal
+          key={editing.id}
+          kind="review"
+          subject={`[${editing.problemKey}] ${editing.title}`}
+          value={noteDraft}
+          onChange={setNoteDraft}
+          saving={savingNote}
+          onSave={saveNote}
+          onClose={() => setEditing(null)}
+          maxLength={20000}
+          placeholder="关键观察、易错点、下次复习先看什么……（Markdown 语法，可直接粘贴 / 拖入截图）"
+          meta={(
+            <>
+              <span>{platformName(editing.platform)}</span>
+              {editing.difficulty != null && <span>难度 {editing.difficulty}</span>}
+              <span>{dueText(editing).text}</span>
+              <span>间隔 {editing.intervalDays} 天 · 第 {editing.stage + 1} 档</span>
+              {editing.reviewCount > 0 && <span>已复习 {editing.reviewCount} 次</span>}
+              {editing.tags.length > 0 && <span>{editing.tags.slice(0, 4).join(' / ')}</span>}
+            </>
+          )}
+          context={(
+            <div className="note-writer-context">
+              <p className="note-writer-context-lead">
+                这道题下次到期 <b>{editing.nextDueOn}</b>
+                {editing.lastReviewedAt ? `，上次复习 ${dayjs(editing.lastReviewedAt).format('YYYY-MM-DD')}` : '，还没有复习记录'}
+                。
+              </p>
+              <ul className="note-writer-side-tips">
+                <li>先写「关键观察」：一句话说清这题为什么想到这个做法。</li>
+                <li>再写「易错点」：上次错在哪、边界条件是什么，下次复习先看这段。</li>
+                <li>代码块用三反引号 cpp 包裹，预览里会高亮；截图直接粘贴上传。</li>
+              </ul>
+              <p className="note-writer-context-foot">
+                反馈节奏：困难 → 退回两档；掌握 → 进入下一档间隔（3/7/14/30/60/120/240/480 天）；轻松 → 跳进两档。
+              </p>
+            </div>
+          )}
+        />
+      )}
     </div>
   )
 }
