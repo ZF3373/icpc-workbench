@@ -6270,12 +6270,12 @@ html.app-hidden *::after {
   flex-shrink: 0;
 }
 
-/* 三栏：写作 / 实时预览 / 上下文。列宽比例的真源在 noteWriterView.NOTE_WRITER_COLUMNS，
-   这里保持一致（改动需同步单测里的期望值）。 */
+/* 三栏：实时预览 / 写作上下文 / MD 写作 —— 写作区在最右侧（反馈：右手边写更顺手）。
+   列宽比例的真源在 noteWriterView.NOTE_WRITER_COLUMNS，单测会比对这里，两处不会漂移。 */
 .note-writer-grid {
   flex: 1 1 auto;
   display: grid;
-  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 1.25fr);
   gap: 12px;
   min-height: 0;
 }
@@ -6476,7 +6476,7 @@ html.app-hidden *::after {
 
 @media (max-width: 1180px) {
   .note-writer-grid {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.85fr) minmax(0, 1.2fr);
   }
 }
 
@@ -6489,6 +6489,17 @@ html.app-hidden *::after {
 
   .note-writer-pane {
     min-height: 300px;
+  }
+
+  /* 堆叠成单列后写作区排最前：窄屏下先落到能打字的地方，
+     再往下滚才是预览与上下文（视觉顺序与 DOM 顺序在这里刻意不一致，靠 order 表达）。
+     此时 01/02/03 的编号会变成 03→01→02，反而误导，单列下直接不显示编号。 */
+  .note-writer-pane.is-writer {
+    order: -1;
+  }
+
+  .note-writer-pane-index {
+    display: none;
   }
 
   .note-writer-preview-scroll {

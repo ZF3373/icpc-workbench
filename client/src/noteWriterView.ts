@@ -70,8 +70,12 @@ export function noteWriterWidth(fullscreen: boolean): number | string {
   return fullscreen ? 'var(--app-viewport-width)' : 760
 }
 
-/** 全屏三栏里「写作区」的列宽比例（说明 / 实时预览 / 代码），单测锁住别写成固定像素 */
-export const NOTE_WRITER_COLUMNS = ['minmax(0, 0.95fr)', 'minmax(0, 1.25fr)', 'minmax(0, 1fr)'] as const
+/**
+ * 全屏三栏的列宽比例，顺序即**视觉顺序**：实时预览 / 写作上下文 / MD 写作。
+ * 写作区放在最右侧（反馈：右手边写、左边看渲染结果更顺手），并且给到最宽的一列。
+ * 单测会拿这份顺序去比对 index.css 的 .note-writer-grid，两处不会漂移。
+ */
+export const NOTE_WRITER_COLUMNS = ['minmax(0, 1fr)', 'minmax(0, 0.9fr)', 'minmax(0, 1.25fr)'] as const
 /**
  * 字数统计：剥掉空白后的字符数（中文按字、英文按字母，跟「写了多少内容」的直觉一致）。
  * 空格与换行不计入，避免「敲了一堆空行」被当成写了很多。

@@ -1,7 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   DEFAULT_NOTE_WRITER_VIEW,
+  NOTE_WRITER_COLUMNS,
   NOTE_WRITER_MODES,
   isNoteWriterMode,
   noteCharCount,
@@ -74,4 +78,24 @@ test('noteLineCount: 空文本算 0 行，其余按换行计', () => {
   assert.equal(noteLineCount('一行'), 1)
   assert.equal(noteLineCount('一行\n两行'), 2)
   assert.equal(noteLineCount('一行\r\n两行'), 2)
+})
+
+test('NOTE_WRITER_COLUMNS: 写作区在最右（顺序即视觉顺序），且给到最宽的一列', () => {
+  // 反馈：右手边写更顺手 —— 顺序必须是「预览 / 上下文 / 写作」
+  assert.equal(NOTE_WRITER_COLUMNS.length, 3)
+  const writer = NOTE_WRITER_COLUMNS[2]
+  const ratio = (value: string) => Number(/\*?\s*([\d.]+)fr/.exec(value)?.[1] ?? 0)
+  assert.ok(ratio(writer) > ratio(NOTE_WRITER_COLUMNS[0]), '写作区应比预览列宽')
+  assert.ok(ratio(writer) > ratio(NOTE_WRITER_COLUMNS[1]), '写作区应比上下文列宽')
+})
+
+test('index.css 的 .note-writer-grid 列顺序与 NOTE_WRITER_COLUMNS 一致（两处不漂移）', () => {
+  const cssPath = resolve(dirname(fileURLToPath(import.meta.url)), '../src/index.css')
+  const css = readFileSync(cssPath, 'utf8')
+  // 只取基础规则（第一条），媒体查询里的收窄档位单独存在、不参与顺序比对
+  const start = css.indexOf('.note-writer-grid {')
+  assert.ok(start > 0, 'index.css 里找不到 .note-writer-grid')
+  const block = css.slice(start, css.indexOf('}', start))
+  const declared = /grid-template-columns:\s*([^;]+);/.exec(block)?.[1]?.trim()
+  assert.equal(declared, NOTE_WRITER_COLUMNS.join(' '))
 })

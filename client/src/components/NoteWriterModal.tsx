@@ -5,8 +5,9 @@
  *
  * 两种形态：
  *   - 卡片态（默认）：760px 定宽，正文吃满一屏，页脚常驻「取消 / 保存」；
- *   - 全屏三栏（沉浸写作）：铺满整个应用窗口，隐藏标题栏，左中右三栏
- *     「Markdown 写作 / 实时预览 / 视图与操作」，Esc 分两层退出。
+ *   - 全屏三栏（沉浸写作）：铺满整个应用窗口，隐藏标题栏，三栏从左到右依次是
+ *     「实时预览 / 写作上下文 / MD 写作」—— 写作区在最右侧，右手边写、左边看渲染结果。
+ *     Esc 分两层退出。
  * 两种形态用的是两套排版（卡片态一栏、全屏态三栏），切换时 NoteEditor 会重新挂载；
  * 但正文由外层受控（value/onChange），所以未保存的内容不会丢 —— 只是光标归位、
  * 撤销栈清空，与改动前「切到预览再切回来」的表现一致。
@@ -232,44 +233,23 @@ export default function NoteWriterModal({
           </div>
 
           <div className="note-writer-grid">
-            <section className="note-writer-pane" aria-label={`${kindLabel} Markdown 写作区`}>
-              <div className="note-writer-pane-head">
-                <span className="note-writer-pane-title">
-                  <span className="note-writer-pane-index">01</span>
-                  MD 写作
-                </span>
-                <span className="note-writer-pane-meta">{charCount} 字</span>
-              </div>
-              <div className="note-writer-pane-body">
-                <NoteEditor
-                  value={value}
-                  onChange={onChange}
-                  mode={editorMode}
-                  hideModeSwitch
-                  fill
-                  maxLength={maxLength}
-                  placeholder={placeholder}
-                />
-              </div>
-            </section>
-
             <section className="note-writer-pane is-preview" aria-label={`${kindLabel}实时渲染预览`}>
               <div className="note-writer-pane-head">
                 <span className="note-writer-pane-title">
-                  <span className="note-writer-pane-index">02</span>
+                  <span className="note-writer-pane-index">01</span>
                   实时预览
                 </span>
                 <span className="note-writer-live"><i aria-hidden />跟随改动</span>
               </div>
               <div className="note-writer-preview-scroll" data-note-zoom>
-                {value.trim() ? <Markdown text={value} /> : <p className="note-writer-preview-empty">还没有内容 —— 左边写下的每一句都会实时渲染在这里。</p>}
+                {value.trim() ? <Markdown text={value} /> : <p className="note-writer-preview-empty">还没有内容 —— 右边写下的每一句都会实时渲染在这里。</p>}
               </div>
             </section>
 
             <aside className="note-writer-pane is-side" aria-label={`${kindLabel}写作上下文`}>
               <div className="note-writer-pane-head">
                 <span className="note-writer-pane-title">
-                  <span className="note-writer-pane-index">03</span>
+                  <span className="note-writer-pane-index">02</span>
                   写作上下文
                 </span>
               </div>
@@ -289,12 +269,33 @@ export default function NoteWriterModal({
                   <ul className="note-writer-side-tips">
                     <li>Ctrl / ⌘ + B 粗体、+ I 斜体；截图直接 Ctrl + V 粘贴上传。</li>
                     <li>Ctrl + 滚轮在正文或预览上可放大笔记文字（50%–200%）。</li>
-                    <li>Esc 第一下退出全屏、第二下关闭弹窗；未保存内容会随弹窗一起丢弃。</li>
+                    <li>写作区在最右侧；Esc 第一下退出全屏、第二下关闭弹窗，未保存内容会随弹窗一起丢弃。</li>
                     <li>形态与编辑模式会被记住，下次打开直接回到这个姿势。</li>
                   </ul>
                 </div>
               </div>
             </aside>
+
+            <section className="note-writer-pane is-writer" aria-label={`${kindLabel} Markdown 写作区`}>
+              <div className="note-writer-pane-head">
+                <span className="note-writer-pane-title">
+                  <span className="note-writer-pane-index">03</span>
+                  MD 写作
+                </span>
+                <span className="note-writer-pane-meta">{charCount} 字</span>
+              </div>
+              <div className="note-writer-pane-body">
+                <NoteEditor
+                  value={value}
+                  onChange={onChange}
+                  mode={editorMode}
+                  hideModeSwitch
+                  fill
+                  maxLength={maxLength}
+                  placeholder={placeholder}
+                />
+              </div>
+            </section>
           </div>
         </div>
       ) : (
@@ -313,7 +314,7 @@ export default function NoteWriterModal({
           />
           {/* 编辑模式的分段控件在 NoteEditor 工具栏里（受控），这里只补一句去全屏的指引 */}
           <p className="note-writer-card-hint">
-            需要更大的写作面？点左下角「全屏写作」——三栏并排：左写作、中实时预览、右上下文。
+            需要更大的写作面？点左下角「全屏写作」——三栏并排：左实时预览、中上下文、右写作。
           </p>
         </div>
       )}
