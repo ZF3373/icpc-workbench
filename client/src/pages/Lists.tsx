@@ -48,7 +48,7 @@ import { difficultyColor } from '../ui'
 import { mergeSuggestedOrder } from '../listOrder'
 import { moveListCard, swapListCard } from '../listCardOrder'
 import { saveTextAsFile } from '../download'
-import { platformMeta } from '../../../shared/src/index.ts'
+import { VJUDGE_OJ_OF_PLATFORM, platformMeta } from '../../../shared/src/index.ts'
 
 /**
  * 题单整理（issue #4）：导入平台题单（粘贴文本自动识别题号/链接），
@@ -285,14 +285,15 @@ export default function Lists() {
       const platform = item.platform as PlatformId
       const label = `${platformMeta(platform).name} ${item.problem_key}`
       if (format === 'txt') return item.url ? `${label} ${item.url}` : label
-      let vjudgeId: string | null = null
-      if (platform === 'codeforces') {
-        vjudgeId = item.url?.includes('/gym/') ? `Gym-${item.problem_key}` : `CF-${item.problem_key}`
-      } else if (platform === 'luogu') vjudgeId = `Luogu-${item.problem_key}`
-      else if (platform === 'atcoder') vjudgeId = `AtCoder-${item.problem_key}`
-      else if (platform === 'nowcoder') vjudgeId = `nowcoder-${item.problem_key}`
-      else if (platform === 'qoj') vjudgeId = `QOJ-${item.problem_key}`
-      if (vjudgeId) return item.url ? `[problem:${vjudgeId}] ${item.url}` : `[problem:${vjudgeId}]`
+      // Virtual Judge 的 `[problem:OJ-题号]` 语法：OJ 字面量必须与 VJudge 线上写法一致
+      //（CodeForces / 洛谷 / 牛客 …），否则粘进 VJudge 认不出来。映射的唯一真源在
+      // shared 的 VJUDGE_OJ_OF_PLATFORM（此前这里各写一份，用的是 CF- / Luogu- / nowcoder-，
+      // 全是 VJudge 并不使用的写法）。
+      const oj = VJUDGE_OJ_OF_PLATFORM[platform]
+      if (oj) {
+        const vjudgeId = `${oj}-${item.problem_key}`
+        return item.url ? `[problem:${vjudgeId}] ${item.url}` : `[problem:${vjudgeId}]`
+      }
       return item.url ? `- [${label}](${item.url})` : `- ${label}`
     })
     const safeTitle = detail.title.replace(/[\\/:*?"<>|]/g, '-').trim() || `题单-${detail.id}`

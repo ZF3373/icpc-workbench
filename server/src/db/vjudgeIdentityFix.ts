@@ -1,32 +1,33 @@
 import type { Db } from './index.ts';
-import { vjudgeIdentity } from '../adapters/vjudgeIdentity.ts';
+import { splitVjudgeProblemSlug, vjudgeIdentity } from '../adapters/vjudgeIdentity.ts';
 import { normalizedKey } from '../import/tombstones.ts';
 
 /**
- * v0.13 数据修复：把历史 `platform = 'vjudge'` 的题目行改写成**原 OJ 身份**。
+ * v0.13 数据修复：把历史 `platform = 'vjudge'` 的题目行改写成**规范身份**。
  *
  * 为什么需要：VJudge 接入最初把记录落成 `vjudge/{OJ}-{题号}`，而「通过链接添加」走
  * `parseProblemList` 落成原 OJ 身份（`luogu/P1001`）—— 同一道题在库里是两行，
  * 同步来的 AC 在复习条目上永远不显示，统计里也各算一次（2026-10-30 review P1-4）。
  * 适配器已改为直接写原 OJ 身份，但**已落库的旧行不会自己变**，这里补一次迁移。
  *
- * 幂等：处理完就没有 vjudge 行了，下次启动是空操作（rows.length === 0 直接返回）。
+ * 幂等：处理完就没有需要改的 vjudge 行了，下次启动是空操作。
  * 必须可重入：中途失败回滚，下次重跑结果一致。
  *
- * 两种情形：
- * - 目标键不存在 → 原地改名（连同 url/标题与按题号存串的表一起改）
- * - 目标键已存在（用户先手动加过同一道题）→ 跨平台合并：引用迁到保留行，旧行删除
+ * 三种情形（口径统一交给 adapters/vjudgeIdentity.ts 的 vjudgeIdentity）：
+ * - 本应用**有**该 OJ 且目标键不存在 → 原地改名成原 OJ 身份（连同 url/标题与按题号存串的表）
+ * - 本应用**有**该 OJ 且目标键已存在（用户先手动加过同一道题）→ 跨平台合并：引用迁到保留行
+ * - 本应用**没有**该 OJ → 规范字面量（`HYSBZ-1000` / `黑暗爆炸-1000` → `BZOJ-1000`）并
+ *   对齐 VJudge 链接；**不删行**（VJudge 是这些题唯一的数据源）。旧实现对这些行原样不动，
+ *   于是同一个 OJ 的不同写法会长期各占一行。
  *
- * 映射不出来的（SPOJ / SGU 等未接入的 OJ）保持原样：适配器现在跳过它们，
- * 但历史行没有对应平台可迁，删掉就是丢用户数据。它们会由「平台不提供难度」
- * 那条终态规则接管，不再反复参与回填（见 difficultyBackfill 的 NO_DIFFICULTY_SOURCE）。
+ * 解析不出 OJ 的行（题号里没有 `-`，历史上不该存在）保持原样，只计入 skipped。
  */
 export interface VjudgeIdentityFixResult {
   /** 原地改名的行数（目标键不存在） */
   renamed: number;
   /** 并入已存在原 OJ 行的行数 */
   merged: number;
-  /** 映射不到的 OJ，保持原样 */
+  /** 解析不出 OJ、或规范身份与现状一致（无需改动）的行数 */
   skipped: number;
 }
 
@@ -42,14 +43,24 @@ export function fixVjudgeProblemIdentities(db: Db): VjudgeIdentityFixResult {
   db.exec('BEGIN');
   try {
     for (const row of rows) {
-      // 历史键有两种形态：`{OJ}-{题号}`（vjudge.ts 原始写法）。统一交给唯一映射表解析。
-      const sep = row.problem_key.indexOf('-');
-      if (sep <= 0) {
+      // 历史键形如 `{OJ}-{题号}`；OJ 与题号都可能带连字符（Z-Trening-1000 /
+      // Toph-make-it-big / OpenJ_NOI-CH0106-02），不能按第一个 '-' 硬切。
+      const parts = splitVjudgeProblemSlug(row.problem_key);
+      if (!parts) {
         result.skipped += 1;
         continue;
       }
-      const identity = vjudgeIdentity(row.problem_key.slice(0, sep), row.problem_key.slice(sep + 1));
+      const identity = vjudgeIdentity(parts.oj, parts.id);
       if (!identity) {
+        result.skipped += 1;
+        continue;
+      }
+      // 已经是规范身份（别名已归并过 / 键与链接都对齐）：空操作，别每轮重写一遍
+      if (
+        identity.platform === 'vjudge' &&
+        identity.problemKey === row.problem_key &&
+        row.url === identity.url
+      ) {
         result.skipped += 1;
         continue;
       }
@@ -89,8 +100,10 @@ function renameInPlace(
   // problemWritePolicy 的守卫是 excluded.title != problems.problem_key，标题停在旧题号
   // 会让后续真实标题能覆盖它（无害），但让库内标题与题号长期不一致（有害）。
   const title = row.title === fromKey ? to.problemKey : row.title;
-  // VJudge 的转发链接换成原站地址：转发链接在部分 OJ 上还要登录 VJudge 才跳得过去
-  const url = row.url && /vjudge\.net/.test(row.url) ? to.url : row.url;
+  // 链接对齐目标身份：本应用有该 OJ 时换成**原站**地址（转发链接在部分 OJ 上还要登录
+  // VJudge 才跳得过去）；本应用没有该 OJ 时换成规范字面量的 VJudge 链接（别名行原先
+  // 指向旧写法，与归并后的键不一致）。非 VJudge 链接（用户手填的）保持不动。
+  const url = row.url === null || /vjudge\.net/.test(row.url) ? to.url : row.url;
   // UNIQUE(platform, problem_key) 已由调用方确认无冲突
   db.prepare('UPDATE problems SET platform = ?, problem_key = ?, title = ?, url = ? WHERE id = ?').run(
     to.platform,

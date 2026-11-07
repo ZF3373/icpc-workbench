@@ -140,14 +140,84 @@ test('VJudge 同步与原 OJ 链接导入落到同一个身份（identity 一致
   } finally { db.close(); }
 });
 
-test('VJudge 未接入的原 OJ（SPOJ / SGU 等）不落库，避免幽灵题目', async () => {
+/**
+ * 本应用没有的 OJ（SPOJ / SGU / HDU / Toph …）**必须用 VJudge 数据落库**。
+ *
+ * 旧实现直接丢弃：VJudge 是这些 OJ 唯一可用的数据源，「丢弃」等于用户的 AC 永远进不了库
+ * （实测一次 status 采样里 HDU / SPOJ / Toph / CSES / EOlymp / UVA / CodeChef 全被丢掉）。
+ * 现在的口径是：有对应平台的映射回原 OJ（去重），没有的落 vjudge 身份（不丢数据）。
+ */
+test('VJudge 未接入的原 OJ 落 vjudge 身份，不丢提交', async () => {
   const adapter = createVjudgeAdapter(async () => Response.json({ data: [
     { runId: 1, time: timestamp, oj: 'SPOJ', probNum: 'TEST', status: 'Accepted', processing: false, userName: 'Fantasy____' },
     { runId: 2, time: timestamp, oj: 'SGU', probNum: '123', status: 'Accepted', processing: false, userName: 'Fantasy____' },
     { runId: 3, time: timestamp, oj: '洛谷', probNum: 'P1001', status: 'Accepted', processing: false, userName: 'Fantasy____' },
   ] }));
   const rows = await adapter.fetchUserSubmissions('Fantasy____');
-  assert.deepEqual(rows.map(r => r.externalId), ['3'], '只有映射得到的 OJ 才落库');
+  assert.deepEqual(rows.map(r => r.externalId), ['1', '2', '3'], '三条都要落库');
+  assert.deepEqual(
+    rows.map(r => `${r.problem.platform}:${r.problem.problemKey}`),
+    ['vjudge:SPOJ-TEST', 'vjudge:SGU-123', 'luogu:P1001'],
+    '有平台的映射回原 OJ，没有的落 vjudge 身份',
+  );
+  assert.equal(rows[0]!.problem.url, 'https://vjudge.net/problem/SPOJ-TEST', '这些题只有 VJudge 有地址');
+  assert.equal(rows[2]!.problem.url, 'https://www.luogu.com.cn/problem/P1001', '已接入 OJ 指回原站');
+});
+
+/**
+ * 去重：VJudge 上同一个 OJ 有多个字面量（HYSBZ / BZOJ / 黑暗爆炸；LibreOJ / LOJ；
+ * Aizu / AOJ）。按字面量原样落键会让同一道题在库里变成两三行 —— 别名必须归并到规范写法，
+ * 且**同一批里重复出现也只落一行**（写入层按 (platform, problem_key) upsert）。
+ */
+test('VJudge 未接入 OJ 的别名归并到规范字面量（同一道题不重复）', async () => {
+  const adapter = createVjudgeAdapter(async () => Response.json({ data: [
+    { runId: 1, time: timestamp, oj: 'LibreOJ', probNum: '102', status: 'Accepted', processing: false, userName: 'Fantasy____' },
+    { runId: 2, time: timestamp, oj: 'LOJ', probNum: '102', status: 'Wrong Answer', processing: false, userName: 'Fantasy____' },
+    { runId: 3, time: timestamp, oj: 'loj', probNum: '102', status: 'Accepted', processing: false, userName: 'Fantasy____' },
+    { runId: 4, time: timestamp, oj: 'UOJ', probNum: '21', status: 'Accepted', processing: false, userName: 'Fantasy____' },
+    { runId: 5, time: timestamp, oj: 'UniversalOJ', probNum: '21', status: 'Accepted', processing: false, userName: 'Fantasy____' },
+  ] }));
+  const rows = await adapter.fetchUserSubmissions('Fantasy____');
+  assert.deepEqual(
+    rows.map(r => r.problem.problemKey),
+    ['LibreOJ-102', 'LibreOJ-102', 'LibreOJ-102', 'UniversalOJ-21', 'UniversalOJ-21'],
+    '同一 OJ 的多种写法归一到同一个键',
+  );
+  assert.ok(rows.every(r => r.problem.platform === 'vjudge'));
+  assert.equal(rows[0]!.problem.url, 'https://vjudge.net/problem/LibreOJ-102');
+
+  // 落库后是**一行题目**（两条 AC 提交都指向它），统计里只算一道题
+  const db = createDb(':memory:');
+  try {
+    insertNormalized(db, 1, rows, { account: 'Fantasy____', sourcePlatform: 'vjudge' });
+    const probs = db.prepare("SELECT platform, problem_key FROM problems WHERE platform = 'vjudge' ORDER BY problem_key").all() as
+      Array<{ platform: string; problem_key: string }>;
+    assert.deepEqual(probs.map(p => p.problem_key), ['LibreOJ-102', 'UniversalOJ-21'], '别名不产生重复题目行');
+    const subs = (db.prepare('SELECT COUNT(*) AS n FROM submissions').get() as { n: number }).n;
+    assert.equal(subs, 5, '五条提交都保留（题目行去重，提交不去重）');
+    const stats = computeOverall(db, 1);
+    assert.equal(stats.solvedProblems, 2, '已解题目按题目身份去重');
+  } finally { db.close(); }
+});
+
+/** 未接入 OJ 的键与链接必须与「通过链接添加」一致，否则同题两行 */
+test('VJudge 未接入 OJ：同步与 URL 导入落到同一身份', async () => {
+  const adapter = createVjudgeAdapter(async () => Response.json({ data: [
+    { runId: 1, time: timestamp, oj: 'HDU', probNum: '1000', status: 'Accepted', processing: false, userName: 'Fantasy____' },
+    { runId: 2, time: timestamp, oj: 'OpenJ_NOI', probNum: 'CH0106-02', status: 'Accepted', processing: false, userName: 'Fantasy____' },
+  ] }));
+  const rows = await adapter.fetchUserSubmissions('Fantasy____');
+  const db = createDb(':memory:');
+  try {
+    for (const [i, url] of [
+      'https://vjudge.net/problem/HDU-1000',
+      'https://vjudge.net/problem/OpenJ_NOI-CH0106-02',
+    ].entries()) {
+      const imported = addReviewFromUrl(db, url);
+      assert.equal(imported.platform, rows[i]!.problem.platform, url);
+      assert.equal(imported.problemKey, rows[i]!.problem.problemKey, url);
+    }
+  } finally { db.close(); }
 });
 
 /**

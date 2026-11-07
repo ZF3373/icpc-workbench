@@ -64,6 +64,26 @@ export function platformMeta(id: PlatformId): PlatformMeta {
   return m;
 }
 
+/**
+ * 本应用平台 → **VJudge 上的 OJ 字面量**（题单导出为 Virtual Judge Markdown 用）。
+ *
+ * 唯一真源放这里而不是各端各写一份：客户端此前用的是 `CF-` / `Luogu-` / `nowcoder-`，
+ * 而 VJudge 线上实际写的是 `CodeForces` / `洛谷` / `牛客`（大小写与中文都不同）——
+ * 导出的题单粘到 VJudge 里认不出来。服务端 adapters/vjudgeIdentity.ts 的登记表是
+ * 这条映射的镜像（那边多了一层「本应用有没有这个 OJ」的判定）。
+ *
+ * 没有登记的平台返回 null（VJudge 上不存在，导出的 Markdown 回退成普通链接）。
+ */
+export const VJUDGE_OJ_OF_PLATFORM: Partial<Record<PlatformId, string>> = {
+  codeforces: 'CodeForces',
+  atcoder: 'AtCoder',
+  luogu: '洛谷',
+  nowcoder: '牛客',
+  jisuanke: '计蒜客',
+  daimayuan: '代码源',
+  qoj: 'QOJ',
+};
+
 // ---------- 刷题记录与题目（平台适配器输出统一结构） ----------
 
 export type Verdict =

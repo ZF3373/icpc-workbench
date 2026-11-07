@@ -39,16 +39,73 @@ test('parseProblemList: VJudge 转发链接映射回原始平台', () => {
     'https://vjudge.net/problem/洛谷-P1001',
     'https://vjudge.net/problem/AtCoder-abc300_a',
     'https://vjudge.net/problem/QOJ-9242', // QOJ → qoj / 9242
-    'https://vjudge.net/problem/SPOJ-TEST', // 不支持的 OJ → 跳过
+    'https://vjudge.net/problem/SPOJ-TEST', // 本应用没有的 OJ → vjudge 身份（不再丢弃）
   ].join('\n');
   const rows = parseProblemListText(raw);
-  assert.equal(rows.length, 5); // SPOJ 被跳过
+  assert.equal(rows.length, 6);
   assert.deepEqual(
     rows.map((r) => `${r.platform}:${r.problemKey}`),
-    ['codeforces:104821A', 'codeforces:1234A', 'luogu:P1001', 'atcoder:abc300_a', 'qoj:9242'],
+    ['codeforces:104821A', 'codeforces:1234A', 'luogu:P1001', 'atcoder:abc300_a', 'qoj:9242', 'vjudge:SPOJ-TEST'],
   );
-  // 验证 URL 被正确还原
-  assert.match(rows[0]!.url ?? '', /vjudge\.net\/problem\/Gym-104821A/);
+  // 已接入的 OJ：地址指回**原站**（与同步侧同口径，不再留转发链接）
+  assert.equal(rows[0]!.url, 'https://codeforces.com/gym/104821/problem/A');
+  assert.equal(rows[2]!.url, 'https://www.luogu.com.cn/problem/P1001');
+  // 本应用没有的 OJ：只有 VJudge 有这道题，链接保留 VJudge
+  assert.equal(rows[5]!.url, 'https://vjudge.net/problem/SPOJ-TEST');
+});
+
+test('parseProblemList: VJudge 未接入 OJ 的别名归并到同一身份（去重）', () => {
+  const rows = parseProblemListText(
+    [
+      'https://vjudge.net/problem/LibreOJ-102',
+      'https://vjudge.net/problem/LOJ-102', // 同一个 OJ 的简写 → 归一
+      'https://vjudge.net/problem/UOJ-21',
+      'https://vjudge.net/problem/UniversalOJ-21', // 同上
+      'https://vjudge.net/problem/CodeChef-FLOW013',
+      'https://vjudge.net/problem/codechef-FLOW013', // OJ 字面量大小写混排 → 归一
+    ].join('\n'),
+  );
+  assert.deepEqual(
+    rows.map((r) => `${r.platform}:${r.problemKey}`),
+    ['vjudge:LibreOJ-102', 'vjudge:UniversalOJ-21', 'vjudge:CodeChef-FLOW013'],
+    '同一 OJ 的不同写法只能落一行',
+  );
+  assert.equal(rows[0]!.url, 'https://vjudge.net/problem/LibreOJ-102');
+});
+
+/**
+ * BZOJ 一系在 VJudge 上是**三个独立 OJ**（HYSBZ / 黑暗爆炸 / BZOJ，官方列表各占一项，
+ * 分别指向 lydsy.com / darkbzoj.cc / new.bzoj.org）。题号大概率同源，但「大概率」不足以
+ * 合并：一旦分叉，合并会把两道不同的题静默算成一道。这里锁住「不猜」的口径。
+ */
+test('parseProblemList: VJudge 上的独立 OJ 不被猜测性合并', () => {
+  const rows = parseProblemListText(
+    [
+      'https://vjudge.net/problem/HYSBZ-1000',
+      'https://vjudge.net/problem/BZOJ-1000',
+      'https://vjudge.net/problem/黑暗爆炸-1000',
+    ].join('\n'),
+  );
+  assert.deepEqual(
+    rows.map((r) => `${r.platform}:${r.problemKey}`),
+    ['vjudge:HYSBZ-1000', 'vjudge:BZOJ-1000', 'vjudge:黑暗爆炸-1000'],
+  );
+});
+
+test('parseProblemList: VJudge 带连字符的 OJ 与题号不被切断', () => {
+  // Z-Trening / OpenJ_NOI 的 OJ 名带连字符或下划线，Toph 的题号带连字符；
+  // 旧实现的正则只认 [A-Za-z0-9_]+ 题号，这些行要么识别失败要么被截成半截键。
+  const rows = parseProblemListText(
+    [
+      'https://vjudge.net/problem/Z-Trening-1000',
+      'https://vjudge.net/problem/OpenJ_NOI-CH0106-02',
+      'https://vjudge.net/problem/Toph-make-it-big',
+    ].join('\n'),
+  );
+  assert.deepEqual(
+    rows.map((r) => `${r.platform}:${r.problemKey}`),
+    ['vjudge:Z-Trening-1000', 'vjudge:OpenJ_NOI-CH0106-02', 'vjudge:Toph-make-it-big'],
+  );
 });
 
 test('parseProblemList: VJudge 真实 OJ 字面量（CodeForces）与 URL 编码往返', () => {
@@ -58,15 +115,17 @@ test('parseProblemList: VJudge 真实 OJ 字面量（CodeForces）与 URL 编码
     'https://vjudge.net/problem/CodeForces-1234A',
     'https://vjudge.net/problem/CodeForces-104821A', // Gym 题在 VJudge 里也可能标 CodeForces
     'https://vjudge.net/problem/codeforces-1234B', // 大小写混排
-    'https://vjudge.net/problem/SGU-123', // 未接入的 OJ → 跳过
+    'https://vjudge.net/problem/SGU-123', // 本应用没有的 OJ → vjudge 身份
     'https://vjudge.net/problem/CodeChef-ABC123', // 同上
   ].join('\n');
   const rows = parseProblemListText(raw);
-  assert.equal(rows.length, 3);
+  assert.equal(rows.length, 5);
   assert.deepEqual(
     rows.map((r) => `${r.platform}:${r.problemKey}`),
-    ['codeforces:1234A', 'codeforces:104821A', 'codeforces:1234B'],
+    ['codeforces:1234A', 'codeforces:104821A', 'codeforces:1234B', 'vjudge:SGU-123', 'vjudge:CodeChef-ABC123'],
   );
+  // 大小写混排的 OJ 归一到规范字面量（VJudge 官方写法），否则同一道题会多一行
+  assert.equal(rows[4]!.problemKey, 'CodeChef-ABC123');
 });
 
 test('parseProblemList: 应用自己生成的 VJudge 编码链接能被自己解析（往返一致）', () => {

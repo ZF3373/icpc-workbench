@@ -55,7 +55,7 @@ test('迁移：目标键已存在时跨平台合并，引用迁到保留行', ()
   } finally { db.close(); }
 });
 
-test('迁移：未接入的原 OJ 保持原样（不丢数据）', () => {
+test('迁移：未接入的原 OJ 保持 vjudge 身份（不丢数据、已是规范写法即空操作）', () => {
   const db = createDb(':memory:');
   try {
     const id = seedProblem(db, 'vjudge', 'SPOJ-TEST', 'SPOJ-TEST', 'https://vjudge.net/problem/SPOJ-TEST');
@@ -67,16 +67,57 @@ test('迁移：未接入的原 OJ 保持原样（不丢数据）', () => {
   } finally { db.close(); }
 });
 
+/**
+ * 未接入 OJ 的**别名归并**：旧实现对这类行一律原样不动，于是 HYSBZ-1000 / 黑暗爆炸-1000
+ * 会与 BZOJ-1000 长期各占一行（同一道题在统计里算三次）。
+ */
+test('迁移：未接入 OJ 的别名行归并到规范字面量，提交跟着走', () => {
+  const db = createDb(':memory:');
+  try {
+    const keepId = seedProblem(db, 'vjudge', 'LibreOJ-102', 'LibreOJ-102', 'https://vjudge.net/problem/LibreOJ-102');
+    const aliasId = seedProblem(db, 'vjudge', 'LOJ-102', 'LOJ-102', 'https://vjudge.net/problem/LOJ-102');
+    const lowerId = seedProblem(db, 'vjudge', 'libreoj-102', 'libreoj-102', null);
+    db.prepare(`INSERT INTO submissions (user_id, platform, account, problem_id, verdict, submitted_at, external_id)
+      VALUES (?, 'vjudge', 'Fantasy', ?, 'AC', '2026-08-01T00:00:00Z', 'run-1')`).run(DEFAULT_USER_ID, aliasId);
+    db.prepare(`INSERT INTO submissions (user_id, platform, account, problem_id, verdict, submitted_at, external_id)
+      VALUES (?, 'vjudge', 'Fantasy', ?, 'WA', '2026-08-02T00:00:00Z', 'run-2')`).run(DEFAULT_USER_ID, lowerId);
+
+    // 保留行本身已是规范写法（键 + 链接都对）→ 空操作，计入 skipped
+    const result = fixVjudgeProblemIdentities(db);
+    assert.deepEqual(result, { renamed: 0, merged: 2, skipped: 1 });
+
+    const rows = db.prepare("SELECT id, problem_key FROM problems WHERE platform = 'vjudge'").all() as
+      Array<{ id: number; problem_key: string }>;
+    assert.deepEqual(rows.map(r => r.problem_key), ['LibreOJ-102'], '别名行并入规范行');
+    const subs = db.prepare('SELECT problem_id FROM submissions ORDER BY external_id').all() as Array<{ problem_id: number }>;
+    assert.deepEqual(subs.map(s => s.problem_id), [keepId, keepId], '提交迁到保留行');
+  } finally { db.close(); }
+});
+
+test('迁移：未接入 OJ 的行补齐规范链接（键已规范、链接还是旧写法）', () => {
+  const db = createDb(':memory:');
+  try {
+    // 历史行可能键规范但链接缺/脏（例如早期 problemUrl 编码口径不同）
+    const id = seedProblem(db, 'vjudge', 'Toph-make-it-big', 'Toph-make-it-big', null);
+    const result = fixVjudgeProblemIdentities(db);
+    assert.deepEqual(result, { renamed: 1, merged: 0, skipped: 0 });
+    const row = db.prepare('SELECT url FROM problems WHERE id = ?').get(id) as { url: string };
+    assert.equal(row.url, 'https://vjudge.net/problem/Toph-make-it-big');
+  } finally { db.close(); }
+});
+
 test('迁移：幂等 —— 第二次运行是空操作', () => {
   const db = createDb(':memory:');
   try {
     seedProblem(db, 'vjudge', '洛谷-P1001', '洛谷-P1001');
     seedProblem(db, 'vjudge', 'AtCoder-abc300_a', 'AtCoder-abc300_a');
+    // 未接入 OJ 的别名行同样要收敛，且第二次运行不得再动它（否则每次启动都重写一遍）
+    seedProblem(db, 'vjudge', 'LOJ-102', 'LOJ-102', 'https://vjudge.net/problem/LOJ-102');
     const first = fixVjudgeProblemIdentities(db);
-    assert.equal(first.renamed, 2);
+    assert.equal(first.renamed, 3);
     const second = fixVjudgeProblemIdentities(db);
-    assert.deepEqual(second, { renamed: 0, merged: 0, skipped: 0 }, '没有 vjudge 行了 → 空操作');
-    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM problems').get() as { n: number }).n, 2, '行数不变');
+    assert.deepEqual(second, { renamed: 0, merged: 0, skipped: 1 }, '只剩已规范的那行，且是空操作');
+    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM problems').get() as { n: number }).n, 3, '行数不变');
   } finally { db.close(); }
 });
 

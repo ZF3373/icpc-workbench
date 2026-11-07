@@ -1,5 +1,5 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
-import { normalizeOjProblemKey, vjudgeOjPlatform } from '../adapters/vjudgeIdentity.ts';
+import { splitVjudgeProblemSlug, vjudgeIdentity } from '../adapters/vjudgeIdentity.ts';
 
 /**
  * 题单文本解析（issue #4 题单整理）：用户从平台题单页复制的题目列表粘贴进来，
@@ -65,36 +65,39 @@ const URL_PATTERNS: UrlPattern[] = [
 
 /**
  * VJudge 转发链接：vjudge.net/problem/{OJ}-{ID}
- * 将 VJudge 的 OJ 标识映射回应用支持的平台：
- * - CodeForces-1234A / CF-1234A → codeforces / 1234A
- * - Gym-104821A → codeforces / 104821A
- * - 洛谷-P1001 → luogu / P1001
- * - AtCoder-abc300_a → atcoder / abc300_a
- * - QOJ-9242 → qoj / 9242
- * 映射表唯一真源是 adapters/vjudgeIdentity.ts（与 VJudge 同步适配器共用，
- * 避免「同步落一种身份、URL 导入落另一种身份」）。
- * 其他不支持的 OJ（如 SPOJ 等）返回 null 跳过。
+ *
+ * 身份口径唯一真源是 adapters/vjudgeIdentity.ts 的 vjudgeIdentity（与 VJudge 同步适配器共用，
+ * 避免「同步落一种身份、URL 导入落另一种身份」）：
+ * - 本应用**有**的 OJ 映射回原平台：CodeForces-1234A → codeforces/1234A、
+ *   Gym-104821A → codeforces/104821A、洛谷-P1001 → luogu/P1001、
+ *   AtCoder-abc300_a → atcoder/abc300_a、QOJ-9242 → qoj/9242
+ * - 本应用**没有**的 OJ（SPOJ / HDU / Toph / CSES …）→ vjudge/{规范 OJ}-{题号}，
+ *   用 VJudge 的链接。旧实现在这里返回 null 把行丢掉，于是「用户从 VJudge 复制的题单里
+ *   一半的题直接消失」，而这些题恰恰只有 VJudge 有数据。
  */
 function parseVJudgeUrl(line: string): { platform: PlatformId; problemKey: string; url?: string; rest: string } | null {
-  // 先解码再匹配：vjudge.ts 的 problemUrl 用 encodeURIComponent 生成链接，
+  // 先解码再匹配：vjudgeProblemUrl 用 encodeURIComponent 生成链接，
   // 洛谷键会写成 problem/%E6%B4%9B%E8%B0%B7-P1001，正则若只认原字符，
   // 「应用自己生成的链接粘回『通过链接添加』」就会识别失败（往返断裂）。
   let decoded = line;
   try { decoded = decodeURIComponent(line); } catch { /* 非法编码按原样匹配 */ }
-  // OJ 标识可为英文（CodeForces/Gym/AtCoder）或中文（洛谷/牛客）；ID 为字母数字下划线
-  const m = decoded.match(/vjudge\.net\/problem\/([A-Za-z\u4e00-\u9fff]+)-([A-Za-z0-9_]+)/);
+  // OJ 标识与题号都可能带连字符（Z-Trening-1000 / Toph-make-it-big /
+  // OpenJ_NOI-CH0106-02），故整体取路径段交给 splitVjudgeProblemSlug 按登记表最长前缀拆解
+  const m = decoded.match(/vjudge\.net\/problem\/([^\s/?#"'<>]+)/);
   if (!m) return null;
-  // 真实 oj 字面量见 vjudgeIdentity 的映射表（线上是 CodeForces / Gym / AtCoder …，
-  // 其中 CodeForces 是 VJudge 的实际写法，CF 是它并不使用的简写，两者都要认）
-  const platform = vjudgeOjPlatform(m[1]);
-  if (!platform) return null;
-  const problemKey = normalizeOjProblemKey(platform, m[2]);
-  if (!problemKey) return null;
-  // 还原完整 URL
-  const urlsInLine = [...line.matchAll(/https?:\/\/[^\s，,；;]+/g)].map((x) => x[0]);
-  const url = urlsInLine.find((u) => u.includes(m[0])) ?? `https://${m[0]}`;
+  const parts = splitVjudgeProblemSlug(m[1]);
+  if (!parts) return null;
+  const identity = vjudgeIdentity(parts.oj, parts.id);
+  if (!identity) return null;
+  // 地址一律取**身份自带的规范地址**，不用用户贴进来的原串：
+  // - 已接入的 OJ → 原站地址（同步落原站链接，导入若留 VJudge 转发链接，同一道题就有
+  //   两个地址，且转发链接在部分 OJ 上还要登录 VJudge 才跳得过去）；
+  // - 本应用没有的 OJ → 规范字面量的 VJudge 链接（用户贴的可能是简写
+  //   `LOJ-102`，落库键却是 `LibreOJ-102`，链接跟着键走才不会自相矛盾）。
+  // 同步侧（adapters/vjudge.ts）走的是同一个 identity，两侧地址因此天然一致。
+  const url = identity.url;
   // rest 同样移除完整 URL，避免 scheme/www. 残留成假标题
-  return { platform, problemKey, url, rest: line.replace(url, ' ').replace(m[0], ' ') };
+  return { platform: identity.platform, problemKey: identity.problemKey, url, rest: line.replace(url, ' ').replace(m[0], ' ') };
 }
 
 const CF_KEY_RE = /^(?:CF)?(\d{1,6}[A-Z][0-9]?)$/i;

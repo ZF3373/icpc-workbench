@@ -116,6 +116,11 @@ const NO_GAP_CACHE: ReadonlySet<PlatformId> = new Set<PlatformId>(['qoj']);
  *
  * 结果：按更新说明自述的规模（牛客 171 条在线编程 + VJudge 200 条），用户点一次「一键回填」
  * 会看到「牛客：失败 171 题；VJudge：失败 200 题」，而且每次都一样。
+ *
+ * 注意 vjudge 行的**来源变了**：旧实现下 vjudge 行只可能是历史遗留（同步已映射回原 OJ）；
+ * 现在「本应用没有的 OJ」会以 `vjudge/{OJ}-{题号}` 落库（见 adapters/vjudgeIdentity.ts），
+ * 这类行是常态而非遗留。它们同样没有难度来源 —— VJudge 不提供难度，原 OJ 又不在本应用里，
+ * 所以照样走这条终态规则，只是理由从「历史遗留」变成「题库未接入」。
  */
 const NO_DIFFICULTY_SOURCE: ReadonlySet<PlatformId> = new Set<PlatformId>(['vjudge']);
 
@@ -294,8 +299,9 @@ const FLOOR_MS = {
  *   故取 20000 让它们在**一轮**内全部收敛（整表已拉、分批只会让下一轮重下整表）。
  */
 const PLATFORM_LIMITS: Record<PlatformId, { delayMs: number; failLimit: number | null; maxPerRun: number }> = {
-  // VJudge 是转发站，本身不提供难度（要回原站查）；题在同步时已映射回原 OJ，
-  // 真正需要回填的是那些原 OJ 的行。这里的行只可能是历史遗留的 vjudge 键 ——
+  // VJudge 是转发站，本身不提供难度（要回原站查）；有对应平台的题在同步时已映射回原 OJ，
+  // 真正需要回填的是那些原 OJ 的行。仍留在 vjudge 名下的是**本应用没有的 OJ**
+  //（SPOJ / HDU / Toph / CSES …，见 adapters/vjudgeIdentity.ts）——它们没有题库、没有难度源，
   // 交给 hasDifficultySource 记终态，不进主链路。
   vjudge: { delayMs: 0, failLimit: null, maxPerRun: 0 },
   // 牛客：整表分页扫描（见 fetchNowcoderTable）→ 默认不逐题请求；

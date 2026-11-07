@@ -3,7 +3,7 @@ import { asHttpClient, type HttpInit } from './http.ts';
 import { pagedFetch } from './pagination.ts';
 import { recordsJson, recordTime } from './remoteRecords.ts';
 import { SyncError, type PlatformAdapter } from './types.ts';
-import { vjudgeIdentity } from './vjudgeIdentity.ts';
+import { vjudgeIdentity, vjudgeProblemUrl } from './vjudgeIdentity.ts';
 
 interface Row {
   runId: number; time: number; oj: string; probNum: string; status: string;
@@ -99,12 +99,13 @@ export function createVjudgeAdapter(fetchFn: HttpInit = fetch, pageTransport?: V
           const submittedAt = recordTime(row.time);
           const verdict = verdictOf(row.status);
           if (row.processing || !verdict || !submittedAt || !row.runId) return null;
-          // 映射回原 OJ：保留 vjudge 身份会让同一道题在库里变成两行
-          // （同步落 vjudge/洛谷-P1001、URL 导入落 luogu/P1001），
-          // 同步来的 AC 在复习条目上永远不显示，统计里也各算一次。
+          // 题目身份：本应用**有**的 OJ 映射回原 OJ（保留 vjudge 身份会让同一道题
+          // 在库里变成两行：同步落 vjudge/洛谷-P1001、URL 导入落 luogu/P1001，同步来的 AC
+          // 在复习条目上永远不显示、统计里各算一次）；本应用**没有**的 OJ（SPOJ / HDU /
+          // Toph / CSES …）落 vjudge 身份并用 VJudge 的链接与题号 —— VJudge 是这些 OJ
+          // 唯一可用的数据源，丢掉不等于没有，旧实现直接丢弃，用户的 AC 永远进不了库。
+          // 只有 oj / 题号本身缺失才跳过（那是真的没有身份，不是没有平台）。
           const identity = vjudgeIdentity(row.oj, row.probNum);
-          // 映射不了的原 OJ（SPOJ / POJ / SGU …）说明本应用没有对应题库：
-          // 落库只会造出永远补不上难度、也没有题面来源的幽灵题目，直接跳过。
           if (!identity) return null;
           return { externalId: String(row.runId), submittedAt, verdict, language: row.language,
             problem: { platform: identity.platform, problemKey: identity.problemKey,
@@ -112,8 +113,9 @@ export function createVjudgeAdapter(fetchFn: HttpInit = fetch, pageTransport?: V
         },
       });
     },
-    // 记录已映射回原 OJ，题号是**原站**题号；这里保留 VJudge 转发链接仅作兜底
-    // （调用方一般直接用行上存的 url，本方法只在缺 url 时兜底）。
-    problemUrl: ({ problemKey }) => `https://vjudge.net/problem/${encodeURIComponent(problemKey)}`,
+    // 只在**缺 url** 时兜底（调用方一般直接用行上存的 url）。落到这里的键可能是
+    // vjudge 身份（本应用没有该 OJ，题号形如 `SPOJ-INOUTEST`）也可能是原 OJ 题号
+    // （历史调用点），统一按 VJudge 转发链接拼——编码口径与 vjudgeIdentity 同一份。
+    problemUrl: ({ problemKey }) => vjudgeProblemUrl(String(problemKey)),
   };
 }

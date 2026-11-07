@@ -8,6 +8,7 @@
  * - 账号管理写操作：绑定/改名/删除账号、适配器开关
  * AI 对话（SSE 流式）也不代理——MCP tools 是请求/响应模型，流式语义不匹配。
  */
+import { PLATFORMS } from '../../../shared/src/index.ts';
 import {
   callApi,
   describeApiError,
@@ -36,8 +37,14 @@ export interface McpToolDef {
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>;
 }
 
-/** 平台标识（与 shared/PLATFORMS 对齐；字符串类型而非硬枚举——新平台接入不需要改这里） */
-const PLATFORM_IDS = 'codeforces / atcoder / luogu / nowcoder / leetcode / daimayuan / jisuanke / dashoj / qoj';
+/**
+ * 平台标识清单（工具描述里给 agent 看的枚举）。
+ *
+ * 从 shared/PLATFORMS 派生而不是手写：手写那份漏了 dashoj 与 vjudge，于是 agent 读到的
+ * 平台清单与真实可用平台不一致 —— 调 `sync_platform` 时按描述传 qoj 之外的平台会被
+ * 判成非法，或干脆不知道该传什么。派生后新平台接入自动跟随。
+ */
+const PLATFORM_IDS = PLATFORMS.map((p) => p.id).join(' / ');
 
 // ---------- 工具执行上下文：包一层「非 2xx 即抛 ToolError」的回环客户端 ----------
 
