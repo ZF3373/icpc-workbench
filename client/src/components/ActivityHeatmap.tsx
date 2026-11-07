@@ -2,8 +2,8 @@
  * 刷题热力图（GitHub contributions 风格）：
  * 周列 × 7 行格子，格子深浅 = 当天 AC 去重题数。分档阈值取非零日四分位数
  * （solveLevelThresholds），避免「每天 1~3 题」的集中分布挤在同一档；
- * 实格用 GitHub 同款四档绿色板（深/浅主题各一套），相邻档可分辨。
- * 格子尺寸随卡片宽度自适应（8~24px）尽量铺满，短范围整体居中。
+ * 实格四档绿色板见 heatmapColors.ts（深/浅主题各一套），相邻档可分辨。
+ * 格子尺寸随卡片宽度自适应（8~20px）尽量铺满，短范围整体居中。
  * 纯 CSS grid 实现，零新依赖。
  */
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
@@ -16,6 +16,7 @@ import { withScope } from '../accountScope'
 import { useTheme } from '../themeCore'
 import type { HeatmapResult } from '../types'
 import { buildHeatmapGrid, levelFor, solveLevelThresholds, type HeatmapCell } from '../heatmapGrid'
+import { heatmapPalette } from '../heatmapColors'
 
 const RANGES = [
   { label: '近3月', days: 90 },
@@ -32,26 +33,7 @@ const GAP = 3
 const CELL_MIN = 8
 const CELL_MAX = 20
 
-/**
- * 实格四档配色（浅→深）；空格用主题 colorBorderSecondary。
- *
- * 亮色主题走**低饱和灰绿**：极简扁平化下热力图是唯一保留的彩色图表，
- * 但饱和度压到与白底融为一体的程度（色相 150° 左右，明度阶梯均匀），
- * 让"哪几天在练"的密度信息比颜色本身更突出；暗色保持 GitHub 同款亮绿。
- */
-const LEVEL_COLORS = {
-  /**
-   * 亮色四档：低饱和灰绿，刻意**拉大深浅跨度**（明度从 0.92 一路压到 0.19），
-   * 让"每天练了多少"一眼可辨 —— 旧版四档都挤在浅灰绿区间里，几乎分不出来。
-   */
-  light: ['#cfe2d6', '#9dc4ad', '#5f9678', '#2f6b4f'],
-  /**
-   * 暗色四档：**霓虹绿**。深底上低饱和绿会糊成一团，所以改用高饱和、高亮度的
-   * 亮绿阶梯（明度 0.056 → 0.811，相邻档对比 ≥ 1.39:1，最亮档对卡片底 14.2:1）。
-   * 第一档刻意压到很暗，与空格（--heatmap-empty #26262b）明确分开。
-   */
-  dark: ['#166b46', '#22a866', '#45dd97', '#8bffc6'],
-} as const
+/* 四档配色与空格色统一由 heatmapColors.ts 提供（含可测的亮度/对比度口径） */
 
 function cellTitle(c: HeatmapCell): string {
   const wk = `周${WEEKDAY_NAMES[dayjs(c.date).day()]}`
@@ -122,11 +104,13 @@ export default function ActivityHeatmap({
   const radius = Math.max(3, Math.min(5, Math.round(cell / 5)))
   /**
    * 空格配色：必须比第一档绿**明显更淡/更暗**，否则"没练"和"练了一点"分不开。
-   * 走 --heatmap-empty 这个语义 Token 而不是 antd 的 colorFillQuaternary ——
-   * 后者在亮色下是 2% 黑，叠在白卡上几乎不可见，格子会像"掉了一块"。
+   * 用调色板自带的 empty 而不是 antd 的 colorFillQuaternary —— 后者在亮色下
+   * 是 2% 黑，叠在白卡上几乎不可见，格子会像"掉了一块"。
+   * 与 heatmapColors.ts 里四档同源，改色只需改那一处。
    */
-  const emptyColor = resolved === 'dark' ? '#26262b' : '#f0f0f2'
-  const filledColors = LEVEL_COLORS[resolved]
+  const palette = heatmapPalette(resolved)
+  const emptyColor = palette.empty
+  const filledColors = palette.levels
   const cellColor = (solved: number) =>
     solved <= 0 ? emptyColor : filledColors[levelFor(solved, thresholds) - 1]
 
