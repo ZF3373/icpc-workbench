@@ -2,6 +2,7 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { parseProblemListText } from '../problems/parseProblemList.ts';
 import { normalizedKey } from '../import/tombstones.ts';
+import { queueStateOf } from './queue.ts';
 import { dateAfterDays, firstReviewDelayDays } from './schedule.ts';
 import { localToday } from '../dates.ts';
 
@@ -41,13 +42,23 @@ export function addReviewFromUrl(db: Db, raw: unknown, title?: unknown) {
       db.prepare('DELETE FROM deleted_problems WHERE platform = ? AND normalized_key = ?')
         .run(parsed.platform, normalizedKey(parsed.problemKey));
     }
-    const existing = db.prepare('SELECT next_due_on FROM review_items WHERE user_id = ? AND problem_id = ?')
-      .get(DEFAULT_USER_ID, problem.id) as { next_due_on: string } | undefined;
-    const nextDueOn = existing?.next_due_on ?? dateAfterDays(localToday(), firstReviewDelayDays(problem.id));
+    // 复习条目按**题目身份**去重（不是按题目行）：同一道题可能有多行
+    //（codeforces/1000A 与洛谷镜像 luogu/CF1000A 共享 identity），按行查会各加一条，
+    // 今日训练里同一道题就出现两次、两条各自独立排期。口径见 reviews/queue.ts。
+    // 命中就复用那条的排期（本题行自己的条目优先，其次是同身份另一行的）——不新建，
+    // 否则同一道题会被排进队列两次，用户要复习两遍。
+    const queued = queueStateOf(db, DEFAULT_USER_ID, problem.id);
+    const itemId = queued.ownRowItemId ?? queued.itemId;
+    const existing = itemId === null
+      ? undefined
+      : db.prepare('SELECT next_due_on FROM review_items WHERE id = ?')
+        .get(itemId) as { next_due_on: string } | undefined;
+    const nextDueOn = existing?.next_due_on
+      ?? dateAfterDays(localToday(), firstReviewDelayDays(problem.id));
     if (!existing) db.prepare('INSERT INTO review_items (user_id, problem_id, next_due_on) VALUES (?, ?, ?)')
       .run(DEFAULT_USER_ID, problem.id, nextDueOn);
     db.exec('COMMIT');
-    return { ok: true, created, alreadyInQueue: !!existing, nextDueOn,
+    return { ok: true, created, alreadyInQueue: Boolean(existing), nextDueOn,
       platform: parsed.platform, problemKey: parsed.problemKey, title: problem.title };
   } catch (error) { db.exec('ROLLBACK'); throw error; }
 }

@@ -161,6 +161,8 @@ function migrate(db: Db): void {
   invalidateUnreliableGapVerdicts(db);
   // v0.13 数据修复：VJudge 记录映射回原 OJ 身份（见 db/vjudgeIdentityFix.ts）
   fixVjudgeProblemIdentities(db);
+  // v0.14 数据修复：复习条目按**题目身份**去重（同一道题多行时只留一条，见 dedupeReviewItemsByIdentity）
+  dedupeReviewItemsByIdentity(db);
 }
 
 /**
@@ -638,6 +640,88 @@ function dedupeReviewItems(db: Db): void {
     throw e;
   }
   console.log(`[migrate] 已清理 ${dupes.length} 条重复复习条目（同一题只留最早一条）`);
+}
+
+/**
+ * v0.14 数据修复：复习条目按**题目身份**去重（同一道题只保留一条）。
+ *
+ * 背景：review_items 的唯一键是 `(user_id, problem_id)` —— 按题目**行**。而 problems 表里
+ * 同一道题可以有多行（`codeforces/1000A` 与洛谷镜像 `luogu/CF1000A` 共享 identity
+ * `codeforces:1000a`；VJudge 转发来的也落到同一身份）。于是「加入复习」走的是按行判存在，
+ * 同一道题能真的落出两条条目（2026-11-07 实测：两次 from-url 导入 → 两行题目、两条复习条目）。
+ *
+ * 危害：今日训练里同一道题出现两次、复习日历/负载都算两次，而且两条各自独立排期
+ * （一条练到 60 天档、另一条还在 3 天档）—— 用户要复习同一道题两遍。
+ *
+ * 保留口径（与 v0.6.2 的 dedupeReviewItems 一致，取最早加入的那条）：
+ * - 同一 (user_id, identity) 下按 id 升序保留第一条，其余合并进来；
+ * - 被合并条目的复习日志**改指保留条目**（不删历史：忘过几次是留存系数的训练数据）；
+ * - 保留条目的排期取两者中**更早的 next_due_on**、档位取**更高档**：合并不能让已经排到
+ *   60 天档的进度被一条新建的 3 天档拽回来，也不能把该复习的题推到很久以后；
+ * - note 取保留条目已有的（非空优先）。
+ *
+ * 幂等：没有重复时一条 SELECT 空转、不写库；重复清完后再跑是空操作。
+ */
+export function dedupeReviewItemsByIdentity(db: Db): void {
+  const dupes = db
+    .prepare(
+      `SELECT p.identity AS identity, MIN(ri.id) AS keepId
+         FROM review_items ri JOIN problems p ON p.id = ri.problem_id
+        GROUP BY ri.user_id, p.identity
+       HAVING COUNT(*) > 1`,
+    )
+    .all() as Array<{ identity: string; keepId: number }>;
+  if (dupes.length === 0) return;
+
+  const rowsOf = db.prepare(
+    `SELECT ri.id, ri.stage, ri.next_due_on, ri.note, ri.last_reviewed_at
+       FROM review_items ri JOIN problems p ON p.id = ri.problem_id
+      WHERE p.identity = ? AND ri.id != ?
+      ORDER BY ri.id`,
+  );
+  const updateKeep = db.prepare(
+    'UPDATE review_items SET stage = ?, next_due_on = ?, note = COALESCE(note, ?), last_reviewed_at = ? WHERE id = ?',
+  );
+  // 复习日志改指保留条目：review_events.review_item_id 外键无级联，直接删条目会抛
+  // FOREIGN KEY constraint failed（迁移回滚、createDb 抛错、应用打不开）
+  const moveEvents = db.prepare('UPDATE review_events SET review_item_id = ? WHERE review_item_id = ?');
+  const dropItem = db.prepare('DELETE FROM review_items WHERE id = ?');
+  let merged = 0;
+  db.exec('BEGIN');
+  try {
+    for (const d of dupes) {
+      const keep = db
+        .prepare('SELECT id, stage, next_due_on, note, last_reviewed_at FROM review_items WHERE id = ?')
+        .get(d.keepId) as
+        | { id: number; stage: number; next_due_on: string; note: string | null; last_reviewed_at: string | null }
+        | undefined;
+      if (!keep) continue; // 并发删除等：本组跳过，不影响其它组
+      for (const row of rowsOf.all(d.identity, d.keepId) as Array<{
+        id: number;
+        stage: number;
+        next_due_on: string;
+        note: string | null;
+        last_reviewed_at: string | null;
+      }>) {
+        moveEvents.run(keep.id, row.id);
+        dropItem.run(row.id);
+        merged += 1;
+        // 合并后的排期：档位取高（保留更长的复习间隔），到期日取早（不耽误该做的复习）
+        keep.stage = Math.max(keep.stage, row.stage);
+        keep.next_due_on = keep.next_due_on < row.next_due_on ? keep.next_due_on : row.next_due_on;
+        keep.note = keep.note ?? row.note;
+        if (row.last_reviewed_at && (!keep.last_reviewed_at || row.last_reviewed_at > keep.last_reviewed_at)) {
+          keep.last_reviewed_at = row.last_reviewed_at;
+        }
+      }
+      updateKeep.run(keep.stage, keep.next_due_on, keep.note, keep.last_reviewed_at, keep.id);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  console.log(`[migrate] 已合并 ${merged} 条重复复习条目（同一道题只保留一条）`);
 }
 
 function seed(db: Db): void {

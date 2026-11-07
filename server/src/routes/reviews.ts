@@ -14,6 +14,7 @@ import { problemIdentity } from '../problems/identity.ts';
 import { reviewPlanTasks } from '../reviews/planTasks.ts';
 import { reviewHistory } from '../reviews/history.ts';
 import { addReviewFromUrl } from '../reviews/fromUrl.ts';
+import { queueStateOf } from '../reviews/queue.ts';
 
 export function reviewsRoutes(db: Db): Router {
   const r = Router();
@@ -41,11 +42,15 @@ export function reviewsRoutes(db: Db): Router {
     if (!problem) return res.status(404).json({ error: `题库中不存在 ${platform}/${problemKey}，请先同步或导入` });
     // 已在队列里就别动它的排期：旧实现靠 INSERT OR IGNORE 静默跳过，重复点「加入复习」
     // 会把已经练到 60 天档的条目拽不回（那是对的），但界面也无从告知用户当前到期日
-    const existing = db
-      .prepare('SELECT next_due_on FROM review_items WHERE user_id = ? AND problem_id = ?')
-      .get(DEFAULT_USER_ID, problem.id) as { next_due_on: string } | undefined;
-    if (existing) {
-      return res.json({ ok: true, alreadyInQueue: true, nextDueOn: existing.next_due_on });
+    //
+    // 判「在不在队列」必须按**题目身份**而不是题目行（见 reviews/queue.ts）：同一道题在库里
+    // 可能有多行（codeforces/1000A 与洛谷镜像 luogu/CF1000A），按行查会给同一道题建出两条
+    // 复习条目 —— 今日训练里出现两次、两条各自独立排期，用户要复习同一道题两遍。
+    const queued = queueStateOf(db, DEFAULT_USER_ID, problem.id);
+    if (queued.inQueue) {
+      const item = db.prepare('SELECT next_due_on FROM review_items WHERE id = ?')
+        .get(queued.itemId!) as { next_due_on: string };
+      return res.json({ ok: true, alreadyInQueue: true, nextDueOn: item.next_due_on });
     }
     // 新条目按题目 id 错峰排到加入后 3–6 天首刷：刚 AC 的题不必次日重做，
     // 批量加入时也不会同日堆满（见 schedule.ts）
