@@ -29,7 +29,13 @@ import InlineError from '../components/InlineError'
 import PlatformTag from '../components/PlatformTag'
 import { saveUrlAsFile } from '../download'
 import { get, post } from '../api'
-import { fetchShellAuthStatus, requestShellAuth, waitShellAuthResult, type ShellAuthStatus } from '../shellAuth'
+import {
+  fetchShellAuthStatus,
+  identifyAccount,
+  requestShellAuth,
+  waitShellAuthResult,
+  type ShellAuthStatus,
+} from '../shellAuth'
 import { buildCookieItem, extractCookieValue } from '../cookies'
 import { relativeTimeText } from '../syncStatus'
 import { openExternal } from '../externalLinks'
@@ -276,6 +282,42 @@ export default function Settings() {
     }
     const only = handle ?? data?.accounts.find((a) => a.platform === platform)?.handle
     void runShellAuth('login', platform, only)
+  }
+
+  /**
+   * 账号卡片「识别账号」：用已保存的登录凭据反查 userId 并填进账号名框。
+   *
+   * 存在的理由：PTA 的 handle 是 19 位数字 userId，手抄必错，站点对昵称直接 400。
+   * 用户在桌面壳里登录后（凭据已存），点一下这里就能把账号名填对，不必去翻个人主页地址栏。
+   * 只填输入框、不自动保存：账号名是用户资产（改名会迁移提交记录），
+   * 自动落库等于替用户做了一次有副作用的决定。
+   */
+  const runIdentify = async (platform: PlatformId, draftKey?: string) => {
+    const key = `identify:${platform}`
+    if (shellBusy) return
+    setShellBusy(key)
+    try {
+      // 新增账号模式：账号名还不知道，凭据也还没保存，只能先用卡片里刚填的值去问。
+      // 拼成一条 Cookie 头（按名分框的普通字段）；填了才带上，没填则由服务端读已保存的平台级值。
+      const draft = draftKey ? (acctInputs[platform]?.[draftKey] ?? {}) : {}
+      const cookie = cookieFieldsOf(platform)
+        .filter((f) => !f.configOnly)
+        .map((f) => buildCookieItem(f, draft[f.key] ?? ''))
+        .filter(Boolean)
+        .join('; ')
+      const r = await identifyAccount(platform, cookie)
+      if (!r.ok || !r.handle) {
+        message.warning(r.message || '未能识别账号，请手动填写')
+        return
+      }
+      setDraftHandle(r.handle)
+      const already = r.bound ? '（该账号此前已绑定）' : ''
+      message.success(`已识别账号 ${r.handle}${r.nickname ? `（${r.nickname}）` : ''}${already}，点「保存」即可完成绑定`)
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setShellBusy(null)
+    }
   }
 
   /** QOJ 专属「立即续签验证」：隐藏窗静默过盾一轮（cf_clearance 约 30 分钟过期） */
@@ -719,8 +761,9 @@ export default function Settings() {
     const handle = account?.handle ?? null
     const draftKey = handle ?? NEW_DRAFT_KEY
     // 凭据是否为同步的**必需品**（cookie 类平台）还是增强项（atcoder：普通同步走镜像，
-    // Cookie 只用于直连补充扫描）——决定卡片里的文案与是否渲染凭据输入框
-    const credRequired = p.sync === 'cookie'
+    // Cookie 只用于直连补充扫描；PTA：公开题集匿名可读，Cookie 只扩展「我加入的题集」）
+    // ——决定卡片里的文案与是否渲染凭据输入框
+    const credRequired = p.sync === 'cookie' && p.id !== 'pta'
     const slotMasked = handle ? data.accountCreds?.[p.id]?.[handle]?.masked : undefined
     const aCheck = handle ? acctCheck[p.id]?.[handle] : undefined
     const vals = acctInputs[p.id]?.[draftKey] ?? {}
@@ -734,7 +777,14 @@ export default function Settings() {
         <div style={{ marginBottom: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 2 }}>账号名</div>
           <Input
-            placeholder={p.id === 'codeforces' ? 'CF handle' : p.id === 'nowcoder' ? '数字 UID / 个人主页链接' : p.id === 'vjudge' ? '用户名 / 个人主页链接' : '用户名 / uid'}
+            placeholder={
+              p.id === 'codeforces' ? 'CF handle'
+                : p.id === 'nowcoder' ? '数字 UID / 个人主页链接'
+                  : p.id === 'vjudge' ? '用户名 / 个人主页链接'
+                    // PTA 只认数字 userId（昵称会被站点当路径参数拒绝），显式点名避免填错
+                    : p.id === 'pta' ? '数字 userId（个人主页地址栏 /user/ 后面那串数字）'
+                      : '用户名 / uid'
+            }
             value={draftHandle}
             onChange={(e) => setDraftHandle(e.target.value)}
             onPressEnter={() => void submitAcctEditor(p.id, handle)}
@@ -746,18 +796,35 @@ export default function Settings() {
             <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 4 }}>
               {handle ? '凭据' : credRequired ? '凭据（可留空）' : '凭据（可选，不配置不影响普通同步）'}
             </div>
-            {handle && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+            {/* 这一排按钮在「新增账号」模式下也要出现：刚粘完 Cookie 但还不知道账号名，
+                正是最需要「识别账号」的时候（旧实现整排都挂在 handle 上，新增模式里一个按钮都没有） */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                {handle && (
                 <Button size="small" loading={aCheck === 'checking'} onClick={() => void checkAccountCreds(p.id, handle)}>
                   检测
                 </Button>
+                )}
+                {/* 账号名是一串抄不对的 id 时（PTA 的 19 位 userId 典型），
+                    用已保存/刚填的凭据向平台反查真实账号名。只渲染声明了 identify 的平台，
+                    否则每个平台都会多一个必然失败的按钮 */}
+                {p.identify && (
+                  <Button
+                    size="small"
+                    title="用已保存的登录凭据向平台反查这是哪个账号，并把账号名填进上面的输入框（不会自动保存）"
+                    loading={shellBusy === `identify:${p.id}`}
+                    disabled={!!shellBusy && shellBusy !== `identify:${p.id}`}
+                    onClick={() => void runIdentify(p.id, draftKey)}
+                  >
+                    识别账号
+                  </Button>
+                )}
                 {shellOnline && (
                   <Button
                     size="small"
                     title="弹出应用内浏览器登录该平台，Cookie 自动写入本账号（无需 F12 手动复制）。此浏览器用独立的 Cookie 目录，与系统的 Chrome/Edge 相互隔离：不会读取或覆盖你原浏览器的登录，在这里登录也不会挤掉浏览器里的会话。"
                     loading={shellBusy === `login:${p.id}:${handle}`}
                     disabled={!!shellBusy && shellBusy !== `login:${p.id}:${handle}`}
-                    onClick={() => startShellLogin(p.id, handle)}
+                    onClick={() => startShellLogin(p.id, handle ?? undefined)}
                   >
                     登录并自动获取
                   </Button>
@@ -768,10 +835,9 @@ export default function Settings() {
                       {aCheck.ok ? '凭据有效' : '凭据无效 / 已过期'}
                     </Tag>
                     {!aCheck.ok && <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{aCheck.message}</span>}
-                  </>
-                )}
-              </div>
-            )}
+                </>
+              )}
+            </div>
             <Space wrap size={8}>
               {fields.map((f) => {
                 // 已配置判定：普通字段看账号槽位打码头；configOnly（QOJ 浏览器 UA）是全账号共用的
@@ -892,7 +958,12 @@ export default function Settings() {
               const account = platformAccounts.find((a) => a.enabled === 1) ?? platformAccounts[0]
               const enabled = data.adapterEnabled[p.id] !== false
               const syncNote =
-                p.sync === 'auto' ? '自动同步' : p.sync === 'cookie' ? '配置 Cookie 后自动同步' : '仅手动导入'
+                p.sync === 'auto'
+                  ? '自动同步'
+                  : p.sync === 'cookie'
+                    // PTA 的 Cookie 是**增强项**：公开题集匿名可同步，登录后才覆盖课程/内部题集
+                    ? (p.id === 'pta' ? '公开题集免登录同步；配置 Cookie 后覆盖「我加入的题集」' : '配置 Cookie 后自动同步')
+                    : '仅手动导入'
               // 连接状态点：自动同步平台看「已绑定 + 适配器开启」；cookie 平台聚合各账号凭据的
               // 检测结果（任一有效 = 已连接；都在检测中 = 检测中；有槽位未检测 = 检测中，由
               // 上方 effect 自动触发；其余 = 未连接——没账号或没有任何账号配置凭据）
@@ -1023,6 +1094,14 @@ export default function Settings() {
                         </Button>
                       </Popover>
                     </Space>
+                    {p.id === 'pta' && (
+                      <p style={{ margin: '2px 0 0', color: 'var(--text-3)', fontSize: 12 }}>
+                        PTA 的公开题集（PAT 甲/乙/顶级、天梯赛练习集、浙大版教材题集等）<b>不配 Cookie 也能同步</b>；
+                        填了 PTASession 才会额外覆盖「我加入的题集」（课程作业、内部赛）。账号必须是数字 userId
+                        （昵称不能作为查询参数），桌面版点「在应用内登录」后<b>会自动识别并绑定账号</b>，不必手抄；
+                        网页版可在登录后点账号卡片里的「识别账号」自动填入。
+                      </p>
+                    )}
                     {(p.id === 'leetcode' || p.id === 'jisuanke') && (
                       <p style={{ margin: '2px 0 0', color: 'var(--amber)', fontSize: 12 }}>
                         ⚠ 多账号请为每个账号分别配置 Cookie：此平台的提交记录跟随 Cookie 登录身份拉取。
@@ -1053,7 +1132,9 @@ export default function Settings() {
                           <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
                             {p.id === 'qoj'
                               ? '桌面版登录一次即可：同步自动经内嵌窗口完成，每 20 分钟自动续签验证，无需复制任何 Cookie。内嵌窗口用独立 Cookie 目录，与系统浏览器隔离、不会挤掉你原浏览器的登录。'
-                              : '弹出应用内浏览器登录后，Cookie 自动保存到账号，无需 F12 手动复制。该窗口用独立 Cookie 目录，与系统的 Chrome/Edge 隔离，不会读取或影响你原浏览器的登录状态。'}
+                              : p.id === 'pta'
+                                ? '弹出应用内浏览器登录 PTA，登录成功后会自动识别账号（数字 userId）并绑定，Cookie 一并保存——不需要手抄 userId，也不需要 F12 复制 Cookie。该窗口用独立 Cookie 目录，与系统的 Chrome/Edge 隔离。'
+                                : '弹出应用内浏览器登录后，Cookie 自动保存到账号，无需 F12 手动复制。该窗口用独立 Cookie 目录，与系统的 Chrome/Edge 隔离，不会读取或影响你原浏览器的登录状态。'}
                           </span>
                         </Space>
                       </div>

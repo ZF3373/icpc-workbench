@@ -5,10 +5,11 @@ import { fetchDashojContests } from './dashojContests.ts';
 import { fetchJisuankeContests } from './jisuankeContests.ts';
 import { fetchLuoguContests } from './luoguContests.ts';
 import { fetchNowcoderContests } from './nowcoderContests.ts';
+import { fetchPtaContests } from './ptaContests.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
 
 /**
- * 多平台赛事聚合：Codeforces / AtCoder / 洛谷 / 牛客 / 计蒜客 / DashOJ。
+ * 多平台赛事聚合：Codeforces / AtCoder / 洛谷 / 牛客 / 计蒜客 / DashOJ / PTA。
  * 单一数据源失败只降级跳过（记入 failures），全部失败才报错。
  */
 
@@ -39,8 +40,9 @@ export async function fetchAllContests(fetchFn: typeof fetch = throttledFetch, f
     fetchNowcoderContests(fetchFn, force),
     fetchJisuankeContests(fetchFn, force),
     fetchDashojContests(fetchFn, force),
+    fetchPtaContests(fetchFn, force),
   ]);
-  const platforms: PlatformId[] = ['codeforces', 'atcoder', 'luogu', 'nowcoder', 'jisuanke', 'dashoj'];
+  const platforms: PlatformId[] = ['codeforces', 'atcoder', 'luogu', 'nowcoder', 'jisuanke', 'dashoj', 'pta'];
   const contests: ContestInfo[] = [];
   const failures: AllContests['failures'] = {};
   results.forEach((r, i) => {

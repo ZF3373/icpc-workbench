@@ -23,7 +23,7 @@ import {
   requestBackfillStop,
   setBackfillProgress,
 } from '../analysis/backfillRun.ts';
-import { fetchLuoguBank, fetchNowcoderBank, fetchCodeforcesBank, fetchLeetcodeBank, fetchAtcoderBank, fetchDaimayuanBank, fetchDashojBank, fetchJisuankeBank } from '../adapters/problemBank.ts';
+import { fetchLuoguBank, fetchNowcoderBank, fetchCodeforcesBank, fetchLeetcodeBank, fetchAtcoderBank, fetchDaimayuanBank, fetchDashojBank, fetchJisuankeBank, fetchPtaBank } from '../adapters/problemBank.ts';
 import type { LuoguProblemType } from '../adapters/problemBank.ts';
 import { upsertBankProblems } from '../import/bankService.ts';
 import { problemKeypointsCte, knowledgeTagsJoinSql, knowledgeTagsCoalesceSql, knowledgeTagsExpr, appendAnnotations, effectiveDataDir, tombstoneLine } from '../knowledge/store.ts';
@@ -506,9 +506,9 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       platform !== 'luogu' && platform !== 'nowcoder' &&
       platform !== 'codeforces' && platform !== 'leetcode' &&
       platform !== 'atcoder' && platform !== 'daimayuan' &&
-      platform !== 'jisuanke' && platform !== 'dashoj'
+      platform !== 'jisuanke' && platform !== 'dashoj' && platform !== 'pta'
     ) {
-      return res.status(400).json({ error: 'platform 需为 luogu / nowcoder / codeforces / leetcode / atcoder / daimayuan / jisuanke / dashoj' });
+      return res.status(400).json({ error: 'platform 需为 luogu / nowcoder / codeforces / leetcode / atcoder / daimayuan / jisuanke / dashoj / pta' });
     }
     // luoguTypes 校验：非法类型直接拒绝，不静默回退默认 ['P']
     // （静默回退会让「我要 CF 镜像题」变成一次普通题拉取，调用方无从察觉）
@@ -528,7 +528,7 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     if (atcoderTags !== undefined && typeof atcoderTags !== 'boolean') {
       return res.status(400).json({ error: 'atcoderTags 需为布尔值' });
     }
-    const maxCap = platform === 'codeforces' ? 20000 : platform === 'atcoder' ? 10000 : platform === 'dashoj' ? 20000 : 5000;
+    const maxCap = platform === 'codeforces' ? 20000 : platform === 'atcoder' ? 10000 : platform === 'dashoj' ? 20000 : platform === 'pta' ? 20000 : 5000;
     const maxN =
       typeof max === 'number' && Number.isFinite(max)
         ? Math.min(maxCap, Math.max(50, Math.floor(max)))
@@ -538,7 +538,9 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
             ? 5000
             : platform === 'dashoj'
               ? 20000 // DashOJ 题库约 2034 题且持续新增，缺省即拉全量（蓝桥杯/考研真题排在最高 docId）
-              : 2000;
+              : platform === 'pta'
+                ? 20000 // PTA 公开题集合计约 4700 题（ZOJ 一套就 3179），缺省即拉全量
+                : 2000;
     const minDiff =
       typeof luoguMinDifficulty === 'number' && Number.isFinite(luoguMinDifficulty)
         ? luoguMinDifficulty
@@ -559,7 +561,9 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
                 ? fetchDashojBank
                 : platform === 'jisuanke'
                   ? fetchJisuankeBank
-                  : fetchCodeforcesBank;
+                  : platform === 'pta'
+                    ? fetchPtaBank
+                    : fetchCodeforcesBank;
       // 增量游标（docId 升序平台专用，目前仅 DashOJ 的 fetcher 会读取/产出）：
       // 从 settings 读上次游标传给 fetcher → 只拉尾部新增题；full=true 时跳过游标强制全量重扫。
       // 其它平台的 fetcher 忽略 incrementalFrom、也不产出 cursor，故此处按平台泛化处理即可。

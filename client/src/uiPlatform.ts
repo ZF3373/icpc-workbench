@@ -17,6 +17,7 @@ export const PLATFORM_COLOR: Record<PlatformId, string> = {
   jisuanke: '#7ee0a3', // 计蒜客品牌绿（暗色底可读版）
   qoj: '#b18cff', // QOJ / Universal Cup：暗色底可读的紫罗兰
   dashoj: '#e879a6', // DashOJ：暗色底可读的玫红（与代码源橙区分）
+  pta: '#ff6b5b', // PTA / 拼题A：暗色底可读的朱红（与 DashOJ 玫红、代码源橙区分）
 }
 
 // id→name 的 O(1) 索引：platformName 在列表渲染等热路径被逐行调用，

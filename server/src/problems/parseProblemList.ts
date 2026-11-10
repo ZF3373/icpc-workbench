@@ -61,6 +61,11 @@ const URL_PATTERNS: UrlPattern[] = [
   { re: /qoj\.ac\/contest\/(\d+)\/problem\/([A-Za-z0-9_]+)/i, platform: 'qoj', key: (m) => `${m[1]}-${m[2]}` },
   // QOJ 题库题目：qoj.ac/problem/9242 → key 9242（与同步适配器同键）
   { re: /qoj\.ac\/problem\/([A-Za-z0-9_]+)/i, platform: 'qoj', key: (m) => m[1] },
+  // PTA（拼题A）题集题：pintia.cn/problem-sets/{ps}/problems/{psp} → key {ps}-{psp}
+  //（与同步适配器同键，见 adapters/pta.ts 的 ptaProblemKey）
+  { re: /pintia\.cn\/problem-sets\/(\d+)\/problems\/(\d+)/i, platform: 'pta', key: (m) => `${m[1]}-${m[2]}` },
+  // PTA 老式链接：pintia.cn/problem-sets/{ps}/exam-problems/{psp} 与 /exam-problem/{psp} 两种写法并存
+  { re: /pintia\.cn\/problem-sets\/(\d+)\/exam-problems?\/(\d+)/i, platform: 'pta', key: (m) => `${m[1]}-${m[2]}` },
 ];
 
 /**

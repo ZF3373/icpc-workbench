@@ -2,13 +2,13 @@
 
 **中文** | [English](./README.en.md)
 
-基于刷题记录（Codeforces / AtCoder / 洛谷 / 牛客 / 代码源 / LeetCode / 计蒜客 / DashOJ / VJudge）分析弱项、由 AI 生成个性化训练计划，并提供日历打卡的**本地 Web 应用**。
+基于刷题记录（Codeforces / AtCoder / 洛谷 / 牛客 / 代码源 / LeetCode / 计蒜客 / DashOJ / PTA / VJudge）分析弱项、由 AI 生成个性化训练计划，并提供日历打卡的**本地 Web 应用**。
 
 桌面体验与同步更新：新增链接加入复习库、关闭驻留托盘、掌握度地图原题跳转、Fantasy 风格与自定义背景，并修复牛客多来源记录同步、接入 VJudge。详见[本次更新说明](docs/updates/2026-10-30-desktop-review-sync.md)。
 
 ## 功能
 
-- **多平台刷题导入**：Codeforces / AtCoder / 牛客 / DashOJ / VJudge 自动同步（官方或公开接口，增量去重）；牛客整合在线编程、ACM 练习和竞赛提交；洛谷 / 代码源 / LeetCode / 计蒜客配置 Cookie 后自动同步；全平台支持手动导入（JSON / CSV / 表单）
+- **多平台刷题导入**：Codeforces / AtCoder / 牛客 / DashOJ / PTA / VJudge 自动同步（官方或公开接口，增量去重；PTA 公开题集免登录，填 Cookie 额外覆盖「我加入的题集」）；牛客整合在线编程、ACM 练习和竞赛提交；洛谷 / 代码源 / LeetCode / 计蒜客配置 Cookie 后自动同步；全平台支持手动导入（JSON / CSV / 表单）
 - **同步可观测性**：每次平台同步（成败皆记）写入任务历史——拉取数、去重数、限速等待、耗时与可解释的失败分类（凭据失效 / 限流 / 页面结构变化 / 需手动导入等）；`GET /api/sync/diagnostics` 可导出纯文本诊断报告（不含任何密钥），`POST /api/sync/:platform` 支持 `days` 参数仅同步最近 N 天；拉取速度用户可调并带每域名安全下限（防风控），提交过多自动分批、再次同步续拉不重复；数据概览常驻同步状态卡（进行中显示逐平台进度，空闲可展开上次同步结果抽屉）
 - **数据保护**：每日首次启动、应用升级前、大批量导入前、换账号重置前自动创建 SQLite 恢复点（`VACUUM INTO` 一致快照，按类型分级保留）；「设置 → 备份与恢复点」可手动备份、一键恢复（重启应用生效）与逐条下载恢复点异地留存；恢复采用「登记 + 重启生效」，列表会标出当前待恢复项，改选其他恢复点前二次确认（不会静默覆盖）；手动导入 JSON/CSV 前先展示变更预览（新增 / 跳过 / 非法行明细），确认后才写入
 - **多账号绑定**：同一平台支持绑定多个账号（如主力号 + 练习小号），不再使用的账号可随时删除；「设置 → 备份与恢复点」里不再需要的备份/恢复点也支持手动删除，释放磁盘
@@ -249,6 +249,7 @@ node server/scripts/build-exe.mjs
 | LeetCode | ✅（需 Cookie） | leetcode.cn GraphQL `submissionList` | easy/medium/hard 三档 → 1000/1500/2100（面试导向，启发式） | 设置页填写 Cookie 后自动同步（每页 40 条，最多 250 页）；仅接入力扣中国（leetcode.cn），国际版接口结构不同暂未接入；题库匿名可访问，拉取带中文标签（`nameTranslated`） |
 | 计蒜客 | ✅（需 Cookie） | `/api/contests?hasParticipated=true` + 逐赛 `/api/contest/submissions`；另含练习（题库）提交 | `difficultyType` = level1…level8 共 8 档（入门/普及−/普及/普及+/提高−/提高/提高+/省选/国赛）→ 与洛谷同表 800/1000/1500/1800/2200/2400/2600/3400 | 设置页整段粘贴登录 Cookie 后自动同步（站点给未登录访客也发游客 `s` 会话，需确认已登录再从 Network 请求头复制）；无统一记录页，按「参加过的比赛」逐场拉取提交（每场至多 2 个请求，30 场/次分批）；以比赛序号为补全游标；**练习（自由练题/题库）提交默认同步**（预筛 `/api/problems` 的 `status=passed` / `status=attempted` 两轮过滤 + 逐题 `/api/problem/submissions`），可在设置页关闭，「仅同步最近 N 天」窗口模式不跑练习段 |
 | QOJ | ✅（需 Cookie） | UOJ 系接口（Cloudflare 挑战后，需登录会话 `__Host-UOJSESSID`（旧名 UOJSESSID，发送前自动改名）/ cf_clearance 两项 Cookie + 浏览器 UA；设置页按 Cookie 名分框填写，后端自动合并成 Cookie 头） | **平台自身无难度字段**（UOJ 数据模型）；难度由「一键回填」用 **ICPC/CCPC 公开榜单**推导金/银/铜/铁档（`icpc-tier`，见下）→ 近似 CF 1000/1500/2000/2600 | 提交可同步；**不支持拉取题库**（题目列表在 Cloudflare 挑战之后）；难度推导三来源：`xcpcrating` 评分目录 + 该数据集的题型键（1100 道）+ **QOJ 比赛页**（题号字母映射，走 HTTP/1.1 + 已配置凭据），比赛名属性匹配榜单；仍未匹配到的题保持「未知」且**不进入训练计划候选池** |
+| PTA（拼题A） | ✅ | 站点 Web API（无公开文档，2026-11 实测）：`/api/problem-sets/always-available` → 逐集 `/exam-problem-list` 取题；`/api/problem-sets/{ps}/users/{uid}/submissions?limit=&before=` 取提交 | **平台自身无难度字段**（`difficulty` 23 套题集实测恒为 0）→ 难度恒为未知（`none`），回填登记为「无来源」不重扫 | **公开题集与公开用户的提交匿名可读**，不配 Cookie 也能同步 23 套公开题集（PAT 甲/乙/顶级练习集、天梯赛练习集、浙大版教材题集、ZOJ 等约 4700 题）；填 `PTASession` 才额外覆盖「我加入的题集」（课程作业、内部赛）。**handle 必须是数字 userId**（个人主页地址栏 `/user/` 后那串数字，昵称站点直接 400）——桌面版「在应用内登录」会在登录后**自动识别 userId 并绑定账号**，网页版账号卡片有「识别账号」按钮，都不必手抄；提交列表**只能按题集查**、分页是 `before` 游标（`page` 参数被忽略）；提交行不带题目标题，对确有新行的题集才补拉一次题目表；题号 = `{题集id}-{题集内题目id}`（与题库同键）；另接赛事日历 `/api/competitions/public`（XCPC 网络赛/省赛） |
 
 > **难度统一标尺**：上表各平台的原生难度都映射到 Codeforces rating（800–3500），映射表**只有一份**，在 `shared/src/difficulty.ts`；原生值一并落库（`problems.native_difficulty` + `problems.difficulty_scale`），平台改档只需改这一个文件。映射为**近似值（±100–200）**，用于训练推荐与弱项分档，不作为精确评级。QOJ 的 `icpc-tier` 尤其粗（只有 4 档，±300–400）：档位由公开榜单的过题队伍占比判定（≤10% 金 / ≤30% 银 / ≤60% 铜 / 其余铁），原生档位与原始占比（如 `bronze:1019/2535`）一并落库，口径变化时可重算而无需重新抓取。
 

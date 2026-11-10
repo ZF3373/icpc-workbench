@@ -121,8 +121,12 @@ const NO_GAP_CACHE: ReadonlySet<PlatformId> = new Set<PlatformId>(['qoj']);
  * 现在「本应用没有的 OJ」会以 `vjudge/{OJ}-{题号}` 落库（见 adapters/vjudgeIdentity.ts），
  * 这类行是常态而非遗留。它们同样没有难度来源 —— VJudge 不提供难度，原 OJ 又不在本应用里，
  * 所以照样走这条终态规则，只是理由从「历史遗留」变成「题库未接入」。
+ *
+ * PTA（pintia.cn）同样没有难度来源：题集题目表里的 `difficulty` 字段 23 套题集实测**恒为 0**
+ * （站点把难度藏在人工评审/通过率里，未在任何公开接口下发）。不留这条终态，则每次回填都会
+ * 把这批题当「失败」重扫一遍，永远补不上。
  */
-const NO_DIFFICULTY_SOURCE: ReadonlySet<PlatformId> = new Set<PlatformId>(['vjudge']);
+const NO_DIFFICULTY_SOURCE: ReadonlySet<PlatformId> = new Set<PlatformId>(['vjudge', 'pta']);
 
 /**
  * 该题是否存在任何难度来源。返回 false = 平台结构上给不出，直接记终态（写 gap_state），不计 failed。
@@ -324,6 +328,8 @@ const PLATFORM_LIMITS: Record<PlatformId, { delayMs: number; failLimit: number |
   // QOJ 不逐题发请求：目录/索引/榜单各拉一次（榜单下载量受 MAX_BOARDS_PER_RUN 约束，
   // 比赛页读取受 MAX_QOJ_PAGES_PER_RUN 约束）
   qoj: { delayMs: 0, failLimit: null, maxPerRun: 2000 },
+  // PTA：平台侧完全没有难度字段（见 NO_DIFFICULTY_SOURCE），不发请求、本轮不处理
+  pta: { delayMs: 0, failLimit: null, maxPerRun: 0 },
 };
 
 /**

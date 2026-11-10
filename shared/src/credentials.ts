@@ -82,6 +82,13 @@ export const COOKIE_FIELDS: Partial<Record<PlatformId, CookieFieldDef[]>> = {
     { key: 'clearance', cookieName: 'cf_clearance', label: 'Cloudflare 通行凭据（必需）', placeholder: '粘贴 cf_clearance 的值（整段 Cookie 亦可，会自动分派）', password: true },
     { key: 'ua', cookieName: '__ua', label: '浏览器 User-Agent（必需，全部账号共用）', placeholder: '在 qoj.ac 页 Console 输入 navigator.userAgent 回车，整行粘贴', configOnly: true, password: true },
   ],
+  // PTA（pintia.cn）：会话只有 PTASession 一项（登录后由 pintia.cn 与 passport.pintia.cn 共用）。
+  // 公开题集与公开用户的提交**匿名可读**，因此这一项是**可选增强**：配了才能枚举
+  // 「我加入的题集」（课程作业/内部赛），题库与公开题集的提交则不依赖它。
+  // handle 必须是数字 userId（站点按路径参数取用户，昵称一律 400）。
+  pta: [
+    { key: 'ptasession', cookieName: 'PTASession', label: '登录会话（可选：配置后可同步「我加入的题集」）', placeholder: '粘贴 PTASession 的值（整段 Cookie 亦可，会自动分派）', password: true },
+  ],
 };
 
 /** 凭据字段表中「不写入 Cookie 头、而是作为请求头单独注入」的字段（如 QOJ 需复刻浏览器 UA） */

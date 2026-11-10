@@ -188,4 +188,21 @@ export interface PlatformAdapter {
     handle?: string;
     ua?: string;
   }): Promise<{ ok: boolean; message: string }>;
+
+  /**
+   * 由登录凭据**反查该凭据属于哪个账号**（返回可绑定/可同步的 handle）。
+   *
+   * 与 checkAuth 的区别：checkAuth 只回答「这份凭据还能用吗」，identify 回答
+   * 「这份凭据是谁的」——用于把「登录了但不知道账号名」的场景接成一条顺路流程。
+   * PTA 是典型：handle 是 19 位数字 userId，让用户自己抄一遍几乎必出错，
+   * 而站点本来就提供了「当前登录用户」接口，登录成功即可直接拿到 id。
+   *
+   * 未实现 = 该平台无法自动识别，调用方应回退到用户手填。
+   * 返回的 handle 应可直接交给 fetchUserSubmissions（PTA 这里是数字 userId）。
+   */
+  identify?(opts: {
+    cookie: string;
+    csrf?: string;
+    ua?: string;
+  }): Promise<{ ok: boolean; handle?: string; nickname?: string; message: string }>;
 }

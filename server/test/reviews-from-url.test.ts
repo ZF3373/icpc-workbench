@@ -80,6 +80,9 @@ test('supported platform URLs and VJudge resolve to platform identities', () => 
       ['https://ac.nowcoder.com/acm/problem/51000', 'nowcoder', '51000'],
       ['https://bs.daimayuan.top/p/7', 'daimayuan', '7'],
       ['https://www.jisuanke.com/problem/T1001', 'jisuanke', 'T1001'],
+      // PTA 题集题：主链接与老式 exam-problems 链接都要落到同一个键 {题集id}-{题集内题目id}
+      ['https://pintia.cn/problem-sets/994805342720868352/problems/994805528788582400', 'pta', '994805342720868352-994805528788582400'],
+      ['https://pintia.cn/problem-sets/994805342720868352/exam-problems/994805528788582400', 'pta', '994805342720868352-994805528788582400'],
     ]) {
       const result = addReviewFromUrl(db, url);
       assert.equal(result.platform, platform);

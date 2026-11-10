@@ -549,6 +549,52 @@ export function settingsRoutes(
     res.json(result);
   }));
 
+  // POST /api/settings/cookies/identify  body: { platform, cookie?, csrf? }
+  //
+  // 「我刚才登录的是哪个账号？」——由登录凭据反查 handle（适配器 identify 能力）。
+  // 与 /cookies/check 的分工：check 回答「这份凭据还能用吗」，identify 回答「它属于谁」。
+  // 存在理由：部分平台的账号名是一串用户抄不对的 id（PTA 是 19 位数字 userId，
+  // 填昵称站点直接 400）。用户完成登录后本可以不查文档就绑定账号：登录 → 识别 → 落库。
+  //
+  // cookie 缺省时读**平台级影子值**（cookie.<platform>）：桌面壳在没有已绑定账号时
+  // 抓到的凭据正是写进这里（账号槽位只对已绑定账号开放）。
+  // 本路由**只读**：识别结果交给调用方决定是「绑定新账号」还是「回填输入框」，
+  // 不在服务端隐式建账号——静默建账号会让用户不清楚自己多了一个要同步的账号。
+  r.post('/cookies/identify', asyncHandler(async (req, res) => {
+    const { platform, cookie, csrf } = req.body ?? {};
+    if (!isPlatform(platform)) {
+      return res.status(400).json({ error: `platform 非法: ${String(platform)}` });
+    }
+    const adapter = getAdapter(platform);
+    if (!adapter?.identify) {
+      return res.json({ ok: false, message: '该平台无法由 Cookie 反查账号，请手动填写' });
+    }
+    const read = snapshotLookup(readSettingsSnapshot(db));
+    const cookieVal =
+      typeof cookie === 'string' && cookie.trim() ? cookie.trim() : read(`cookie.${platform}`) ?? '';
+    if (!cookieVal) {
+      return res.json({ ok: false, message: '尚未保存该平台的 Cookie，请先登录或粘贴' });
+    }
+    const csrfVal = typeof csrf === 'string' && csrf.trim() ? csrf.trim() : read(`csrf.${platform}`);
+    const uaVal = read(`ua.${platform}`);
+    const result = await adapter.identify({
+      cookie: cookieVal,
+      ...(csrfVal ? { csrf: csrfVal } : {}),
+      ...(uaVal ? { ua: uaVal } : {}),
+    });
+    // 顺手告诉调用方这个账号是否已绑定：前端据此决定「直接保存」还是「提示已存在」，
+    // 桌面壳据此决定登录后要不要再调 /accounts（幂等，但省一次请求也省一次日志噪音）
+    const bound =
+      result.ok && result.handle
+        ? Boolean(
+            db
+              .prepare('SELECT 1 AS ok FROM platform_accounts WHERE user_id = ? AND platform = ? AND handle = ?')
+              .get(DEFAULT_USER_ID, platform, result.handle),
+          )
+        : false;
+    res.json({ ...result, ...(result.ok ? { bound } : {}) });
+  }));
+
   // POST /api/settings/ai
   // body: { enabled?, timeoutMs?, maxTokens?, contextWindow?, searchEngine?, searchApiKey?,
   //         providers?: [{ id, name, baseURL, model, apiKey? }], activeProviderId?,

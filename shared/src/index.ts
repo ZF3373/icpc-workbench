@@ -4,7 +4,7 @@
 // 仅类型引用：本模块反向 re-export difficulty.ts，用 import type 避免运行时循环依赖
 import type { DifficultyScale } from './difficulty.ts';
 
-export type PlatformId = 'codeforces' | 'atcoder' | 'luogu' | 'nowcoder' | 'daimayuan' | 'leetcode' | 'jisuanke' | 'qoj' | 'dashoj' | 'vjudge';
+export type PlatformId = 'codeforces' | 'atcoder' | 'luogu' | 'nowcoder' | 'daimayuan' | 'leetcode' | 'jisuanke' | 'qoj' | 'dashoj' | 'pta' | 'vjudge';
 
 export type PlatformSync = 'auto' | 'cookie' | 'manual';
 
@@ -22,6 +22,14 @@ export interface PlatformMeta {
   difficultyScale: DifficultyScale;
   /** 提交来源：contest=比赛内提交；practice=自由练题/题库提交；none=不适用 */
   syncSources: Array<'contest' | 'practice' | 'none'>;
+  /**
+   * 适配器可由登录凭据**反查账号**（PlatformAdapter.identify）。
+   *
+   * 用于决定设置页是否渲染「识别账号」按钮：账号名是一串用户抄不对的 id、
+   * 而站点又提供「当前登录用户」接口的平台（PTA 的 19 位数字 userId）才需要。
+   * 缺省 false —— 不声明的平台不渲染按钮，避免每个平台上都放一个必然失败的按钮。
+   */
+  identify?: boolean;
 }
 
 export const PLATFORMS: PlatformMeta[] = [
@@ -50,6 +58,19 @@ export const PLATFORMS: PlatformMeta[] = [
   // 故同步无需登录 Cookie（sync=auto，2026-10-22 实测确认）。题库 /p 公开、含 Hydro 1-10 难度字段，
   // 复用 hydro-1-10 标度（与代码源同源映射表）。
   { id: 'dashoj', name: 'DashOJ', nameEn: 'DashOJ', hasOfficialApi: false, homepage: 'https://dashoj.com', sync: 'auto', hasBank: true, difficultyScale: 'hydro-1-10', syncSources: ['none'] },
+  // PTA（拼题A / pintia.cn，浙江大学在线判题与题集平台，PAT 甲乙级、天梯赛、浙大教材题目集都在这里）：
+  // 无官方公开 API 文档，但 Web 端 API（/api/problem-sets/...）**对游客开放**：
+  //   · 公开题集清单 GET /api/problem-sets/always-available（23 套：PAT 甲/乙/顶级、天梯赛练习集、
+  //     浙大版 C 语言/数据结构、ZOJ 题库…）；题库 GET /api/problem-sets/{ps}/exam-problem-list
+  //   · 指定用户的提交 GET /api/problem-sets/{ps}/users/{userId}/submissions（匿名 200，cursor 分页）
+  // 因此同步**不强制** Cookie；但「我加入的题集」（课程作业、内部赛）只能登录后枚举，
+  // 故 sync 记为 cookie：配了 PTASession 覆盖更全，不配则只覆盖上述公开题集。
+  // 账号 handle 必须是**数字 userId**（昵称无法作为路径参数，站点直接 400）。
+  // 平台自身**没有难度字段**（exam-problem-list 的 difficulty 恒为 0），故 difficultyScale 记 none、
+  // 不下发难度——与 QOJ 同口径：平台给不出就是未知，不臆造。
+  // identify: true —— 账号名是 19 位数字 userId，站点又提供「当前登录用户」接口，
+  // 故登录后可由凭据反查账号（设置页「识别账号」、桌面壳登录后自动绑定都靠它）。
+  { id: 'pta', name: 'PTA', nameEn: 'PTA', hasOfficialApi: false, homepage: 'https://pintia.cn', sync: 'cookie', hasBank: true, difficultyScale: 'none', syncSources: ['practice'], identify: true },
   // VJudge（vjudge.net，转发站）：本身不提供题库与难度，提交记录按公开 status 分页拉取。
   // 必须排在**末尾**：数组顺序就是各平台下拉/账号卡片的展示顺序，转发站不该占首项
   //（2026-10-30 review 实测约 7 处列表首项被它顶掉）。

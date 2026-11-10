@@ -51,6 +51,30 @@ export function requestShellAuth(action: 'login' | 'pull', platform: string, han
   }).then((r) => r.id)
 }
 
+export interface IdentifyResult {
+  ok: boolean
+  /** 识别出的账号（可直接保存为绑定账号 / 用于同步） */
+  handle?: string
+  /** 站点昵称（仅展示；不等于 handle） */
+  nickname?: string
+  /** 该 handle 是否已绑定（桌面壳据此跳过重复绑定） */
+  bound?: boolean
+  message: string
+}
+
+/**
+ * 由已保存的登录凭据反查账号（服务端走适配器的 identify 能力）。
+ *
+ * 与 checkAuth 的分工：checkAuth 回答「这份凭据还能用吗」，这里回答「它属于谁」。
+ * 典型用途是「刚在桌面壳里登录完，账号名不想手抄」——PTA 的 handle 是 19 位数字 userId。
+ */
+export function identifyAccount(platform: string, cookie?: string): Promise<IdentifyResult> {
+  return post<IdentifyResult>('/api/settings/cookies/identify', {
+    platform,
+    ...(cookie && cookie.trim() ? { cookie: cookie.trim() } : {}),
+  })
+}
+
 /**
  * 按 id 轮询壳的执行结果，直到匹配 / 超时 / 壳离线。
  * 返回 null = 超时未得到结果；壳中途离线也按 null 处理（message 提示检查桌面壳）。

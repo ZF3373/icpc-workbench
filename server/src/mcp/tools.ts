@@ -257,12 +257,12 @@ export const MCP_TOOLS: McpToolDef[] = [
   ),
   tool(
     'fetch_problem_bank',
-    '从平台拉取公开题库入库（扩充可选题量）。Codeforces 秒级；洛谷/牛客/计蒜客按页拉取，可能需要数分钟。已有题自动去重更新。',
+    '从平台拉取公开题库入库（扩充可选题量）。Codeforces 秒级；洛谷/牛客/计蒜客/PTA 按页拉取，可能需要数分钟。已有题自动去重更新。',
     {
       platform: {
         type: 'string',
         description: '题库来源平台',
-        enum: ['codeforces', 'luogu', 'nowcoder', 'leetcode', 'atcoder', 'daimayuan', 'dashoj', 'jisuanke'],
+        enum: ['codeforces', 'luogu', 'nowcoder', 'leetcode', 'atcoder', 'daimayuan', 'dashoj', 'jisuanke', 'pta'],
       },
       max: { type: 'number', description: '最多拉取条数（可省略）' },
       luoguMinDifficulty: { type: 'number', description: '洛谷最低难度过滤（可省略）' },
@@ -559,7 +559,7 @@ export const MCP_TOOLS: McpToolDef[] = [
   // ===== 比赛 =====
   tool(
     'list_contests',
-    '赛事日历：聚合各平台公开比赛（Codeforces/AtCoder/洛谷/牛客/DashOJ 等），按 upcoming/running/finished 过滤，支持关键词搜索。',
+    '赛事日历：聚合各平台公开比赛（Codeforces/AtCoder/洛谷/牛客/DashOJ/PTA 等），按 upcoming/running/finished 过滤，支持关键词搜索。',
     {
       type: { type: 'string', description: 'upcoming（默认）/ running / finished' },
       platform: { type: 'string', description: '只看某平台' },

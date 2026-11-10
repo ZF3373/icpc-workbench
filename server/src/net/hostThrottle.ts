@@ -81,6 +81,10 @@ export const HOST_MIN_INTERVAL_MS: Record<string, number> = {
   'bs.daimayuan.top': 1500,
   'dashoj.com': 1500,
   'www.jisuanke.com': 1500,
+  // PTA（pintia.cn）：一次同步要枚举 20+ 套题集（每集至少 1 次请求），且站点对游客开放、
+  // 未见明确限额。取与计蒜客同档的保守值，压低短时请求密度。
+  'pintia.cn': 1500,
+  'passport.pintia.cn': 1500,
   'kenkoooo.com': 2000,
   /**
    * clist.by（issue #57 的第三方难度备选源）：官方文档写明「标准限额 10 次/分钟」，

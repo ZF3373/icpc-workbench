@@ -6,6 +6,7 @@ import { createJisuankeAdapter } from './jisuanke.ts';
 import { createLeetcodeAdapter } from './leetcode.ts';
 import { createLuoguAdapter } from './luogu.ts';
 import { createNowcoderAdapter } from './nowcoder.ts';
+import { createPtaAdapter } from './pta.ts';
 import { createVjudgeAdapter } from './vjudge.ts';
 import { createQojAdapter } from './qoj.ts';
 import { fetchPageViaAgent } from './qojAgent.ts';
@@ -33,6 +34,9 @@ export function initAdapters(dataDir?: string): void {
   register(createAtcoderAdapter(dataDir, http));
   register(createLuoguAdapter(http));
   register(createNowcoderAdapter(http));
+  // PTA：公开题集与「公开用户在某题集里的提交」匿名可读（2026-11 实测），
+  // Cookie（PTASession）只用于扩展「我加入的题集」，故与其它 cookie 平台一样走同一 HttpClient。
+  register(createPtaAdapter(http));
   // VJudge 记录接口走 WebView 同源代理（qojAgent.ts）：2026-11 起站点 Cloudflare 按 TLS
   // 指纹拦 Node 直连（带浏览器 UA / 强制 HTTP/1.1 也恒定 403），唯一稳健通道是壳内 WebView
   // 同源抓取。无壳环境（Docker/网页版）代理不在线，fetchPageViaAgent 会给出明确引导。

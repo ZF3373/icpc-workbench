@@ -30,6 +30,7 @@ const SUGGESTED_SYNC_INTERVAL_MS: Partial<Record<PlatformId, number>> = {
   leetcode: 24 * 3600_000,
   daimayuan: 24 * 3600_000,
   dashoj: 24 * 3600_000,
+  pta: 24 * 3600_000,
   // QOJ：前置 Cloudflare，请求密度越低越安全；提交记录按页（10 条/页）拉取，不宜过于频繁
   qoj: 24 * 3600_000,
 };

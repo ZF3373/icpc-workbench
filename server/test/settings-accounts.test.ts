@@ -893,3 +893,86 @@ test('cookieFields: 洛谷/代码源字段同样支持单字段增量保存', as
     );
   });
 });
+
+// ---------- Cookie 反查账号（identify） ----------
+
+test('POST /cookies/identify：用已保存凭据反查 handle，并告知是否已绑定', async () => {
+  const original = getAdapter('pta');
+  let seenCookie = '';
+  register({
+    platform: 'pta',
+    async fetchUserSubmissions() {
+      return [];
+    },
+    problemUrl: () => 'https://pintia.cn',
+    async identify(opts) {
+      seenCookie = opts.cookie;
+      return { ok: true, handle: '1693903232973955072', nickname: 'leonyret', message: 'ok' };
+    },
+  });
+  await withServer(async (db, base) => {
+    // 没有任何已保存凭据 → 明确提示，不打适配器
+    const none = (await (
+      await fetch(`${base}/cookies/identify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform: 'pta' }),
+      })
+    ).json()) as { ok: boolean; message: string };
+    assert.equal(none.ok, false);
+    assert.match(none.message, /Cookie/);
+    assert.equal(seenCookie, '');
+
+    // 桌面壳在「还没绑定账号」时把凭据写到平台级影子值：identify 必须读它
+    db.prepare("INSERT INTO settings (key, value) VALUES ('cookie.pta', 'PTASession=tok')").run();
+    const first = (await (
+      await fetch(`${base}/cookies/identify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform: 'pta' }),
+      })
+    ).json()) as { ok: boolean; handle?: string; nickname?: string; bound: boolean };
+    assert.equal(seenCookie, 'PTASession=tok');
+    assert.equal(first.ok, true);
+    assert.equal(first.handle, '1693903232973955072');
+    assert.equal(first.nickname, 'leonyret');
+    assert.equal(first.bound, false, '尚未绑定');
+
+    // 绑定后同一识别结果应回 bound=true（桌面壳据此跳过重复绑定）
+    db.prepare(
+      `INSERT INTO platform_accounts (user_id, platform, handle, enabled) VALUES (?, 'pta', ?, 1)`,
+    ).run(DEFAULT_USER_ID, '1693903232973955072');
+    const again = (await (
+      await fetch(`${base}/cookies/identify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform: 'pta' }),
+      })
+    ).json()) as { bound: boolean };
+    assert.equal(again.bound, true);
+  });
+  if (original) register(original);
+});
+
+test('POST /cookies/identify：适配器未实现 identify / 平台非法时给出可读结果', async () => {
+  await withServer(async (_db, base) => {
+    const bad = await fetch(`${base}/cookies/identify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ platform: 'nope' }),
+    });
+    assert.equal(bad.status, 400);
+
+    // codeforces 没有 identify（公开 API 平台）→ 200 + ok:false，不是错误
+    const cf = (await (
+      await fetch(`${base}/cookies/identify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform: 'codeforces' }),
+      })
+    ).json()) as { ok: boolean; message: string };
+    assert.equal(cf.ok, false);
+    assert.match(cf.message, /手动填写|无法/);
+  });
+});
+

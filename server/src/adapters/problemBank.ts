@@ -1082,3 +1082,117 @@ export async function fetchJisuankeBank(
   }
   return { platform: 'jisuanke', problems: problems.slice(0, max), total };
 }
+
+// ---------- PTA（拼题A / pintia.cn） ----------
+
+const PTA_BASE = 'https://pintia.cn';
+/** 题集题目表实测单页上限 200（limit=200 返回满页；再大按 200 处理） */
+const PTA_BANK_PAGE_SIZE = 200;
+/** 单次拉取最多扫几套题集（站点公开题集约 23 套，留余量防空转） */
+const PTA_BANK_MAX_SETS = 40;
+
+/**
+ * PTA 公开题库（匿名可读，无需 Cookie）。
+ *
+ * 站点没有「全站题目表」这种接口：题目永远挂在某个题集（problem set）下，因此题库拉取 =
+ * 「先枚举公开题集 → 逐个题集翻 exam-problem-list」。公开题集来自
+ * `GET /api/problem-sets/always-available`（2026-11 实测 23 套：PAT 甲/乙/顶级练习集、
+ * 团体程序设计天梯赛练习集、浙大版 C/C++/Python/数据结构教材题目集、ZOJ 题库…，
+ * 合计约 4700 题，其中 ZOJ 一套就占 3179 题）。
+ *
+ * 两个只有实测才知道的边界：
+ * - **没有难度**：exam-problem-list 的 `difficulty` 字段 23 套题集实测恒为 0（站点不给），
+ *   按项目规则「未知一律 null，不猜」→ bankDifficulty('pta', null)，标度 none。
+ *   回填路径也把 pta 登记为 NO_DIFFICULTY_SOURCE，不会每轮重扫。
+ * - **没有算法标签**：接口不下发 tag/knowledge-point（那是题集级的另一个接口，且需登录）。
+ *
+ * 题号口径：`{problemSetId}-{problemSetProblemId}`，与同步适配器（adapters/pta.ts）同键，
+ * 因此题库行与提交行天然合并到同一道题上。
+ */
+export async function fetchPtaBank(
+  fetchFn: HttpInit,
+  opts: BankFetchOptions = {},
+): Promise<BankFetchResult> {
+  const max = opts.max ?? 5000;
+  const http = asHttpClient(fetchFn);
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    Accept: 'application/json;charset=UTF-8',
+    Referer: `${PTA_BASE}/`,
+  };
+  const problems: BankProblem[] = [];
+  const seen = new Set<string>();
+  const wanted = makeWantedTracker(opts.wantKeys);
+  let wantedDone = false;
+
+  const setsRes = await http.fetch(`${PTA_BASE}/api/problem-sets/always-available`, { headers });
+  if (!setsRes.ok) throw new Error(`PTA 题集清单接口 HTTP ${setsRes.status}，请稍后重试`);
+  const setsBody = (await setsRes.json().catch(() => null)) as { problemSets?: unknown } | null;
+  if (setsBody === null) throw new Error('PTA 题集清单接口返回非 JSON（接口变化），请稍后重试');
+  const rawSets = Array.isArray(setsBody.problemSets) ? setsBody.problemSets : [];
+  const sets: Array<{ id: string; name: string }> = [];
+  for (const s of rawSets) {
+    if (typeof s !== 'object' || s === null) continue;
+    const id = String((s as { id?: unknown }).id ?? '').trim();
+    if (!/^\d+$/.test(id)) continue;
+    const name = String((s as { name?: unknown }).name ?? '').trim();
+    sets.push({ id, name: name || id });
+  }
+  if (sets.length === 0) throw new Error('PTA 未返回任何公开题集（接口变化），请稍后重试');
+
+  let total = 0;
+  for (const set of sets.slice(0, PTA_BANK_MAX_SETS)) {
+    if (problems.length >= max || wantedDone) break;
+    let setTotal: number | null = null;
+    for (let page = 0; ; page += 1) {
+      const url =
+        `${PTA_BASE}/api/problem-sets/${set.id}/exam-problem-list` +
+        `?problem_type=PROGRAMMING&page=${page}&limit=${PTA_BANK_PAGE_SIZE}`;
+      const res = await http.fetch(url, { headers });
+      // 单个题集失败（如某套题集改为仅成员可见）不该让整批题库失败：跳过该集，继续下一套
+      if (!res.ok) break;
+      const body = (await res.json().catch(() => null)) as
+        | { total?: unknown; problemSetProblems?: unknown }
+        | null;
+      if (body === null) break;
+      const rows = Array.isArray(body.problemSetProblems) ? body.problemSetProblems : [];
+      if (rows.length === 0) break;
+      if (setTotal === null && typeof body.total === 'number') {
+        setTotal = body.total;
+        total += body.total;
+      }
+      for (const p of rows) {
+        if (typeof p !== 'object' || p === null) continue;
+        const pid = String((p as { id?: unknown }).id ?? '').trim();
+        if (!/^\d+$/.test(pid)) continue;
+        const key = `${set.id}-${pid}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const label = String((p as { label?: unknown }).label ?? '').trim();
+        const title = String((p as { title?: unknown }).title ?? '').trim();
+        problems.push({
+          platform: 'pta',
+          problemKey: key,
+          // 标题缺失时退到题号（如 1001 / L1-001）；写入层有「title != problem_key 才覆盖」的守卫
+          title: title || label || key,
+          ...bankDifficulty('pta', null), // 平台无难度字段（见上）
+          url: `${PTA_BASE}/problem-sets/${set.id}/problems/${pid}`,
+          tags: [],
+        });
+        if (wanted.hit(key)) {
+          wantedDone = true;
+          break;
+        }
+        if (problems.length >= max) break;
+      }
+      opts.onProgress?.({ platform: 'pta', count: problems.length, total });
+      if (wantedDone || problems.length >= max) break;
+      if (setTotal !== null && page * PTA_BANK_PAGE_SIZE + rows.length >= setTotal) break;
+      if (rows.length < PTA_BANK_PAGE_SIZE) break;
+      await sleep(opts.pageDelayMs ?? 1200); // 页间限速（与 hostThrottle 的安全下限同档）
+    }
+    if (!wantedDone && problems.length < max) await sleep(opts.pageDelayMs ?? 1200);
+  }
+  return { platform: 'pta', problems: problems.slice(0, max), total: total > 0 ? total : null };
+}
+

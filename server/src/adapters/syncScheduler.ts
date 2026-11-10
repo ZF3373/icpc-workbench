@@ -35,6 +35,8 @@ export const AUTO_CONTINUE_DELAY_MS: Record<PlatformId, number> = {
   leetcode: 120_000,
   qoj: 180_000,
   dashoj: 120_000,
+  // PTA：单次同步天然要打「题集数」次请求，续拉间隔给足
+  pta: 180_000,
 };
 
 /** 一次点击同步后最多自动续拉几轮（原 6）：更少的自动轮次 = 更低的短时请求密度 */

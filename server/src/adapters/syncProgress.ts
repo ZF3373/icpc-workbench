@@ -40,6 +40,7 @@ const PLATFORM_HOST: Record<PlatformId, string> = {
   daimayuan: 'bs.daimayuan.top',
   jisuanke: 'www.jisuanke.com',
   dashoj: 'dashoj.com',
+  pta: 'pintia.cn',
 };
 
 function platformStats(platform: PlatformId): { requests: number; lastRequestAt: number } {

@@ -9,7 +9,8 @@ import { localToday } from '../dates.ts';
 const HOSTS = new Set(['luogu.com.cn', 'www.luogu.com.cn', 'codeforces.com', 'www.codeforces.com',
   'atcoder.jp', 'www.atcoder.jp', 'bs.daimayuan.top', 'oj.daimayuan.top', 'ac.nowcoder.com',
   'jisuanke.com', 'www.jisuanke.com', 'leetcode.cn', 'www.leetcode.cn', 'leetcode.com',
-  'www.leetcode.com', 'www.nowcoder.com', 'qoj.ac', 'www.qoj.ac', 'vjudge.net', 'www.vjudge.net']);
+  'www.leetcode.com', 'www.nowcoder.com', 'qoj.ac', 'www.qoj.ac', 'vjudge.net', 'www.vjudge.net',
+  'pintia.cn', 'www.pintia.cn']);
 
 /** Only parse a supported URL; never fetch arbitrary user-supplied addresses. */
 export function addReviewFromUrl(db: Db, raw: unknown, title?: unknown) {

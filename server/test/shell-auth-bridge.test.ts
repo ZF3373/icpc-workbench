@@ -116,7 +116,9 @@ test('shell-auth 桥：status 心跳驱动 shell 在线判定，login 结果按 
 
     // /platforms：与 shared COOKIE_FIELDS 同口径的凭据平台清单
     const plats = await (await fetch(`${b.url}/platforms`)).json() as { platforms: string[] };
-    assert.deepEqual(plats.platforms.sort(), ['atcoder', 'daimayuan', 'jisuanke', 'leetcode', 'luogu', 'qoj']);
+    // 清单由 shared COOKIE_FIELDS 派生：PTA 的 PTASession 虽是可选项（公开题集匿名可同步），
+    // 但它确实是一份登录凭据，桌面壳也为它配了登录窗，故同样在列。
+    assert.deepEqual(plats.platforms.sort(), ['atcoder', 'daimayuan', 'jisuanke', 'leetcode', 'luogu', 'pta', 'qoj']);
   } finally {
     await b.close();
   }

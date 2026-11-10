@@ -54,6 +54,14 @@ struct LoginSpec {
     /// TLS 指纹，抓到的 Cookie 在 Node 侧重放必被拦（2026-10-11 实测）。这类平台不再
     /// 「抓 Cookie 推回」，而是注入守护脚本让 WebView 自己同源抓取提交页（qojAgent）。
     agent: bool,
+    /// 登录后**由凭据反查账号**并自动绑定（PTA）。
+    ///
+    /// 两个理由使它不能只用「Cookie 到了就算登录完成」：
+    /// 1. PTA 的 handle 是 19 位数字 userId，用户抄写／粘贴几乎必错，站点对昵称直接 400；
+    /// 2. passport.pintia.cn **未登录也会下发匿名 PTASession**（实测：200 + 空身份 +
+    ///    Set-Cookie），所以「抓到了 PTASession」根本不能证明用户登录成功。
+    /// 因此这类平台的完成判据是 identify 成功，且顺手把账号绑好——用户登完连账号都不用填。
+    identify: bool,
 }
 
 const LOGIN_SPECS: &[LoginSpec] = &[
@@ -64,6 +72,7 @@ const LOGIN_SPECS: &[LoginSpec] = &[
         fields: &[("__Host-UOJSESSID", "uojsessid"), ("UOJSESSID", "uojsessid"), ("cf_clearance", "clearance")],
         ua: true,
         agent: true,
+        identify: false,
     },
     LoginSpec {
         platform: "luogu",
@@ -72,6 +81,7 @@ const LOGIN_SPECS: &[LoginSpec] = &[
         fields: &[("_uid", "uid"), ("__client_id", "clientId")],
         ua: false,
         agent: false,
+        identify: false,
     },
     LoginSpec {
         platform: "daimayuan",
@@ -80,6 +90,7 @@ const LOGIN_SPECS: &[LoginSpec] = &[
         fields: &[("sid", "sid")],
         ua: false,
         agent: false,
+        identify: false,
     },
     LoginSpec {
         platform: "leetcode",
@@ -88,6 +99,7 @@ const LOGIN_SPECS: &[LoginSpec] = &[
         fields: &[("LEETCODE_SESSION", "session"), ("csrftoken", "csrftoken")],
         ua: false,
         agent: false,
+        identify: false,
     },
     LoginSpec {
         platform: "jisuanke",
@@ -96,6 +108,7 @@ const LOGIN_SPECS: &[LoginSpec] = &[
         fields: &[("s", "s"), ("JSKUSS", "jskuss")],
         ua: false,
         agent: false,
+        identify: false,
     },
     LoginSpec {
         platform: "atcoder",
@@ -104,6 +117,22 @@ const LOGIN_SPECS: &[LoginSpec] = &[
         fields: &[("REVEL_SESSION", "revelSession")],
         ua: false,
         agent: false,
+        identify: false,
+    },
+    // PTA（拼题A）：会话只有 PTASession 一项，由 pintia.cn 与 passport.pintia.cn 共用。
+    // 公开题集与公开用户的提交匿名可读，因此这是**可选**凭据：登录后才覆盖「我加入的题集」。
+    //
+    // 直接开登录页而不是首页：首页要用户自己再点一次「登录」，多一步且容易点错。
+    // identify=true 的两个原因见 LoginSpec.identify 注释——尤其第 2 条：
+    // pintia.cn 对游客也发 PTASession，所以「抓到 Cookie」在这里**不是**成功判据。
+    LoginSpec {
+        platform: "pta",
+        url: "https://pintia.cn/auth/login",
+        title: "PTA 登录 · 登录后自动识别并绑定账号（可随手关闭）",
+        fields: &[("PTASession", "ptasession")],
+        ua: false,
+        agent: false,
+        identify: true,
     },
 ];
 
@@ -120,11 +149,19 @@ const AGENT_PLATFORMS: &[(&str, &str, &str)] = &[
     ("vjudge", "vjudge-worker", "https://vjudge.net/"),
 ];
 
-/// 平台展示名（保活/提示文案用）
-fn platform_label(platform: &str) -> &'static str {
+/// 平台展示名（保活 / 登录结果等**面向用户**的提示文案用）。
+/// 未列出的平台回退平台 ID 本身，好过显示成别的平台名。
+fn platform_label(platform: &str) -> &str {
     match platform {
+        "qoj" => "QOJ",
         "vjudge" => "VJudge",
-        _ => "QOJ",
+        "luogu" => "洛谷",
+        "daimayuan" => "代码源",
+        "leetcode" => "LeetCode",
+        "jisuanke" => "计蒜客",
+        "atcoder" => "AtCoder",
+        "pta" => "PTA",
+        other => other,
     }
 }
 
@@ -179,6 +216,8 @@ const FIRST_KEEPALIVE_DELAY: Duration = Duration::from_secs(15);
 const PULL_WAIT: Duration = Duration::from_secs(30);
 /// 登录窗观察窗口：等用户完成（可能的）人机验证 + 登录
 const LOGIN_WATCH: Duration = Duration::from_secs(10 * 60);
+/// identify 平台的轮询节流：登录窗开着时每 10 秒才向核心问一次「这份凭据是谁的」
+const IDENTIFY_EVERY: Duration = Duration::from_secs(10);
 /// QOJ 保活连续失败 N 次后弹出可见登录窗请人工过盾（挑战可能是交互式的）
 const KEEPALIVE_FAIL_SHOW: u32 = 2;
 
@@ -316,28 +355,47 @@ async fn handle_login(app: &AppHandle, port: u16, req: &PendingRequest) {
     crate::logln(&format!("[shell-auth] {} 登录窗口已打开，等待凭据…", spec.platform));
     let deadline = tokio::time::Instant::now() + LOGIN_WATCH;
     let mut creds: Option<Creds> = None;
+    // 识别到的账号（identify 平台）
+    let mut who: Option<Identity> = None;
+    // 上次询问核心「这份凭据是谁的」的时刻（节流：见循环内注释）
+    let mut last_identify = tokio::time::Instant::now() - IDENTIFY_EVERY;
     loop {
         tokio::time::sleep(POLL_TICK).await;
         if app.get_webview_window(&label).is_none() {
             break; // 用户关窗：用最后一次读到的凭据收尾
         }
         if let Some(c) = read_cookies(app, &label, spec) {
-            let done = creds_complete(spec, &c);
-            creds = Some(c);
-            if done {
+            // ⚠ 不用 continue 提前跳出：循环尾部的 LOGIN_WATCH 超时判定必须每拍都跑到，
+            // 否则「Cookie 一直不齐」的窗口会永远观察下去
+            if !creds_complete(spec, &c) {
+                creds = Some(c); // 还没取齐：记下来（用户可能随时关窗，用最后一次读到的收尾）
+            } else if !spec.identify {
+                creds = Some(c);
                 break;
+            } else {
+                // identify 平台：Cookie 齐了还得能认出是谁。PTA 对游客也发 PTASession
+                // （实测 200 + 空身份），此时 identify 失败、继续等用户真正登录——
+                // 这正是「抓到 Cookie ≠ 登录成功」的那一类站点。
+                // 节流：每 10 秒才问一次核心，别把凭据登记接口打成刷屏。
+                if last_identify.elapsed() >= IDENTIFY_EVERY {
+                    last_identify = tokio::time::Instant::now();
+                    if let Some(id) = identify(port, spec.platform, &cookie_header(spec, &c)).await {
+                        crate::logln(&format!("[shell-auth] {} 已识别登录账号：{}", spec.platform, id.handle));
+                        who = Some(id);
+                        // 匿名会话换成真会话时 Cookie 值会变：必须存最新那份
+                        creds = Some(c);
+                        break;
+                    }
+                }
+                creds = Some(c);
             }
         }
         if tokio::time::Instant::now() >= deadline {
             break;
         }
     }
-    match creds {
-        Some(c) if creds_complete(spec, &c) => {
-            let (pushed, message) = push_cookies(port, spec, req.handle.as_deref(), &c).await;
-            crate::logln(&format!("[shell-auth] {} 登录抓取推送{}（{message}）", spec.platform, if pushed { "成功" } else { "失败" }));
-            post_result(port, "login", Some(req.id), pushed, &message).await;
-        }
+    let c = match creds {
+        Some(c) if creds_complete(spec, &c) => c,
         other => {
             let message = match other {
                 None => "登录窗口已关闭且未取得登录 Cookie".to_string(),
@@ -345,8 +403,52 @@ async fn handle_login(app: &AppHandle, port: u16, req: &PendingRequest) {
             };
             crate::logln(&format!("[shell-auth] {} 登录抓取未取齐凭据（{message}）", spec.platform));
             post_failure(port, "login", Some(req.id), &message).await;
+            return;
         }
+    };
+    // identify 平台若走到这里还没认出账号（用户关窗/超时），别把匿名 Cookie 当登录结果推回：
+    // PTA 游客会话无害但会让界面显示「已登录」，用户以为成功了、同步却仍只覆盖公开题集
+    if spec.identify && who.is_none() {
+        let message = format!(
+            "未检测到 {} 登录：请在窗口里完成登录后再点一次「在应用内登录 {}」",
+            spec.platform, spec.platform
+        );
+        crate::logln(&format!("[shell-auth] {} 未识别到登录身份，放弃推送（{message}）", spec.platform));
+        post_failure(port, "login", Some(req.id), &message).await;
+        return;
     }
+    // identify 平台：先把账号绑好再推凭据——账号槽位只对已绑定账号开放，
+    // 顺序反了会退化成「平台级暂存」，用户还得再抓一次才轮到账号同步
+    //
+    // ⚠ 以识别结果为准，不用前端传的 handle：用户在账号 A 的卡片里登录成了账号 B 时，
+    // 把 B 的 Cookie 写进 A 的槽位会让 A 的同步去拉 B 的提交记录（静默串号）。
+    // 识别结果才是事实，两者不一致时在消息里说明，让用户自己决定要不要删掉多余账号。
+    let mismatch: Option<String> = match (&who, &req.handle) {
+        // 只在「卡片上写了别的账号」时提示；没写（新增账号/平台级登录）不算不一致
+        (Some(id), Some(want)) if *want != id.handle => Some(format!(
+            "（注意：窗口里登录的是账号 {}，与卡片上的 {} 不同，已按实际登录账号保存）",
+            id.handle, want
+        )),
+        _ => None,
+    };
+    let handle = match &who {
+        Some(id) => {
+            bind_account(port, spec.platform, &id.handle).await;
+            Some(id.handle.clone())
+        }
+        None => req.handle.clone(),
+    };
+    let (pushed, message) = push_cookies(port, spec, handle.as_deref(), &c).await;
+    crate::logln(&format!("[shell-auth] {} 登录抓取推送{}（{message}）", spec.platform, if pushed { "成功" } else { "失败" }));
+    let mut message = message;
+    if let (Some(id), true) = (&who, pushed) {
+        let nick = id.nickname.as_deref().map(|n| format!("（{n}）")).unwrap_or_default();
+        message = format!("{message}；已自动绑定账号 {}{nick}，可随手关闭本窗口", id.handle);
+    }
+    if let Some(extra) = mismatch {
+        message.push_str(&extra);
+    }
+    post_result(port, "login", Some(req.id), pushed, &message).await;
 }
 
 /// 代理平台「立即续签」：刷新助手窗口（重导航续签 Cloudflare 凭据 + 重建守护脚本）
@@ -525,6 +627,62 @@ fn read_cookies(app: &AppHandle, label: &str, spec: &LoginSpec) -> Option<Creds>
         return None;
     }
     Some(out)
+}
+
+/// identify 平台识别出的登录账号（handle 可直接用于同步；nickname 仅用于展示）
+struct Identity {
+    handle: String,
+    nickname: Option<String>,
+}
+
+/// 询问核心「这份 Cookie 属于哪个账号」（核心走适配器的 identify，如 PTA 查 passport）。
+/// 未登录 / 未实现 / 网络失败一律 None：调用方继续等，不据此判定失败。
+async fn identify(port: u16, platform: &str, cookie: &str) -> Option<Identity> {
+    let body = json!({ "platform": platform, "cookie": cookie });
+    let v = post_json(port, "/api/settings/cookies/identify", &body).await?;
+    if v.get("ok").and_then(|o| o.as_bool()) != Some(true) {
+        return None;
+    }
+    let handle = v.get("handle").and_then(|h| h.as_str())?.trim().to_string();
+    if handle.is_empty() {
+        return None;
+    }
+    let nickname = v
+        .get("nickname")
+        .and_then(|n| n.as_str())
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty());
+    Some(Identity { handle, nickname })
+}
+
+/// 把识别出的账号登记为已绑定账号（幂等：核心对同 handle 只重新启用，不清数据）。
+/// 失败只记日志：凭据仍会推送，退化成「平台级暂存」，用户可手动绑定后再抓一次。
+async fn bind_account(port: u16, platform: &str, handle: &str) {
+    let body = json!({ "platform": platform, "handle": handle });
+    match post_json(port, "/api/settings/accounts", &body).await {
+        Some(_) => crate::logln(&format!("[shell-auth] {platform} 账号 {handle} 已绑定（自动识别）")),
+        None => crate::logln(&format!("[shell-auth] {platform} 账号 {handle} 自动绑定失败，凭据将暂存到平台级")),
+    }
+}
+
+/// Creds → Cookie 请求头文本（identify 的输入）。
+///
+/// Creds 存的是**字段 key → 值**（read_cookies 已把「同 key 多名字」归并成一个），
+/// 而核心那边要的是真实 Cookie 名，所以靠 LoginSpec.fields 反查：
+/// 按字段表顺序走一遍，同 key 的多个候选名取第一个有值的（与 read_cookies 同一口径）。
+fn cookie_header(spec: &LoginSpec, creds: &Creds) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut done: Vec<&str> = Vec::new();
+    for (name, key) in spec.fields {
+        if done.contains(key) {
+            continue;
+        }
+        if let Some((_, value)) = creds.iter().find(|(k, _)| k == key) {
+            done.push(key);
+            parts.push(format!("{name}={value}"));
+        }
+    }
+    parts.join("; ")
 }
 
 /// 是否取齐了该平台的全部凭据字段（字段表中每个 key 都有值）
