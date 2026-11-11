@@ -76,6 +76,26 @@ export function noteWriterWidth(fullscreen: boolean): number | string {
  * 单测会拿这份顺序去比对 index.css 的 .note-writer-grid，两处不会漂移。
  */
 export const NOTE_WRITER_COLUMNS = ['minmax(0, 1fr)', 'minmax(0, 0.9fr)', 'minmax(0, 1.25fr)'] as const
+
+/**
+ * 「笔记文字」缩放（`--note-text-zoom`）覆盖到全屏三栏的哪些栏。
+ *
+ * 背景（issue #62）：原来的 Ctrl+滚轮 / 加减按钮只认 `[data-note-zoom]` 锚点，
+ * 而全屏三栏里只有 01 实时预览、以及 02 里的模板大纲渲染块打了这个标记 ——
+ * 于是 02「写作上下文」的正文与 03「MD 写作」的编辑器**都不响应**缩放。
+ * 用户看到的是「缩放面板的百分数在涨（截图里的『笔记已放大 140%』），
+ * 但这两栏的字号纹丝不动」。
+ *
+ * 这三栏读的都是同一篇笔记，字号理应同进同退，所以三栏全部纳入缩放范围：
+ * - 01 实时预览：Markdown 渲染，已有 `[data-note-zoom] ` 那套字号规则；
+ * - 02 写作上下文：正文、标签与提示，按正文基准 12px 乘同一个系数；
+ * - 03 MD 写作：CodeMirror 编辑器，字号走 `--note-text-zoom` 而不是硬编码 12.5px。
+ *
+ * 只作用于**正文**：栏头（01/02/03 标题、字数）、缩放控件与「退出全屏」按钮
+ * 都不缩放 —— 与卡片态「缩放读长笔记的正文，而不是整张 UI」同一口径。
+ * 单测会比对 index.css，确认这三个锚点真实存在且三栏都在作用域内。
+ */
+export const NOTE_WRITER_ZOOM_PANES = ['01', '02', '03'] as const
 /**
  * 字数统计：剥掉空白后的字符数（中文按字、英文按字母，跟「写了多少内容」的直觉一致）。
  * 空格与换行不计入，避免「敲了一堆空行」被当成写了很多。

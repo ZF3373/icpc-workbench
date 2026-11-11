@@ -7,6 +7,7 @@ import {
   DEFAULT_NOTE_WRITER_VIEW,
   NOTE_WRITER_COLUMNS,
   NOTE_WRITER_MODES,
+  NOTE_WRITER_ZOOM_PANES,
   isNoteWriterMode,
   noteCharCount,
   noteLineCount,
@@ -98,4 +99,46 @@ test('index.css 的 .note-writer-grid 列顺序与 NOTE_WRITER_COLUMNS 一致（
   const block = css.slice(start, css.indexOf('}', start))
   const declared = /grid-template-columns:\s*([^;]+);/.exec(block)?.[1]?.trim()
   assert.equal(declared, NOTE_WRITER_COLUMNS.join(' '))
+})
+
+/* ---------- issue #62：全屏三栏的「笔记文字」缩放覆盖到 02 / 03 两栏 ----------
+ * 用户报的是「复习笔记区的 2、3 模块希望字体放大，或者增加调节功能」，并补充
+ * 「目前的放大是只要 1 版块的笔记查看的能放大」。
+ * 也就是说缩放入口本来就有（顶栏 ZoomControl），缺的是作用范围。
+ * 这几条钉住的是「三栏都在作用域内」，不是某一处的写法。 */
+
+test('NOTE_WRITER_ZOOM_PANES: 全屏三栏全部参与「笔记文字」缩放', () => {
+  assert.deepEqual([...NOTE_WRITER_ZOOM_PANES], ['01', '02', '03'])
+})
+
+test('NoteWriterModal: 01/02/03 三栏正文都挂了 data-note-zoom 锚点', () => {
+  const src = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../src/components/NoteWriterModal.tsx'), 'utf8')
+  // 01 实时预览、02 上下文、03 编辑器各一处；缺任何一处都会退回「只有部分能放大」。
+  // 只数真正的 JSX 属性（`data-note-zoom>` 这种布尔简写），注释里提到这个词不算。
+  const anchors = src.match(/data-note-zoom>/g) ?? []
+  assert.equal(anchors.length, 3, `三栏各需要一个 data-note-zoom，实际 ${anchors.length} 处`)
+  for (const className of ['note-writer-preview-scroll', 'note-writer-side-scroll', 'note-writer-pane-editor']) {
+    const re = new RegExp(`className="${className}"[^>]*data-note-zoom`)
+    assert.match(src, re, `${className} 未挂 data-note-zoom，该栏不会跟着缩放`)
+  }
+})
+
+test('index.css: 02 / 03 两栏的字号真的乘了 --note-text-zoom', () => {
+  const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../src/index.css'), 'utf8')
+  // 02 栏：各块的覆盖规则都要带缩放系数
+  for (const selector of [
+    'note-writer-side-meta',
+    'note-writer-side-label',
+    'note-writer-side-tips',
+    'note-writer-context-lead',
+    'note-writer-context-foot',
+  ]) {
+    const re = new RegExp(`\\[data-note-zoom\\] \\.${selector} \\{[^}]*--note-text-zoom`)
+    assert.match(css, re, `.${selector} 没有按 --note-text-zoom 缩放`)
+  }
+  // 03 栏：CodeMirror 正文与行号栏
+  assert.match(css, /\[data-note-zoom\] \.cm-editor \{[^}]*--note-text-zoom/)
+  // 栏头（01/02/03 编号、标题、字数）不参与缩放 —— 缩放的是正文，不是整张 UI
+  assert.doesNotMatch(css, /\.note-writer-pane-title \{[^}]*--note-text-zoom/)
+  assert.doesNotMatch(css, /\.note-writer-pane-meta \{[^}]*--note-text-zoom/)
 })

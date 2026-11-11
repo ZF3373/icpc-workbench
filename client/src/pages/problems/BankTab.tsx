@@ -72,9 +72,9 @@ export function BankTab({ onDone }: { onDone: () => void }) {
   return (
     <div>
       <p style={{ color: 'var(--text-3)' }}>
-        软件已内置 Codeforces 等题库，开箱即可供训练计划/题单选题；需要更多题目时从这里扩充（无需账号/Cookie，不影响刷题统计）。
-        Codeforces / AtCoder 一次调用秒级完成；洛谷/牛客/LeetCode/代码源按页拉取，拉取量越大耗时越长（约 1-2 分钟/千题）。
-        列表只列有公开题库的平台（QOJ 无题库接口，故不提供拉取）。
+        内置 Codeforces 等题库，开箱即可用于训练计划与题单；需要更多题时从这里扩充
+        （无需账号 / Cookie，不影响刷题统计）。拉取量越大耗时越长，约 1–2 分钟/千题；
+        只列有公开题库接口的平台。
       </p>
       <Space wrap>
         <Select
@@ -111,8 +111,7 @@ export function BankTab({ onDone }: { onDone: () => void }) {
           <Space>
             <Switch checked={atcoderTags} onChange={setAtcoderTags} />
             <span style={{ color: 'var(--text-3)' }}>
-              用洛谷镜像补标签（默认关；覆盖有限：实测 250 行样本中 139 行命中题号、仅 68 行真的带标签，
-              结果里的命中计数如实回传）
+              用洛谷镜像补标签（默认关，覆盖有限；结果里的命中计数如实回传）
             </span>
           </Space>
         </div>

@@ -253,13 +253,18 @@ export default function NoteWriterModal({
                   写作上下文
                 </span>
               </div>
-              <div className="note-writer-side-scroll">
+              {/* data-note-zoom：02 栏正文参与「笔记文字」缩放（issue #62）。
+                  原来只有下面的模板大纲块 @data-note-zoom，复习库的复习节奏与写作提示
+                  完全不受缩放影响 —— 同一栏里两套字号，用户看到的就是「只有部分能放大」。 */}
+              <div className="note-writer-side-scroll" data-note-zoom>
                 {meta ? <div className="note-writer-side-meta">{meta}</div> : null}
                 {context ? <div className="note-writer-side-block">{context}</div> : null}
                 {reference && reference.text.trim() ? (
                   <div className="note-writer-side-block">
                     <div className="note-writer-side-label">{reference.title}</div>
-                    <div className="note-writer-side-doc" data-note-zoom>
+                    {/* 外层 .note-writer-side-scroll 已经统一打上 data-note-zoom，
+                        这里不再重复标记，避免同一栏出现两套作用域 */}
+                    <div className="note-writer-side-doc">
                       <Markdown text={reference.text} />
                     </div>
                   </div>
@@ -285,15 +290,20 @@ export default function NoteWriterModal({
                 <span className="note-writer-pane-meta">{charCount} 字</span>
               </div>
               <div className="note-writer-pane-body">
-                <NoteEditor
-                  value={value}
-                  onChange={onChange}
-                  mode={editorMode}
-                  hideModeSwitch
-                  fill
-                  maxLength={maxLength}
-                  placeholder={placeholder}
-                />
+                {/* data-note-zoom：03 栏编辑器同样参与「笔记文字」缩放（issue #62）。
+                    编辑器字号在 CodeEditor 里是硬编码的 12.5px，这里靠 index.css 的
+                    [data-note-zoom] .cm-editor 规则乘上同一个系数。 */}
+                <div className="note-writer-pane-editor" data-note-zoom>
+                  <NoteEditor
+                    value={value}
+                    onChange={onChange}
+                    mode={editorMode}
+                    hideModeSwitch
+                    fill
+                    maxLength={maxLength}
+                    placeholder={placeholder}
+                  />
+                </div>
               </div>
             </section>
           </div>

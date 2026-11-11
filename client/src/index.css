@@ -6359,6 +6359,19 @@ html.app-hidden *::after {
   background: var(--surface-inset);
 }
 
+/*
+ * issue #62：03「MD 写作」的编辑器字号也要跟「笔记文字」缩放。
+ * 编辑器字号在 components/CodeEditor.tsx 的 EditorView.theme 里写死 12.5px，
+ * 主题选择器是 CodeMirror 运行时生成的随机类名（.cm-xxxx，只有一个类），
+ * 所以这里用两个类的后代选择器就能稳定压过它，不需要 !important，
+ * 也不必改 CodeEditor 本身（那是模板库等共用组件）。
+ * 行号栏一并缩放，否则正文放大后行号反而显得更小。
+ */
+[data-note-zoom] .cm-editor { font-size: calc(12.5px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .cm-editor .cm-gutters { font-size: calc(12.5px * var(--note-text-zoom, 1)); }
+/* 占位符与工具栏也按同一系数，避免「正文放大了、提示行还是小字」 */
+[data-note-zoom] .cm-editor .cm-placeholder { font-size: inherit; }
+
 .note-writer-pane-body .note-editor.is-fill {
   display: flex;
   flex-direction: column;
@@ -6366,6 +6379,19 @@ html.app-hidden *::after {
   border: none;
   border-radius: 0;
   background: transparent;
+}
+
+/* 03 栏的缩放锚点：必须撑满，否则包一层 div 会把编辑器的 100% 高度断掉 */
+.note-writer-pane-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.note-writer-pane-editor .note-editor.is-fill {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .note-writer-pane-body .note-editor.is-fill .note-editor-body {
@@ -6411,6 +6437,13 @@ html.app-hidden *::after {
   overflow-y: auto;
   padding: 12px 14px 20px;
   scrollbar-width: thin;
+  /*
+   * issue #62：02「写作上下文」的正文跟着「笔记文字」缩放。
+   * 这里只给一个基准字号，各块在下面按自身基准再乘同一个系数；100% 时排列与改动前
+   * 一致，只有缩放过才拉开。栏头（01/02/03 编号、标题、字数）与顶栏控件不在
+   * [data-note-zoom] 作用域内，不参与缩放。
+   */
+  font-size: calc(12px * var(--note-text-zoom, 1));
 }
 
 .note-writer-side-meta {
@@ -6473,6 +6506,14 @@ html.app-hidden *::after {
   font-size: 11.5px;
   line-height: 1.6;
 }
+
+/* issue #62：02 栏各块按自身基准字号乘同一个缩放系数（100% 时排版与改动前一致）。
+   放在基准声明之后，读起来是「原样 → 缩放版」，也避免以后有人误以为这两组毫不相干。 */
+[data-note-zoom] .note-writer-side-meta { font-size: calc(11.5px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .note-writer-side-label { font-size: calc(11px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .note-writer-side-tips { font-size: calc(11.5px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .note-writer-context-lead { font-size: calc(12px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .note-writer-context-foot { font-size: calc(11.5px * var(--note-text-zoom, 1)); }
 
 @media (max-width: 1180px) {
   .note-writer-grid {
