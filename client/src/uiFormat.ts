@@ -69,6 +69,7 @@ const SCALE_PLATFORM_NAME: Record<string, string> = {
   'atcoder-kenkoooo-irt': 'AtCoder',
   'nowcoder-score': '牛客',
   'icpc-tier': 'ICPC 榜单', // QOJ 题的难度来自 ICPC/CCPC 公开榜单档位（金/银/铜/铁）
+  'pta-level-5': 'PTA', // PTA 站点的 0-5 难度枚举（0 = 未标注 → 未知；1-5 = 入门/简单/中等/较难/困难）
 }
 
 /**

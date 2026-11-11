@@ -40,8 +40,14 @@ import { asHttpClient, sleep, type HttpClient, type HttpInit } from './http.ts';
  * 5. **题集内的提交行不带题目标题**（`problemSetProblemById[].title` 实测恒为空串），
  *    标题只能从题集的题目表 `exam-problem-list` 拿。故只对「本集确实拉到了新提交」的
  *    题集补拉一次题目表，避免为 23 套题集无脑多打 23 次请求。
- * 6. **平台没有难度字段**：`exam-problem-list` 的 `difficulty` 恒为 0（23 套题集实测全 0）。
- *    按项目规则「未知一律 null，不猜」，`difficulty` 不下发、标度记 none。
+ * 6. **难度是 0-5 的枚举，但公开题集实测恒为 0**。站点前端包体里的序数表是
+ *    `{0:UNLIMITED, 1:BEGINNER, 2:EASY, 3:MEDIUM, 4:DIFFICULT, 5:HARD}`
+ *    （中文：不限/入门/简单/中等/较难/困难），教师的题集配置 `showDifficulty` 只控制
+ *    考生能否看见、不改变返回值。**但 2026-11 把 23 套公开题集的 1906 道题全扫一遍，
+ *    `difficulty` 1906/1906 都是 0** —— 只有教师在自己建的题集里标过的题才有 1-5。
+ *    因此这里照常把值搬出来交给 `difficultyFields('pta', ...)` 换算（标度 `pta-level-5`），
+ *    **0 与缺失一律按未知处理**（不下发 difficulty 键），绝不把 0 当成最简档。
+ *    未标难度的题在本应用的呈现与其余平台「上游未评级」一致。
  *
  * 身份口径：题目的 `problemKey` 取 `{problemSetId}-{problemSetProblemId}`（与计蒜客的
  * `{contestId}-{problemId}` 同构）。`problemSetProblemId` 在全站范围内看似唯一，但把它们
@@ -125,6 +131,8 @@ export interface PtaProblemListItem {
   label?: string;
   title?: string;
   type?: string;
+  /** 站点难度枚举原文（0-5；0 = 未标注）。映射见 shared/src/difficulty.ts 的 PTA_LEVEL_TO_RATING */
+  difficulty?: unknown;
 }
 
 /** `/users/{uid}/submissions` 的一行（PROJECTION 实测字段） */
@@ -137,6 +145,14 @@ export interface PtaSubmissionRow {
   score?: number;
   compiler?: string;
   previewSubmission?: boolean;
+}
+
+/** 题集题目表补出来的题目元数据（提交行不带这些） */
+interface PtaProblemMeta {
+  /** 标题（缺失时退回题号，由调用方决定） */
+  title?: string;
+  /** 站点难度枚举原文（0-5；0 = 未标注） */
+  difficulty?: unknown;
 }
 
 /** 提交列表响应体 */
@@ -228,7 +244,16 @@ export function parsePtaProblemList(body: unknown): { items: PtaProblemListItem[
     const label = String((row as { label?: unknown }).label ?? '').trim();
     const title = String((row as { title?: unknown }).title ?? '').trim();
     const type = String((row as { type?: unknown }).type ?? '').trim();
-    items.push({ id, ...(label ? { label } : {}), ...(title ? { title } : {}), ...(type ? { type } : {}) });
+    // 难度原样透传（0-5 序数，或 null/缺失）：校验与换算全在 shared/src/difficulty.ts，
+    // 这里只做搬运，绝不在此处把 0 当成「最简档」
+    const difficulty = (row as { difficulty?: unknown }).difficulty;
+    items.push({
+      id,
+      ...(label ? { label } : {}),
+      ...(title ? { title } : {}),
+      ...(type ? { type } : {}),
+      ...(difficulty === undefined ? {} : { difficulty }),
+    });
   }
   const total = typeof b?.total === 'number' && Number.isFinite(b.total) ? b.total : null;
   return { items, total };
@@ -405,11 +430,12 @@ export function createPtaAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
   }
 
   /**
-   * 题集题目表 → `problemSetProblemId → 标题/题号`（提交行本身不带标题，见文件头第 5 条）。
-   * 任何失败都回退空表：标题缺失只会让题目退化显示题号，不该让整次同步失败。
+   * 题集题目表 → `problemSetProblemId → { 标题/题号, 难度原文 }`。
+   * 提交行本身既不带标题也不带难度（见文件头第 5、6 条），两者都只能从这里取。
+   * 任何失败都回退空表：元数据缺失只会让题目退化显示题号、难度未知，不该让整次同步失败。
    */
-  async function fetchTitleMap(problemSetId: string, cookie?: string): Promise<Map<string, string>> {
-    const map = new Map<string, string>();
+  async function fetchProblemMetaMap(problemSetId: string, cookie?: string): Promise<Map<string, PtaProblemMeta>> {
+    const map = new Map<string, PtaProblemMeta>();
     try {
       for (let page = 0; page < TITLE_LIST_MAX_PAGES; page += 1) {
         const { body } = await getJson(
@@ -420,14 +446,14 @@ export function createPtaAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
         if (items.length === 0) break;
         for (const it of items) {
           const label = it.title || it.label || '';
-          if (label) map.set(it.id, label);
+          map.set(it.id, { ...(label ? { title: label } : {}), difficulty: it.difficulty });
         }
         if (total !== null && page * TITLE_PAGE_SIZE + items.length >= total) break;
         if (items.length < TITLE_PAGE_SIZE) break;
         await sleep(PAGE_DELAY_MS);
       }
     } catch {
-      // 题目表拉不到就只丢标题：不抛错（与同步主体解耦）
+      // 题目表拉不到就只丢标题与难度：不抛错（与同步主体解耦）
     }
     return map;
   }
@@ -539,10 +565,12 @@ export function createPtaAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
               problem: {
                 platform: 'pta' as PlatformId,
                 problemKey: key,
-                // 标题稍后由 fetchTitleMap 补（提交行不带标题），先退到题号；题号也没有时占位为 key，
+                // 标题稍后由 fetchProblemMetaMap 补（提交行不带标题），先退到题号；题号也没有时占位为 key，
                 // 写入层有「title == problem_key 不覆盖」的守卫，不会把占位串当成真标题覆盖掉人工值
                 title: (typeof labelFromPage === 'string' && labelFromPage.trim()) || key,
-                ...difficultyFields('pta', null), // 平台无难度字段（见文件头第 6 条）
+                // 难度同样只能从题目表拿（见文件头第 6 条）：这里先给「未知但标度已定」，
+                // 由后续 fetchProblemMetaMap 按统一表回填；题目表拉不到时即保持未知，不猜
+                ...difficultyFields('pta', null),
                 url: ptaProblemUrl(key),
                 tags: [],
               },
@@ -590,18 +618,27 @@ export function createPtaAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
       /** 还有没被看过的题集（预算/上限把它挡在后面） */
       const setsRemain = resumeIndex < sets.length;
 
-      // 标题回填：只对真的产出了新行的题集再多打少量请求（见文件头第 5 条）
+      // 元数据回填（标题 + 难度）：只对真的产出了新行的题集再多打少量请求（见文件头第 5 条）
       if (setsWithNewRows.size > 0) {
         for (const psId of setsWithNewRows) {
           if (pagesUsed >= budget + setsWithNewRows.size * TITLE_LIST_MAX_PAGES) break;
-          const titleMap = await fetchTitleMap(psId, cookie);
-          if (titleMap.size === 0) continue;
+          const metaMap = await fetchProblemMetaMap(psId, cookie);
+          if (metaMap.size === 0) continue;
           const prefix = `${psId}-`;
           for (const s of out) {
             if (!s.problem.problemKey.startsWith(prefix)) continue;
             const pspId = s.problem.problemKey.slice(prefix.length);
-            const title = titleMap.get(pspId);
-            if (title) s.problem.title = title;
+            const meta = metaMap.get(pspId);
+            if (!meta) continue;
+            if (meta.title) s.problem.title = meta.title;
+            // 难度：按统一表换算。0（UNLIMITED）/缺失 → 不写 difficulty 键（未知），
+            // 但站点确实给了值（如 '0'）时原生原文照样留存，供日后按新表重算
+            const diff = difficultyFields('pta', meta.difficulty);
+            if (diff.difficulty !== undefined) s.problem.difficulty = diff.difficulty;
+            if (diff.nativeDifficulty !== undefined) s.problem.nativeDifficulty = diff.nativeDifficulty;
+            if (diff.difficulty !== undefined || diff.nativeDifficulty !== undefined) {
+              s.problem.difficultyScale = diff.difficultyScale;
+            }
           }
         }
       }

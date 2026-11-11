@@ -1101,9 +1101,12 @@ const PTA_BANK_MAX_SETS = 40;
  * 合计约 4700 题，其中 ZOJ 一套就占 3179 题）。
  *
  * 两个只有实测才知道的边界：
- * - **没有难度**：exam-problem-list 的 `difficulty` 字段 23 套题集实测恒为 0（站点不给），
- *   按项目规则「未知一律 null，不猜」→ bankDifficulty('pta', null)，标度 none。
- *   回填路径也把 pta 登记为 NO_DIFFICULTY_SOURCE，不会每轮重扫。
+ * - **难度字段是 0-5 枚举，但公开题集实测恒为 0**：站点前端包体的序数表是
+ *   `{0:UNLIMITED,1:BEGINNER,2:EASY,3:MEDIUM,4:DIFFICULT,5:HARD}`（不限/入门/简单/中等/较难/困难），
+ *   0 = 教师未标注。2026-11 把 23 套公开题集 1906 道题全扫一遍，1906/1906 都是 0。
+ *   因此照常把原值交给 `bankDifficulty('pta', ...)`（标度 `pta-level-5`）：
+ *   教师自己的题集若标了 1-5 就能换算成 CF rating，0/缺失仍按未知（null），绝不把 0 当最简档。
+ *   回填路径仍把 pta 登记为 NO_DIFFICULTY_SOURCE（公开题集拿不到 1-5），不会每轮重扫。
  * - **没有算法标签**：接口不下发 tag/knowledge-point（那是题集级的另一个接口，且需登录）。
  *
  * 题号口径：`{problemSetId}-{problemSetProblemId}`，与同步适配器（adapters/pta.ts）同键，
@@ -1170,12 +1173,14 @@ export async function fetchPtaBank(
         seen.add(key);
         const label = String((p as { label?: unknown }).label ?? '').trim();
         const title = String((p as { title?: unknown }).title ?? '').trim();
+        // 难度原样搬运（0-5 枚举，0 = 未标注）：校验/换算只在 shared/src/difficulty.ts 一处
+        const rawDifficulty = (p as { difficulty?: unknown }).difficulty;
         problems.push({
           platform: 'pta',
           problemKey: key,
           // 标题缺失时退到题号（如 1001 / L1-001）；写入层有「title != problem_key 才覆盖」的守卫
           title: title || label || key,
-          ...bankDifficulty('pta', null), // 平台无难度字段（见上）
+          ...bankDifficulty('pta', rawDifficulty), // 0/缺失 → 未知；1-5 → pta-level-5 表（见上）
           url: `${PTA_BASE}/problem-sets/${set.id}/problems/${pid}`,
           tags: [],
         });

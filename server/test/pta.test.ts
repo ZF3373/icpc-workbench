@@ -172,6 +172,7 @@ test('pta: parsePtaProblemList 取 total 并保留题号/标题', () => {
     label: '1001',
     title: 'A+B Format',
     type: 'PROGRAMMING',
+    difficulty: 0, // 站点原文透传（0 = UNLIMITED；换算在 shared/src/difficulty.ts）
   });
   assert.deepEqual(parsePtaProblemList(null), { items: [], total: null });
 });
@@ -209,8 +210,10 @@ test('pta: 匿名同步公开发表记录（无 Cookie 也能拉到）', async (
   assert.equal(rows[1]?.verdict, 'WA');
   // 题号 = 题集 id + 题集内题目 id（与题库拉取同键）
   assert.equal(rows[0]?.problem.problemKey, `${PS}-994805516654460928`);
-  assert.equal(rows[0]?.problem.difficulty, undefined); // 平台无难度：不臆造
-  assert.equal(rows[0]?.problem.difficultyScale, 'none');
+  assert.equal(rows[0]?.problem.difficulty, undefined); // 难度 0/缺失 = 未知：不臆造
+  // 标度仍然是 pta-level-5：回填/前端据此知道「这个平台有 0-5 的难度域」，
+  // 只是这批题恰好都是 0（公开题集实测 1906/1906 全 0）
+  assert.equal(rows[0]?.problem.difficultyScale, 'pta-level-5');
   assert.equal(rows[0]?.externalId, '2119783105457266688');
   assert.equal(rows[0]?.submittedAt, '2026-11-09T13:02:10.000Z'.replace('13:02:10', '13:24:10'));
   assert.equal(rows[0]?.language, 'GCC');
@@ -437,6 +440,96 @@ test('pta: 题集题目表拉不到时只丢标题，不影响同步', async () 
   assert.equal(rows.length, 1);
   // 退回页内给出的题号（label），而不是空标题
   assert.equal(rows[0]?.problem.title, '1006');
+});
+
+
+// ---------- 难度（0-5 枚举 → CF rating，映射表在 shared/src/difficulty.ts） ----------
+
+test('pta: 题集题目表里的 1-5 档难度换算为 CF rating 并带回原生档位', async () => {
+  const adapter = createPtaAdapter(
+    router({
+      '/api/problem-sets/always-available': ALWAYS_AVAILABLE,
+      '/users/1693903232973955072/submissions': {
+        submissions: [sub({ id: '300', status: 'ACCEPTED' })],
+        hasBefore: false,
+        problemSetProblemById: { '994805516654460928': { id: '994805516654460928', label: '1006', title: '' } },
+      },
+      // 同一套题集里两档：1006 标了「中等」(3)，1001 未标注 (0)
+      '/exam-problem-list': {
+        total: 2,
+        problemSetProblems: [
+          { id: '994805516654460928', label: '1006', title: 'Sign In and Sign Out', difficulty: 3 },
+          { id: '994805528788582400', label: '1001', title: 'A+B Format', difficulty: 0 },
+        ],
+      },
+    }),
+  );
+  const rows = await adapter.fetchUserSubmissions('1693903232973955072', { pageDelayMs: 0 });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.problem.difficulty, 1600); // 3 中等 → CF 1600
+  assert.equal(rows[0]?.problem.nativeDifficulty, '3');
+  assert.equal(rows[0]?.problem.difficultyScale, 'pta-level-5');
+  assert.equal(rows[0]?.problem.title, 'Sign In and Sign Out');
+});
+
+test('pta: 难度 0（UNLIMITED）/缺失一律按未知，不下发 difficulty 键', async () => {
+  const adapter = createPtaAdapter(
+    router({
+      '/api/problem-sets/always-available': ALWAYS_AVAILABLE,
+      '/users/1693903232973955072/submissions': {
+        submissions: [sub({ id: '300', status: 'ACCEPTED' })],
+        hasBefore: false,
+        problemSetProblemById: { '994805516654460928': { id: '994805516654460928', label: '1006', title: '' } },
+      },
+      '/exam-problem-list': {
+        total: 2,
+        problemSetProblems: [
+          { id: '994805516654460928', label: '1006', title: 'Sign In and Sign Out', difficulty: 0 },
+          { id: '994805528788582400', label: '1001', title: 'A+B Format' }, // 字段缺失
+        ],
+      },
+    }),
+  );
+  const rows = await adapter.fetchUserSubmissions('1693903232973955072', { pageDelayMs: 0 });
+  assert.equal(rows[0]?.problem.difficulty, undefined);
+  assert.equal(rows[0]?.problem.nativeDifficulty, '0'); // 原文如实留存（0 也是有效原文）
+  assert.equal(rows[0]?.problem.difficultyScale, 'pta-level-5');
+});
+
+test('pta: 越界难度值不钳位、不猜，只留原文', async () => {
+  const adapter = createPtaAdapter(
+    router({
+      '/api/problem-sets/always-available': ALWAYS_AVAILABLE,
+      '/users/1693903232973955072/submissions': {
+        submissions: [sub({ id: '300', status: 'ACCEPTED' })],
+        hasBefore: false,
+      },
+      '/exam-problem-list': {
+        total: 1,
+        problemSetProblems: [
+          { id: '994805516654460928', label: '1006', title: 'X', difficulty: 9 }, // 站点未来扩档
+        ],
+      },
+    }),
+  );
+  const rows = await adapter.fetchUserSubmissions('1693903232973955072', { pageDelayMs: 0 });
+  assert.equal(rows[0]?.problem.difficulty, undefined);
+  assert.equal(rows[0]?.problem.nativeDifficulty, '9');
+  assert.equal(rows[0]?.problem.difficultyScale, 'pta-level-5');
+});
+
+test('pta: parsePtaProblemList 透传难度原文（0-5 序数，不做本地换算）', () => {
+  const { items } = parsePtaProblemList({
+    total: 3,
+    problemSetProblems: [
+      { id: '1', label: 'A', title: 'a', difficulty: 0 },
+      { id: '2', label: 'B', title: 'b', difficulty: 4 },
+      { id: '3', label: 'C', title: 'c' },
+    ],
+  });
+  assert.equal(items[0]?.difficulty, 0);
+  assert.equal(items[1]?.difficulty, 4);
+  assert.equal('difficulty' in (items[2] ?? {}), false); // 缺失不补默认值
 });
 
 test('pta: checkAuth 依据 passport /api/u/current 的内容判定（该接口未登录也是 200）', async () => {

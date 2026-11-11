@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  CF_RATING_MAX,
+  CF_RATING_MIN,
   DIFFICULTY_BUCKETS,
   UNKNOWN_DIFFICULTY_BUCKET,
   atcoderThetaToRating,
@@ -12,6 +14,7 @@ import {
   parseIcpcTier,
   parseNativeDifficulty,
   parseNowcoderScore,
+  parsePtaDifficulty,
   toCfRating,
 } from '../../shared/src/difficulty.ts';
 
@@ -164,6 +167,92 @@ test('difficulty: ICPC/CCPC 公开榜单档位（QOJ 难度来源）解析与映
   assert.equal(parseNativeDifficulty('qoj', null).rating, null);
   assert.equal(parseNativeDifficulty('qoj', null).scale, 'none');
   assert.equal('difficulty' in difficultyFields('qoj', null), false);
+});
+
+
+// ---------- PTA（拼题A）难度：0-5 枚举 → CF rating ----------
+
+test('difficulty: PTA 覆盖整个 0-5 取值域，0 与越界值一律未知（不猜、不钳位）', () => {
+  // 域来自站点前端包体的序数表：{0:UNLIMITED,1:BEGINNER,2:EASY,3:MEDIUM,4:DIFFICULT,5:HARD}
+  for (const level of [1, 2, 3, 4, 5]) {
+    assert.equal(parsePtaDifficulty(level), level, `档位 ${level} 必须被接受`);
+    assert.equal(parsePtaDifficulty(String(level)), level, `字符串形态 ${level} 也必须被接受`);
+  }
+  // 0 = UNLIMITED（教师未标注）：不是「最简档」，按未知处理
+  assert.equal(parsePtaDifficulty(0), null);
+  assert.equal(parsePtaDifficulty('0'), null);
+  // 越界值不钳位：把 6 当 5 用等于替站点编造数据
+  assert.equal(parsePtaDifficulty(6), null);
+  assert.equal(parsePtaDifficulty(999), null);
+  assert.equal(parsePtaDifficulty(-1), null);
+  // 非整数/非数字/空值
+  assert.equal(parsePtaDifficulty(2.5), null);
+  assert.equal(parsePtaDifficulty('MEDIUM'), null);
+  assert.equal(parsePtaDifficulty(''), null);
+  assert.equal(parsePtaDifficulty(' '), null);
+  assert.equal(parsePtaDifficulty(null), null);
+  assert.equal(parsePtaDifficulty(undefined), null);
+});
+
+test('difficulty: PTA 1-5 → CF rating 单调递增且对齐 CF 段位分界', () => {
+  // 锚点逐个对应 cfRatingTitle 的段位分界（见 shared/src/difficulty.ts 的 PTA_LEVEL_TO_RATING 表）
+  assert.equal(toCfRating('pta', 1), 800);
+  assert.equal(toCfRating('pta', 2), 1200);
+  assert.equal(toCfRating('pta', 3), 1600);
+  assert.equal(toCfRating('pta', 4), 2100);
+  assert.equal(toCfRating('pta', 5), 2600);
+  // 严格单调（5 档压缩 28 个离散 rating，但至少不能乱序）
+  const ys = [1, 2, 3, 4, 5].map((l) => toCfRating('pta', l)!);
+  for (let i = 1; i < ys.length; i += 1) assert.ok(ys[i]! > ys[i - 1]!, `档位 ${i + 1} 必须高于 ${i}`);
+  // 同档落在同一 CF 段（锚点即段位下界，再往上不越到下一段就是自洽的）
+  assert.equal(cfRatingTitle(toCfRating('pta', 1)!).en, 'Newbie');
+  assert.equal(cfRatingTitle(toCfRating('pta', 2)!).en, 'Pupil');
+  assert.equal(cfRatingTitle(toCfRating('pta', 3)!).en, 'Expert');
+  assert.equal(cfRatingTitle(toCfRating('pta', 4)!).en, 'Master');
+  assert.equal(cfRatingTitle(toCfRating('pta', 5)!).en, 'International Grandmaster');
+  // 取值域必须落在 CF 标尺内
+  for (const l of [1, 2, 3, 4, 5]) {
+    const v = toCfRating('pta', l)!;
+    assert.ok(v >= CF_RATING_MIN && v <= CF_RATING_MAX, `档位 ${l} 的 rating 越界：${v}`);
+  }
+});
+
+test('difficulty: PTA 原生档位名与标度', () => {
+  assert.equal(nativeDifficultyLabel('pta', 1), '入门');
+  assert.equal(nativeDifficultyLabel('pta', 2), '简单');
+  assert.equal(nativeDifficultyLabel('pta', 3), '中等');
+  assert.equal(nativeDifficultyLabel('pta', 4), '较难');
+  assert.equal(nativeDifficultyLabel('pta', 5), '困难');
+  // 0 = 不限（未标注）→ 无档位名
+  assert.equal(nativeDifficultyLabel('pta', 0), null);
+  assert.equal(parseNativeDifficulty('pta', 3).scale, 'pta-level-5');
+  // 未知难度也必须带标度（回填据此知道「这个平台的难度域是什么」）
+  assert.equal(parseNativeDifficulty('pta', 0).scale, 'pta-level-5');
+  assert.equal(parseNativeDifficulty('pta', null).scale, 'pta-level-5');
+  // 原生原文如实保留，供日后按新表重算
+  assert.equal(parseNativeDifficulty('pta', 4).native, '4');
+});
+
+test('difficulty: PTA 难度缺失/异常时与其余平台同口径（缺 difficulty 键，不臆造）', () => {
+  // 0 与缺失在「有没有 difficulty 值」上完全等价：都不给 difficulty 键。
+  // 差别只在原生原文：0 是站点真的给了值（原文 '0' 如实留存，与洛谷 0「暂无评定」同口径），
+  // 缺失则连原文都没有。
+  assert.deepEqual(difficultyFields('pta', 0), { difficultyScale: 'pta-level-5', nativeDifficulty: '0' });
+  assert.deepEqual(difficultyFields('pta', null), { difficultyScale: 'pta-level-5' });
+  assert.equal('difficulty' in difficultyFields('pta', 0), false);
+  // 异常值：越界/非整数/非数字串 —— 同样保持未知，但原生原文留存
+  for (const bad of [6, -1, 2.5, 'MEDIUM']) {
+    const f = difficultyFields('pta', bad);
+    assert.equal(f.difficulty, undefined, `${String(bad)} 不得产出 difficulty`);
+    assert.equal(f.difficultyScale, 'pta-level-5');
+    assert.equal(f.nativeDifficulty, String(bad));
+  }
+  // 有值时三字段齐发
+  assert.deepEqual(difficultyFields('pta', 5), {
+    difficulty: 2600,
+    nativeDifficulty: '5',
+    difficultyScale: 'pta-level-5',
+  });
 });
 
 test('difficulty: cfRatingTitle 边界', () => {

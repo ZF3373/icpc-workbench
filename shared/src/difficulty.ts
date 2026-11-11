@@ -71,6 +71,9 @@ export type DifficultyScale =
   | 'jisuanke-level-8'
   | 'hydro-1-10'
   | 'icpc-tier'
+  // PTA（拼题A）题目的 difficulty 枚举：站点只有 0-5 六个序数，**不是** CF 那种千分位 rating。
+  // 0 = 不限（考生视角「没给难度」），1-5 = 入门/简单/中等/较难/困难。
+  | 'pta-level-5'
   /**
    * 第三方聚合站 clist.by 的题目 rating（issue #57 的备选来源）。
    * 与平台原生标度区分开：它**不是**平台给出的难度，只是社区聚合值，用于官方/上游
@@ -244,6 +247,68 @@ function toNumber(raw: unknown): number | null {
   return null;
 }
 
+/**
+ * PTA（拼题A / pintia.cn）难度枚举。
+ *
+ * 域只有 0-5 六个序数（**不是** CF 那种千分位 rating）。字典取自站点前端
+ * `exam-app` 包体里的 Difficulty 序数表（2026-11 实测，源码常量）：
+ *
+ * ```
+ * {0:{name:"UNLIMITED"},1:{name:"BEGINNER"},2:{name:"EASY"},
+ *  3:{name:"MEDIUM"},4:{name:"DIFFICULT"},5:{name:"HARD"}}
+ * ```
+ *
+ * 对应的中文名同包体 i18n 词典：不限 / 入门 / 简单 / 中等 / 较难 / 困难。
+ * 教师在建题集时给题目标这一档；**题集配置 `showDifficulty` 只控制考生能否看见该列**，
+ * 不改变接口返回值。
+ *
+ * 0 = UNLIMITED 是「没标难度」而非最简档，与洛谷 0「暂无评定」同义 → 一律按未知处理。
+ */
+export const PTA_DIFFICULTY_NAMES: Readonly<Record<number, string>> = {
+  1: '入门', 2: '简单', 3: '中等', 4: '较难', 5: '困难',
+};
+
+/** PTA 难度域：1..5 是档位，0（UNLIMITED）= 未标 */
+export const PTA_DIFFICULTY_MAX = 5;
+
+/**
+ * PTA 5 档 → CF rating。
+ *
+ * **没有权威对照表**：站点未公布档位与任何 rating 的换算，社区也没有可用样本
+ * （PTA 题目没有公开的通过率榜单可与 CF 对齐，公开题集的 difficulty 实测恒为 0，
+ * 见下）。因此这里是**启发式锚定**，不是实测回归：把 5 档对齐到 **Codeforces 段位分界**
+ * （https://en.wikipedia.org/wiki/Codeforces#Rating_system ，与本文件 `cfRatingTitle`
+ * 用的是同一套边界），每个锚点都能引用出处、且单调递增：
+ *
+ * | PTA 档 | 锚点 CF rating | 依据 |
+ * | --- | --- | --- |
+ * | 1 入门 | 800 | CF 题库 rating 下限（problemset.problems 实测 min=800） |
+ * | 2 简单 | 1200 | Newbie/Pupil 分界 |
+ * | 3 中等 | 1600 | Expert 段起点 |
+ * | 4 较难 | 2100 | Master 段起点（Candidate Master 之上） |
+ * | 5 困难 | 2600 | International Grandmaster 段起点（Div.1 后半） |
+ *
+ * **精度声明**：5 档压缩了 CF 的 28 个离散 rating，单档跨度 300-500 → 量化误差
+ * 本身就有 **±200-300**，只可作为粗分档信号（弱项归类、推荐候选池）。
+ * 不要用它做精确评级，也不要在同一道题上把它与 CF 原生 rating 直接比大小。
+ * 若日后站点公布对照或出现足够配对样本（如 PTA 题在洛谷有镜像且难度可比），
+ * 只改这一张表即可，与其余平台同一口径。
+ */
+export const PTA_LEVEL_TO_RATING: Readonly<Record<number, number>> = {
+  1: 800, 2: 1200, 3: 1600, 4: 2100, 5: 2600,
+};
+
+/**
+ * PTA 难度原文校验：只接受 1..5 的整数（数字或整数字符串）。
+ * 0（不限）、越界值（6+ / 负数）、非整数（2.5）、非数字串、空值一律 → null（未知不猜）。
+ * 不做钳位：把 6 当 5 用等于替站点编造数据。
+ */
+export function parsePtaDifficulty(raw: unknown): number | null {
+  const n = toNumber(raw);
+  if (n === null || !Number.isInteger(n) || n < 1 || n > PTA_DIFFICULTY_MAX) return null;
+  return n;
+}
+
 export function parseNativeDifficulty(platform: PlatformId, raw: unknown): DifficultyParse {
   const nativeText =
     raw === null || raw === undefined || raw === '' ? null : String(raw).trim() === '' ? null : String(raw).trim();
@@ -315,6 +380,18 @@ export function parseNativeDifficulty(platform: PlatformId, raw: unknown): Diffi
         rating: HYDRO_LEVEL_TO_RATING[level] ?? null,
         label: `${level}/10`,
         scale: 'hydro-1-10',
+        native: nativeText,
+      };
+    }
+    case 'pta': {
+      // 站点 `difficulty` 是 0-5 的枚举序数（见 PTA_LEVEL_TO_RATING），不是 rating。
+      // 0 = UNLIMITED（教师未标注）→ 未知；1-5 → 按启发式锚点换算，标度记 pta-level-5。
+      const level = parsePtaDifficulty(raw);
+      if (level === null) return { rating: null, label: null, scale: 'pta-level-5', native: nativeText };
+      return {
+        rating: PTA_LEVEL_TO_RATING[level] ?? null,
+        label: PTA_DIFFICULTY_NAMES[level] ?? null,
+        scale: 'pta-level-5',
         native: nativeText,
       };
     }

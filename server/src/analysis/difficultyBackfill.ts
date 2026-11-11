@@ -122,9 +122,13 @@ const NO_GAP_CACHE: ReadonlySet<PlatformId> = new Set<PlatformId>(['qoj']);
  * 这类行是常态而非遗留。它们同样没有难度来源 —— VJudge 不提供难度，原 OJ 又不在本应用里，
  * 所以照样走这条终态规则，只是理由从「历史遗留」变成「题库未接入」。
  *
- * PTA（pintia.cn）同样没有难度来源：题集题目表里的 `difficulty` 字段 23 套题集实测**恒为 0**
- * （站点把难度藏在人工评审/通过率里，未在任何公开接口下发）。不留这条终态，则每次回填都会
- * 把这批题当「失败」重扫一遍，永远补不上。
+ * PTA（pintia.cn）的难度字段是 0-5 的枚举（0=UNLIMITED，1-5=入门/简单/中等/较难/困难，
+ * 见 shared/src/difficulty.ts 的 PTA_LEVEL_TO_RATING），**但公开题集的 1906 道题实测
+ * 1906/1906 都是 0** —— 只有教师在自己建的题集里标过的题才有 1-5，而本应用同步/题库
+ * 只覆盖公开题集（与「我加入的题集」无关，那部分靠提交同步顺带拿到）。
+ * 因此回填对公开题集结构性无解：不留这条终态，则每次回填都会把这批题当「失败」重扫一遍。
+ * 注意这不是「平台没难度字段」——同步/题库路径仍会把 1-5 换算下来（标度 pta-level-5），
+ * 只是那需要用户账号所在题集的教师标过档。
  */
 const NO_DIFFICULTY_SOURCE: ReadonlySet<PlatformId> = new Set<PlatformId>(['vjudge', 'pta']);
 
@@ -328,7 +332,7 @@ const PLATFORM_LIMITS: Record<PlatformId, { delayMs: number; failLimit: number |
   // QOJ 不逐题发请求：目录/索引/榜单各拉一次（榜单下载量受 MAX_BOARDS_PER_RUN 约束，
   // 比赛页读取受 MAX_QOJ_PAGES_PER_RUN 约束）
   qoj: { delayMs: 0, failLimit: null, maxPerRun: 2000 },
-  // PTA：平台侧完全没有难度字段（见 NO_DIFFICULTY_SOURCE），不发请求、本轮不处理
+  // PTA：公开题集的 difficulty 实测恒为 0（见 NO_DIFFICULTY_SOURCE），不发请求、本轮不处理
   pta: { delayMs: 0, failLimit: null, maxPerRun: 0 },
 };
 
