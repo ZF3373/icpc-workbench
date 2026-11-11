@@ -61,10 +61,18 @@ const URL_PATTERNS: UrlPattern[] = [
   { re: /qoj\.ac\/contest\/(\d+)\/problem\/([A-Za-z0-9_]+)/i, platform: 'qoj', key: (m) => `${m[1]}-${m[2]}` },
   // QOJ 题库题目：qoj.ac/problem/9242 → key 9242（与同步适配器同键）
   { re: /qoj\.ac\/problem\/([A-Za-z0-9_]+)/i, platform: 'qoj', key: (m) => m[1] },
-  // PTA（拼题A）题集题：pintia.cn/problem-sets/{ps}/problems/{psp} → key {ps}-{psp}
-  //（与同步适配器同键，见 adapters/pta.ts 的 ptaProblemKey）
+  // PTA（拼题A）**现行**的题目页路由（本应用生成的就是这种，也是站点自己列表里的链接）：
+  //   pintia.cn/problem-sets/{ps}/exam/problems/type/{type}?problemSetProblemId={psp}
+  // 题目 id 在**查询参数**里，不在路径段 —— 因此正则必须把 `?...problemSetProblemId=` 一起吃进来，
+  // 否则 m[0] 不含查询串、url 还原也会断在路径上。type 取任意序数（编程题 7）。
+  {
+    re: /pintia\.cn\/problem-sets\/(\d+)\/exam\/problems\/type\/\d+\?[^\s]*\bproblemSetProblemId=(\d+)/i,
+    platform: 'pta',
+    key: (m) => `${m[1]}-${m[2]}`,
+  },
+  // PTA 老式链接：pintia.cn/problem-sets/{ps}/problems/{psp} 与 /exam-problems/{psp} 两种写法并存
+  //（这类路径现在点开会被 SPA 渲染成 404，但历史题单/别人文档里仍可能贴，仍需能认出来）
   { re: /pintia\.cn\/problem-sets\/(\d+)\/problems\/(\d+)/i, platform: 'pta', key: (m) => `${m[1]}-${m[2]}` },
-  // PTA 老式链接：pintia.cn/problem-sets/{ps}/exam-problems/{psp} 与 /exam-problem/{psp} 两种写法并存
   { re: /pintia\.cn\/problem-sets\/(\d+)\/exam-problems?\/(\d+)/i, platform: 'pta', key: (m) => `${m[1]}-${m[2]}` },
 ];
 

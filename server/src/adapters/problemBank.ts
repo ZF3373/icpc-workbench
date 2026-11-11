@@ -1,6 +1,7 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
 import { difficultyFields, parseNowcoderScore, toCfRating, type DifficultyScale } from '../../../shared/src/difficulty.ts';
 import { fetchWithChallenge } from './luogu.ts';
+import { ptaProblemUrl } from './pta.ts';
 import { parseJisuankeProblemTags } from './jisuanke.ts';
 import { asHttpClient, sleep, type HttpInit } from './http.ts';
 
@@ -1090,6 +1091,15 @@ const PTA_BASE = 'https://pintia.cn';
 const PTA_BANK_PAGE_SIZE = 200;
 /** 单次拉取最多扫几套题集（站点公开题集约 23 套，留余量防空转） */
 const PTA_BANK_MAX_SETS = 40;
+/**
+ * 单次题库拉取的**总页数上限**。
+ *
+ * 内层翻页原先是无界 `for (;;)`：只要站点一直返回满页就继续翻。实测公开题集共 1906 题
+ * ≈ 10 页，但题集会持续新增（ZOJ 一套就 3179 题 = 16 页），且「满页判定」依赖站点
+ * 如实返回 pagesize —— 一旦它开始忽略 limit 恒返回满页，循环就永不结束。
+ * 60 页 ≈ 12000 题（远高于当前 4700 题的全量），同时给全局节流层一个确定的上界。
+ */
+const PTA_BANK_MAX_PAGES = 60;
 
 /**
  * PTA 公开题库（匿名可读，无需 Cookie）。
@@ -1144,10 +1154,15 @@ export async function fetchPtaBank(
   if (sets.length === 0) throw new Error('PTA 未返回任何公开题集（接口变化），请稍后重试');
 
   let total = 0;
+  /** 本次已发出的页请求数（跨题集累计，受 PTA_BANK_MAX_PAGES 封顶） */
+  let pagesFetched = 0;
   for (const set of sets.slice(0, PTA_BANK_MAX_SETS)) {
-    if (problems.length >= max || wantedDone) break;
+    // 页预算用尽即整批收工（不只是内层 break）：否则外层会为余下每套空转一次 sleep
+    if (problems.length >= max || wantedDone || pagesFetched >= PTA_BANK_MAX_PAGES) break;
     let setTotal: number | null = null;
     for (let page = 0; ; page += 1) {
+      if (pagesFetched >= PTA_BANK_MAX_PAGES) break;
+      pagesFetched += 1;
       const url =
         `${PTA_BASE}/api/problem-sets/${set.id}/exam-problem-list` +
         `?problem_type=PROGRAMMING&page=${page}&limit=${PTA_BANK_PAGE_SIZE}`;
@@ -1181,7 +1196,9 @@ export async function fetchPtaBank(
           // 标题缺失时退到题号（如 1001 / L1-001）；写入层有「title != problem_key 才覆盖」的守卫
           title: title || label || key,
           ...bankDifficulty('pta', rawDifficulty), // 0/缺失 → 未知；1-5 → pta-level-5 表（见上）
-          url: `${PTA_BASE}/problem-sets/${set.id}/problems/${pid}`,
+          // 题目页地址只在 ptaProblemUrl 一处拼（从前端路由表实测得来），不要在这里另写一份：
+          // 之前这里手写 /problem-sets/{ps}/problems/{pid}，是站点**不存在**的路径 → 打开即 404
+          url: ptaProblemUrl(key),
           tags: [],
         });
         if (wanted.hit(key)) {
@@ -1194,7 +1211,9 @@ export async function fetchPtaBank(
       if (wantedDone || problems.length >= max) break;
       if (setTotal !== null && page * PTA_BANK_PAGE_SIZE + rows.length >= setTotal) break;
       if (rows.length < PTA_BANK_PAGE_SIZE) break;
-      await sleep(opts.pageDelayMs ?? 1200); // 页间限速（与 hostThrottle 的安全下限同档）
+      // 页间限速：显式等待 + 全局按域名节流（pintia.cn 1500ms）取较大者生效，
+      // 这里 1200ms 是「没挂节流层时」的兜底（与其余适配器同一口径）
+      await sleep(opts.pageDelayMs ?? 1200);
     }
     if (!wantedDone && problems.length < max) await sleep(opts.pageDelayMs ?? 1200);
   }

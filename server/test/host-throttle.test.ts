@@ -259,6 +259,8 @@ test('hostThrottle: 生产间隔表覆盖 8 个平台且不低于各适配器自
     'leetcode.cn': 300,
     'bs.daimayuan.top': 400,
     'www.jisuanke.com': 400,
+    'pintia.cn': 1200, // PTA 适配器的 PAGE_DELAY_MS
+    'passport.pintia.cn': 1200, // 同一适配器（checkAuth/identify 走该子域）
   };
   for (const [host, delay] of Object.entries(adapterPageDelay)) {
     const interval = HOST_MIN_INTERVAL_MS[host];

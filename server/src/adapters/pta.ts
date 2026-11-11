@@ -39,7 +39,8 @@ import { asHttpClient, sleep, type HttpClient, type HttpInit } from './http.ts';
  *    照页码翻会让同一页被无限重扫。
  * 5. **题集内的提交行不带题目标题**（`problemSetProblemById[].title` 实测恒为空串），
  *    标题只能从题集的题目表 `exam-problem-list` 拿。故只对「本集确实拉到了新提交」的
- *    题集补拉一次题目表，避免为 23 套题集无脑多打 23 次请求。
+ *    题集补拉一次题目表，避免为 23 套题集无脑多打 23 次请求；且这段**额外**请求另有
+ *    总量上限（META_FETCH_MAX_PER_SYNC），不与提交分页抢预算、也不无限膨胀。
  * 6. **难度是 0-5 的枚举，但公开题集实测恒为 0**。站点前端包体里的序数表是
  *    `{0:UNLIMITED, 1:BEGINNER, 2:EASY, 3:MEDIUM, 4:DIFFICULT, 5:HARD}`
  *    （中文：不限/入门/简单/中等/较难/困难），教师的题集配置 `showDifficulty` 只控制
@@ -73,12 +74,38 @@ const PER_SET_MAX_PAGES = 4;
  * 看一眼**（增量的「整页已知即跳过」正是靠这一次请求判定的），再按单次新增上限追加页数。
  */
 const PER_SYNC_MAX_PAGES = 60;
-/** 页间限速（与全局按域名节流取较大者，缺省 1200ms 见 hostThrottle） */
+/**
+ * 页间限速（毫秒）。
+ *
+ * 与全局按域名节流（net/hostThrottle.ts 的 `pintia.cn` = 1500ms）**取较大者**生效：
+ * 线上实际节奏由节流层把关（1× 时 1500ms/请求），本值只是「没挂节流层时」的最后一道防线
+ * （单测注入 mock fetch、脚本、未来重构遗漏），因此取得比安全下限略短 —— 与 CF 500/2000、
+ * 洛谷 300/4000 等其余适配器同一口径（适配器自带延迟 < 节流下限 < 实际节奏）。
+ */
 const PAGE_DELAY_MS = 1200;
 /** 题集题目表每次最多翻几页（limit=200 → 1200 题）：只用于把标题补全，不值得为 ZOJ 的 3179 题翻 16 页 */
 const TITLE_LIST_MAX_PAGES = 5;
 /** `exam-problem-list` 单页上限 */
 const TITLE_PAGE_SIZE = 200;
+/**
+ * 单次同步**元数据补拉**（标题 + 难度）的请求数上限。
+ *
+ * 为什么必须单独设限（2026-11-11 实测）：元数据请求原先既不计入 `pagesUsed`、也不受任何
+ * 上限约束 —— 20 套有新增的题集 × 每集最多 5 页 = **100 次请求**全在主循环之外发出，
+ * 而它们之间只有 `sleep(PAGE_DELAY_MS)`（不经过 sleepTracked，`waited_ms` 里看不见）。
+ * 主预算保护不了这一段，等于「同步了几条提交，却额外翻了上百页题目表」。
+ *
+ * 与洛谷同一思路（其题目信息抓取另有 PROBLEM_FETCH_MAX_PER_SYNC=100）；这里更小，
+ * 因为元数据只影响标题/难度的展示完整度，缺了下次同步还能补，不值得为它把请求量翻倍。
+ */
+const META_FETCH_MAX_PER_SYNC = 12;
+
+/**
+ * 题目类型序数：站点 `ProblemType` 枚举里 `PROGRAMMING` 的 ordinal（源自站点前端包体）。
+ * 题目页路由 `/problem-sets/:id/exam/problems/type/:type` 用的就是这个序数，
+ * 编程题固定为 7（其余：2 单选、4 填空、5 程序填空、6 代码补全、8 主观…）。
+ */
+const PTA_PROGRAMMING_TYPE_ORDINAL = 7;
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
@@ -185,13 +212,30 @@ export function ptaProblemKey(problemSetId: string, problemSetProblemId: string)
   return `${ps}-${psp}`;
 }
 
-/** 题目页地址：`/problem-sets/{ps}/problems/{psp}`（实测 200，游客可读） */
+/**
+ * 题目页地址。
+ *
+ * **只能拼站点 SPA 自己的路由**，不能按「题集 id + 题目 id」想当然：
+ * `/problem-sets/{ps}/problems/{psp}` 是**前端路由表里不存在的路径**，SPA 一兜底就渲染出
+ * 「404 Not Found」（HTTP 仍是 200，所以只看状态码发现不了 —— 2026-11 实测踩坑）。
+ *
+ * 真实路由（站点 `exam-app` 包体的路由表 + 帖子/脚本里的实际链接交叉验证）：
+ * - 题集内题目：`/problem-sets/{ps}/exam/problems/type/{type}?problemSetProblemId={psp}`
+ * - 题目 id 是**查询参数** `problemSetProblemId`，不是路径段
+ * - `{type}` 是题目类型的**序数**（站点 ProblemType 枚举），编程题为 **7**
+ *
+ * 库里的键只区分「题集 + 题目」，不区分题型，而本应用同步/题库只覆盖
+ * `problem_type=PROGRAMMING`，故固定用 7。若日后接入非编程题（选择/填空），
+ * 需要在 problemKey 里带上题型，否则链接会指错 tab。
+ *
+ * 裸数字（手动导入/历史行）退到老的全局别名页 `/problems/{id}`：那个页面在站点上
+ * 是可用的（题集 91827364500 的 1001 题 problemId 与 pspId 同值，实测能打开）。
+ */
 export function ptaProblemUrl(problemKey: string): string {
   const key = String(problemKey ?? '').trim();
   const m = /^(\d+)-(\d+)$/.exec(key);
-  // 裸数字（手动导入/历史行）：站点有 /problems/{problemId} 这个别名页，至少能跳过去
   if (!m) return /^\d+$/.test(key) ? `${BASE}/problems/${key}` : BASE;
-  return `${BASE}/problem-sets/${m[1]}/problems/${m[2]}`;
+  return `${BASE}/problem-sets/${m[1]}/exam/problems/type/${PTA_PROGRAMMING_TYPE_ORDINAL}?problemSetProblemId=${m[2]}`;
 }
 
 /** 账号 handle → 数字 userId；不合法返回 null（站点按路径参数取用户，昵称一律 400） */
@@ -434,14 +478,28 @@ export function createPtaAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
    * 提交行本身既不带标题也不带难度（见文件头第 5、6 条），两者都只能从这里取。
    * 任何失败都回退空表：元数据缺失只会让题目退化显示题号、难度未知，不该让整次同步失败。
    */
-  async function fetchProblemMetaMap(problemSetId: string, cookie?: string): Promise<Map<string, PtaProblemMeta>> {
+  async function fetchProblemMetaMap(
+    problemSetId: string,
+    opts: {
+      cookie?: string;
+      /** 剩余可用的元数据请求数：返回本次实际用掉的次数由调用方扣减 */
+      budgetLeft: number;
+      /** 页间等待（计入 waited_ms，与提交分页同一口径） */
+      sleepPage: () => Promise<void>;
+    },
+  ): Promise<{ map: Map<string, PtaProblemMeta>; requestsUsed: number }> {
     const map = new Map<string, PtaProblemMeta>();
+    let requestsUsed = 0;
+    // 预算不足就整集跳过：宁可标题/难度暂时缺失（下次同步补），也不越界多发请求
+    if (opts.budgetLeft <= 0) return { map, requestsUsed };
     try {
       for (let page = 0; page < TITLE_LIST_MAX_PAGES; page += 1) {
+        if (requestsUsed >= opts.budgetLeft) break;
         const { body } = await getJson(
           `${BASE}/api/problem-sets/${problemSetId}/exam-problem-list?problem_type=PROGRAMMING&page=${page}&limit=${TITLE_PAGE_SIZE}`,
-          { ...(cookie ? { cookie } : {}), label: `PTA 题集 ${problemSetId} 的题目表` },
+          { ...(opts.cookie ? { cookie: opts.cookie } : {}), label: `PTA 题集 ${problemSetId} 的题目表` },
         );
+        requestsUsed += 1;
         const { items, total } = parsePtaProblemList(body);
         if (items.length === 0) break;
         for (const it of items) {
@@ -450,12 +508,13 @@ export function createPtaAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
         }
         if (total !== null && page * TITLE_PAGE_SIZE + items.length >= total) break;
         if (items.length < TITLE_PAGE_SIZE) break;
-        await sleep(PAGE_DELAY_MS);
+        // 下一页前限速：走 sleepPage（计入 waited_ms），且剩余预算不足时不再多等一次
+        if (requestsUsed < opts.budgetLeft) await opts.sleepPage();
       }
     } catch {
       // 题目表拉不到就只丢标题与难度：不抛错（与同步主体解耦）
     }
-    return map;
+    return { map, requestsUsed };
   }
 
   return {
@@ -618,11 +677,19 @@ export function createPtaAdapter(fetchFn: HttpInit = fetch): PlatformAdapter {
       /** 还有没被看过的题集（预算/上限把它挡在后面） */
       const setsRemain = resumeIndex < sets.length;
 
-      // 元数据回填（标题 + 难度）：只对真的产出了新行的题集再多打少量请求（见文件头第 5 条）
+      // 元数据回填（标题 + 难度）：只对真的产出了新行的题集再多打少量请求（见文件头第 5 条），
+      // 且总量受 META_FETCH_MAX_PER_SYNC 封顶 —— 这一段在主循环之外，主预算管不到它
       if (setsWithNewRows.size > 0) {
+        let metaBudget = META_FETCH_MAX_PER_SYNC;
         for (const psId of setsWithNewRows) {
-          if (pagesUsed >= budget + setsWithNewRows.size * TITLE_LIST_MAX_PAGES) break;
-          const metaMap = await fetchProblemMetaMap(psId, cookie);
+          if (metaBudget <= 0) break;
+          const fetched = await fetchProblemMetaMap(psId, {
+            ...(cookie ? { cookie } : {}),
+            budgetLeft: metaBudget,
+            sleepPage: () => sleepTracked(delayMs),
+          });
+          metaBudget -= fetched.requestsUsed;
+          const metaMap = fetched.map;
           if (metaMap.size === 0) continue;
           const prefix = `${psId}-`;
           for (const s of out) {

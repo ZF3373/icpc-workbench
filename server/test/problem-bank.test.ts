@@ -9,6 +9,7 @@ import {
   fetchNowcoderBank,
   fetchAtcoderBank,
   fetchDaimayuanBank,
+  fetchPtaBank,
   hydroDifficulty,
   parseNcBankRows,
   parseJisuankeProblemTags,
@@ -680,6 +681,68 @@ test('atcoder bank: 无桥时不做洛谷请求，也不上报标签计数', asy
   assert.equal(r.tagMatched, undefined);
   assert.equal(r.tagScanned, undefined);
   assert.deepEqual(r.problems[0].tags, []);
+});
+
+// ---------- PTA 题库：页请求有上界 ----------
+
+test('pta bank: 站点恒返回满页时不会无限翻页（页请求有硬上限）', async () => {
+  // 30 套题集 × 每套恒返回满页 200（模拟「站点忽略 limit」或题量暴涨）：
+  // 旧实现是无界 for(;;)，只要满页就继续翻 → 请求数没有上界。
+  const sets = Array.from({ length: 30 }, (_, i) => ({ id: String(200 + i), name: `S${i}` }));
+  let pageRequests = 0;
+  const fetchFn = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes('always-available')) {
+      return new Response(JSON.stringify({ problemSets: sets }), { status: 200 });
+    }
+    pageRequests += 1;
+    const rows = Array.from({ length: 200 }, (_, i) => ({
+      id: String(900000 + i),
+      label: `L${i}`,
+      title: `T${i}`,
+      difficulty: 3,
+    }));
+    return new Response(JSON.stringify({ total: 999999, problemSetProblems: rows }), { status: 200 });
+  }) as unknown as typeof fetch;
+
+  const r = await fetchPtaBank(fetchFn, { max: 20000, pageDelayMs: 0 });
+  assert.ok(pageRequests <= 60, `页请求应被封顶到 60，实际 ${pageRequests}`);
+  assert.ok(pageRequests > 0);
+  assert.ok(r.problems.length > 0);
+  // 难度照常换算（页上限不影响字段搬运）
+  assert.equal(r.problems[0]?.difficulty, 1600);
+  assert.equal(r.problems[0]?.difficultyScale, 'pta-level-5');
+  // 题目链接必须是站点 SPA 真实路由：题库路径曾手写 /problem-sets/{ps}/problems/{pid}，
+  // 那是**不存在**的路径 → 从题库点开就是 404（HTTP 却返回 200）
+  assert.equal(
+    r.problems[0]?.url,
+    'https://pintia.cn/problem-sets/200/exam/problems/type/7?problemSetProblemId=900000',
+  );
+});
+
+test('pta bank: 难度 0/缺失 → null，不臆造', async () => {
+  const fetchFn = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes('always-available')) {
+      return new Response(JSON.stringify({ problemSets: [{ id: '12', name: '浙大版' }] }), { status: 200 });
+    }
+    return new Response(
+      JSON.stringify({
+        total: 2,
+        problemSetProblems: [
+          { id: '237', label: '237', title: 'Programming in C is fun!', difficulty: 0 },
+          { id: '238', label: '238', title: '无难度字段' },
+        ],
+      }),
+      { status: 200 },
+    );
+  }) as unknown as typeof fetch;
+  const r = await fetchPtaBank(fetchFn, { max: 10, pageDelayMs: 0 });
+  assert.equal(r.problems.length, 2);
+  assert.equal(r.problems[0]?.difficulty, null);
+  assert.equal(r.problems[0]?.nativeDifficulty, '0');
+  assert.equal(r.problems[0]?.difficultyScale, 'pta-level-5');
+  assert.equal(r.problems[1]?.difficulty, null);
 });
 
 // ---------- 入库服务 ----------

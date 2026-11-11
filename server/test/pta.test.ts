@@ -13,6 +13,7 @@ import {
   ptaSubmittedAt,
 } from '../src/adapters/pta.ts';
 import { getAdapter, initAdapters } from '../src/adapters/index.ts';
+import { parseProblemListText } from '../src/problems/parseProblemList.ts';
 import { platformMeta } from '../../shared/src/index.ts';
 import { SyncError } from '../src/adapters/types.ts';
 
@@ -101,11 +102,22 @@ test('pta: ptaProblemKey 需要两侧都是数字 id', () => {
   assert.equal(ptaProblemKey('a-b', '237'), null);
 });
 
-test('pta: ptaProblemUrl 按题号拼题目页，畸形键退回站点首页', () => {
-  assert.equal(ptaProblemUrl(`${PS}-994805528788582400`), `https://pintia.cn/problem-sets/${PS}/problems/994805528788582400`);
+test('pta: ptaProblemUrl 拼站点真实路由（题目 id 在查询参数里），畸形键退回站点首页', () => {
+  // 站点 SPA 的路由是 /problem-sets/:id/exam/problems/type/:type?problemSetProblemId=...
+  // 旧实现拼的 /problem-sets/{ps}/problems/{psp} 在路由表里**不存在** → 点开渲染 404
+  //（HTTP 仍是 200，只看状态码发现不了）。编程题的 type 序数是 7。
+  assert.equal(
+    ptaProblemUrl(`${PS}-994805528788582400`),
+    `https://pintia.cn/problem-sets/${PS}/exam/problems/type/7?problemSetProblemId=994805528788582400`,
+  );
   // 裸数字（历史行/手动导入）走站点的 /problems/{problemId} 别名页
   assert.equal(ptaProblemUrl('10007'), 'https://pintia.cn/problems/10007');
   assert.equal(ptaProblemUrl(''), 'https://pintia.cn');
+  // 拼出来的链接必须能被「粘贴 URL 导入」反解回同一个键（见 problems/parseProblemList.ts）
+  const back = parseProblemListText(ptaProblemUrl(`${PS}-994805528788582400`));
+  assert.equal(back.length, 1);
+  assert.equal(back[0]?.platform, 'pta');
+  assert.equal(back[0]?.problemKey, `${PS}-994805528788582400`);
 });
 
 test('pta: parsePtaUserId 只接受数字 userId（昵称站点一律 400）', () => {
@@ -532,6 +544,79 @@ test('pta: parsePtaProblemList 透传难度原文（0-5 序数，不做本地换
   assert.equal('difficulty' in (items[2] ?? {}), false); // 缺失不补默认值
 });
 
+
+// ---------- 请求频率（限速 / 额外请求上限） ----------
+
+test('pta: 元数据补拉有总量上限（20 套有新行也只发 12 次题目表请求）', async () => {
+  // 每套题集都产出一行新提交，且题目表恒返回满页 200（原本会 5 页/集 × 20 集 = 100 次）
+  const sets = Array.from({ length: 20 }, (_, i) => ({ id: String(100 + i), name: `S${i}` }));
+  const log: string[] = [];
+  const adapter = createPtaAdapter(async (input: string | URL | Request) => {
+    const url = String(input);
+    log.push(url);
+    if (url.includes('always-available')) {
+      return new Response(JSON.stringify({ problemSets: sets }), { status: 200 });
+    }
+    if (url.includes('/exam-problem-list')) {
+      const rows = Array.from({ length: 200 }, (_, i) => ({
+        id: String(900000 + i),
+        label: `L${i}`,
+        title: `T${i}`,
+        difficulty: 3,
+      }));
+      return new Response(JSON.stringify({ total: 1000, problemSetProblems: rows }), { status: 200 });
+    }
+    const setId = /problem-sets\/(\d+)\/users/.exec(url)?.[1] ?? '';
+    return new Response(
+      JSON.stringify({
+        submissions: [
+          { id: `s${setId}`, problemSetProblemId: '900000', submitAt: '2026-11-09T13:00:00Z', status: 'ACCEPTED' },
+        ],
+        hasBefore: false,
+        problemSetProblemById: { '900000': { id: '900000', label: 'L0', title: '' } },
+      }),
+      { status: 200 },
+    );
+  });
+  const rows = await adapter.fetchUserSubmissions('1693903232973955072', { pageDelayMs: 0 });
+  assert.equal(rows.length, 20);
+  const metaReqs = log.filter((u) => u.includes('/exam-problem-list')).length;
+  const subReqs = log.filter((u) => u.includes('/users/')).length;
+  assert.equal(subReqs, 20, '提交分页每集 1 次');
+  assert.ok(metaReqs <= 12, `元数据请求必须被封顶到 12 次，实际 ${metaReqs}`);
+  assert.ok(metaReqs > 0, '至少有新增行就该尝试补元数据');
+  // 前几套题集仍拿到了标题与难度（预算没被浪费）
+  assert.equal(rows.filter((r) => r.problem.title.startsWith('T')).length > 0, true);
+  assert.equal(rows.find((r) => r.problem.title.startsWith('T'))?.problem.difficulty, 1600);
+});
+
+test('pta: 元数据分页的等待计入 waited_ms（同步中心的限速耗时）', async () => {
+  const sets = [{ id: '100', name: 'S' }];
+  const adapter = createPtaAdapter(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes('always-available')) {
+      return new Response(JSON.stringify({ problemSets: sets }), { status: 200 });
+    }
+    if (url.includes('/exam-problem-list')) {
+      const rows = Array.from({ length: 200 }, (_, i) => ({ id: String(900000 + i), label: `L${i}`, title: `T${i}` }));
+      return new Response(JSON.stringify({ total: 1000, problemSetProblems: rows }), { status: 200 });
+    }
+    return new Response(
+      JSON.stringify({
+        submissions: [
+          { id: 's1', problemSetProblemId: '900000', submitAt: '2026-11-09T13:00:00Z', status: 'ACCEPTED' },
+        ],
+        hasBefore: false,
+      }),
+      { status: 200 },
+    );
+  });
+  const opts: { pageDelayMs: number; waitedMs?: number } = { pageDelayMs: 5 };
+  await adapter.fetchUserSubmissions('1693903232973955072', opts);
+  // 提交页间与元数据页间的等待都必须累计（此前元数据那段用裸 sleep，waited_ms 里看不见）
+  assert.ok((opts.waitedMs ?? 0) > 0, `元数据分页的等待应计入 waited_ms，实际 ${opts.waitedMs}`);
+});
+
 test('pta: checkAuth 依据 passport /api/u/current 的内容判定（该接口未登录也是 200）', async () => {
   const anonymous = createPtaAdapter(
     async () =>
@@ -614,7 +699,11 @@ test('pta: 已注册到适配器注册表', () => {
   const adapter = getAdapter('pta');
   assert.ok(adapter);
   assert.equal(adapter!.platform, 'pta');
-  assert.equal(adapter!.problemUrl({ problemKey: `${PS}-994805528788582400` }), `https://pintia.cn/problem-sets/${PS}/problems/994805528788582400`);
+  assert.equal(
+    adapter!.problemUrl({ problemKey: `${PS}-994805528788582400` }),
+    `https://pintia.cn/problem-sets/${PS}/exam/problems/type/7?problemSetProblemId=994805528788582400`,
+    '适配器下发的题目链接必须是站点 SPA 真实路由（旧路径点开是 404）',
+  );
 });
 
 test('pta: 平台元数据的 identify 标记与适配器能力一致（防止前端渲染出必然失败的按钮）', () => {

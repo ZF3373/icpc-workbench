@@ -66,11 +66,12 @@ export const PLATFORMS: PlatformMeta[] = [
   // 因此同步**不强制** Cookie；但「我加入的题集」（课程作业、内部赛）只能登录后枚举，
   // 故 sync 记为 cookie：配了 PTASession 覆盖更全，不配则只覆盖上述公开题集。
   // 账号 handle 必须是**数字 userId**（昵称无法作为路径参数，站点直接 400）。
-  // 平台自身**没有难度字段**（exam-problem-list 的 difficulty 恒为 0），故 difficultyScale 记 none、
-  // 不下发难度——与 QOJ 同口径：平台给不出就是未知，不臆造。
+  // 难度字段是 0-5 枚举（0=UNLIMITED 教师未标注，1-5=入门/简单/中等/较难/困难），
+  // 标度记 pta-level-5；但公开题集实测 1906/1906 全为 0 → 落到库里的多数仍是未知。
+  // 0/缺失一律按未知处理（不臆造），映射表只在 shared/src/difficulty.ts 一份。
   // identify: true —— 账号名是 19 位数字 userId，站点又提供「当前登录用户」接口，
   // 故登录后可由凭据反查账号（设置页「识别账号」、桌面壳登录后自动绑定都靠它）。
-  { id: 'pta', name: 'PTA', nameEn: 'PTA', hasOfficialApi: false, homepage: 'https://pintia.cn', sync: 'cookie', hasBank: true, difficultyScale: 'none', syncSources: ['practice'], identify: true },
+  { id: 'pta', name: 'PTA', nameEn: 'PTA', hasOfficialApi: false, homepage: 'https://pintia.cn', sync: 'cookie', hasBank: true, difficultyScale: 'pta-level-5', syncSources: ['practice'], identify: true },
   // VJudge（vjudge.net，转发站）：本身不提供题库与难度，提交记录按公开 status 分页拉取。
   // 必须排在**末尾**：数组顺序就是各平台下拉/账号卡片的展示顺序，转发站不该占首项
   //（2026-10-30 review 实测约 7 处列表首项被它顶掉）。
