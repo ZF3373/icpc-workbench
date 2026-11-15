@@ -9,6 +9,10 @@ import { popJob, resolveJob, agentAlive, jobPlatform, type AgentPlatform } from 
  * - CORS 只放行各平台自己的源（https://qoj.ac / https://vjudge.net），其他页面读不到任务、写不进结果；
  * - https 页面 → http://127.0.0.1 属「本地回环豁免」（Chromium 视 127.0.0.1 为安全上下文），
  *   但会触发 Private Network Access 预检，需回 `Access-Control-Allow-Private-Network: true`；
+ *   **WebKit（macOS 壳的 WKWebView）不豁免这个回环地址**（WebKit bug 171934，2017 年
+ *   提出、至今仍是 NEW），页面内的跨源 fetch 会被混合内容策略直接拦死。所以 macOS
+ *   上页面不轮询本服务：改由壳原生驱动（eval 注入抓取函数 + 取回结果），本文件的
+ *   /next、/result 两个端点由**壳进程**消费，语义不变。
  * - /result 只接受**有 pending 任务**的 id（qojAgent.resolveJob 校验，未知 id 返回 ok:false），
  *   且回传源须与该任务所属平台的源一致；任务只在用户触发同步/检测时存在，恶意页面无从伪造有效任务。
  */

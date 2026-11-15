@@ -1148,10 +1148,13 @@ export default function Settings() {
                     {p.id === 'qoj' && (
                       <p style={{ margin: '2px 0 0', color: 'var(--text-3)', fontSize: 12 }}>
                         桌面版：点上方「在应用内登录 QOJ」登录一次即可，同步自动经内嵌浏览器窗口完成（站点 Cloudflare
-                        已把凭据绑定到签发浏览器的指纹，手动复制 Cookie 的方式已失效）。网页版：qoj.ac 登录后 F12 →
-                        Application → Cookies 复制 __Host-UOJSESSID（旧名 UOJSESSID）与 cf_clearance（点账号框在卡片里粘贴，
-                        也可整段 Cookie 粘进任一框自动分派）；cf_clearance 约 30 分钟过期，过期后重贴该项即可。
-                        浏览器 UA 在账号卡片里填写，全部账号共用。
+                        已把凭据绑定到签发浏览器的指纹，手动复制 Cookie 的方式已失效）。
+                        <br />
+                        网页版 / Docker（没有内嵌浏览器）：qoj.ac 登录后 F12 → Application → Cookies 复制
+                        __Host-UOJSESSID（旧名 UOJSESSID）与 cf_clearance，在账号卡片里粘贴（也可整段 Cookie 粘进任一框自动分派），
+                        并在同一张卡片填浏览器 User-Agent（Console 执行 navigator.userAgent 整行粘贴）；三项都要有，
+                        缺 UA 时 Cloudflare 同样判凭据无效。cf_clearance 约 30 分钟过期，过期后重贴该项即可。
+                        填好后点「检测凭据」验证；拿到可用凭据后同步会直接走直连通道，不再依赖助手窗口。
                       </p>
                     )}
                     {p.id === 'vjudge' && shellOnline && (

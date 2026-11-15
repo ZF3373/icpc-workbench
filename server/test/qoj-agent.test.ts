@@ -12,6 +12,7 @@ import {
   resolveJob,
   agentAlive,
 } from '../src/adapters/qojAgent.ts';
+import { AgentUnavailableError } from '../src/adapters/qojAgent.ts';
 import { qojAgentRoutes } from '../src/routes/qojAgent.ts';
 import { createQojAdapter } from '../src/adapters/qoj.ts';
 import { ManualImportRequiredError } from '../src/adapters/types.ts';
@@ -32,6 +33,63 @@ test('qojAgent：入队 → 领取 → 回传 的完整回路', async () => {
   assert.equal(r.finalUrl, 'https://qoj.ac/submissions');
   // 未知 id 拒绝（防伪造注入）
   assert.equal(resolveJob(999999, 200, 'x'), false);
+});
+
+test('qojAgent：代理不在线时抛 AgentUnavailableError（供调用方回退）', async () => {
+  resetAgentForTests(); // agentSeenAt=0 → 不在线
+  await assert.rejects(
+    () => fetchPageViaAgent('https://qoj.ac/x', 30000),
+    (e: Error) =>
+      e instanceof AgentUnavailableError && e.reason === 'not-ready' && /助手窗口/.test(e.message),
+  );
+  resetAgentForTests();
+  popJob();
+});
+
+test('qojAgent：有 Cookie 时代理不可用 → 回退到直连路径（issue #63 的 docker 场景）', async () => {
+  resetAgentForTests(); // 代理离线 = 没有桌面壳（docker / 网页版）
+  let called = 0;
+  let sentCookie = '';
+  const fetchFn = (async (_url: string, init?: { headers?: Record<string, string> }) => {
+    called += 1;
+    sentCookie = init?.headers?.Cookie ?? '';
+    return new Response(
+      `<html><body><table>
+        <tr><td><a href="/submission/1">#1</a></td>
+        <td><a href="/problem/100">A. Test</a></td>
+        <td><span class="uoj-username">alice</span></td>
+        <td><a class="uoj-score">AC</a></td>
+        <td>17ms</td><td>4000kb</td><td><a href="/submission/1">C++</a></td>
+        <td>1234b</td><td>2026-01-02 03:04:05</td></tr>
+      </table><div>Server Time: 2026-01-02 03:04:06</div></body></html>`,
+      { status: 200, headers: { 'content-type': 'text/html' } },
+    );
+  }) as unknown as typeof fetch;
+  const adapter = createQojAdapter(fetchFn, {
+    fetchPage: (url, timeoutMs) => fetchPageViaAgent(url, timeoutMs),
+  });
+  const rows = await adapter.fetchUserSubmissions('alice', {
+    cookie: 'cf_clearance=abc; __Host-UOJSESSID=def',
+    ua: 'UA/1.0',
+    maxSubmissions: 10,
+  });
+  assert.equal(called > 0, true, '代理不可用时应回退到直连 fetch');
+  assert.match(sentCookie, /cf_clearance=abc/, '回退路径必须带上用户填的 Cookie');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.verdict, 'AC');
+  resetAgentForTests();
+});
+
+test('qojAgent：没填 Cookie 时代理不可用 → 保留助手窗口提示（不回退）', async () => {
+  resetAgentForTests();
+  const adapter = createQojAdapter(fetch, {
+    fetchPage: (url, timeoutMs) => fetchPageViaAgent(url, timeoutMs),
+  });
+  await assert.rejects(
+    () => adapter.fetchUserSubmissions('alice', { maxSubmissions: 10 }),
+    (e: Error) => e instanceof AgentUnavailableError && /助手窗口/.test(e.message),
+  );
+  resetAgentForTests();
 });
 
 test('qojAgent：超时未回传 → 明确报助手窗口错误', async () => {

@@ -6,6 +6,7 @@ import type {
 import { difficultyFields } from '../../../shared/src/difficulty.ts';
 import { withHardenedSessionCookie, cleanUserAgent } from '../../../shared/src/credentials.ts';
 import { ManualImportRequiredError } from './types.ts';
+import { AgentUnavailableError } from './qojAgent.ts';
 import type { FetchOptions, PlatformAdapter } from './types.ts';
 import { pagedFetch } from './pagination.ts';
 import { asHttpClient, type HttpInit } from './http.ts';
@@ -449,9 +450,23 @@ async function fetchSubmissionsPage(
 ): Promise<string> {
   const url = `${BASE}/submissions?submitter=${encodeURIComponent(handle)}&page=${page}`;
 
-  // —— WebView 同源代理路径（生产）：登录态与 Cloudflare 凭据都在壳内浏览器里 ——
+  // —— WebView 同源代理路径（桌面版）：登录态与 Cloudflare 凭据都在壳内浏览器里 ——
+  //
+  // 代理不可用（没有桌面壳：Docker / 网页版；或助手窗口没就绪/超时）时**回退到 Cookie
+  // 直连路径**——这正是 issue #63 里 docker 版「填了 Cookie 和 UA 也同步不了」的成因：
+  // 以前代理是唯一通道，代理不在线直接报「助手窗口未就绪」，用户填的凭据完全用不上。
+  // 直连走 HTTP/1.1 + 用户自己的 UA/Cookie，能否过 Cloudflare 由站点决定；过不了会走
+  // 下面的挑战判定，给出「整段复制 Cookie / 填 UA」的明确提示，而不是死路。
   if (pageTransport) {
-    const r = await pageTransport.fetchPage(url, 25000);
+    let r: { status: number; body: string; finalUrl?: string };
+    try {
+      r = await pageTransport.fetchPage(url, 25000);
+    } catch (e) {
+      if (!(e instanceof AgentUnavailableError)) throw e;
+      // 只有用户确实填了凭据才回退；否则保留代理那条更可操作的提示
+      if (!cookie.trim()) throw e;
+      return fetchSubmissionsPageDirect(http, url, cookie, ua);
+    }
     // 登录跳转：follow 重定向落在 /login，或渲染出登录页
     if ((r.finalUrl && /\/login/.test(r.finalUrl)) || looksLikeLoginPage(r.body)) {
       throw new ManualImportRequiredError(
@@ -465,13 +480,37 @@ async function fetchSubmissionsPage(
         'QOJ 页面在助手窗口内被 Cloudflare 拦截：请在设置页点「在应用内登录 QOJ」，让窗口完成一次人机验证后重试。',
       );
     }
+    if (r.status === 0) {
+      // 壳内助手窗口没能在预算内取回页面（macOS 由壳原生驱动时会出现：导航中断、
+      // 或验证还没过完）。这类失败重试通常就好，别让用户误以为是账号问题。
+      throw new Error(
+        'QOJ 助手窗口这次没能抓回页面（可能还在过 Cloudflare 验证或窗口刚被刷新）：' +
+          '请保持软件打开，稍后重试；仍失败可在设置页点「立即续签验证」。',
+      );
+    }
     if (r.status !== 200) {
       throw new Error(`QOJ 提交列表返回 HTTP ${r.status}（经助手窗口），请稍后重试`);
     }
     return r.body;
   }
 
-  // —— legacy HTTP 路径（测试用）：Cookie 重放在真实 Cloudflare 下已不可用 ——
+  // —— legacy HTTP 路径（测试用 / 无壳环境回退）：Cookie + UA 直连 ——
+  return fetchSubmissionsPageDirect(http, url, cookie, ua);
+}
+
+/**
+ * 用已保存的 Cookie + 浏览器 UA 直连抓一页（无桌面壳时的通道）。
+ *
+ * 局限必须写清楚：qoj.ac 的 Cloudflare 会把 cf_clearance 绑到签发客户端的 TLS 指纹，
+ * Node（OpenSSL）重放经常被拦，所以桌面版仍优先走 WebView 同源代理。这里存在是为了
+ * 「Docker / 网页版至少还有一条路」，以及桌面版助手窗口被关掉时不要彻底卡死。
+ */
+async function fetchSubmissionsPageDirect(
+  http: ReturnType<typeof asHttpClient>,
+  url: string,
+  cookie: string,
+  ua?: string,
+): Promise<string> {
   const res = await http.fetch(url, { headers: requestHeaders(cookie, ua), redirect: 'manual' }, { timeoutMs: 25000 });
   const html = await res.text();
   if (isCloudflareChallenge(html, res.status, res.headers.get('cf-mitigated'))) {

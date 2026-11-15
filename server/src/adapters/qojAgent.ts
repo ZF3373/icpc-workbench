@@ -49,12 +49,42 @@ export const DEFAULT_AGENT_TIMEOUT_MS = 30_000;
 /** 结果体上限（提交列表页远小于此；防异常页面撑爆内存） */
 const MAX_BODY_CHARS = 2_000_000;
 
-/** 守护脚本不在线时的引导文案（按平台） */
+/**
+ * 守护脚本（壳内 WebView）不在线：桌面壳没开、窗口没就绪，或在 Docker / 网页版里根本没有壳。
+ *
+ * 单独成类型是为了让适配器能**区分**「代理这条通道不可用」与「代理抓回来一个失败响应」：
+ * 前者应当回退到 Cookie 直连路径（用户可能已经手动填了 Cookie 与 UA），后者不该回退
+ * （那是站点真实返回的结果，比如登录态过期或页面被拦）。
+ */
+export class AgentUnavailableError extends Error {
+  readonly platform: AgentPlatform;
+  readonly reason: 'not-ready' | 'timeout';
+  constructor(platform: AgentPlatform, reason: 'not-ready' | 'timeout', message: string) {
+    super(message);
+    this.name = 'AgentUnavailableError';
+    this.platform = platform;
+    this.reason = reason;
+  }
+}
+
+/**
+ * 守护脚本不在线时的引导文案（按平台）。
+ *
+ * 分「桌面版」与「无壳环境」两种说法：Docker / 网页版里根本没有内嵌 WebView，
+ * 再让用户「保持软件打开等待助手窗口」就是死路一条（issue #63 的 docker 反馈）。
+ * 没填 Cookie 时这类环境应当明确告诉用户去填 Cookie + UA。
+ */
 function notReadyMessage(platform: AgentPlatform): string {
   const label = PLATFORM_LABEL[platform];
-  return platform === 'qoj'
-    ? 'QOJ 助手窗口未就绪：桌面版启动约 90 秒后自动就绪（保持软件打开即可）；也可在设置页点「在应用内登录 QOJ」立即打开，稍后重试同步。'
-    : `${label} 助手窗口未就绪：桌面版启动后自动就绪（保持软件打开即可）；也可在设置页点「刷新 ${label} 助手窗口」立即打开，稍后重试同步。`;
+  if (platform === 'qoj') {
+    return (
+      'QOJ 助手窗口未就绪（同步通道不可用）：桌面版会在启动约 90 秒后自动就绪（保持软件打开即可），' +
+      '也可在设置页点「在应用内登录 QOJ」立即打开；' +
+      '如果你用的是 Docker / 网页版（没有内嵌浏览器），请在账号卡片里填 QOJ 用户名、' +
+      '整段 Cookie（含 __Host-UOJSESSID 与 cf_clearance）和浏览器 User-Agent 后重试。'
+    );
+  }
+  return `${label} 助手窗口未就绪：桌面版启动后自动就绪（保持软件打开即可）；也可在设置页点「刷新 ${label} 助手窗口」立即打开，稍后重试同步。`;
 }
 
 /**
@@ -70,7 +100,7 @@ export async function fetchPageViaAgent(
   const waitStart = Date.now();
   while (!agentAlive(platform)) {
     if (Date.now() - waitStart >= 20_000) {
-      throw new Error(notReadyMessage(platform));
+      throw new AgentUnavailableError(platform, 'not-ready', notReadyMessage(platform));
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
@@ -80,7 +110,9 @@ export async function fetchPageViaAgent(
     const timer = setTimeout(() => {
       if (pending.delete(id)) {
         reject(
-          new Error(
+          new AgentUnavailableError(
+            platform,
+            'timeout',
             platform === 'qoj'
               ? 'QOJ 助手窗口抓取超时：请确认窗口保持打开且已登录 qoj.ac，稍后重试同步。'
               : `${PLATFORM_LABEL[platform]} 助手窗口抓取超时：请确认窗口保持打开，稍后重试同步。`,

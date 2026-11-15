@@ -35,11 +35,28 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use crate::PortState;
 
 /// 登录窗口统一 UA（显式指定而非读运行时真实值）：QOJ 的 cf_clearance 与签发它的
-/// UA 逐字节绑定，请求端（Node 适配器）复刻同一串，两端必然一致。与 qoj.ts 适配器
-/// 内置回退 UA 同款（Chrome/131），已是实测可过盾的取值；其余平台无 UA 绑定问题，
-/// 但统一的正常浏览器 UA 也能避免各站对异常 UA 的风控。
+/// UA 逐字节绑定，请求端（Node 适配器）复刻同一串，两端必然一致。
+///
+/// ⚠ 必须**按平台**给（issue #63）：macOS 壳是 WKWebView（Safari/WebKit 引擎），
+/// 给它塞一个「Windows NT 10.0 … Chrome/131」的 UA 就是自相矛盾——WebKit 发不出
+/// Chrome 的 Client Hints（Sec-CH-UA 系列），Cloudflare 拿 UA 与 CH 对不上号，于是
+/// 无论怎么等，托管挑战都不会放行（用户看到的就是「一直卡在 CF 验证循环」）。
+/// Windows/WebView2 才是 Chromium，那条分支才该说自己是 Chrome。
+#[cfg(windows)]
 const WEBVIEW_UA: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+/// macOS：说真话（Safari 引擎 + Mac 平台），Cloudflare 才会按真实浏览器放行；
+/// 适配器侧回退 UA 仍留在 qoj.ts 里给 Node 直连路径用，两者互不影响（macOS 上提交页
+/// 由壳内 WebView 抓取，不再依赖 UA 与 Node 请求的一致性）。
+#[cfg(target_os = "macos")]
+const WEBVIEW_UA: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
+
+/// 其它 Unix（Linux 桌面构建）：Chromium 系但非 Windows，别冒充 Windows。
+#[cfg(all(not(windows), not(target_os = "macos")))]
+const WEBVIEW_UA: &str =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 /// 单平台的登录抓取规格。字段表与 shared/src/credentials.ts COOKIE_FIELDS 同口径：
 /// （cookie 名 → cookieFields 的字段 key），同 key 多个 cookie 名 = 新旧名兼容（取先到）。
@@ -165,10 +182,14 @@ fn platform_label(platform: &str) -> &str {
     }
 }
 
-/// QOJ 守护脚本：注入到目标站页面上下文（与页面同源 → 同源 fetch 自动携带完美客户端
-/// 指纹与真实登录态，Cloudflare 无法区分）。自轮询领任务 → 同源抓取 → 回传。
+/// Windows/WebView2 的守护脚本：注入到目标站页面上下文（与页面同源 → 同源 fetch 自动携带
+/// 完美客户端指纹与真实登录态，Cloudflare 无法区分）。自轮询领任务 → 同源抓取 → 回传。
 /// 幂等（window 标记）；导航换文档后由壳的下一次注入重建。
 /// __PORT__ / __PLATFORM__ 由注入时替换为核心端口与平台 ID。
+///
+/// macOS（WKWebView）用不了这个脚本：WebKit 不把 127.0.0.1 当本地回环豁免，页面里对
+/// http://127.0.0.1 的 fetch 会被混合内容策略直接拦死（WebKit bug 171934，2017 年提出、
+/// 至今仍是 NEW）。那条路径下改由壳原生驱动页面抓取，见 MAC_AGENT_GRAB_FN。
 const AGENT_DAEMON_SCRIPT: &str = r#"(function () {
   if (window.__icpcAgent) return;
   window.__icpcAgent = true;
@@ -201,6 +222,33 @@ const AGENT_DAEMON_SCRIPT: &str = r#"(function () {
     }
   })();
 })();
+"#;
+
+/// macOS 的抓取函数（**由壳原生 eval 注入并调用**，页面里不跑轮询循环）。
+///
+/// 为什么这么绕：WKWebView 里页面自己 fetch http://127.0.0.1 会被混合内容策略拦下，
+/// 所以「领任务 / 回传结果」这两跳改由壳用 reqwest 走（它不过 WebKit），只有「抓目标页」
+/// 这一跳必须留在页面里 —— 那是唯一能带上真实 TLS 指纹与登录态的上下文。
+///
+/// ⚠ 刻意用「回调写全局变量」而不是返回 Promise：WebKit 的 evaluateJavaScript 不会等
+/// Promise，拿到 Promise 对象去 JSON 序列化会直接报错，回调永远拿不到结果。
+/// 因此抓取把结果写进 window.__icpcGrabResult（带 seq 防串），壳轮询这个变量取回。
+#[cfg(not(windows))]
+const MAC_AGENT_GRAB_FN: &str = r#"
+window.__icpcGrabResult = null;
+window.__icpcGrabRun = function (seq, url) {
+  window.__icpcGrabResult = null;
+  fetch(url, { credentials: 'include' })
+    .then(function (res) {
+      return res.text().then(function (body) {
+        window.__icpcGrabResult = { seq: seq, status: res.status, finalUrl: res.url, body: body };
+      });
+    })
+    .catch(function (e) {
+      window.__icpcGrabResult = { seq: seq, error: String((e && e.message) || e) };
+    });
+  return 'started';
+};
 "#;
 
 /// 主循环轮询间隔（pending 请求的响应延迟上界）
@@ -239,6 +287,13 @@ pub fn spawn(app: AppHandle) {
 
 async fn run(app: AppHandle) {
     crate::logln("[shell-auth] 凭据任务启动");
+    // macOS：页面里跑不了守护脚本的轮询（WebKit 拦页面→127.0.0.1 的混合内容），
+    // 改由壳的原生任务驱动抓取。每个平台一条独立任务，互不阻塞，也不拖慢主循环里的
+    // 心跳与前端动作（一次抓取最长 25 秒，塞进主循环会让「一键登录」等动作被卡住）。
+    #[cfg(not(windows))]
+    for (platform, worker, _) in AGENT_PLATFORMS {
+        spawn_agent_driver(app.clone(), platform, worker);
+    }
     let mut last_heartbeat = tokio::time::Instant::now() - HEARTBEAT_EVERY; // 启动即发一跳
     // 每个代理平台独立保活节奏；首次延迟 FIRST_KEEPALIVE_DELAY 拉起助手窗（首屏检测依赖代理在线）
     let mut keepalive: Vec<KeepaliveState> = AGENT_PLATFORMS
@@ -552,14 +607,209 @@ async fn renew_agent(app: &AppHandle, port: u16, platform: &str, worker: &str, u
     Some(format!("{label} 助手窗口已就绪（Cloudflare 验证已随导航续签，守护脚本已重建）"))
 }
 
-/// 幂等注入守护脚本：脚本在目标站页面上下文里自轮询 /api/qoj-agent/next?platform=X 领任务，
-/// 同源 fetch 记录页（完美客户端指纹 + 真实登录态）后回传。重复注入由 window 标记挡掉。
+/// 生成 Windows 用的守护脚本（替换端口/平台占位符）。
+#[cfg(windows)]
+fn agent_script(port: u16, platform: &str) -> String {
+    AGENT_DAEMON_SCRIPT
+        .replace("__PORT__", &port.to_string())
+        .replace("__PLATFORM__", platform)
+}
+
+/// 幂等注入守护脚本（Windows）：脚本在目标站页面上下文里自轮询领任务、抓页面、回传。
+/// 重复注入由 window 标记挡掉；导航换文档后由壳的下一次注入重建。
+#[cfg(windows)]
 fn inject_agent(app: &AppHandle, label: &str, port: u16, platform: &str) {
     if let Some(w) = app.get_webview_window(label) {
-        let script = AGENT_DAEMON_SCRIPT
-            .replace("__PORT__", &port.to_string())
-            .replace("__PLATFORM__", platform);
-        let _ = w.eval(&script);
+        let _ = w.eval(agent_script(port, platform));
+    }
+}
+
+/// 助手窗（隐藏）的坐标：放到远离屏幕的位置。
+///
+/// macOS 不能用 visible(false)：WKWebView 的隐藏视图会被 WebKit 判为不可见，
+/// 于是降频甚至挂起定时器（守护脚本靠定时器轮询，一旦挂起同步就永远等不到结果）。
+/// 挪到屏幕外则是「显示中的窗口」，既不打扰用户，也不会触发降频。
+#[cfg(not(windows))]
+const AGENT_OFFSCREEN: f64 = 20_000.0;
+
+/// macOS 驱动一轮：从核心领一个任务 → 在助手窗页面里同源抓取 → 把结果回传核心。
+///
+/// 三跳的分工（与 Windows 脚本等价，只是驱动方从页面脚本换成了壳）：
+/// 1. 领任务 / 回传结果：壳用 reqwest 打 127.0.0.1（不受 WebKit 混合内容限制）；
+/// 2. 抓目标页：必须留在页面里做（eval 调 __icpcGrabRun），那才有真实 TLS 指纹与登录态。
+///
+/// 返回 Some(true) = 领到并处理了一个任务；Some(false) = 队列空；None = 页面上还没有抓取
+/// 函数（文档没加载完 / 注入丢失），调用方下轮补注入后重试。
+#[cfg(not(windows))]
+async fn mac_agent_tick(app: &AppHandle, port: u16, platform: &str, worker: &str) -> Option<bool> {
+    let job = get_json(port, &format!("/api/qoj-agent/next?platform={platform}")).await?;
+    let job = job.get("job")?.clone();
+    if job.is_null() {
+        return Some(false);
+    }
+    let id = job.get("id")?.as_u64()?;
+    let url = job.get("url")?.as_str()?.to_string();
+    let url_js = serde_json::to_string(&url).ok()?;
+    // 序号：页面结果写在全局变量里，用序号挡掉上一单的残值（导航后的旧结果也会被识别）
+    let seq = MAC_GRAB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let start_script = format!(
+        "(function () {{ if (!window.__icpcGrabRun) return 'missing'; return window.__icpcGrabRun({seq}, {url_js}); }})()"
+    );
+    match eval_json(app, worker, &start_script, MAC_EVAL_TIMEOUT).await {
+        Some(Value::String(s)) if s == "missing" => return None, // 脚本还没注入，调用方补注入
+        Some(_) => {}
+        None => return None,
+    }
+    // 轮询页面结果（WebKit 的 evaluateJavaScript 不等 Promise，只能这样取回）
+    let deadline = tokio::time::Instant::now() + MAC_GRAB_BUDGET;
+    let mut result: Option<Value> = None;
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(MAC_GRAB_POLL).await;
+        let probe = format!(
+            "(function () {{ var r = window.__icpcGrabResult; return JSON.stringify(r && r.seq === {seq} ? r : null); }})()"
+        );
+        match eval_json(app, worker, &probe, MAC_EVAL_TIMEOUT).await {
+            Some(Value::String(s)) => {
+                let parsed: Value = serde_json::from_str(&s).unwrap_or(Value::Null);
+                if !parsed.is_null() {
+                    result = Some(parsed);
+                    break;
+                }
+            }
+            // 页面正在导航（WKWebView 换文档时 eval 会失败）：继续等，下一拍再试
+            _ => continue,
+        }
+    }
+    let (status, body, final_url) = match result {
+        Some(r) => {
+            let st = r.get("status").and_then(|v| v.as_i64()).map(|v| v as i32);
+            match (st, r.get("body").and_then(|v| v.as_str())) {
+                (Some(st), Some(bd)) => (
+                    st,
+                    bd.to_string(),
+                    r.get("finalUrl").and_then(|v| v.as_str()).map(|v| v.to_string()),
+                ),
+                _ => {
+                    let err = r
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("助手窗口内抓取超时（页面未返回结果）");
+                    crate::logln(&format!("[shell-auth] {platform} 助手窗口抓取失败：{err}"));
+                    (0, String::new(), None)
+                }
+            }
+        }
+        None => {
+            crate::logln(&format!("[shell-auth] {platform} 助手窗口抓取超时（页面 {url} 未在预算内返回）"));
+            (0, String::new(), None)
+        }
+    };
+    let mut payload = json!({ "id": id, "status": status, "body": body });
+    if let Some(f) = final_url {
+        payload["finalUrl"] = json!(f);
+    }
+    post_json(port, "/api/qoj-agent/result", &payload).await;
+    Some(true)
+}
+
+/// eval 一次页面 JS 并取回结果（JSON 值）。WebKit / WebView2 都会把返回值序列化成 JSON 文本，
+/// 字符串返回值因此是「JSON 里的字符串」，这里统一解包；超时或窗口消失返回 None。
+#[cfg(not(windows))]
+async fn eval_json(app: &AppHandle, worker: &str, script: &str, timeout: Duration) -> Option<Value> {
+    let w = app.get_webview_window(worker)?;
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    let tx = std::sync::Mutex::new(Some(tx));
+    w.eval_with_callback(script.to_string(), move |v| {
+        if let Ok(mut g) = tx.lock() {
+            if let Some(s) = g.take() {
+                let _ = s.send(v);
+            }
+        }
+    })
+    .ok()?;
+    let raw = tokio::time::timeout(timeout, rx).await.ok()?.ok()?;
+    let mut parsed: Value = serde_json::from_str(&raw).ok()?;
+    if let Value::String(inner) = &parsed {
+        if let Ok(v) = serde_json::from_str::<Value>(inner) {
+            parsed = v;
+        }
+    }
+    Some(parsed)
+}
+
+/// macOS 的常驻抓取任务：领任务 → 页面里抓 → 回传，循环到进程退出。
+///
+/// 与 Windows 守护脚本的差别只是「谁在循环」：Windows 是页面脚本自己轮询，macOS 是壳的
+/// 任务轮询。两种情况下 /next、/result 的语义都一样，适配器与解析层零改动。
+///
+/// 没有助手窗时不能空转打核心：窗口未就绪就睡一会儿，等保活任务把它建出来。
+#[cfg(not(windows))]
+fn spawn_agent_driver(app: AppHandle, platform: &'static str, worker: &'static str) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let Some(port) = current_port(&app) else {
+                tokio::time::sleep(POLL_TICK).await;
+                continue;
+            };
+            if app.get_webview_window(worker).is_none() {
+                // 窗口没建（保活 20 分钟才首建）或被用户关掉了：这里主动拉起，
+                // 否则「一开软件就同步」会白等 20 分钟，关窗后更是永远不再工作。
+                // 幂等：renew_agent 先 ensure_window 再导航，窗口已在时只是刷新。
+                provision_agent_window(&app, port, platform, worker).await;
+                tokio::time::sleep(POLL_TICK).await;
+                continue;
+            }
+            // 抓取函数可能因导航而丢失（WKWebView 的 eval 不跨文档存活）：补注入只在需要时做，
+            // mac_agent_tick 返回 None 就说明页面上下文里还没有它
+            match mac_agent_tick(&app, port, platform, worker).await {
+                Some(true) => {} // 刚处理完一单：立刻再领（队列里常有连续多页）
+                Some(false) => tokio::time::sleep(AGENT_IDLE_TICK).await,
+                None => {
+                    inject_agent(&app, worker, port, platform);
+                    tokio::time::sleep(AGENT_RETRY_TICK).await;
+                }
+            }
+        }
+    });
+}
+
+/// 把助手窗拉起来（与保活同一条路径：建窗 + 导航 + 注入 + 等就绪）
+#[cfg(not(windows))]
+async fn provision_agent_window(app: &AppHandle, port: u16, platform: &str, worker: &str) {
+    let Some(&(_, _, url)) = AGENT_PLATFORMS.iter().find(|(p, _, _)| *p == platform) else {
+        return;
+    };
+    let _ = renew_agent(app, port, platform, worker, url).await;
+}
+
+/// macOS 空闲轮询间隔：队列空时的节奏（与 Windows 守护脚本的 4s 对齐，够快又不吵核心）
+#[cfg(not(windows))]
+const AGENT_IDLE_TICK: Duration = Duration::from_millis(1500);
+/// 脚本缺失时的重试间隔（页面还在加载时别狂刷 eval）
+#[cfg(not(windows))]
+const AGENT_RETRY_TICK: Duration = Duration::from_millis(800);
+
+/// 抓取序号（macOS）：区分「这一单的结果」与上一单残留 / 导航前的旧结果
+#[cfg(not(windows))]
+static MAC_GRAB_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// 单页抓取预算：与适配器侧 fetchPage 的 25s 超时对齐，绝不把任务无限期挂住
+#[cfg(not(windows))]
+const MAC_GRAB_BUDGET: Duration = Duration::from_secs(25);
+/// 页面结果轮询间隔（抓一页通常 200ms~2s）
+#[cfg(not(windows))]
+const MAC_GRAB_POLL: Duration = Duration::from_millis(300);
+/// 单次 eval 的回调预算（页面在导航时 eval 会失败，给足但要短于抓取预算）
+#[cfg(not(windows))]
+const MAC_EVAL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 幂等注入抓取函数（macOS）：把 __icpcGrab 定义到页面上下文。
+///
+/// WKWebView 的 eval 不跨文档存活（每次导航就丢），所以窗口创建时用
+/// initialization_script 每个文档都注入一次，这里再周期性补一遍兜底。
+#[cfg(not(windows))]
+fn inject_agent(app: &AppHandle, label: &str, _port: u16, _platform: &str) {
+    if let Some(w) = app.get_webview_window(label) {
+        let _ = w.eval(MAC_AGENT_GRAB_FN);
     }
 }
 
@@ -577,6 +827,14 @@ async fn ensure_window(app: &AppHandle, label: &str, url: &str, title: &str, vis
     let label = label.to_string();
     let url = url.to_string();
     let title = title.to_string();
+    // 隐藏助手窗要能立刻工作：创建时就带上脚本（可见登录窗由 handle_login 自己补注入）
+    #[cfg(windows)]
+    let port = current_port(app).unwrap_or(0);
+    let platform = if visible {
+        None
+    } else {
+        AGENT_PLATFORMS.iter().find(|(_, w, _)| *w == label).map(|(p, _, _)| *p)
+    };
     let queued = app.run_on_main_thread(move || {
         // WebView2 同一用户数据目录 → 各窗共享 Cookie 存储；UA 显式统一（见 WEBVIEW_UA）
         let mut builder = WebviewWindowBuilder::new(
@@ -589,6 +847,28 @@ async fn ensure_window(app: &AppHandle, label: &str, url: &str, title: &str, vis
         .user_agent(WEBVIEW_UA);
         if !visible {
             builder = builder.visible(false);
+            #[cfg(windows)]
+            {
+                // WebView2 会把 initialization_script 在每个新文档里重放：这里带端口，
+                // 脚本一就位就能自己领任务（WKWebView 分支不需要端口，见下方注释）
+                if let Some(p) = platform {
+                    builder = builder.initialization_script(agent_script(port, p));
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                // macOS：不用 visible(false)（会被 WebKit 判为不可见而降频/挂起定时器），
+                // 改为把窗口挪到屏幕外——见 AGENT_OFFSCREEN 说明。background_throttling
+                // 只在 macOS 14+ 生效，两招都上，老系统也有保障。
+                builder = builder
+                    .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+                    .visible(true)
+                    .position(AGENT_OFFSCREEN, AGENT_OFFSCREEN);
+                if platform.is_some() {
+                    // WKWebView 的 eval 不跨文档存活：每个新文档一开始就注入抓取函数
+                    builder = builder.initialization_script(MAC_AGENT_GRAB_FN);
+                }
+            }
         }
         let _ = tx.send(builder.build().is_ok());
     });
