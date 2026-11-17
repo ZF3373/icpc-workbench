@@ -178,6 +178,32 @@ test('缓存策略：index.html 与未哈希文件 no-cache（升级后必须拿
   });
 });
 
+test('缺失资源不回 index.html 兜底：旧哈希 chunk 必须 404（issue #65）', async () => {
+  await withSpaApp(async (origin) => {
+    // 升级后 WebView2 缓存里的旧 index.html 会按旧哈希要 chunk
+    const js = await rawGet(origin, '/assets/index-OLDHASH1.js');
+    assert.equal(js.status, 404, '缺失的 chunk 必须 404');
+    assert.equal(/text\/html/i.test(String(js.headers['content-type'])), false, '不得回 HTML 冒充 JS');
+    assert.equal(js.headers['cache-control'], 'no-store', '404 不能被缓存');
+
+    // 目录式与带扩展名的其它缺失资源同理（favicon 之外的新资源名）
+    for (const p of ['/assets/', '/assets/missing-ABCD1234.css', '/fonts/missing-AbCdEf12.woff2']) {
+      const res = await rawGet(origin, p);
+      assert.equal(res.status, 404, `${p} 应 404`);
+    }
+  });
+});
+
+test('前端路由仍回 index.html：兜底只让开资源路径（issue #65 不回归）', async () => {
+  await withSpaApp(async (origin) => {
+    for (const p of ['/', '/problems', '/reviews/12', '/plans/2026/spring']) {
+      const res = await rawGet(origin, p);
+      assert.equal(res.status, 200, `${p} 应回 index.html`);
+      assert.match(res.body.toString('utf8'), /<body>app<\/body>/);
+    }
+  });
+});
+
 test('缓存策略：BrowserRouter 刷新兜底返回 index.html，同样 no-cache', async () => {
   await withSpaApp(async (origin) => {
     const res = await rawGet(origin, '/contests/123');

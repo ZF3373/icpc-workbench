@@ -14,6 +14,7 @@ import '@fontsource/inter/700.css'
 import './index.css'
 import { setupExternalLinks } from './externalLinks'
 import { setupAppZoom } from './appZoom'
+import { installChunkRecovery } from './chunkRecovery'
 import { ThemeProvider } from './themeContext'
 import { UpdateProvider } from './updateContext'
 import { SyncProgressProvider } from './syncProgressContext'
@@ -23,8 +24,16 @@ import './fantasy.css'
 
 dayjs.locale('zh-cn')
 setupExternalLinks()
+// 懒加载 chunk 失效（升级后缓存里仍是旧哈希）→ 自愈重载一次，避免页面黑屏（issue #65）。
+// 必须在首帧渲染前安装：首个路由级 import() 失败时就要能被接住。
+const cleanupChunkRecovery = installChunkRecovery()
 const cleanupAppZoom = setupAppZoom()
-if (import.meta.hot) import.meta.hot.dispose(cleanupAppZoom)
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    cleanupAppZoom()
+    cleanupChunkRecovery()
+  })
+}
 
 /**
  * GPU 节能：应用不可见（最小化 / 切走标签页）立即冻结动画；窗口失焦但仍在
