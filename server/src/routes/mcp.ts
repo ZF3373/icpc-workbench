@@ -35,6 +35,26 @@ function loopbackBaseOf(req: express.Request): string {
   return `http://${host}:${port}`;
 }
 
+/**
+ * 同时在飞的 tools/call 上限（issue #66）。
+ *
+ * 为什么需要：MCP 是无状态端点，外部 agent（Claude Desktop / Cursor）会不受控地并发打进来；
+ * 而 Node 是单事件循环 + node:sqlite 全同步 API，两三个「拉题库 / 导出汇总」级的大查询
+ * 叠在一起就能把事件循环占满十几秒 —— 桌面壳的健康探测连续超时，会把一个**正常但忙碌**的
+ * 核心判成「本地服务未响应」并杀掉（用户看到的就是「一开 Claude Desktop 工作台就掉线」）。
+ * 这里对**工具调用**限流而不是对请求限流：initialize / tools/list 是廉价的协议握手，
+ * 卡住它们只会让客户端以为服务不存在，反而更糟。
+ */
+const MAX_CONCURRENT_TOOL_CALLS = 2;
+let inflightToolCalls = 0;
+
+/** 该 POST 是不是一次 tools/call（协议握手放行，不做限流） */
+function isToolCallBody(body: unknown): boolean {
+  if (!body || typeof body !== 'object') return false;
+  const method = (body as { method?: unknown }).method;
+  return method === 'tools/call';
+}
+
 export function mcpRoutes(): express.Router {
   const r = express.Router();
 
@@ -43,6 +63,22 @@ export function mcpRoutes(): express.Router {
   r.post(
     '/',
     asyncHandler(async (req, res) => {
+      const toolCall = isToolCallBody(req.body);
+      if (toolCall) {
+        if (inflightToolCalls >= MAX_CONCURRENT_TOOL_CALLS) {
+          // 503 + Retry-After：MCP 客户端（及背后的模型）会据此退避重试，
+          // 而不是把「服务忙」当成「工具不存在」并把错误写进对话。
+          res.setHeader('Retry-After', '2');
+          res.status(503).json({
+            jsonrpc: '2.0',
+            error: { code: -32000, message: '工作台正忙（并发工具调用已达上限），请稍后重试' },
+            id: (req.body as { id?: unknown }).id ?? null,
+          });
+          return;
+        }
+        inflightToolCalls += 1;
+        res.on('close', () => { inflightToolCalls = Math.max(0, inflightToolCalls - 1); });
+      }
       const base = loopbackBaseOf(req);
       const transport = new StreamableHTTPServerTransport({
         // undefined = 显式无状态：不生成 Mcp-Session-Id，客户端每次 POST 都是独立请求

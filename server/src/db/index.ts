@@ -36,6 +36,11 @@ export function createDb(dbPath: string): Db {
   db.exec('PRAGMA cache_size = -20000;');
   // 只读内存映射 256MB：查询期读页走 mmap，绕过 read() 系统调用；WAL 下安全（写仍走 WAL 文件）。
   db.exec('PRAGMA mmap_size = 268435456;');
+  // 写锁等待（issue #66）：node:sqlite 是全同步 API，默认 busy_timeout=0 —— 另一进程（桌面壳
+  // 残留的旧核心、同时打开的第二份工作台、或备份进程）持有写锁时，任何一次写入都立刻抛
+  // SQLITE_BUSY，同步层随即报「同步失败」，而桌面壳的健康探测也会在这段时间连续超时，
+  // 被判成「本地服务未响应」并强制杀掉核心。给 5s 等待，把这类瞬时争用吸收在库层。
+  db.exec('PRAGMA busy_timeout = 5000;');
   db.exec(schemaOverride ?? fs.readFileSync(SCHEMA_PATH, 'utf8'));
   migrate(db);
   seed(db);
@@ -137,6 +142,10 @@ function migrate(db: Db): void {
   // 能力值算法据此区分赛场 AC 与赛后补题，补题/练习题降权
   const submissionCols = columnsOf('submissions');
   if (!submissionCols.has('context')) db.exec('ALTER TABLE submissions ADD COLUMN context TEXT');
+  // v0.15: 提交详情页地址（issue #69）。新库由 schema.sql 建列，老库在这里补；
+  // 老行留 NULL 即可——/api/history 返回时按 (platform, external_id) 现算补齐，
+  // 只要平台路由可推导，历史记录不必等下一次同步也能点开提交详情。
+  if (!submissionCols.has('submission_url')) db.exec('ALTER TABLE submissions ADD COLUMN submission_url TEXT');
   // v0.8: 多账号支持——submissions 增加 account 列且唯一键扩为 (user_id, platform, account, external_id)；
   // platform_accounts 唯一键从 (user_id, platform) 扩为 (user_id, platform, handle)。
   // SQLite 无法修改约束，两表都需要重建（先补 context 列再重建，保证老库两步迁移一步到位）。
