@@ -3,8 +3,11 @@
  * 抽成纯函数是为了能直接单测（node:test），组件里只做拼装不做字符串处理。
  */
 
-/** 笔记归属种类：复习库 / 模板库 / 计划任务备注，决定默认标题与渲染方式 */
-export type NoteKind = 'review' | 'template' | 'task'
+/**
+ * 笔记归属种类：复习库 / 模板库 / 计划任务备注 / 题目笔记 / 比赛笔记，
+ * 决定默认标题与渲染方式（issue #71 新增后两种：与复习队列解耦的独立笔记）。
+ */
+export type NoteKind = 'review' | 'template' | 'task' | 'problem' | 'contest'
 
 /** 各类笔记在界面上的名称：标题、无障碍标签、入口文案共用同一份真源 */
 export function noteKindLabel(kind: NoteKind): string {
@@ -12,6 +15,8 @@ export function noteKindLabel(kind: NoteKind): string {
     case 'review': return '复习笔记'
     case 'template': return '学习笔记'
     case 'task': return '任务备注'
+    case 'problem': return '题目笔记'
+    case 'contest': return '比赛笔记'
   }
 }
 

@@ -32,6 +32,9 @@ import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
 import PageSkeleton from '../components/PageSkeleton'
 import ProblemBatchActions from '../components/ProblemBatchActions'
+import HiddenCell from '../components/HiddenCell'
+import ProblemNoteButton from '../components/ProblemNoteButton'
+import { shouldHideDifficulty, shouldHideTags, useProblemVisibility } from '../problemVisibility'
 import { difficultyColor, formatDifficulty, OFFICIAL_NO_DIFFICULTY_TEXT, PLATFORM_COLOR, platformName, tagColor } from '../ui'
 import { DIFFICULTY_BUCKETS as DIFF_BUCKETS, type DifficultyBucket } from '../problemFilter'
 import { appendSortParams, sortFieldOf, sortFromAntd, sorterOrderOf, sortTooltip, type SortState } from '../problemSort'
@@ -170,6 +173,11 @@ export default function Problems() {
    * 否则侧栏与 Select 会同时存在于 Tab 顺序里，读屏也会念两遍。
    */
   const narrowTaxonomy = useMediaQuery(BP.narrowTaxonomy)
+  /**
+   * 「隐藏未 AC 题目的算法标签 / 难度」（issue #68）：偏好存 localStorage，
+   * 设置页改动后经 useSyncExternalStore 即时同步到本页，不必刷新。
+   */
+  const visibility = useProblemVisibility()
   const [rows, setRows] = useState<ProblemRow[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -1131,6 +1139,8 @@ export default function Problems() {
       // 单元格整体是「手动填写难度」的入口：上游给不出的题（已删除/私有/永久未评级/gym Unrated）
       // 永远等不到回填结果，用户只能自己标定（manual 优先级最高，回填不会覆盖）。
       render: (v: number | null, r) => {
+        // issue #68：未 AC 的题按用户偏好可隐藏难度，避免做题前先入为主
+        if (shouldHideDifficulty(visibility, r.ac_count)) return <HiddenCell />
         const manual = r.difficultySource === 'manual'
         return (
           <Tooltip
@@ -1169,6 +1179,9 @@ export default function Problems() {
       dataIndex: 'tags',
       width: 230,
       render: (tags: string[], row: ProblemRow) => {
+        // issue #68：未 AC 的题可隐藏算法标签，避免顺着标签猜解法。
+        // 只藏标签本身，行内其它信号（卡点角标）保留——那一条是用户自己记的，不是平台给的剧透。
+        if (shouldHideTags(visibility, row.ac_count)) return <HiddenCell />
         // 卡点角标（可见可管）：记过「卡在哪」的题一眼可辨——角标直接给出
         // 「卡过 N 次 · 最差卡点」全文（只显示数字的话，类型仍要悬停才能看到）。
         // 跟在标签尾部而不新增列——它是辅助信号，不该占据一整列的布局预算。
@@ -1209,6 +1222,12 @@ export default function Problems() {
       fixed: 'right',
       render: (_v, r) => (
         <Space size={4}>
+          {/* 题目笔记入口（issue #71）：与复习队列解耦，未 AC / 不打算复习的题也能记 */}
+          <ProblemNoteButton
+            key={`note-${r.platform}-${r.problem_key}`}
+            target={{ platform: r.platform, problemKey: r.problem_key }}
+            subject={`[${r.problem_key}] ${r.title}`}
+          />
           {r.status !== 'ac' && (
             // 防误触（2026-10-06）：标记会写入一条真实生效的本地 AC 记录（影响 AC 率 /
             // 已解题数 / 能力值估计，且界面没有撤销入口），气泡确认拦一下手滑
@@ -1281,7 +1300,7 @@ export default function Problems() {
         </Space>
       ),
     },
-  ], [sort, menuRowId, message, markAc, addToReview, removeFromReview, removeProblem, openKpEditor, openDiffEditor])
+  ], [sort, menuRowId, message, markAc, addToReview, removeFromReview, removeProblem, openKpEditor, openDiffEditor, visibility])
 
   const diffDistMax = Math.max(1, ...diffDist.map((d) => d.count))
   const platMax = Math.max(1, ...platDist.map((d) => d.count))

@@ -5,7 +5,7 @@
  * 嵌在「数据概览」内，不单独占一个侧边栏板块。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Badge, Button, DatePicker, Input, Popconfirm, Select, Table, Tag, Tooltip, Typography, App as AntdApp } from 'antd'
+import { Badge, Button, DatePicker, Input, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, App as AntdApp } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { ClearOutlined, CheckOutlined, ReadOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -16,6 +16,9 @@ import PlatformTag from './PlatformTag'
 import IntentPopover from './IntentPopover'
 import { codeOptionsFromTags, intentBadgeSummary } from '../intentOptions'
 import { difficultyColor } from '../ui'
+import HiddenCell from './HiddenCell'
+import ProblemNoteButton from './ProblemNoteButton'
+import { shouldHideDifficulty, useProblemVisibility } from '../problemVisibility'
 
 type View = 'problem' | 'submission'
 type ResultFilter = 'all' | 'ac' | 'failed'
@@ -55,6 +58,14 @@ interface SubmissionItem {
   reviewItemId?: number | null
   intentCount?: number
   worstIntent?: string | null
+  /** 该次提交在 OJ 的详情页（issue #69）；服务端算不出来时为 null */
+  submissionUrl?: string | null
+  /** 平台侧提交号 */
+  externalId?: string | null
+  /** 提交语境（CF 下发：contest / virtual / practice），赛时/赛后筛选的展示依据 */
+  context?: string | null
+  /** 提交归属账号（同一场比赛有正式参赛与 VP 时用来区分） */
+  account?: string
 }
 
 /** 两种视图的行形状不同，按视图各自取字段 */
@@ -99,14 +110,52 @@ function verdictColor(v: string): string {
 
 const fmtTime = (iso: string) => dayjs(iso).format('YYYY-MM-DD HH:mm')
 
+/**
+ * 参赛阶段（issue #70）：把提交按「赛时 / 赛后补题」筛出来。
+ * 赛时口径含虚拟赛 —— 虚拟赛的提交时间落在今天，用时间窗判定会全部判错，
+ * 所以后端优先用平台自报的 context，这一点在界面上要写清（避免用户以为筛选漏了）。
+ */
+const PHASE_TABS: Array<{ key: ContestPhase; label: string }> = [
+  { key: 'all', label: '全部' },
+  { key: 'during', label: '赛时' },
+  { key: 'after', label: '赛后' },
+]
+
+type ContestPhase = 'during' | 'after' | 'all'
+
+/** 从 URL 读筛选条件：赛事中心「查看提交」跳过来时带 contestKey（issue #70） */
+function readContestKeyFromUrl(): string | undefined {
+  if (typeof window === 'undefined') return undefined
+  return new URLSearchParams(window.location.search).get('contestKey') ?? undefined
+}
+
+/** GET /api/submissions/:id/source 的响应（issue #69） */
+interface SubmissionSource {
+  submissionId: number
+  submissionUrl: string
+  source: string
+  language: string | null
+  fetchedAt: string
+  cached: boolean
+}
+
 const ProblemLink = ({ url, children }: { url?: string | null; children: ReactNode }) =>
   url ? <a href={url} target="_blank" rel="noreferrer">{children}</a> : <>{children}</>
 
 export default function HistoryPanel() {
   const { message } = AntdApp.useApp()
-  const [view, setView] = useState<View>('problem')
+  // issue #68：未 AC 题目的难度可按偏好隐藏（与题目管理页同一份偏好）
+  const visibility = useProblemVisibility()
+  // 从赛事中心「查看提交」跳进来时直接落到逐条提交视图：比赛的赛时/赛后只有逐条才有意义
+  const [view, setView] = useState<View>(() => (readContestKeyFromUrl() ? 'submission' : 'problem'))
   const [platform, setPlatform] = useState<PlatformId>()
   const [result, setResult] = useState<ResultFilter>('all')
+  /**
+   * 按比赛 + 阶段筛选（issue #70）。contestKey 初值从 URL 读：赛事中心「查看提交」
+   * 跳过来时带着它，用户落地就能看到该场赛时/赛后的提交。
+   */
+  const [contestKey, setContestKey] = useState<string | undefined>(readContestKeyFromUrl)
+  const [phase, setPhase] = useState<ContestPhase>('all')
   const [range, setRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
   const [q, setQ] = useState<string>()
   const [qInput, setQInput] = useState('')
@@ -115,6 +164,9 @@ export default function HistoryPanel() {
   const [page, setPage] = useState(1)
   const [platforms, setPlatforms] = useState<PlatformAgg[]>([])
   const [loading, setLoading] = useState(false)
+  /** 源码查看弹窗（issue #69）：null = 关闭 */
+  const [sourceView, setSourceView] = useState<{ title: string; data: SubmissionSource } | null>(null)
+  const [sourceLoading, setSourceLoading] = useState(false)
 
   const params = useMemo(() => {
     const p = new URLSearchParams()
@@ -126,8 +178,13 @@ export default function HistoryPanel() {
     if (range?.[0]) p.set('from', range[0].startOf('day').toISOString())
     if (range?.[1]) p.set('to', range[1].add(1, 'day').startOf('day').toISOString())
     if (q) p.set('q', q)
+    // 比赛筛选只对逐条提交有意义：按题聚合视图里一场比赛的边界被「这道题的全部提交」抹掉了
+    if (contestKey) {
+      p.set('contestKey', contestKey)
+      if (phase !== 'all') p.set('phase', phase)
+    }
     return p
-  }, [view, platform, result, range, q])
+  }, [view, platform, result, range, q, contestKey, phase])
 
   // 只允许「最新一次请求」落地：连点筛选/翻页时会有多个请求在途，
   // 晚到的旧响应若照常写回，会把旧视图的行 + 它的 total/page 一起盖上去，
@@ -172,8 +229,16 @@ export default function HistoryPanel() {
     setPlatform(undefined)
     setResult('all')
     setRange(null)
+    setContestKey(undefined)
+    setPhase('all')
     setQ(undefined)
     setQInput('')
+    // 地址栏里的 contestKey 也要清：否则刷新页面又被它带回来
+    if (typeof window !== 'undefined' && window.location.search.includes('contestKey=')) {
+      const url = new URL(window.location.href)
+      url.searchParams.delete('contestKey')
+      window.history.replaceState(null, '', url.toString())
+    }
   }
 
   const addToReview = async (r: HistoryItem) => {
@@ -251,6 +316,27 @@ export default function HistoryPanel() {
    */
   const actionsCell = (r: HistoryItem) => (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+      {/* 题目笔记（issue #71）：写题历史里就近记一笔，不必切回题目管理 */}
+      {r.platform != null && r.problemKey != null && (
+        <ProblemNoteButton
+          target={{ platform: r.platform, problemKey: r.problemKey }}
+          subject={`[${r.problemKey}] ${r.title ?? ''}`}
+        />
+      )}
+      {/* 查看代码（issue #69）：逐条视图才有单次提交；首次点开会访问 OJ 详情页并缓存 */}
+      {view === 'submission' && r.id != null && r.submissionUrl && (
+        <Tooltip title="取这次提交的源码（首次会访问 OJ 提交页，之后直接读本地缓存）">
+          <Button
+            size="small"
+            type="text"
+            loading={sourceLoading}
+            aria-label="查看代码"
+            onClick={() => void viewSource(r)}
+          >
+            代码
+          </Button>
+        </Tooltip>
+      )}
       {view === 'problem' && (r.acCount ?? 0) === 0 && (
         // 防误触：与题目管理页同款气泡确认（写入的 AC 记录无撤销入口）
         <Popconfirm
@@ -316,8 +402,10 @@ export default function HistoryPanel() {
       dataIndex: 'difficulty',
       width: 76,
       align: 'right',
-      render: (v: number | null | undefined) =>
-        v == null ? (
+      render: (v: number | null | undefined, r) =>
+        shouldHideDifficulty(visibility, r.acCount) ? (
+          <HiddenCell />
+        ) : v == null ? (
           <span style={{ color: 'var(--text-3)' }}>-</span>
         ) : (
           <span className="rating-pill mono" style={{ color: difficultyColor(v) }}>{v}</span>
@@ -342,6 +430,24 @@ export default function HistoryPanel() {
     },
   ]
 
+  /**
+   * 「查看代码」（issue #69）：首次点开才访问 OJ 提交详情页，取到即落库缓存。
+   * 各平台有最小间隔，服务端会回 429 + retryAfterMs —— 这里把提示原样透出来，
+   * 用户知道「等一下再点」而不是以为坏了。
+   */
+  const viewSource = async (r: HistoryItem) => {
+    if (r.id == null) return
+    setSourceLoading(true)
+    try {
+      const res = await get<SubmissionSource>(`/api/submissions/${r.id}/source`)
+      setSourceView({ title: `[${r.problemKey}] ${r.title ?? ''} · ${r.verdict ?? ''}`, data: res })
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setSourceLoading(false)
+    }
+  }
+
   const submissionCols: ColumnsType<HistoryItem> = [
     {
       title: '时间',
@@ -352,6 +458,23 @@ export default function HistoryPanel() {
     { title: '平台', dataIndex: 'platform', width: 100, render: (v: PlatformId) => <PlatformTag id={v} /> },
     { title: '题号', dataIndex: 'problemKey', width: 120, render: (_v, r) => keyCell(r) },
     { title: '标题', dataIndex: 'title', ellipsis: true },
+    {
+      title: '提交页',
+      key: 'submission',
+      width: 92,
+      render: (_v, r) =>
+        // 提交详情页（issue #69）：这条提交在 OJ 上的位置。
+        // 拿不到链接（平台路由未知 / 手动导入）时显示横杠，而不是给一个可能 404 的死链。
+        r.submissionUrl ? (
+          <Tooltip title="在 OJ 打开这次提交">
+            <a className="mono" href={r.submissionUrl} target="_blank" rel="noreferrer">
+              打开 ↗
+            </a>
+          </Tooltip>
+        ) : (
+          <span style={{ color: 'var(--text-3)' }}>-</span>
+        ),
+    },
     {
       title: '结果',
       dataIndex: 'verdict',
@@ -425,6 +548,35 @@ export default function HistoryPanel() {
           onChange={setPlatform}
           options={PLATFORMS.map((p) => ({ value: p.id, label: p.name }))}
         />
+        {/* 按比赛 + 阶段筛选（issue #70）：赛事中心「查看提交」跳过来时自动带上 contestKey。
+            赛时口径含虚拟赛（平台自报的 context 优先于时间窗），阶段选择因此只在选定比赛时出现 */}
+        {contestKey && (
+          <>
+            <Tag
+              closable
+              color="geekblue"
+              onClose={() => {
+                setContestKey(undefined)
+                setPhase('all')
+              }}
+              title="当前只看这一场比赛的提交"
+            >
+              比赛 {contestKey}
+            </Tag>
+            <div className="status-tabs">
+              {PHASE_TABS.map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  className={phase === t.key ? 'is-active' : ''}
+                  onClick={() => setPhase(t.key)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
         <DatePicker.RangePicker
           value={range as [Dayjs, Dayjs] | null}
           onChange={(v) => setRange(v && v[0] && v[1] ? [v[0], v[1]] : null)}
@@ -443,6 +595,33 @@ export default function HistoryPanel() {
           重置
         </Button>
       </div>
+
+      {/* 源码查看弹窗：只读展示，不去编辑器（复盘场景是「看」而不是「改」） */}
+      {sourceView && (
+        <Modal
+          open
+          title={sourceView.title}
+          width={900}
+          footer={
+            <Space>
+              <a href={sourceView.data.submissionUrl} target="_blank" rel="noreferrer">
+                在 OJ 打开 ↗
+              </a>
+              <Button onClick={() => setSourceView(null)}>关闭</Button>
+            </Space>
+          }
+          onCancel={() => setSourceView(null)}
+        >
+          <p className="muted-note" style={{ marginTop: 0 }}>
+            {sourceView.data.language ? `语言：${sourceView.data.language} · ` : ''}
+            {sourceView.data.cached ? '来自本地缓存' : '刚从 OJ 拉取并已缓存'}
+            {sourceView.data.fetchedAt ? `（${dayjs(sourceView.data.fetchedAt).format('YYYY-MM-DD HH:mm')}）` : ''}
+          </p>
+          <pre className="submission-source" aria-label="提交源码">
+            {sourceView.data.source}
+          </pre>
+        </Modal>
+      )}
 
       <Table<HistoryItem>
         // rowKey 按数据自身形状派生（problem 行有 problemId，submission 行有 id），

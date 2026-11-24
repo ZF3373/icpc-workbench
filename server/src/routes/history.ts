@@ -5,6 +5,13 @@ import type { Db } from '../db/index.ts';
 import { DEFAULT_USER_ID } from '../constants.ts';
 import { safeTags } from '../analysis/stats.ts';
 import { intentFactor } from '../today/ability.ts';
+import { submissionUrlOf } from '../adapters/submissionUrl.ts';
+import {
+  CONTEST_PHASES,
+  contestScopeSql,
+  resolveContestScope,
+  type ContestPhase,
+} from '../history/contestScope.ts';
 
 /**
  * 写题历史（issue #19）：数据全部来自 submissions ⋈ problems（平台同步 / CSV 导入写入），
@@ -30,6 +37,12 @@ interface HistoryFilters {
   /** 时间窗上界（不含），规范化后的 ISO 时刻 */
   to?: string;
   q?: string;
+  /** 按比赛筛选（issue #70）：contestKey 形如 codeforces:1877 */
+  contestKey?: string;
+  /** 该场比赛的参赛阶段；缺省 all */
+  phase: ContestPhase;
+  /** 只看某账号的提交（同一场比赛既有正式参赛又有 VP 时用来区分） */
+  account?: string;
 }
 
 interface ProblemRow {
@@ -61,6 +74,13 @@ interface SubmissionRow {
   /** 该题全部提交里的 AC 次数（操作列据此决定是否显示「标记 AC」） */
   ac_count: number;
   review_item_id: number | null;
+  /** 提交详情页（issue #69）；库内为 NULL 的老行由 toSubmissionItem 现算补齐 */
+  external_id: string | null;
+  submission_url: string | null;
+  /** 提交语境（issue #70：赛时/赛后筛选的结果里标出这条属于哪种） */
+  context: string | null;
+  /** 提交归属账号（多账号下「查看某次参赛的提交」用） */
+  account: string;
 }
 
 const toProblemItem = (r: ProblemRow) => ({
@@ -89,7 +109,17 @@ const toSubmissionItem = (r: SubmissionRow) => ({
   verdict: r.verdict,
   language: r.language,
   submittedAt: r.submitted_at,
+  /** 题目页地址（保持旧字段语义，前端标题仍指向原题） */
   url: r.url,
+  /**
+   * 提交详情页地址（issue #69）：库内列优先（同步时由适配器算好），
+   * 老行为 NULL 时按 (platform, external_id) 现算 —— 历史记录不必等下一次同步才能点开。
+   * 算不出来（该平台路由未知 / 手动导入）就是 null，前端据此不渲染入口。
+   */
+  submissionUrl: r.submission_url ?? (r.external_id ? submissionUrlOf(r.platform, r.external_id) : null),
+  externalId: r.external_id,
+  context: r.context,
+  account: r.account,
   tags: safeTags(r.tags),
   acCount: r.ac_count,
   reviewItemId: r.review_item_id,
@@ -136,7 +166,7 @@ function likeParam(q: string): string {
 }
 
 function parseFilters(query: Record<string, unknown>): HistoryFilters {
-  const out: HistoryFilters = { result: 'all' };
+  const out: HistoryFilters = { result: 'all', phase: 'all' };
   if (typeof query.platform === 'string' && PLATFORMS.some((p) => p.id === query.platform)) {
     out.platform = query.platform as PlatformId;
   }
@@ -148,6 +178,16 @@ function parseFilters(query: Record<string, unknown>): HistoryFilters {
   if (from !== undefined) out.from = from;
   if (to !== undefined) out.to = to;
   if (typeof query.q === 'string' && query.q.trim() !== '') out.q = query.q.trim();
+  // issue #70：按比赛 + 参赛阶段筛选。contestKey 形态校验交给 resolveContestScope
+  // （它同时负责查出该场的时间窗与平台），非法/解析不到时按「不筛选」处理而不是 400 ——
+  // 前端从旧链接带过来一个已清理的比赛时，退化成全部提交比报错更有用。
+  if (typeof query.contestKey === 'string' && query.contestKey.trim() !== '') {
+    out.contestKey = query.contestKey.trim();
+  }
+  if (typeof query.phase === 'string' && CONTEST_PHASES.has(query.phase)) {
+    out.phase = query.phase as ContestPhase;
+  }
+  if (typeof query.account === 'string' && query.account.trim() !== '') out.account = query.account.trim();
   return out;
 }
 
@@ -156,9 +196,25 @@ function parseFilters(query: Record<string, unknown>): HistoryFilters {
  * result 只在这里下发给 submission 视图（逐条流水按行判定）；problem 视图改走 HAVING，
  * 否则「提交/AC」计数会被结果过滤切片，5 发才 A 的题会显示成 1/1。
  */
-function filterSql(f: HistoryFilters, view: View): { where: string; params: Array<string | number> } {
+function filterSql(db: Db, f: HistoryFilters, view: View): { where: string; params: Array<string | number> } {
   let where = ' WHERE s.user_id = ?';
   const params: Array<string | number> = [DEFAULT_USER_ID];
+  if (f.account !== undefined) {
+    where += ' AND s.account = ?';
+    params.push(f.account);
+  }
+  if (f.contestKey !== undefined) {
+    const scope = resolveContestScope(db, f.contestKey);
+    // 解析不到 = 这场比赛的数据已被清理（换账号/删库）：明确回空而不是静默忽略筛选，
+    // 否则用户会以为「这场一条提交都没有」和「筛选没生效」是同一件事。
+    if (!scope) {
+      where += ' AND 1 = 0';
+    } else {
+      const scoped = contestScopeSql(scope, f.phase);
+      where += scoped.sql;
+      params.push(...scoped.params);
+    }
+  }
   if (f.platform !== undefined) {
     where += ' AND s.platform = ?';
     params.push(f.platform);
@@ -264,7 +320,7 @@ export function historyRoutes(db: Db): Router {
     const pageSize = clampInt(req.query.pageSize, DEFAULT_PAGE_SIZE, 1, MAX_PAGE_SIZE);
     const page = clampInt(req.query.page, 1, 1, Number.MAX_SAFE_INTEGER);
     const offset = (page - 1) * pageSize;
-    const { where, params } = filterSql(f, view);
+    const { where, params } = filterSql(db, f, view);
 
     let items: unknown[];
     let total: number;
@@ -285,6 +341,7 @@ export function historyRoutes(db: Db): Router {
       items = (db
         .prepare(
           `SELECT s.id, p.id AS problem_id, s.platform, p.problem_key, p.title, s.verdict, s.language, s.submitted_at, p.url, p.tags,
+    s.external_id, s.submission_url, s.context, s.account,
     (SELECT COUNT(*) FROM submissions s3
       WHERE s3.problem_id = p.id AND s3.user_id = ${DEFAULT_USER_ID} AND s3.verdict = 'AC') AS ac_count,
     (SELECT ri.id FROM review_items ri

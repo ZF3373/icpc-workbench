@@ -197,6 +197,10 @@ CREATE TABLE IF NOT EXISTS submissions (
   submitted_at TEXT NOT NULL,                  -- ISO8601 UTC
   external_id  TEXT,                           -- 平台侧提交号（去重用）
   context      TEXT,                           -- 提交语境：contest / virtual / practice；NULL = 平台不下发（能力值据此区分赛场 AC 与补题）
+  -- 提交详情页地址（issue #69）：同步时由适配器按平台路由拼出/直接取回，不额外请求提交详情页。
+  -- 老行（加列前的历史数据）为 NULL，可由 /api/history 在返回时按 (platform, external_id) 现算补齐；
+  -- 现算不出来的平台（路由未知）保持 NULL，前端据此不渲染链接。
+  submission_url TEXT,
   UNIQUE (user_id, platform, account, external_id)
 );
 -- 冗余索引：旧的 idx_submissions_user_platform(user_id, platform) 是下方 migrate 创建的
@@ -470,4 +474,45 @@ CREATE TABLE IF NOT EXISTS problem_statements (
   source_url  TEXT,
   fetched_at  TEXT NOT NULL,
   PRIMARY KEY (platform, problem_key)
+);
+
+-- 提交源码缓存（单次提交一行；routes/submissions.ts 首次「查看代码」时拉取，之后直接读库）。
+-- 存在的理由（issue #69）：复盘时想对比同一道题的赛时 WA 与赛后 AC 源码，逐次去 OJ 翻提交页
+-- 既慢又给平台添流量。源码对某次提交是**不变**的（不像 verdict 会被重判），所以缓存永久有效；
+-- 只缓存成功取到的源码（失败不留行，下次可重试），并把抓取时刻留给「拉取速度限制」判断。
+-- 与 submissions 的关联用 (platform, account, external_id) 而不是 submissions.id：
+-- 与同步去重同键，重同步生成的新行也能命中同一份缓存。
+CREATE TABLE IF NOT EXISTS submission_sources (
+  platform    TEXT NOT NULL,
+  account     TEXT NOT NULL DEFAULT '',
+  external_id TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  language    TEXT,
+  source_url  TEXT,
+  fetched_at  TEXT NOT NULL,
+  PRIMARY KEY (platform, account, external_id)
+);
+
+-- 题目 / 比赛 的独立笔记（issue #71）：
+-- 「复习笔记」挂在 review_items 上，意味着移出复习队列笔记就跟着没了；而用户想记的是
+-- 「这道题 / 这场比赛」本身（没 AC 的题、暂不复习的题、整场比赛的选题换题决策都值得记）。
+-- 因此这里按**题目身份**（problems/identity.ts 的口径，镜像归一到同一道题）与
+-- **比赛 key**（participated_contests 拼出的 platform:contestId，与赛事中心一致）各建一张表，
+-- 与复习队列彻底解耦：移出队列不影响笔记，加入队列也不抢占。
+CREATE TABLE IF NOT EXISTS problem_notes (
+  user_id     INTEGER NOT NULL REFERENCES users(id),
+  identity    TEXT NOT NULL,                   -- 题目身份（如 codeforces:1919c / luogu:p1001）
+  text        TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, identity)
+);
+
+CREATE TABLE IF NOT EXISTS contest_notes (
+  user_id     INTEGER NOT NULL REFERENCES users(id),
+  contest_key TEXT NOT NULL,                   -- 形如 codeforces:1877（与赛事中心的 contest.key 一致）
+  text        TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, contest_key)
 );

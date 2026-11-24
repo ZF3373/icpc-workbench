@@ -147,6 +147,15 @@ export interface NormalizedSubmission {
   /** 平台侧提交号（去重/增量依据） */
   externalId: string;
   /**
+   * 该次提交在平台上的详情页地址（issue #69）。
+   *
+   * 由适配器在**同步时**直接拼出（绝不额外请求提交详情页）：
+   * 需要 contestId 才能拼路由的平台（Codeforces / AtCoder）由适配器自己算好放进来；
+   * 其余平台省略即可，落库层会回落到 adapters/submissionUrl.ts 的平台级模板。
+   * 普通 open-ended 平台（如转发站 VJudge）也可放它在平台侧的原始 href。
+   */
+  submissionUrl?: string;
+  /**
    * 提交语境：contest = 比赛进行中（含现场非正式参赛）、virtual = 虚拟赛、practice = 赛后补题/题单练习。
    * 目前仅 Codeforces 下发（user.status.participantType）；能力值算法用其区分赛场 AC 与补题 AC。
    */

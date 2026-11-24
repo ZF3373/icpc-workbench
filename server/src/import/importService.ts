@@ -4,6 +4,7 @@ import { annotateProblemsL1 } from '../knowledge/pipeline.ts';
 import { problemUpsertSql, purifyTags } from './problemWritePolicy.ts';
 import { mergeProblemRow } from './problemMerge.ts';
 import { createTombstoneMatcher } from './tombstones.ts';
+import { resolveSubmissionUrl } from '../adapters/submissionUrl.ts';
 
 export interface InsertResult {
   imported: number;
@@ -70,14 +71,21 @@ export function insertNormalized(
   const sourcePlatform = opts.sourcePlatform;
   const insertSub = db.prepare(
     `INSERT OR IGNORE INTO submissions
-       (user_id, platform, account, problem_id, verdict, language, submitted_at, external_id, context)
-     VALUES (?, ?, ?, (SELECT id FROM problems WHERE platform = ? AND problem_key = ?), ?, ?, ?, ?, ?)`,
+       (user_id, platform, account, problem_id, verdict, language, submitted_at, external_id, context, submission_url)
+     VALUES (?, ?, ?, (SELECT id FROM problems WHERE platform = ? AND problem_key = ?), ?, ?, ?, ?, ?, ?)`,
   );
   // 老行回填语境：INSERT OR IGNORE 会跳过已存在的同账号提交号，而 context 列是后加的
   //（历史行全为 NULL）。同步数据天然重复出现，跳过插入时顺手把语境补上，下次同步即完成回填。
   const backfillContext = db.prepare(
     `UPDATE submissions SET context = ?
        WHERE user_id = ? AND platform = ? AND account = ? AND external_id = ? AND context IS NULL`,
+  );
+  // 老行回填提交详情链接（issue #69）：加列前的历史行 submission_url 全为 NULL。
+  // 与 backfillContext 同款机制——同步时这些行本来就会再次出现，跳过插入时顺手补上，
+  // 下一次同步即完成回填，不必写一次性的全表 UPDATE（那种迁移还得重复实现一遍各平台路由）。
+  const backfillSubmissionUrl = db.prepare(
+    `UPDATE submissions SET submission_url = ?
+       WHERE user_id = ? AND platform = ? AND account = ? AND external_id = ? AND submission_url IS NULL`,
   );
   // 平台侧改判刷新：同账号同提交号再次同步时 verdict 若有变化（评测中→终态、平台重判等），
   // 更新既有行——verdict 以平台数据为准。没有这条路径，「评测中曾被落库为 WA/SKIPPED」的提交
@@ -181,6 +189,7 @@ export function insertNormalized(
         s.submittedAt,
         s.externalId,
         s.context ?? null,
+        resolveSubmissionUrl(sourcePlatform ?? s.problem.platform, s.externalId, s.submissionUrl),
       );
       if (r.changes > 0) imported += 1;
       else {
@@ -191,6 +200,9 @@ export function insertNormalized(
         let effective = false;
         // 补语境列（见 backfillContext 注释）
         if (s.context) backfillContext.run(s.context, userId, sourcePlatform ?? s.problem.platform, account, s.externalId);
+        // 补提交详情链接（见 backfillSubmissionUrl 注释）：算不出来就跳过，不留空串
+        const url = resolveSubmissionUrl(sourcePlatform ?? s.problem.platform, s.externalId, s.submissionUrl);
+        if (url) backfillSubmissionUrl.run(url, userId, sourcePlatform ?? s.problem.platform, account, s.externalId);
         // 平台侧改题号（洛谷比赛题赛后 T 号转正式 P 号等）：既有行被 INSERT OR IGNORE
         // 冻结在失效的旧题行上（链接打不开、标题退化为题号），把旧题行并入新键行、
         // 提交重定向过去——旧键行从此不再下发，记墓碑防止迟到的旧键提交拽回死链

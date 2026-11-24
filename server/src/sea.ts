@@ -17,7 +17,7 @@ import type { Server } from 'node:http';
 import { isSea, getAsset } from 'node:sea';
 import express, { type Express } from 'express';
 import { SERVER_ROOT } from './server-root.ts';
-import { looksLikeOurInstance } from './instance-health.ts';
+import { looksLikeOurInstance, looksLikeSameInstall } from './instance-health.ts';
 import { resolveDataDir, migrateLegacyDataDir } from './data-dir.ts';
 import { aiConfigFromDb, loadConfig, DEFAULT_CONFIG, type AppConfig } from './config.ts';
 import { tryLaunchWidget } from './widget-launcher.ts';
@@ -52,6 +52,8 @@ import { uploadsRoutes } from './routes/uploads.ts';
 import { appearanceRoutes } from './routes/appearance.ts';
 import { widgetRoutes, setWidgetPublicDir } from './routes/widget.ts';
 import { mcpRoutes } from './routes/mcp.ts';
+import { notesRoutes } from './routes/notes.ts';
+import { submissionRoutes } from './routes/submissions.ts';
 import { setSchemaSql } from './db/index.ts';
 import { setBuiltinBankJson, seedBuiltinBank } from './db/builtinBank.ts';
 import { setPromptTemplate } from './plans/planService.ts';
@@ -184,6 +186,8 @@ export function startServer(
   app.use('/api/export', exportRoutes(db));
   app.use('/api/problems', problemsRoutes(db));
   app.use('/api/history', historyRoutes(db));
+  app.use('/api/notes', notesRoutes(db));
+  app.use('/api/submissions', submissionRoutes(db));
   app.use('/api/reviews', reviewsRoutes(db));
   app.use('/api/uploads', uploadsRoutes({ uploadsDir: path.join(config.dataDir, 'uploads') }));
   app.use('/api/appearance', appearanceRoutes(config.dataDir));
@@ -445,6 +449,48 @@ async function bootServer(app: Express, db: Db, port: number, host: string): Pro
   installShutdown(server, db);
 }
 
+/**
+ * 把实际监听端口写进 data/runtime.json（issue #66）。
+ *
+ * 为什么需要：核心允许端口漂移（默认 3001 被占就往后试），而外部 agent 的 MCP 配置里
+ * 只能写一个固定地址（README 教用户填 http://127.0.0.1:3001/mcp）。核心一旦漂到 3002，
+ * 那个地址就是死的 —— 用户看到的是「Claude Desktop 连不上 / 工作台掉线」。
+ * 壳启动时先读这个文件（带过期校验）再探活，就能跟住真实端口；文件也给人排障用。
+ *
+ * 写失败不影响启动（只读目录、权限异常都可能）：探测仍有 3001..3020 的兜底扫描。
+ * 退出时删除它 —— 否则下次启动会先对着一个已死的端口等一个超时。
+ * 记录里的 pid 不是给壳判断存活用的（壳探活即可），而是给人排障：看到 pid 对不上就知道
+ * 这份文件是上一次运行留下的。
+ */
+function writeRuntimePortFile(config: AppConfig, port: number): void {
+  try {
+    const dir = path.dirname(config.dbPath);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'runtime.json');
+    // 记录 pid 与启动时刻只是为了排障（壳靠探活判断这份记录是否还成立）
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ port, pid: process.pid, startedAt: new Date().toISOString(), dataDir: dir }, null, 2),
+    );
+    runtimePortFilePath = file;
+  } catch (e) {
+    console.warn(`[boot] 写入 runtime.json 失败（不影响启动）: ${errMessage(e)}`);
+  }
+}
+
+/** 记录本次写下的 runtime.json 路径，退出时清理（只清自己写的那个） */
+let runtimePortFilePath: string | null = null;
+
+function removeRuntimePortFile(): void {
+  if (!runtimePortFilePath) return;
+  try {
+    fs.unlinkSync(runtimePortFilePath);
+  } catch {
+    /* 已被删/无权限：忽略 */
+  }
+  runtimePortFilePath = null;
+}
+
 /** 监听失败的可读报错：容器里跑起来再报 "listen EADDRINUSE" 最难排查。 */
 function reportListenError(e: unknown, port: number): void {
   const code = (e as NodeJS.ErrnoException).code;
@@ -480,6 +526,8 @@ function reportListenError(e: unknown, port: number): void {
 function installShutdown(server: Server, db: Db): void {
   let shuttingDown = false;
   const finish = (code: number): void => {
+    // 端口记录随进程一起失效：留着会让壳下次启动先等一个已死的端口（见 writeRuntimePortFile）
+    removeRuntimePortFile();
     // 关库失败不阻塞退出：进程结束时 SQLite 仍会自行收尾，只是可能留下 -wal 残留
     try {
       db.close();
@@ -520,7 +568,7 @@ function installShutdown(server: Server, db: Db): void {
 async function bootSea(app: Express, config: AppConfig, db: Db, desiredPort: number): Promise<void> {
   // 探测范围必须与下面「端口漂移」的尝试范围一致：上一份实例可能因为默认端口被别的
   // 程序占着而落在 desiredPort+1..+19，只探默认端口会把「重复双击」误判成新实例。
-  const runningPort = await findOurInstance(desiredPort);
+  const runningPort = await findOurInstance(desiredPort, path.dirname(config.dbPath));
   if (runningPort !== null) {
     console.log(`ICPC 备赛工作台已经在运行了（端口 ${runningPort}），正在为你打开页面…`);
     openBrowser(`http://localhost:${runningPort}`);
@@ -560,6 +608,7 @@ async function bootSea(app: Express, config: AppConfig, db: Db, desiredPort: num
   }
   serving = true;
   installShutdown(server, db);
+  writeRuntimePortFile(config, port);
   const url = `http://localhost:${port}`;
   console.log(banner(url, APP_VERSION));
   // 桌面壳（Tauri）拉起的嵌入模式：窗口由壳提供，不再抢占默认浏览器
@@ -598,24 +647,32 @@ const SEA_PORT_ATTEMPTS = 20;
  * 用户重复双击时会再起一个实例抢同一个数据库。反过来，从低位往高位扫还有额外好处：
  * 漂移总是从低位向上占用，最先命中的通常就是最早那份实例。
  */
-async function findOurInstance(desiredPort: number): Promise<number | null> {
+async function findOurInstance(desiredPort: number, dataDir: string): Promise<number | null> {
   for (let p = desiredPort; p < desiredPort + SEA_PORT_ATTEMPTS; p++) {
     if (p > 65535) break;
-    if (await isOurInstance(p)) return p;
+    const health = await probeInstance(p);
+    if (health === null) continue;
+    if (looksLikeSameInstall(health, dataDir)) return p;
+    // 另一个**安装**的实例（不同 dataDir）：不能认作「我已经在运行」，否则本实例静默退出、
+    // 用户的页面指向别人的数据库。记一条日志后继续往后找自己的端口（issue #66）。
+    console.warn(
+      `[boot] 端口 ${p} 上是另一个工作台安装（数据目录 ${String((health as { dataDir?: unknown }).dataDir ?? '未知')}），跳过`,
+    );
   }
   return null;
 }
 
-/** 判断某端口上是否已是本程序实例（health 探测）。 */
-async function isOurInstance(port: number): Promise<boolean> {
+/** 探测某端口的 /api/health；不是本程序则返回 null。 */
+async function probeInstance(port: number): Promise<unknown | null> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/health`, {
       signal: AbortSignal.timeout(1500),
     });
-    if (!res.ok) return false;
-    return looksLikeOurInstance(await res.json());
+    if (!res.ok) return null;
+    const health: unknown = await res.json();
+    return looksLikeOurInstance(health) ? health : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
