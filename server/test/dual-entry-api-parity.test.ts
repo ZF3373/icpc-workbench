@@ -54,7 +54,7 @@ test('双入口一致：/api/health 在两个入口都存在（探活/发现依�
  */
 
 /** 两个入口都必须装配的安全中间件，按必需的先后顺序。 */
-const SECURITY_MIDDLEWARES = ['hostGuard', 'securityHeaders'];
+const SECURITY_MIDDLEWARES = ['hostGuard', 'csrfGuard', 'securityHeaders'];
 
 /** 取出一次 `app.use(...)` 的完整参数文本（按括号配平扫描，避免嵌套括号截断）。 */
 function argsOfAppUse(src: string, openParenAt: number): string {
@@ -108,15 +108,17 @@ test('双入口一致：安全中间件在两个入口都装配，且先后顺�
   }
 });
 
-test('双入口一致：Host 头校验装在路由之前（否则请求已进路由，校验形同虚设）', () => {
+test('双入口一致：Host 与 CSRF 守卫装在路由之前', () => {
   for (const file of ['index.ts', 'sea.ts']) {
     const src = readFileSync(join(here, '..', 'src', file), 'utf-8');
-    const guardAt = src.indexOf('app.use(hostGuard(');
+    const hostGuardAt = src.indexOf('app.use(hostGuard(');
+    const csrfGuardAt = src.indexOf('app.use(csrfGuard(');
     const firstRouteAt = src.search(/app\.use\(\s*'\/api\//);
-    assert.ok(guardAt >= 0, `${file} 未装配 hostGuard——全站零鉴权，缺少防 DNS rebinding 的唯一防线`);
+    assert.ok(hostGuardAt >= 0, `${file} 未装配 hostGuard`);
+    assert.ok(csrfGuardAt > hostGuardAt, `${file} 未在 hostGuard 后装配 csrfGuard`);
     assert.ok(
-      firstRouteAt >= 0 && guardAt < firstRouteAt,
-      `${file}: hostGuard 必须早于第一个 /api 路由挂载（当前 guardAt=${guardAt}, firstRouteAt=${firstRouteAt}）`,
+      firstRouteAt >= 0 && csrfGuardAt < firstRouteAt,
+      `${file}: csrfGuard 必须早于第一个 /api 路由挂载`,
     );
   }
 });

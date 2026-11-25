@@ -10,7 +10,7 @@
  * 唯一稳健的通道：让桌面壳的内嵌 WebView **自己**去取——在目标站页面上下文里发同源
  * fetch（完美指纹 + 真实登录态，Cloudflare 无法区分），把响应体交回服务器解析。
  * 流程：适配器 fetchPageViaAgent 入队（按平台）→ 壳注入的守护脚本（各自域名下自轮询）
- * GET /next?platform=X 领任务 → 页面内 fetch → POST /result 回传 → 入队侧 Promise 兑现。
+ * POST /next?platform=X 领任务 → 页面内 fetch → POST /result 回传 → 入队侧 Promise 兑现。
  * 解析 / 去重 / 同步编排零改动（只是传输层换了）。
  *
  * 安全：/next 只向外发任务（内部 URL）；/result 只接受**有 pending 任务**的 id

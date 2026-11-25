@@ -16,7 +16,18 @@ async function startBridge(): Promise<{ url: string; close: () => Promise<void> 
   app.use('/api/settings/shell-auth', shellAuthRoutes(db));
   const srv: Server = await listenForTest(app);
   const { port } = srv.address() as AddressInfo;
-  return { url: `http://127.0.0.1:${port}/api/settings/shell-auth`, close: () => new Promise<void>((r) => srv.close(() => r())) };
+  return { url: `http://127.0.0.1:${port}/api/settings/shell-auth`, close: () => new Promise<void>((r) => {
+    srv.closeAllConnections();
+    srv.close(() => r());
+  }) };
+}
+
+function postPending(url: string): Promise<Response> {
+  return fetch(`${url}/pending`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
 }
 
 function bind(db: Db, platform: string, handle: string): void {
@@ -43,17 +54,36 @@ test('shell-auth 桥：request → pending（pop 语义）→ 空轮询', async 
     assert.equal(missing.status, 404);
 
     // 无请求时 pending 为 null（壳空轮询的主路径）
-    let res = await (await fetch(`${b.url}/pending`)).json() as { request: unknown };
+    let res = await (await postPending(b.url)).json() as { request: unknown };
     assert.equal(res.request, null);
 
     // 请求后第一次 GET 取走（pop），第二次 GET 为空——同一请求不会被壳执行两次。
     // platform 缺省 = qoj；未绑定的 handle 在上面已验证为 404，正路径见下一个用例
     let res2 = await (await fetch(`${b.url}/request`, { method: 'POST', body: JSON.stringify({ action: 'login' }), headers: { 'Content-Type': 'application/json' } })).json() as { ok: boolean; id: number };
     assert.equal(res2.ok, true);
-    res = await (await fetch(`${b.url}/pending`)).json();
+    res = await (await postPending(b.url)).json();
     assert.deepEqual(res.request, { id: res2.id, action: 'login', platform: 'qoj' });
-    res = await (await fetch(`${b.url}/pending`)).json();
+    res = await (await postPending(b.url)).json();
     assert.equal(res.request, null);
+  } finally {
+    await b.close();
+  }
+});
+
+test('shell-auth 桥：GET /pending 不再消费请求', async () => {
+  const b = await startBridge();
+  try {
+    const created = await (await fetch(`${b.url}/request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'login', platform: 'qoj' }),
+    })).json() as { id: number };
+
+    const legacy = await fetch(`${b.url}/pending`);
+    assert.equal(legacy.status, 404);
+
+    const popped = await (await postPending(b.url)).json() as { request: { id: number } | null };
+    assert.equal(popped.request?.id, created.id);
   } finally {
     await b.close();
   }
@@ -70,17 +100,20 @@ test('shell-auth 桥：绑定账号后带 handle 的请求可取走，缺省 pla
   try {
     const post = await (await fetch(`${url}/request`, { method: 'POST', body: JSON.stringify({ action: 'login', platform: 'luogu', handle: '1892580' }), headers: { 'Content-Type': 'application/json' } })).json() as { ok: boolean; id: number };
     assert.equal(post.ok, true);
-    let res = await (await fetch(`${url}/pending`)).json() as { request: { id: number; action: string; platform: string; handle?: string } | null };
+    let res = await (await postPending(url)).json() as { request: { id: number; action: string; platform: string; handle?: string } | null };
     assert.deepEqual(res.request, { id: post.id, action: 'login', platform: 'luogu', handle: '1892580' });
-    res = await (await fetch(`${url}/pending`)).json();
+    res = await (await postPending(url)).json();
     assert.equal(res.request, null);
 
     // platform 缺省 = qoj（无 handle）：老客户端/壳兼容
     const post2 = await (await fetch(`${url}/request`, { method: 'POST', body: JSON.stringify({ action: 'login' }), headers: { 'Content-Type': 'application/json' } })).json() as { ok: boolean; id: number };
-    res = await (await fetch(`${url}/pending`)).json();
+    res = await (await postPending(url)).json();
     assert.deepEqual(res.request, { id: post2.id, action: 'login', platform: 'qoj' });
   } finally {
-    await new Promise<void>((r) => srv.close(() => r()));
+    await new Promise<void>((r) => {
+      srv.closeAllConnections();
+      srv.close(() => r());
+    });
   }
 });
 

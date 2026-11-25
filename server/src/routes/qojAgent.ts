@@ -4,7 +4,7 @@ import { popJob, resolveJob, agentAlive, jobPlatform, type AgentPlatform } from 
 /**
  * WebView 同源代理的任务交换端点（消费方 = 壳注入到各平台页面的守护脚本）。
  *
- * 页面脚本：GET /next?platform=X 领任务（同源 fetch 任务 URL）→ POST /result 回传响应体。
+ * 页面脚本：POST /next?platform=X 领任务（同源 fetch 任务 URL）→ POST /result 回传响应体。
  * 安全模型：
  * - CORS 只放行各平台自己的源（https://qoj.ac / https://vjudge.net），其他页面读不到任务、写不进结果；
  * - https 页面 → http://127.0.0.1 属「本地回环豁免」（Chromium 视 127.0.0.1 为安全上下文），
@@ -30,6 +30,11 @@ function platformOfQuery(v: unknown): AgentPlatform | null {
   return null;
 }
 
+function isJsonRequest(contentType: string | undefined): boolean {
+  const mime = String(contentType ?? '').split(';')[0].trim().toLowerCase();
+  return mime === 'application/json' || mime.endsWith('+json');
+}
+
 export function qojAgentRoutes(): Router {
   const r = Router();
 
@@ -50,11 +55,15 @@ export function qojAgentRoutes(): Router {
     next();
   });
 
-  // GET /api/qoj-agent/next?platform=X → { job: { id, url } | null }
+  // POST /api/qoj-agent/next?platform=X → { job: { id, url } | null }
   // 守护脚本领取本平台任务（pop 语义）。空轮询即心跳：顺带刷新守护脚本活跃时间。
-  r.get('/next', (req, res) => {
+  r.post('/next', (req, res) => {
     const platform = platformOfQuery(req.query.platform);
     if (!platform) return res.status(400).json({ error: 'platform 需为 qoj 或 vjudge' });
+    const origin = req.headers.origin;
+    if ((origin !== undefined && origin !== PLATFORM_ORIGIN[platform]) || (origin === undefined && !isJsonRequest(req.headers['content-type']))) {
+      return res.status(403).json({ error: '请求来源不受信任。' });
+    }
     res.json({ job: popJob(platform) });
   });
 
@@ -80,7 +89,7 @@ export function qojAgentRoutes(): Router {
     // 回传源须与任务所属平台一致（浏览器守护脚本必带 Origin；无 Origin 的服务端自检放行）
     const origin = req.headers.origin;
     const expected = jobPlatform(id);
-    if (typeof origin === 'string' && expected && origin !== PLATFORM_ORIGIN[expected]) {
+    if ((typeof origin === 'string' && expected && origin !== PLATFORM_ORIGIN[expected]) || (origin === undefined && !isJsonRequest(req.headers['content-type']))) {
       return res.json({ ok: false });
     }
     const ok = resolveJob(id, status, body, typeof finalUrl === 'string' ? finalUrl : undefined);

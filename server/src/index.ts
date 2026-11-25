@@ -9,7 +9,7 @@ import { initAdapters } from './adapters/index.ts';
 import { migratePlatformCookieToAccounts } from './adapters/accountCreds.ts';
 import { configureSyncScheduler } from './adapters/syncScheduler.ts';
 import { setRequestIntervalScale } from './net/hostThrottle.ts';
-import { compressionMiddleware, errorHandler, hostGuard, securityHeaders } from './middleware.ts';
+import { compressionMiddleware, csrfGuard, errorHandler, hostGuard, securityHeaders } from './middleware.ts';
 import { backupsRoutes } from './routes/backups.ts';
 import { checkinsRoutes } from './routes/checkins.ts';
 import { contestsRoutes } from './routes/contests.ts';
@@ -77,6 +77,7 @@ const app = express();
 // 监听地址在装配中间件前就要定下来：Host 头校验只在绑定回环时启用（见 middleware.hostGuard）
 const host = process.env.HOST ?? '127.0.0.1';
 app.use(hostGuard(host));
+app.use(csrfGuard());
 // gzip/br 压缩：与 sea.ts 同口径（Docker/桌面版共用该入口），SSE 由 filter 显式排除
 app.use(compressionMiddleware());
 // 12 MiB：/api/ai/chat 允许每条消息带 8 个附件、单个 textContent 上限 1 MiB（见 routes/ai.ts），

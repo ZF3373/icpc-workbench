@@ -10,22 +10,36 @@ export interface PdfExtractResult {
   pages: number;
 }
 
+export interface PdfExtractOptions {
+  maxPages?: number;
+}
+
+const DEFAULT_MAX_PAGES = 200;
+
 /**
  * 从 PDF 字节中提取文本。使用 unpdf（Mozilla pdf.js 服务端封装），支持文本型 PDF。
  * 扫描型 PDF（纯图片）无法提取文字，返回空文本 + error 说明。
  * 失败抛错（加密/损坏），调用方负责兜底处理。
  */
-export async function extractPdfText(data: Uint8Array): Promise<PdfExtractResult> {
+export async function extractPdfText(data: Uint8Array, options: PdfExtractOptions = {}): Promise<PdfExtractResult> {
   // unpdf 要求 Uint8Array（不接受 Buffer），防御性转换为独立 Uint8Array
   const bytes = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
     ? data
     : new Uint8Array(data);
   const doc = await getDocumentProxy(bytes);
-  // mergePages: true 时 text 为 string（多页合并）；防御性兼容 string[] 形态
-  const { totalPages, text } = await extractText(doc, { mergePages: true });
-  const raw = typeof text === 'string' ? text : (text as string[]).join('\n\n');
-  const cleaned = cleanPdfText(raw);
-  return { text: cleaned, pages: totalPages };
+  try {
+    const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
+    if (doc.numPages > maxPages) {
+      throw new Error(`PDF 页数 ${doc.numPages} 超过上限 ${maxPages}`);
+    }
+    // mergePages: true 时 text 为 string（多页合并）；防御性兼容 string[] 形态
+    const { totalPages, text } = await extractText(doc, { mergePages: true });
+    const raw = typeof text === 'string' ? text : (text as string[]).join('\n\n');
+    const cleaned = cleanPdfText(raw);
+    return { text: cleaned, pages: totalPages };
+  } finally {
+    await doc.cleanup();
+  }
 }
 
 /**

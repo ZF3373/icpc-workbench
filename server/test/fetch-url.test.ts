@@ -1,5 +1,8 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import dns from 'node:dns';
+import { syncBuiltinESMExports } from 'node:module';
 import {
   FETCH_URL_TRANSPORT,
   executeFetchUrl,
@@ -195,7 +198,7 @@ describe('isPrivateIp', () => {
   });
 
   it('识别 IPv6 回环/未指定/链路本地/唯一本地/IPv4 映射', () => {
-    for (const ip of ['::1', '::', 'fe80::1', 'fc00::1', 'fd12:3456::1', '::ffff:127.0.0.1', '::ffff:10.0.0.1', '::ffff:7f00:1']) {
+    for (const ip of ['::1', '::', 'fe80::1', 'fe81::1', 'fe90::1', 'febf::1', 'fc00::1', 'fd12:3456::1', '::ffff:127.0.0.1', '::ffff:10.0.0.1', '::ffff:7f00:1']) {
       assert.ok(isPrivateIp(ip), `${ip} 应判为私网`);
     }
     for (const ip of ['2606:4700::1111', '2001:db8::1', '::ffff:8.8.8.8']) {
@@ -237,6 +240,68 @@ describe('executeFetchUrl fallback (direct fetch)', () => {
 
   it('默认传输层 = 全局节流 throttledFetch（防风控：AI 工具不得绕过平台节奏）', () => {
     assert.equal(FETCH_URL_TRANSPORT, throttledFetch);
+  });
+
+  it('DNS 重绑定不会在连接阶段再次解析并读到本机响应', async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('INTERNAL-SECRET');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    const originalLookup = dns.lookup;
+    let connectionLookups = 0;
+    dns.lookup = ((hostname: string, options: dns.LookupOptions | ((err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void), callback?: (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void) => {
+      if (hostname !== 'rebind.test') return originalLookup(hostname, options as dns.LookupOptions, callback!);
+      connectionLookups += 1;
+      const cb = typeof options === 'function' ? options : callback!;
+      if (typeof options === 'object' && options.all) cb(null, [{ address: '127.0.0.1', family: 4 }]);
+      else cb(null, '127.0.0.1', 4);
+    }) as typeof dns.lookup;
+    syncBuiltinESMExports();
+    setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
+    const fastFetch = ((input: URL | RequestInfo, init?: RequestInit) =>
+      fetch(input, { ...init, signal: AbortSignal.timeout(1000) })) as typeof fetch;
+    try {
+      const result = await executeFetchUrl(`http://rebind.test:${port}/private`, CFG_NO_KEY, undefined, fastFetch);
+      assert.equal(connectionLookups, 0, '实际连接不得再次调用系统 DNS');
+      assert.equal(result.content, '');
+      assert.ok(result.error);
+    } finally {
+      setDnsLookupForTest(null);
+      dns.lookup = originalLookup;
+      syncBuiltinESMExports();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('HTML 响应超过 10 MiB 时中止读取', async () => {
+    const oversized = new Uint8Array(10 * 1024 * 1024 + 1);
+    const fetchFn = (async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(oversized);
+        controller.close();
+      },
+    }), { headers: { 'Content-Type': 'text/html' } })) as typeof fetch;
+
+    const result = await executeFetchUrl('https://example.com/huge', CFG_NO_KEY, undefined, fetchFn);
+    assert.equal(result.content, '');
+    assert.match(result.error ?? '', /响应.*上限/);
+  });
+
+  it('PDF 响应超过 10 MiB 时在解析前中止读取', async () => {
+    const oversized = new Uint8Array(10 * 1024 * 1024 + 1);
+    const fetchFn = (async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(oversized);
+        controller.close();
+      },
+    }), { headers: { 'Content-Type': 'application/pdf' } })) as typeof fetch;
+
+    const result = await executeFetchUrl('https://example.com/huge.pdf', CFG_NO_KEY, undefined, fetchFn);
+    assert.equal(result.content, '');
+    assert.match(result.error ?? '', /响应.*上限/);
   });
 
   it('成功读取 HTML 正文并返回 title', async () => {

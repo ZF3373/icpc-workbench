@@ -100,6 +100,42 @@ export function hostGuard(boundHost: string, extraHosts = process.env.ICPC_ALLOW
   };
 }
 
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/** 浏览器页面必须同源；原生壳/MCP 等无 Origin 客户端只能用 JSON，避免简单表单跨站写入。 */
+export function csrfGuard(): RequestHandler {
+  return (req, res, next) => {
+    if (!MUTATING_METHODS.has(req.method)) return next();
+    // QOJ/VJudge 页面按设计跨源访问回环服务，由 qojAgentRoutes 校验平台 Origin。
+    if (req.path === '/api/qoj-agent' || req.path.startsWith('/api/qoj-agent/')) return next();
+
+    const reject = () => res.status(403).json({ error: '跨站写请求被拒绝。' });
+    const fetchSite = req.headers['sec-fetch-site'];
+    if (fetchSite === 'cross-site') return reject();
+
+    const origin = req.headers.origin;
+    if (origin !== undefined) {
+      try {
+        if (origin === 'null' || !req.headers.host) return reject();
+        const forwardedHost = req.headers['x-forwarded-host'];
+        const requestHost = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost)?.split(',')[0].trim() || req.headers.host;
+        const forwarded = req.headers['x-forwarded-proto'];
+        const protocol = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0].trim() || req.protocol;
+        const expected = new URL(`${protocol}://${requestHost}`);
+        const actual = new URL(origin);
+        if (actual.protocol !== `${protocol}:` || actual.host !== expected.host) return reject();
+      } catch {
+        return reject();
+      }
+      return next();
+    }
+
+    const contentType = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+    if (contentType === 'application/json' || contentType.endsWith('+json')) return next();
+    return reject();
+  };
+}
+
 /**
  * 全局错误处理中间件：捕获 asyncHandler 转交的 rejection 与同步抛出，
  * 统一返回 JSON 错误响应，避免客户端挂起或收到 HTML 错误页。

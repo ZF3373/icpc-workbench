@@ -23,6 +23,25 @@ function twoPagePdfBytes(): Uint8Array {
   return Uint8Array.from(Buffer.from(TWO_PAGE_PDF_B64, 'base64'));
 }
 
+function manyPagePdfBytes(pageCount: number): Uint8Array {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${Array.from({ length: pageCount }, (_, i) => `${i + 3} 0 R`).join(' ')}] /Count ${pageCount} >>`,
+    ...Array.from({ length: pageCount }, () => '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>'),
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets: number[] = [0];
+  for (const [i, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${i + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) pdf += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Uint8Array.from(Buffer.from(pdf));
+}
+
 // ---------- 纯函数：truncatePdfText / isPdf* ----------
 
 test('truncatePdfText: 短文本原样返回', () => {
@@ -55,6 +74,20 @@ test('extractPdfText: 从 2 页 PDF 提取文本', async () => {
   assert.equal(pages, 2);
   assert.match(text, /Page One Content/);
   assert.match(text, /Second Page Text/);
+});
+
+test('extractPdfText: 默认拒绝超过 200 页的 PDF', async () => {
+  await assert.rejects(
+    extractPdfText(manyPagePdfBytes(201)),
+    /页数|页超过/,
+  );
+});
+
+test('extractPdfText: 页数超过上限时拒绝解析', async () => {
+  await assert.rejects(
+    extractPdfText(twoPagePdfBytes(), { maxPages: 1 }),
+    /页数|页超过/,
+  );
 });
 
 test('extractPdfText: 垃圾字节抛错（非合法 PDF）', async () => {
