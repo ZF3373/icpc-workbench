@@ -265,7 +265,8 @@ fn kill_stale_cores(app: &tauri::AppHandle) {
             Ok(g) => g,
             Err(_) => return,
         };
-        guard.as_ref().and_then(|c| c.id())
+        // Child::id() 直接返回 u32（不像 try_wait 那样返回 Result）：这里要的是 Option<u32>
+        guard.as_ref().map(|c| c.id())
     };
     // own_pid 为 None 时仍然继续：那正是「刚启动、句柄还没拿到」的场景，
     // 也正是最需要清理孤儿的时候（下面用 process_alive(ppid) 排除别人的核心）。
