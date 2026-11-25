@@ -526,6 +526,61 @@ const engSerpingapi: SearchEngineAdapter = {
   },
 };
 
+
+const engKeenable: SearchEngineAdapter = {
+  id: 'keenable',
+  label: 'Keenable',
+  supportsFetch: true,
+  async search(query, key, signal) {
+    const endpoint = key ? 'https://api.keenable.ai/v1/search' : 'https://api.keenable.ai/v1/search/public';
+    const headers: Record<string, string> = key
+      ? { 'Content-Type': 'application/json', 'X-API-Key': key }
+      : { 'Content-Type': 'application/json', 'X-Keenable-Title': 'icpc-workbench' };
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ query, max_results: 5 }),
+      signal,
+    });
+    await assertOk(res, this.label);
+    const data = (await res.json()) as {
+      results?: Array<{ url?: string; title?: string; snippet?: string; description?: string }>;
+    };
+    const rows = (data.results ?? []).map((r) => resultOf(r.url, r.title, r.snippet || r.description));
+    return assertResults(rows.filter((r): r is EngineSearchResult => r !== undefined), this.label);
+  },
+  async fetch(url, key, signal) {
+    const endpoint = key ? 'https://api.keenable.ai/v1/fetch' : 'https://api.keenable.ai/v1/fetch/public';
+    const headers: Record<string, string> = key
+      ? { 'Content-Type': 'application/json', 'X-API-Key': key }
+      : { 'Content-Type': 'application/json', 'X-Keenable-Title': 'icpc-workbench' };
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ urls: [url], content: { max_chars: 50000 } }),
+      signal,
+    });
+    await assertOk(res, this.label);
+    const data = (await res.json()) as {
+      results?: Array<{
+        url?: string;
+        title?: string;
+        content?: string;
+        error?: { code?: string; message?: string };
+      }>;
+    };
+    const first = data.results?.[0];
+    if (first?.error) {
+      const reason = first.error.message || first.error.code;
+      throw new SearchEngineError(reason ? `Keenable 抓取失败：${reason}` : 'Keenable 抓取失败');
+    }
+    if (typeof first?.content !== 'string' || !first.content.trim()) {
+      throw new SearchEngineError('Keenable 抓取返回空内容');
+    }
+    return { content: first.content, title: first.title?.trim() || undefined };
+  },
+};
+
 /** 全部引擎适配器（顺序无关：调用顺序由用户配置决定） */
 export const SEARCH_ENGINE_ADAPTERS: readonly SearchEngineAdapter[] = [
   engTinyfish,
@@ -540,6 +595,7 @@ export const SEARCH_ENGINE_ADAPTERS: readonly SearchEngineAdapter[] = [
   engSerpapi,
   engJina,
   engSerpingapi,
+  engKeenable,
 ];
 
 const ENGINE_BY_ID: Record<string, SearchEngineAdapter> = Object.fromEntries(

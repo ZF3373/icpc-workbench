@@ -199,3 +199,39 @@ test('AnySearch 抓取 401 不重复尝试，继续直连兜底', async () => {
   assert.equal(result.content, 'Direct content');
   assert.equal(engineCalls, 1);
 });
+
+test('Keenable 搜索与抓取支持无 Key 公共路径与有 Key 路径，并检查 results[0].error', async () => {
+  const seen: Array<{ url: string; headers: HeadersInit | undefined; body: unknown }> = [];
+  globalThis.fetch = async (url, init) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    seen.push({ url: String(url), headers: init?.headers, body });
+    if (String(url).endsWith('/v1/search/public')) {
+      return Response.json({ results: [{ url: 'https://example.com/a', title: 'A', snippet: 'Snippet A' }] });
+    }
+    if (String(url).endsWith('/v1/fetch')) {
+      return Response.json({ results: [{ url: 'https://example.com/a', title: 'Page A', content: 'Full text' }] });
+    }
+    throw new Error(`unexpected url: ${url}`);
+  };
+
+  const searchRes = await executeWebSearch('segment tree', { searchProviders: [{ engine: 'keenable', keys: [] }] });
+  assert.equal(searchRes.error, undefined);
+  assert.deepEqual(searchRes.results, [{ url: 'https://example.com/a', title: 'A', snippet: 'Snippet A' }]);
+  assert.equal(seen[0]?.url, 'https://api.keenable.ai/v1/search/public');
+  assert.equal((seen[0]?.headers as Record<string, string>)['X-Keenable-Title'], 'icpc-workbench');
+
+  setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
+  const fetchRes = await executeFetchUrl('https://example.com/a', { searchProviders: [{ engine: 'keenable', keys: ['keen_k'] }] }, undefined,
+    async () => new Response('unexpected direct fetch', { status: 502 }));
+  assert.equal(fetchRes.error, undefined);
+  assert.equal(fetchRes.title, 'Page A');
+  assert.equal(fetchRes.content, 'Full text');
+  assert.equal(seen[1]?.url, 'https://api.keenable.ai/v1/fetch');
+  assert.equal((seen[1]?.headers as Record<string, string>)['X-API-Key'], 'keen_k');
+
+  globalThis.fetch = async () => Response.json({
+    results: [{ url: 'https://example.com/fail', error: { code: 'fetch_failed', message: 'timeout' } }],
+  });
+  const adapter = engineAdapter('keenable')!;
+  await assert.rejects(() => adapter.fetch!('https://example.com/fail', '', new AbortController().signal), /timeout/);
+});
