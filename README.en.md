@@ -357,6 +357,8 @@ POST /mcp                         # MCP endpoint (Streamable HTTP, external AI a
 The workbench embeds an MCP (Model Context Protocol) server. External agent applications — Claude Desktop, Cursor, Claude Code, Cline, etc. — can connect and operate the workbench directly: query practice profiles, search and pick problems, manage training plans and problem lists, check in, trigger syncs, export summaries — no manual clicking required.
 
 - **Endpoint**: `http://127.0.0.1:3001/mcp` (Streamable HTTP transport, stateless; the port follows your deployment — for the desktop build use the port shown in the startup banner)
+  - If 3001 is taken the core drifts to the next free port. The **actual** port is written to `runtime.json` in the data directory (e.g. `{"port":3002,...}`); the desktop shell reads it on startup
+  - Tool calls run **synchronously in one process**: more than 2 concurrent calls get `503` + `Retry-After`, so call them one at a time (concurrent heavy queries stall the whole app, including the shell's health probe)
 - **Tools**: 40 in total; each tool is a loopback call to an existing `/api/*` endpoint, defined in `server/src/mcp/tools.ts`
 - **Prerequisite**: the workbench must be running (the MCP endpoint shares the server's process and port)
 
@@ -384,7 +386,8 @@ claude mcp add --transport http icpc-workbench http://127.0.0.1:3001/mcp
 |---|---|
 | Status & settings | `get_app_status` · `get_sync_status` · `get_settings_overview` · `sync_platform` |
 | Stats profiles | `get_stats_overview` · `get_weakness_analysis` · `get_mastery_map` · `get_practice_heatmap` · `get_practice_summary` |
-| Problems & submissions | `search_problems` · `list_submission_history` · `fetch_problem_bank` |
+| Problems & submissions | `search_problems` · `list_submission_history` · `get_submission_source` · `fetch_problem_bank` |
+| Problem / contest notes | `get_problem_notes` · `save_problem_notes` · `get_contest_notes` · `save_contest_notes` |
 | Today & plans | `get_today_training` · `list_plans` · `get_plan` · `import_ai_plan` · `export_plan_package` · `shift_plan` · `update_plan_task` · `delete_plan_task` · `delete_plan` |
 | Problem lists | `list_problem_lists` · `get_problem_list` · `import_problem_list` · `add_problems_to_list` · `classify_problem_list` |
 | Check-ins | `get_checkin_calendar` · `checkin_task` · `cancel_checkin` · `auto_checkin_today` |

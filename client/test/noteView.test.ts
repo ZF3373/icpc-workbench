@@ -2,10 +2,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { hasNoteText, noteCardWidth, noteKindLabel, noteSummary } from '../src/noteView'
 
-test('noteKindLabel: 三类笔记各有独立名称', () => {
+test('noteKindLabel: 五类笔记各有独立名称', () => {
   assert.equal(noteKindLabel('review'), '复习笔记')
   assert.equal(noteKindLabel('template'), '学习笔记')
   assert.equal(noteKindLabel('task'), '任务备注')
+  assert.equal(noteKindLabel('problem'), '题目笔记')
+  assert.equal(noteKindLabel('contest'), '比赛笔记')
 })
 
 test('hasNoteText: 空串 / 纯空白不算有内容，普通文本算', () => {

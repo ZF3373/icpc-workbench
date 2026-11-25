@@ -36,6 +36,11 @@ export function createDb(dbPath: string): Db {
   db.exec('PRAGMA cache_size = -20000;');
   // 只读内存映射 256MB：查询期读页走 mmap，绕过 read() 系统调用；WAL 下安全（写仍走 WAL 文件）。
   db.exec('PRAGMA mmap_size = 268435456;');
+  // 写锁等待（issue #66）：node:sqlite 是全同步 API，默认 busy_timeout=0 —— 另一进程（桌面壳
+  // 残留的旧核心、同时打开的第二份工作台、或备份进程）持有写锁时，任何一次写入都立刻抛
+  // SQLITE_BUSY，同步层随即报「同步失败」，而桌面壳的健康探测也会在这段时间连续超时，
+  // 被判成「本地服务未响应」并强制杀掉核心。给 5s 等待，把这类瞬时争用吸收在库层。
+  db.exec('PRAGMA busy_timeout = 5000;');
   db.exec(schemaOverride ?? fs.readFileSync(SCHEMA_PATH, 'utf8'));
   migrate(db);
   seed(db);
@@ -137,6 +142,10 @@ function migrate(db: Db): void {
   // 能力值算法据此区分赛场 AC 与赛后补题，补题/练习题降权
   const submissionCols = columnsOf('submissions');
   if (!submissionCols.has('context')) db.exec('ALTER TABLE submissions ADD COLUMN context TEXT');
+  // v0.15: 提交详情页地址（issue #69）。新库由 schema.sql 建列，老库在这里补；
+  // 老行留 NULL 即可——/api/history 返回时按 (platform, external_id) 现算补齐，
+  // 只要平台路由可推导，历史记录不必等下一次同步也能点开提交详情。
+  if (!submissionCols.has('submission_url')) db.exec('ALTER TABLE submissions ADD COLUMN submission_url TEXT');
   // v0.8: 多账号支持——submissions 增加 account 列且唯一键扩为 (user_id, platform, account, external_id)；
   // platform_accounts 唯一键从 (user_id, platform) 扩为 (user_id, platform, handle)。
   // SQLite 无法修改约束，两表都需要重建（先补 context 列再重建，保证老库两步迁移一步到位）。
@@ -486,7 +495,9 @@ function rebuildSubmissionsForMultiAccount(db: Db): void {
   );
   const rows = db
     .prepare(
-      'SELECT id, user_id, platform, problem_id, verdict, language, submitted_at, external_id, context FROM submissions',
+      `SELECT id, user_id, platform, problem_id, verdict, language, submitted_at, external_id, context,
+              submission_url
+         FROM submissions`,
     )
     .all() as Array<{
     id: number;
@@ -498,6 +509,12 @@ function rebuildSubmissionsForMultiAccount(db: Db): void {
     submitted_at: string;
     external_id: string | null;
     context: string | null;
+    /**
+     * 重建只发生在「还没有 account 列」的老库上（v0.8 之前），那时还没有 submission_url，
+     * 这一列刚由上面的 ALTER 补出、全为 NULL。仍然照原样搬过去：rebuid 的语义是
+     * 「换表结构但不丢数据」，多带一列比事后猜有没有值更安全。
+     */
+    submission_url: string | null;
   }>;
   // 建表 → 拷数据 → 换名 → 重建索引，整段收进**同一个事务**。SQLite 的 DDL 本身是事务性的，
   // 而原实现把 CREATE TABLE 放在 BEGIN 之前、把 DROP/RENAME 放在 COMMIT 之后，于是：
@@ -518,12 +535,16 @@ function rebuildSubmissionsForMultiAccount(db: Db): void {
         submitted_at TEXT NOT NULL,
         external_id  TEXT,
         context      TEXT,
+        -- issue #69：重建表必须带上后加的列，否则迁移完成后 submissions 里根本没有这一列，
+        -- 引用 s.submission_url 的历史查询与写入会整片报 "no such column"。
+        submission_url TEXT,
         UNIQUE (user_id, platform, account, external_id)
       )`);
     const ins = db.prepare(
       `INSERT INTO submissions_new
-         (id, user_id, platform, account, problem_id, verdict, language, submitted_at, external_id, context)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, user_id, platform, account, problem_id, verdict, language, submitted_at, external_id, context,
+          submission_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const r of rows) {
       ins.run(
@@ -537,6 +558,7 @@ function rebuildSubmissionsForMultiAccount(db: Db): void {
         r.submitted_at,
         r.external_id,
         r.context,
+        r.submission_url,
       );
     }
     db.exec('DROP TABLE submissions');

@@ -52,6 +52,7 @@ export interface ToolContext {
   get(path: string, query?: QueryParams, timeoutMs?: number): Promise<unknown>;
   getText(path: string, query?: QueryParams, timeoutMs?: number): Promise<string>;
   post(path: string, body?: unknown, timeoutMs?: number): Promise<unknown>;
+  put(path: string, body?: unknown): Promise<unknown>;
   patch(path: string, body?: unknown): Promise<unknown>;
   del(path: string, body?: unknown): Promise<unknown>;
 }
@@ -74,6 +75,8 @@ export function createToolContext(base: string): ToolContext {
       return typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
     },
     post: async (path, body, timeoutMs) => unwrap(await call({ method: 'POST', path, body, timeoutMs })),
+    // 笔记的写入口是 PUT（幂等覆盖，符合「保存这条笔记」的语义）；proxy 已支持该方法
+    put: async (path, body) => unwrap(await call({ method: 'PUT', path, body })),
     patch: async (path, body) => unwrap(await call({ method: 'PATCH', path, body })),
     del: async (path, body) => unwrap(await call({ method: 'DELETE', path, body })),
   };
@@ -234,12 +237,21 @@ export const MCP_TOOLS: McpToolDef[] = [
   ),
   tool(
     'list_submission_history',
-    '写题历史（提交记录）：按题目视图或提交视图浏览，可按平台、结果（AC/失败）、日期区间、关键词过滤，分页返回。',
+    '写题历史（提交记录）：按题目视图或提交视图浏览，可按平台、结果（AC/失败）、日期区间、关键词过滤，分页返回。' +
+      '逐条视图（view=submission）的每条记录带 submissionUrl（该次提交在 OJ 上的详情页，issue #69），可用于后续查询源码。' +
+      '也可以按比赛筛选（contestKey，如 codeforces:1877）并用 phase 只看赛时（during，含虚拟赛）或赛后补题（after）的提交（issue #70）——' +
+      '找同一道题的赛时 WA 与赛后 AC 做对比时，正是用它。',
     {
       ...scopeProps(),
       view: { type: 'string', description: 'problem = 按题去重视图（默认），submission = 原始提交流' },
       result: { type: 'string', description: 'all / ac / failed（默认 all）' },
       q: { type: 'string', description: '关键词（题号/标题）' },
+      contestKey: {
+        type: 'string',
+        description: '按比赛筛选（形如 codeforces:1877 / atcoder:abc380 / luogu:353129；赛事中心的比赛 key）',
+      },
+      phase: { type: 'string', description: '参赛阶段：all（默认）/ during（赛时，含虚拟赛）/ after（赛后补题）' },
+      account: { type: 'string', description: '只看该平台下某账号的提交（同一场比赛有正式参赛与 VP 时用来区分）' },
       page: { type: 'number', description: '页码（默认 1）' },
       pageSize: { type: 'number', description: '每页数量（默认 50，上限 200）' },
     },
@@ -251,9 +263,93 @@ export const MCP_TOOLS: McpToolDef[] = [
         from: str(a.from),
         to: str(a.to),
         q: str(a.q),
+        contestKey: str(a.contestKey),
+        phase: str(a.phase),
+        account: str(a.account),
         page: num(a.page),
         pageSize: num(a.pageSize),
       }),
+  ),
+  tool(
+    'get_submission_source',
+    '取某次提交的源码（issue #69）：传入 list_submission_history 逐条视图里的 id。' +
+      '首次调用会访问该提交的 OJ 详情页抓取源码并缓存到本地，之后直接读缓存；' +
+      '各平台有最小请求间隔（约 1.5-2 秒），连续调用会收到 429 与重试提示，请逐个取。' +
+      '复盘典型用法：用 contestKey + phase 分别取出赛时 WA 与赛后 AC，再取两者源码对比。',
+    {
+      submissionId: { type: 'number', description: '提交记录 id（list_submission_history 逐条视图返回的 id）' },
+      refresh: { type: 'boolean', description: 'true = 忽略缓存重新抓取（默认 false）' },
+    },
+    async (a, ctx) => {
+      const id = num(a.submissionId);
+      if (id === undefined) throw new ToolError('submissionId 必填（数字）');
+      return ctx.get(`/api/submissions/${id}/source`, bool(a.refresh) ? { refresh: '1' } : undefined, LONG_TASK_TIMEOUT_MS);
+    },
+    ['submissionId'],
+  ),
+  tool(
+    'get_problem_notes',
+    '读某道题的独立笔记（issue #71，与复习队列无关：移出复习队列笔记依然在）。' +
+      '题目按「题目身份」定位，洛谷的 CF/AtCoder 镜像与原站视为同一道题。' +
+      '返回 text / hasNote / updatedAt；没写过时 text 为空串（不是错误）。',
+    {
+      platform: { type: 'string', description: `题目所属平台（${PLATFORM_IDS}）` },
+      problemKey: { type: 'string', description: '题号（如 1919C / P1001 / abc321_a）' },
+    },
+    async (a, ctx) => {
+      const platform = str(a.platform);
+      const problemKey = str(a.problemKey);
+      if (platform === undefined || problemKey === undefined) throw new ToolError('platform 与 problemKey 均必填');
+      return ctx.get(`/api/notes/problem/${encodeURIComponent(platform)}/${encodeURIComponent(problemKey)}`, undefined);
+    },
+    ['platform', 'problemKey'],
+  ),
+  tool(
+    'save_problem_notes',
+    '新建或覆盖某道题的独立笔记（Markdown，最长 20000 字符；text 传空串 = 删除该笔记）。' +
+      'AI 复盘后把「关键性质 / 卡点 / 纠偏过程」写回题目本身时用它。',
+    {
+      platform: { type: 'string', description: `题目所属平台（${PLATFORM_IDS}）` },
+      problemKey: { type: 'string', description: '题号（如 1919C / P1001 / abc321_a）' },
+      text: { type: 'string', description: 'Markdown 笔记正文；空串表示删除' },
+    },
+    async (a, ctx) => {
+      const platform = str(a.platform);
+      const problemKey = str(a.problemKey);
+      const text = typeof a.text === 'string' ? a.text : undefined;
+      if (platform === undefined || problemKey === undefined || text === undefined) {
+        throw new ToolError('platform / problemKey / text 均必填');
+      }
+      return ctx.put(`/api/notes/problem/${encodeURIComponent(platform)}/${encodeURIComponent(problemKey)}`, { text });
+    },
+    ['platform', 'problemKey', 'text'],
+  ),
+  tool(
+    'get_contest_notes',
+    '读某场比赛的独立笔记（issue #71）：竞赛复盘时把选题、换题等决策记在整场比赛下。' +
+      'contestKey 与赛事中心一致（codeforces:1877 / atcoder:abc380）。',
+    { contestKey: { type: 'string', description: '比赛 key，形如 codeforces:1877' } },
+    async (a, ctx) => {
+      const key = str(a.contestKey);
+      if (key === undefined) throw new ToolError('contestKey 必填');
+      return ctx.get(`/api/notes/contest/${encodeURIComponent(key)}`, undefined);
+    },
+    ['contestKey'],
+  ),
+  tool(
+    'save_contest_notes',
+    '新建或覆盖某场比赛的独立笔记（Markdown，最长 20000 字符；text 传空串 = 删除）。',
+    {
+      contestKey: { type: 'string', description: '比赛 key，形如 codeforces:1877' },
+      text: { type: 'string', description: 'Markdown 笔记正文；空串表示删除' },
+    },
+    async (a, ctx) => {
+      const key = str(a.contestKey);
+      const text = typeof a.text === 'string' ? a.text : undefined;
+      if (key === undefined || text === undefined) throw new ToolError('contestKey / text 均必填');
+      return ctx.put(`/api/notes/contest/${encodeURIComponent(key)}`, { text });
+    },
+    ['contestKey', 'text'],
   ),
   tool(
     'fetch_problem_bank',

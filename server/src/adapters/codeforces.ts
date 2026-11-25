@@ -9,6 +9,7 @@ import type { PlatformAdapter } from './types.ts';
 import { asHttpClient, sleep, type HttpInit } from './http.ts';
 import { recordWait } from './pagination.ts';
 import { splitCodeforcesProblemKey } from './problemKey.ts';
+import { codeforcesSubmissionUrl } from './submissionUrl.ts';
 
 const API_BASE = 'https://codeforces.com/api';
 const PAGE_SIZE = 1000;
@@ -260,6 +261,11 @@ function normalize(s: CFSubmission): NormalizedSubmission {
     ...(s.programmingLanguage ? { language: s.programmingLanguage } : {}),
     submittedAt: new Date(s.creationTimeSeconds * 1000).toISOString(),
     externalId: String(s.id),
+    // issue #69：提交详情页地址。contestId 只在 user.status 里有，拼路由必须用它，
+    // 所以在这里（而不是导入层）算好；规则与 problemUrlFor 共用同一个 gym 阈值。
+    ...(contestId !== undefined
+      ? { submissionUrl: codeforcesSubmissionUrl(contestId, s.id) ?? undefined }
+      : {}),
     ...(context ? { context } : {}),
   };
 }

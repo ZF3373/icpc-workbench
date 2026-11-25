@@ -379,7 +379,23 @@ export default function Dashboard() {
   }, [stats, platformOrder])
 
   /** 当前折叠的模块集合：没有用户记录时用默认折叠集合 */
-  const collapsedSet = useMemo(() => new Set<string>(collapsedModules ?? COLLAPSED_BY_DEFAULT), [collapsedModules])
+  /**
+   * 带 ?contestKey= 进来时强制展开「写题历史」（issue #70）。
+   *
+   * 赛事中心「查看提交」跳过来落地在这一页，而写题历史默认是折叠的 ——
+   * 不展开的话用户点了按钮却看不到任何提交，会以为功能没生效。
+   * 只影响「是否展开」这一个渲染判断，不回写偏好：用户下次自己打开概览页时
+   * 仍按他自己的折叠习惯走。
+   */
+  const deepLinkedContestKey = useMemo(() => {
+    if (typeof window === 'undefined') return null
+    return new URLSearchParams(window.location.search).get('contestKey')
+  }, [])
+  const collapsedSet = useMemo(() => {
+    const set = new Set<string>(collapsedModules ?? COLLAPSED_BY_DEFAULT)
+    if (deepLinkedContestKey) set.delete('history')
+    return set
+  }, [collapsedModules, deepLinkedContestKey])
 
   // 只允许「最新一次请求」落地：切换账号视角时旧 scope 的慢响应会晚到，若照常写回会把
   // 新账号的数据盖成旧账号的。与 Problems/Today/Calendar/Contests 的 reqSeq 护栏同款。

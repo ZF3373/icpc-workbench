@@ -46,6 +46,7 @@ import { ImportPlanModal } from './settings/ImportPlanModal'
 import { KnowledgePipelineCard } from './settings/KnowledgePipelineCard'
 import { BackupCard } from './settings/BackupCard'
 import { ClistCard, type ClistSettingsView } from './settings/ClistCard'
+import { ProblemVisibilityCard } from './settings/ProblemVisibilityCard'
 
 interface SettingsData {
   ai: SettingsAiData
@@ -934,6 +935,11 @@ export default function Settings() {
       <div className="settings-body">
       <BackgroundSettings />
       <Row gutter={[16, 24]}>
+      {/* 题目信息隐藏（issue #68）：纯前端偏好（localStorage），与 AI 配置同列上方，
+          因为它影响的是「看题时看到什么」，属于日常刷题体验而不是账号/数据配置 */}
+      <Col span={24} id="settings-visibility">
+        <ProblemVisibilityCard />
+      </Col>
       <Col xs={24} lg={12} id="settings-ai">
         {/* AI 配置表单是独立子组件：form 实例必须在**表单本身挂载时**创建。
             旧实现把 Form.useForm() 放在本页顶部（数据还没到、Form 还没挂载：

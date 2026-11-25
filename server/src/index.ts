@@ -34,6 +34,8 @@ import { uploadsRoutes } from './routes/uploads.ts';
 import { appearanceRoutes } from './routes/appearance.ts';
 import { widgetRoutes } from './routes/widget.ts';
 import { mcpRoutes } from './routes/mcp.ts';
+import { notesRoutes } from './routes/notes.ts';
+import { submissionRoutes } from './routes/submissions.ts';
 import { PLATFORMS } from '../../shared/src/index.ts';
 import { initKnowledgeStore, loadAnnotationsIntoDb, purgeAiAnnotations } from './knowledge/store.ts';
 
@@ -92,6 +94,10 @@ app.use('/api/knowledge', knowledgeRoutes(db));
 app.use('/api/export', exportRoutes(db));
 app.use('/api/problems', problemsRoutes(db));
 app.use('/api/history', historyRoutes(db));
+// 题目 / 比赛 独立笔记（issue #71）：与复习队列解耦，移动/删除复习条目不影响笔记
+app.use('/api/notes', notesRoutes(db));
+// 单次提交的详情链接与按需源码（issue #69）：链接只读库，源码首次访问才抓提交页
+app.use('/api/submissions', submissionRoutes(db));
 app.use('/api/reviews', reviewsRoutes(db));
 // 笔记图片：上传与静态服务封装在同一 Router（GET 服务 /api/uploads/xxx，POST 上传）
 app.use('/api/uploads', uploadsRoutes({ uploadsDir: path.join(config.dataDir, 'uploads') }));

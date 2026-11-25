@@ -225,6 +225,90 @@ fn core_running(app: &tauri::AppHandle) -> bool {
     }
 }
 
+/// 该 pid 是否仍存在。
+///
+/// 为什么不用 std::process 按 pid 查：那需要一个句柄；这里只有任务管理器/兄弟壳留下的数字。
+/// Windows 上用 tasklist 过滤（一次调用，无新依赖）；查不到时**保守返回 true** ——
+/// 宁可不清理，也不要误伤别人正在用的核心。
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    let filter = format!("PID eq {pid}");
+    let Ok(out) = std::process::Command::new("tasklist")
+        .args(["/FI", filter.as_str(), "/NH"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    else {
+        return true;
+    };
+    String::from_utf8_lossy(&out.stdout).contains(&pid.to_string())
+}
+
+#[cfg(not(windows))]
+fn process_alive(_pid: u32) -> bool {
+    true
+}
+
+/// 按镜像名清理**不是自己拉起**的残留核心进程（issue #66）。
+///
+/// 为什么必须做：kill_core 只杀自己 Child 句柄里的进程；壳被任务管理器结束、崩溃、
+/// 或升级替换 exe 时，核心会活下来。下一次启动时新核心抢不到端口 → 漂移到下一个，
+/// 同一份 data/ 上于是有两个写者（SQLite 争锁，用户看到同步失败/掉线）；
+/// 而且孤儿占着默认端口 3001，Claude Desktop 等外部 agent 的 MCP 配置里写死的
+/// http://127.0.0.1:3001/mcp 会一直打到**旧的那份数据**上。
+///
+/// 只清「同名镜像、且父进程已经不在」的进程：父进程还活着的（别的窗口/别的安装）不动。
+#[cfg(windows)]
+fn kill_stale_cores(app: &tauri::AppHandle) {
+    let own_pid = {
+        let core: &CoreHandle = app.state::<CoreHandle>().inner();
+        let guard = match core.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        // Child::id() 直接返回 u32（不像 try_wait 那样返回 Result）：这里要的是 Option<u32>
+        guard.as_ref().map(|c| c.id())
+    };
+    // own_pid 为 None 时仍然继续：那正是「刚启动、句柄还没拿到」的场景，
+    // 也正是最需要清理孤儿的时候（下面用 process_alive(ppid) 排除别人的核心）。
+    let script = "Get-CimInstance Win32_Process -Filter \"Name='icpc-core.exe'\" | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress".to_string();
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", script.as_str()]);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let Ok(out) = cmd.output() else { return };
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) else { return };
+    let rows: Vec<serde_json::Value> = match json {
+        serde_json::Value::Array(a) => a,
+        serde_json::Value::Object(o) => vec![serde_json::Value::Object(o)],
+        _ => return,
+    };
+    for row in rows {
+        let pid = row.get("ProcessId").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let ppid = row.get("ParentProcessId").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        if pid == 0 || Some(pid) == own_pid {
+            continue;
+        }
+        // 父进程仍是活着的进程 → 可能是另一个窗口/另一份安装拉起的核心，不动它
+        if ppid != 0 && process_alive(ppid) {
+            continue;
+        }
+        let pid_text = pid.to_string();
+        let mut kill = std::process::Command::new("taskkill");
+        kill.args(["/PID", pid_text.as_str(), "/T", "/F"]);
+        kill.creation_flags(CREATE_NO_WINDOW);
+        let result = kill.output();
+        let code = result.as_ref().ok().and_then(|o| o.status.code()).unwrap_or(-1);
+        logln(&format!("[shell] 清理残留核心 pid={pid}（父进程 {ppid} 已退出），taskkill 退出码 {code}"));
+    }
+}
+
+#[cfg(not(windows))]
+fn kill_stale_cores(_app: &tauri::AppHandle) {}
+
 /// 拉起核心（无窗口、嵌入模式，stdout/stderr 落会话日志）。若核心进程仍在运行则跳过。
 fn spawn_core(app: &tauri::AppHandle) {
     let core: &CoreHandle = app.state::<CoreHandle>().inner();
@@ -238,6 +322,15 @@ fn spawn_core(app: &tauri::AppHandle) {
             return;
         }
     }
+    // 自己手上没有活着的核心，但可能有上一代壳留下的孤儿占着端口与数据目录。
+    // 先清掉再拉起，否则新核心只能漂到下一个端口，而 MCP 地址（写死默认端口）
+    // 与「重复双击复用实例」的判断都会指向旧的孤儿（issue #66）。
+    drop(guard);
+    kill_stale_cores(app);
+    let mut guard = match core.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
     let path = core_path();
     if !path.exists() {
         logln(&format!("[shell] 未找到核心程序: {}", path.display()));

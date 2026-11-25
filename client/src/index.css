@@ -1972,6 +1972,56 @@ body {
   color: var(--green) !important;
 }
 
+/* 被「题目信息隐藏」藏起来的格子（issue #68）：虚线空占位。
+   用虚线而不是实线边框，是让它一眼区别于「正经数据」；不加 hover 提示真实值，
+   否则悬停一下就剧透，开关就白设了。 */
+/* 题目/比赛笔记入口（issue #71）：记过东西的行在图标右上角挂一个小圆点，
+   一眼能看出「这题/这场我写过」，而不必点进去确认。 */
+/* 提交源码（issue #69）：等宽 + 保留换行，正文可横向滚动但不撑破弹窗 */
+.submission-source {
+  max-height: 60vh;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--overlay-1, rgba(128, 128, 128, 0.08));
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+  tab-size: 4;
+}
+
+.note-dot-btn {
+  position: relative;
+}
+
+.note-dot-btn.is-written::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--green, #52c41a);
+}
+
+.hidden-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  height: 21px;
+  padding: 0 6px;
+  border: 1px dashed var(--border-2, rgba(128, 128, 128, 0.45));
+  border-radius: 7px;
+  color: var(--text-3);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
 /* 难度格 = 手动填写入口：整格可点，但不做成按钮外观（列宽只有 88px） */
 .difficulty-edit {
   display: inline-flex;

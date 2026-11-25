@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Button, Card, Col, Input, Pagination, Row, Segmented, Select, Tag, Tooltip } from 'antd'
-import { BarChartOutlined, ClockCircleOutlined, RedoOutlined, RobotOutlined, SearchOutlined } from '@ant-design/icons'
+import { BarChartOutlined, ClockCircleOutlined, HistoryOutlined, RedoOutlined, RobotOutlined, SearchOutlined } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import PlatformTag from '../components/PlatformTag'
@@ -8,6 +8,7 @@ import PageSkeleton from '../components/PageSkeleton'
 import EmptyState from '../components/EmptyState'
 import InlineError from '../components/InlineError'
 import ContestAnalysisModal from '../components/ContestAnalysisModal'
+import ProblemNoteButton from '../components/ProblemNoteButton'
 import { api } from '../api'
 import { useDebounced } from '../useDebounced'
 import { fmtDateTime } from '../formatTime.ts'
@@ -274,7 +275,10 @@ export default function Contests() {
           ]} /></Card>
           : tab === 'participated' ? <Row gutter={[16, 16]}>{historyPage.map(c => <Col xs={24} lg={12} xl={8} key={c.key}>
             <ParticipationCard contest={c} onReview={() => nav(`/ai?contest=${encodeURIComponent(c.key)}`)}
-              onAnalyze={() => setAnalysisContest(c)} />
+              onAnalyze={() => setAnalysisContest(c)}
+              /* 查看该场提交（issue #70）：落到数据概览的写题历史并预置比赛筛选，
+                 赛时/赛后切换在那里做 —— 复盘时要对比的正是同一道题的两条提交 */
+              onSubmissions={() => nav(`/?contestKey=${encodeURIComponent(c.key)}`)} />
           </Col>)}</Row>
             : tab === 'running' ? <Row gutter={[16, 16]}>{items.map(c => <Col xs={24} lg={12} xl={8} key={c.id}>
               <CalendarCard contest={c} mode={tab} />
@@ -290,7 +294,9 @@ export default function Contests() {
   )
 }
 
-function ParticipationCard({ contest: c, onReview, onAnalyze }: { contest: ParticipatedContest; onReview: () => void; onAnalyze: () => void }) {
+function ParticipationCard({ contest: c, onReview, onAnalyze, onSubmissions }: {
+  contest: ParticipatedContest; onReview: () => void; onAnalyze: () => void; onSubmissions: () => void
+}) {
   const progress = upsolveProgress(c)
   const evidence = EVIDENCE_TAG[c.evidence] ?? { color: 'default', label: '依据待确认', detail: '暂无法识别这条参赛记录的依据。' }
   const ratingStatus = c.ratingStatus ?? (c.source?.ratingChange == null ? 'pending' : 'rated')
@@ -316,7 +322,14 @@ function ParticipationCard({ contest: c, onReview, onAnalyze }: { contest: Parti
     </div>
     {c.accounts && c.accounts.length > 1 && <div className="contest-footnote">合并账号：{c.accounts.join('、')}；{c.source?.account ? `排名、Rating 与赛中 AC 来自 ${c.source.account}` : '赛中 AC 按账号合并'}。</div>}
     <div className="contest-card-actions">
+      {/* 比赛笔记（issue #71）：选题/换题等决策记在整场比赛下，赛后再翻回来 */}
+      <ProblemNoteButton
+        target={{ contestKey: c.key }}
+        subject={c.name || c.key}
+        variant="text"
+      />
       <Button size="small" type="link" icon={<BarChartOutlined />} className="contest-review-action" onClick={onAnalyze}>赛事分析</Button>
+      <Button size="small" type="link" icon={<HistoryOutlined />} className="contest-review-action" onClick={onSubmissions}>查看提交</Button>
       <Button size="small" type="link" icon={<RobotOutlined />} className="contest-review-action" onClick={onReview}>去 AI 复盘</Button>
     </div>
   </Card>

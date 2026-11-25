@@ -24,15 +24,47 @@ pub async fn check(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{port}/api/health");
     let Ok(resp) = client().get(&url).send().await else { return false; };
     let Ok(v) = resp.json::<serde_json::Value>().await else { return false; };
+    // sea === true 必须一起校验（与服务端 instance-health.ts 同口径）：
+    // 3001..3020 上完全可能蹲着 tsx dev server（sea:false）或另一份安装的核心，
+    // 只看 ok+platforms 会让壳把窗口挂到一个「不是它拉起的、数据目录也可能不同」的实例上。
     v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false)
         && v.get("platforms").map(|p| p.is_array()).unwrap_or(false)
+        && v.get("sea").and_then(|s| s.as_bool()).unwrap_or(false)
+}
+
+/// 读核心写下的 data/runtime.json，取出上一次/本次运行的实际端口（issue #66）。
+///
+/// 为什么先看它：核心允许端口漂移（3001 被占就往后试），而壳的扫描范围只有
+/// PORT_MIN..=PORT_MAX。默认端口被别的程序（含另一份安装）长期占用时，
+/// 核心会落到扫描范围之外，壳就永远探不到，页面停在「本地服务未响应」——
+/// 用户双击 icpc-core.exe 却一切正常。文件里带 pid，用来剔除上次运行留下的僵尸记录。
+///
+/// 只在文件声明的端口确实能探通时才采信：文件是磁盘上的普通 JSON，可能过期（上次运行
+/// 异常退出没删掉）、也可能被用户手改；探不通就当它不存在，退回范围扫描。
+pub async fn runtime_port() -> Option<u16> {
+    let path = crate::exe_dir().join("data").join("runtime.json");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let port = v.get("port")?.as_u64()?;
+    if port == 0 || port > 65535 {
+        return None;
+    }
+    let port = port as u16;
+    if check(port).await {
+        return Some(port);
+    }
+    None
 }
 
 pub async fn find_server(hint: Option<u16>) -> Option<u16> {
     if let Some(p) = hint {
-        if (PORT_MIN..=PORT_MAX).contains(&p) && check(p).await {
+        if check(p).await {
             return Some(p);
         }
+    }
+    // 再试核心自己记下的实际端口（可能落在 PORT_MIN..=PORT_MAX 之外）
+    if let Some(p) = runtime_port().await {
+        return Some(p);
     }
     // 全量并行探测（20 个端口同时发），按端口升序取第一个命中（最低端口优先）
     let tasks = (PORT_MIN..=PORT_MAX).map(|p| async move { (p, check(p).await) });

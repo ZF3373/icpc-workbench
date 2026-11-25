@@ -10,6 +10,7 @@ import type { FetchOptions, PlatformAdapter } from './types.ts';
 import { asHttpClient, sleep, type HttpInit } from './http.ts';
 import { fetchOwnContestSubmissions, isAtcoderLoginPage, type KenkoooSubmission } from './atcoderDirect.ts';
 import { atcoderContestPrefix } from './problemKey.ts';
+import { atcoderSubmissionUrl } from './submissionUrl.ts';
 
 const API = 'https://kenkoooo.com/atcoder';
 const SITE = 'https://atcoder.jp';
@@ -372,5 +373,7 @@ function normalize(
     language: s.language,
     submittedAt: new Date(s.epoch_second * 1000).toISOString(),
     externalId: String(s.id),
+    // issue #69：kenkoooo 的 id 是 AtCoder 全局提交号，提交详情路由还需要 contest_id
+    submissionUrl: atcoderSubmissionUrl(s.contest_id, s.id) ?? undefined,
   };
 }
