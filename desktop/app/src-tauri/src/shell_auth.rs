@@ -1098,10 +1098,17 @@ fn current_port(app: &AppHandle) -> Option<u16> {
     *state.lock().ok()?
 }
 
+/// 壳 → 核心的回环 HTTP 客户端。
+///
+/// 与 discovery::client 同理必须 `.no_proxy()`（issue #66）：这是一条纯回环调用，
+/// 一旦被 reqwest 的 system-proxy 塞进用户系统代理，凭据桥与后续接口全部失效——
+/// 而用户在浏览器里打开同一地址却是正常的（浏览器自己会旁路 localhost），
+/// 表现得像「只有桌面版坏」。回环地址不经过代理是这里的硬约束。
 fn http() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
+            .no_proxy()
             .timeout(Duration::from_secs(8))
             .build()
             .expect("构建壳凭据桥 HTTP 客户端失败")

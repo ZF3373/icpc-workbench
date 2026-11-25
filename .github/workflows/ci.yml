@@ -61,6 +61,13 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      # 桌面壳的单元测试（issue #66）：这条链路上的 bug（例如探活被系统代理拦截）
+      # 只体现在 Rust 侧，Node 测试完全覆盖不到，必须单独跑。放在打包之前 ——
+      # 测试失败就别浪费 40 分钟去打一个坏包。
+      - name: 桌面壳单元测试
+        working-directory: desktop/app/src-tauri
+        run: cargo test
+
       - name: 构建 Windows 安装包与便携版
         run: node server/scripts/build-desktop.mjs
 

@@ -10,10 +10,22 @@ use std::time::Duration;
 const PROBE_TIMEOUT: Duration = Duration::from_millis(2500);
 
 /// 共享 HTTP 客户端：探活每次都新建 Client 会在 20 端口并行扫描时重复构建连接池。
+///
+/// **必须 `.no_proxy()`（issue #66 的真因）**：reqwest 0.12 默认开启 `system-proxy` 特性，
+/// 在 Windows 上会读注册表 `Internet Settings` 的 `ProxyEnable`/`ProxyServer`/`ProxyOverride`，
+/// 于是对 **127.0.0.1 的探活也可能被塞进系统代理**。而 Windows 默认的旁路写法是 `127.*`
+/// ——hyper-util 的匹配器只把 `*` 当通配、`127.*` 被当成域名处理，**匹配不上 `127.0.0.1`**
+/// （实测：只有 `NO_PROXY=127.0.0.1` 才真能旁路）。
+///
+/// 后果就是用户看到的那个现象：核心活得好好的（任务管理器在、浏览器打开 localhost:3001
+/// 也正常），但壳的探活全被送进代理；代理没开/端口变了/规则拦截时请求直接失败，
+/// 壳据此判定「本地服务未响应」，再按恢复预算把正常核心强杀（issue #66）。
+/// 回环地址永远不该走代理，这里显式断开，与系统代理设置无关。
 fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
+            .no_proxy()
             .timeout(PROBE_TIMEOUT)
             .build()
             .expect("构建健康探测 HTTP 客户端失败")
@@ -73,4 +85,53 @@ pub async fn find_server(hint: Option<u16>) -> Option<u16> {
         .into_iter()
         .find(|(_, ok)| *ok)
         .map(|(p, _)| p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归门禁（issue #66）：探活客户端必须**不经系统代理**。
+    ///
+    /// 这个 bug 的实际表现极难在测试里复现（要么改注册表、要么起一个假代理），
+    /// 但它有一个稳定可断言的特征：一旦有人把 `.no_proxy()` 从 client() 里删掉，
+    /// 回环探活就会重新受 reqwest 的 system-proxy 影响。这里用「设置 HTTP_PROXY
+    /// 指向一个必然不可达的端口」来构造：若 client() 尊重代理，探活必然失败；
+    /// 只有 no_proxy 生效时才会连上本地监听。
+    #[tokio::test]
+    async fn probe_ignores_system_proxy() {
+        // 起一个最小 HTTP 服务，返回 /api/health 期望的形状
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                // 读掉请求头后直接回一个固定响应体
+                let mut buf = [0u8; 1024];
+                let _ = std::io::Read::read(&mut s, &mut buf);
+                let body = r#"{"ok":true,"platforms":[],"sea":true}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = std::io::Write::write_all(&mut s, resp.as_bytes());
+            }
+        });
+
+        // 把代理指到一个不可达端口：只要请求真的走了代理，就必然失败
+        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:1");
+        std::env::set_var("http_proxy", "http://127.0.0.1:1");
+        std::env::set_var("ALL_PROXY", "http://127.0.0.1:1");
+        std::env::set_var("all_proxy", "http://127.0.0.1:1");
+        // 关键：NO_PROXY 故意留空，模拟「系统旁路列表没有回环」的用户环境
+        std::env::remove_var("NO_PROXY");
+        std::env::remove_var("no_proxy");
+
+        // client() 是 OnceLock 缓存的，本测试进程内首次构建——正是要测的那份配置
+        assert!(
+            check(port).await,
+            "探活被系统代理拦截了：client() 必须调用 .no_proxy()（issue #66）"
+        );
+    }
 }

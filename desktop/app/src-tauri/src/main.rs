@@ -144,17 +144,31 @@ fn logln(line: &str) {
     );
 }
 
-/// 轮转并打开核心会话日志（append）：上一份 core.log 挪到 core.old.log。
-/// 只在真正拉起新核心时调用——旧子进程此时已退出、文件句柄已释放，Windows 上才能改名成功。
-/// 核心的 stdout/stderr 指向该文件：Node 对文件 fd 的写入是同步的，
-/// 未捕获异常的堆栈在进程退出前必然落盘，崩溃原因不再「未知」。
+/// 打开核心会话日志（append）；**每次壳运行只轮转一次**（issue #66 的取证缺陷）。
+///
+/// 原实现是「每次真正拉起新核心就轮转一次」，看似合理，实际把故障现场吃掉了：
+/// 壳自己的 logln 也写同一个 core.log，于是排查一个「反复掉线重拉」的故障时，
+/// 「工作台壳启动 / 服务就绪 / 服务掉线 / 核心启动超时」这些**最关键的因果行**
+/// 会随着恢复期的每次 respawn 被推进 core.old.log，再被下一次 rename 覆盖掉
+/// （core.old.log 只留一份）。用户贴回来的日志因此只剩「拉起 → 被杀」的尾巴，
+/// 看不到它是怎么走到那一步的。
+///
+/// 现在只在一个壳进程的**第一次**拉起时轮转，之后的重拉全部追加到同一个文件：
+/// 一次运行 = 一条完整时间线，从「壳启动」到「本轮恢复失败」都在。
+/// 旧子进程此时已退出、句柄已释放，Windows 上才能改名成功。
 fn open_rotated_core_log() -> Option<std::fs::File> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static ROTATED_THIS_RUN: AtomicBool = AtomicBool::new(false);
+
     let path = log_path();
     let dir = path.parent()?;
     let _ = std::fs::create_dir_all(dir);
-    let old = dir.join("core.old.log");
-    let _ = std::fs::remove_file(&old);
-    let _ = std::fs::rename(&path, &old);
+    // 仅本次壳运行的首个核心做轮转；后续重拉复用同一个 core.log
+    if !ROTATED_THIS_RUN.swap(true, Ordering::Relaxed) {
+        let old = dir.join("core.old.log");
+        let _ = std::fs::remove_file(&old);
+        let _ = std::fs::rename(&path, &old);
+    }
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)

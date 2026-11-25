@@ -70,6 +70,12 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      # 桌面壳单元测试（issue #66）。Rust 侧的回归只有这里能拦：
+      # 上一版正是因为 CI 从不跑 cargo test，探活被系统代理拦截这类故障一路进了发布版。
+      - name: 桌面壳单元测试
+        working-directory: desktop/app/src-tauri
+        run: cargo test
+
       - name: 构建桌面版（核心 SEA + Tauri 壳 + NSIS 安装程序）
         run: node server/scripts/build-desktop.mjs
 
