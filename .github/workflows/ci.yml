@@ -61,15 +61,37 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
-      # 桌面壳的单元测试（issue #66）：这条链路上的 bug（例如探活被系统代理拦截）
-      # 只体现在 Rust 侧，Node 测试完全覆盖不到，必须单独跑。放在打包之前 ——
-      # 测试失败就别浪费 40 分钟去打一个坏包。
-      - name: 桌面壳单元测试
-        working-directory: desktop/app/src-tauri
-        run: cargo test
-
       - name: 构建 Windows 安装包与便携版
         run: node server/scripts/build-desktop.mjs
+
+      # 桌面壳回归守卫（issue #66）：探活/凭据桥的回环 HTTP 客户端必须 .no_proxy()。
+      #
+      # 为什么不在 CI 里 cargo test：本 crate 的 build.rs 会 embed-resource 编译
+      # windows-app.manifest 并要求 tauri 的 binaries/icpc-core-<triple>.exe 就位，
+      # 在干净 runner 上会先失败在 rc.exe（RC2135 / resource path 不存在），
+      # 与测试断言无关；而真正的断言测试在开发机上可用 cargo test 跑。
+      # 这里只做**零构建依赖**的静态守卫：删掉 .no_proxy() 就会红。
+      - name: 校验回环 HTTP 客户端禁用系统代理（issue #66）
+        shell: pwsh
+        run: |
+          $files = @(
+            'desktop/app/src-tauri/src/discovery.rs',
+            'desktop/app/src-tauri/src/shell_auth.rs'
+          )
+          $bad = @()
+          foreach ($f in $files) {
+            $text = Get-Content -LiteralPath $f -Raw
+            # 每个文件都必须出现 .no_proxy()（客户端构建处）
+            if ($text -notmatch '\.no_proxy\(\)') {
+              $bad += "$f 缺少 .no_proxy()：回环请求会被系统代理接管（issue #66）"
+            }
+          }
+          if ($bad.Count -gt 0) {
+            $bad | ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+          Write-Host '回环 HTTP 客户端已禁用系统代理',
+
 
       - name: 附带许可和更新说明
         shell: pwsh

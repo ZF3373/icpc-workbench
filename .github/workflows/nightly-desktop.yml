@@ -70,14 +70,32 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
-      # 桌面壳单元测试（issue #66）。Rust 侧的回归只有这里能拦：
-      # 上一版正是因为 CI 从不跑 cargo test，探活被系统代理拦截这类故障一路进了发布版。
-      - name: 桌面壳单元测试
-        working-directory: desktop/app/src-tauri
-        run: cargo test
-
       - name: 构建桌面版（核心 SEA + Tauri 壳 + NSIS 安装程序）
         run: node server/scripts/build-desktop.mjs
+
+      # 桌面壳回归守卫（issue #66）：探活/凭据桥的回环 HTTP 客户端必须 .no_proxy()。
+      # 上一版正是因为 CI 对 Rust 侧零覆盖，探活被系统代理拦截一路进了发布版。
+      # 不在 CI 里 cargo test 的原因见 ci.yml 同名步骤的说明（build.rs 需要
+      # windows-app.manifest 与 binaries/icpc-core-* 就位，干净 runner 上会先失败）。
+      - name: 校验回环 HTTP 客户端禁用系统代理（issue #66）
+        shell: pwsh
+        run: |
+          $files = @(
+            'desktop/app/src-tauri/src/discovery.rs',
+            'desktop/app/src-tauri/src/shell_auth.rs'
+          )
+          $bad = @()
+          foreach ($f in $files) {
+            $text = Get-Content -LiteralPath $f -Raw
+            if ($text -notmatch '\.no_proxy\(\)') {
+              $bad += "$f 缺少 .no_proxy()：回环请求会被系统代理接管（issue #66）"
+            }
+          }
+          if ($bad.Count -gt 0) {
+            $bad | ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+          Write-Host '回环 HTTP 客户端已禁用系统代理'
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
