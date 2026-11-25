@@ -1,7 +1,7 @@
 import type { PlatformId } from '../../../shared/src/index.ts';
 import type { Db } from '../db/index.ts';
-import { resolveContestGroup } from '../contests/participated.ts';
 import { readContestProblemSet } from '../contests/problemSetCache.ts';
+import { DEFAULT_USER_ID } from '../constants.ts';
 
 /**
  * 「按比赛 / 参赛阶段筛选提交」（issue #70）。
@@ -56,13 +56,36 @@ export function resolveContestScope(db: Db, contestKey: string): ContestScope | 
   if (!m) return null;
   const platform = m[1] as PlatformId;
   const contestId = m[2]!;
-  const review = resolveContestGroup(db, contestKey);
-  if (!review) return null;
-  const c = review.contest;
-  const startMs = c.startTimeIso ? Date.parse(c.startTimeIso) : NaN;
-  const endMs = c.endTimeIso ? Date.parse(c.endTimeIso) : NaN;
+  /**
+   * 时间窗**直接读 participated_contests**，不走 resolveContestGroup。
+   *
+   * 为什么：后者是为「赛事中心 / AI 复盘」服务的推导管线，需要日历与平台参赛记录源
+   * 一起参与才能把一场比赛「认出来」（qualifyGroup 要证据、contestGroups 要日历分组）。
+   * 而写题历史只是一个查询页面，两样东西都拿不到 —— 实测直接调它会对绝大多数
+   * **真实存在**的比赛返回 null，筛选整体失效（"未找到比赛 xxx"）。
+   *
+   * 而这场比赛的时间窗本来就以权威形式落在 participated_contests 里
+   * （official_window=1 的是官方赛程，其余是平台侧记录），这里直接取即可：
+   * 既不需要网络、也不需要日历。
+   */
+  const stored = db
+    .prepare(
+      `SELECT name, start_ms AS startMs, end_ms AS endMs, official_window AS officialWindow
+         FROM participated_contests
+        WHERE user_id = ? AND platform = ? AND contest_id = ?
+        ORDER BY official_window DESC, start_ms DESC
+        LIMIT 1`,
+    )
+    .get(DEFAULT_USER_ID, platform, contestId) as
+    | { name: string | null; startMs: number | null; endMs: number | null; officialWindow: number }
+    | undefined;
+  if (!stored) return null;
+  const startMs = stored.startMs ?? NaN;
+  const endMs = stored.endMs ?? NaN;
   const hasWindow = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
-  const reliableWindow = hasWindow && !c.timeIsApproximate;
+  // 只有官方赛程给的窗口才算可靠：official_window=0 是旧版用 Rating 结算时间推算的，
+  // 那时用它会把握手当成赛时（见 schema.sql 的列注释）。
+  const reliableWindow = hasWindow && stored.officialWindow === 1;
   // 已落库的官方题目集：最精确的归属依据（含用户一题都没提交的场次）
   const refs = readContestProblemSet(db, platform, contestId);
   const problemKeys = refs && refs.length > 0 ? refs.map((r) => r.id) : null;
@@ -74,7 +97,7 @@ export function resolveContestScope(db: Db, contestKey: string): ContestScope | 
     startMs: hasWindow ? startMs : null,
     endMs: hasWindow ? endMs : null,
     reliableWindow,
-    name: c.name ?? contestKey,
+    name: stored.name ?? contestKey,
   };
 }
 
@@ -114,16 +137,16 @@ function contestMemberSql(scope: ContestScope): ScopeSql {
       // 题号形如 1877C（比赛号+题号），前缀匹配会撞号（1877 vs 187）；
       // URL 里的 /contest/1877/ 与 /gym/1877/ 是平台侧权威归属，用它做精确段匹配。
       return {
-        sql: ' AND (p.url LIKE ? ESCAPE \'\\\\\' OR p.url LIKE ? ESCAPE \'\\\\\')',
+        sql: " AND (p.url LIKE ? ESCAPE '\\' OR p.url LIKE ? ESCAPE '\\')",
         params: [`%/contest/${id}/%`, `%/gym/${id}/%`],
         note: null,
       };
     case 'atcoder':
-      return { sql: ' AND p.url LIKE ? ESCAPE \'\\\\\'', params: [`%/contests/${id}/%`], note: null };
+      return { sql: " AND p.url LIKE ? ESCAPE '\\'", params: [`%/contests/${id}/%`], note: null };
     case 'qoj':
     case 'jisuanke':
       // 比赛题键 = {contestId}-{problemId}（见 contests/participated.ts 的 contestIdOf）
-      return { sql: ' AND p.problem_key LIKE ? ESCAPE \'\\\\\'', params: [`${id}-%`], note: null };
+      return { sql: " AND p.problem_key LIKE ? ESCAPE '\\'", params: [`${id}-%`], note: null };
     default:
       // 洛谷 / 牛客：题号与链接都不携带比赛信息，只能靠时间窗
       return { sql: '', params: [], note: null };

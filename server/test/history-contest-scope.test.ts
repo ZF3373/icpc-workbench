@@ -154,3 +154,57 @@ test('无法解析的比赛 key：明确回空并给出说明（而不是静默�
     assert.match(res.scopeNote ?? '', /未找到比赛/);
   });
 });
+
+test('生成的 SQL 必须真的能执行（ESCAPE 是单字符，e2e 回归）', async () => {
+  // 之前这里只断言 SQL 文本形态，于是 ESCAPE '\\\\'（两个字符，反斜杠被双重转义）
+  // 一路绿灯到了真实数据上才炸 "ESCAPE expression must be a single character"。
+  // 这条用例真的把片段拼进查询执行一遍：SQL 文本对不代表 SQL 能跑。
+  const db = createDb(':memory:');
+  seed(db);
+  const scopes: ContestScope[] = [
+    scope(), // CF：URL 段匹配 + context
+    scope({ platform: 'atcoder', contestKey: 'atcoder:abc380', contestId: 'abc380', reliableWindow: false }),
+    scope({ platform: 'qoj', contestKey: 'qoj:1234', contestId: '1234', reliableWindow: false }),
+    scope({ platform: 'jisuanke', contestKey: 'jisuanke:567', contestId: '567', reliableWindow: false }),
+    scope({ problemKeys: ['1877B'] }), // 题目集路径
+  ];
+  for (const sc of scopes) {
+    for (const phase of ['during', 'after', 'all'] as const) {
+      const { sql, params } = contestScopeSql(sc, phase);
+      assert.doesNotThrow(
+        () => db.prepare(`SELECT COUNT(*) AS c FROM submissions s JOIN problems p ON p.id = s.problem_id WHERE s.user_id = 1${sql}`).all(...params),
+        `${sc.platform}/${phase} 的片段无法执行：${sql}`,
+      );
+    }
+  }
+  db.close();
+});
+
+test('e2e：选一场比赛不会带出别的比赛/别的平台的提交', async () => {
+  const db = createDb(':memory:');
+  seed(db);
+  // 权威参赛记录（时间窗就存在这里，筛选据此判定赛时/赛后）
+  db.prepare(
+    `INSERT INTO participated_contests (user_id, platform, account, contest_id, name, start_ms, end_ms, official_window, fetched_at)
+     VALUES (1, 'codeforces', 'alice', '1877', 'Round 1877', ?, ?, 1, '2026-09-13T00:00:00.000Z')`,
+  ).run(Date.parse('2026-09-10T14:35:00.000Z'), Date.parse('2026-09-10T16:35:00.000Z'));
+  await withServer(db, async (base) => {
+    const during = (await (await fetch(`${base}/submissions?view=submission&contestKey=codeforces:1877&phase=during`)).json()) as {
+      items: Array<Record<string, unknown>>;
+      total: number;
+    };
+    // 只有本场的赛时提交（1900A 是另一场，P1001 是另一个平台，都必须被排除）
+    assert.deepEqual(during.items.map((i) => i.externalId), ['11']);
+    assert.equal(during.total, 1);
+
+    const after = (await (await fetch(`${base}/submissions?view=submission&contestKey=codeforces:1877&phase=after`)).json()) as {
+      items: Array<Record<string, unknown>>;
+    };
+    assert.deepEqual(after.items.map((i) => i.externalId), ['12']);
+
+    const all = (await (await fetch(`${base}/submissions?view=submission&contestKey=codeforces:1877&phase=all`)).json()) as {
+      items: Array<Record<string, unknown>>;
+    };
+    assert.deepEqual(all.items.map((i) => i.externalId).sort(), ['11', '12']);
+  });
+});
