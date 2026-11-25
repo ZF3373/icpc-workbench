@@ -38,9 +38,28 @@ export function normalizeVisibility(raw: unknown): ProblemVisibility {
   }
 }
 
-/** 当前偏好：localStorage 优先，非法或缺失回退「全部可见」 */
+/**
+ * 当前偏好：localStorage 优先，非法或缺失回退「全部可见」。
+ *
+ * ⚠ 返回引用必须稳定：它是 useSyncExternalStore 的 getSnapshot（见 useProblemVisibility）。
+ * 每次新建对象会让 React 在每次取快照时都判定「状态变了」→ 重渲染 → 再取快照 → 再判变，
+ * 一路顶到「Maximum update depth exceeded」（React error #185），整棵树被卸载，页面白屏。
+ * 触发条件只需「有组件订阅了这个 hook」：数据概览默认折叠「写题历史」，
+ * 用户一旦手动全部展开（localStorage 存下 []），HistoryPanel 就会挂载并订阅 —— 于是白屏。
+ * 所以这里按字段值缓存：两项都没变就返回上一次的对象。
+ */
+let cachedVisibility: ProblemVisibility | null = null
 export function getVisibility(): ProblemVisibility {
-  return normalizeVisibility(readJson<unknown>(PROBLEM_VISIBILITY_KEY))
+  const next = normalizeVisibility(readJson<unknown>(PROBLEM_VISIBILITY_KEY))
+  if (
+    cachedVisibility &&
+    cachedVisibility.hideTags === next.hideTags &&
+    cachedVisibility.hideDifficulty === next.hideDifficulty
+  ) {
+    return cachedVisibility
+  }
+  cachedVisibility = next
+  return cachedVisibility
 }
 
 /** 写入偏好并广播变更（同标签页立即生效；跨标签页由 storage 事件处理） */
@@ -77,7 +96,7 @@ function subscribe(cb: () => void): () => void {
   }
 }
 
-/** React hook：订阅偏好变更，返回当前两个开关 */
+/** React hook：订阅偏好变更，返回当前两个开关（getVisibility 返回稳定引用，见其注释） */
 export function useProblemVisibility(): ProblemVisibility {
   return useSyncExternalStore(subscribe, getVisibility, () => DEFAULT_VISIBILITY)
 }
