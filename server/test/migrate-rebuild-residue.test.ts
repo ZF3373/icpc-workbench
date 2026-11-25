@@ -159,3 +159,33 @@ test('migrate: platform_accounts_new 残留（重建中途被杀）不得让应�
     }
   });
 });
+
+test('migrate: 重建后必须保留 submission_url 列（issue #69 回归）', () => {
+  // 评审意见 P1：先 ALTER 补 submission_url、再重建 submissions 时，若重建的
+  // CREATE TABLE / INSERT 没有带上这一列，迁移完成后表里就根本没有该列 ——
+  // 引用 s.submission_url 的历史查询与写入会整片报 "no such column"。
+  withTempDb((file) => {
+    createLegacyDb(file);
+    const db = createDb(file);
+    try {
+      const cols = (db.prepare('PRAGMA table_info(submissions)').all() as Array<{ name: string }>).map((c) => c.name);
+      assert.ok(cols.includes('submission_url'), '重建后的 submissions 必须仍有 submission_url 列');
+      // 真正的回归断言：按新列写入并读回（旧实现会在这一步抛 no such column）
+      db.prepare(
+        "INSERT INTO submissions (user_id, platform, account, problem_id, verdict, submitted_at, external_id, submission_url) " +
+          "VALUES (1, 'codeforces', 'big-account', 1, 'WA', '2026-01-03T00:00:00.000Z', 'ext-2', 'https://codeforces.com/contest/1877/submission/2')",
+      ).run();
+      const row = db
+        .prepare("SELECT submission_url FROM submissions WHERE external_id = 'ext-2'")
+        .get() as { submission_url: string | null };
+      assert.equal(row.submission_url, 'https://codeforces.com/contest/1877/submission/2');
+      // 迁移前的存量行该列为 NULL（重建只是换结构，不编造链接）
+      const old = db
+        .prepare("SELECT submission_url FROM submissions WHERE external_id = 'ext-1'")
+        .get() as { submission_url: string | null };
+      assert.equal(old.submission_url, null);
+    } finally {
+      db.close();
+    }
+  });
+});

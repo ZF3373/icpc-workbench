@@ -196,9 +196,14 @@ function parseFilters(query: Record<string, unknown>): HistoryFilters {
  * result 只在这里下发给 submission 视图（逐条流水按行判定）；problem 视图改走 HAVING，
  * 否则「提交/AC」计数会被结果过滤切片，5 发才 A 的题会显示成 1/1。
  */
-function filterSql(db: Db, f: HistoryFilters, view: View): { where: string; params: Array<string | number> } {
+function filterSql(
+  db: Db,
+  f: HistoryFilters,
+  view: View,
+): { where: string; params: Array<string | number>; scopeNote: string | null } {
   let where = ' WHERE s.user_id = ?';
   const params: Array<string | number> = [DEFAULT_USER_ID];
+  let scopeNote: string | null = null;
   if (f.account !== undefined) {
     where += ' AND s.account = ?';
     params.push(f.account);
@@ -209,10 +214,12 @@ function filterSql(db: Db, f: HistoryFilters, view: View): { where: string; para
     // 否则用户会以为「这场一条提交都没有」和「筛选没生效」是同一件事。
     if (!scope) {
       where += ' AND 1 = 0';
+      scopeNote = `未找到比赛 ${f.contestKey} 的记录（可能已更换账号或数据被清理），请先在赛事中心刷新参赛记录。`;
     } else {
       const scoped = contestScopeSql(scope, f.phase);
       where += scoped.sql;
       params.push(...scoped.params);
+      scopeNote = scoped.note;
     }
   }
   if (f.platform !== undefined) {
@@ -236,7 +243,7 @@ function filterSql(db: Db, f: HistoryFilters, view: View): { where: string; para
     const like = likeParam(f.q);
     params.push(like, like);
   }
-  return { where, params };
+  return { where, params, scopeNote };
 }
 
 /** problem 视图的结果过滤：在聚合之后按「该题在窗口内是否 AC 过」判定 */
@@ -320,7 +327,7 @@ export function historyRoutes(db: Db): Router {
     const pageSize = clampInt(req.query.pageSize, DEFAULT_PAGE_SIZE, 1, MAX_PAGE_SIZE);
     const page = clampInt(req.query.page, 1, 1, Number.MAX_SAFE_INTEGER);
     const offset = (page - 1) * pageSize;
-    const { where, params } = filterSql(db, f, view);
+    const { where, params, scopeNote } = filterSql(db, f, view);
 
     let items: unknown[];
     let total: number;
@@ -366,6 +373,11 @@ export function historyRoutes(db: Db): Router {
       page,
       pageSize,
       hasMore: offset + items.length < total,
+      /**
+       * 比赛筛选的说明（issue #70）：无法归属某场比赛时解释原因，
+       * 让「这场没有提交」与「筛不出来」在界面上是两件可区分的事。
+       */
+      ...(scopeNote !== null ? { scopeNote } : {}),
       platforms: platformAgg.map((p) => ({
         platform: p.platform,
         platformName: PLATFORMS.find((m) => m.id === p.platform)?.name ?? p.platform,

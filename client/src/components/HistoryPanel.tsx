@@ -86,6 +86,8 @@ interface HistoryPage {
   pageSize: number
   hasMore: boolean
   platforms: PlatformAgg[]
+  /** 比赛筛选的说明（issue #70）：无法归属某场比赛时解释原因 */
+  scopeNote?: string
 }
 
 const PAGE_SIZE = 20
@@ -163,6 +165,8 @@ export default function HistoryPanel() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [platforms, setPlatforms] = useState<PlatformAgg[]>([])
+  /** 比赛筛选的服务端说明（issue #70）：为空表示筛选正常工作 */
+  const [scopeNote, setScopeNote] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   /** 源码查看弹窗（issue #69）：null = 关闭 */
   const [sourceView, setSourceView] = useState<{ title: string; data: SubmissionSource } | null>(null)
@@ -207,6 +211,7 @@ export default function HistoryPanel() {
           setTotal(res.total)
           setPage(res.page)
           setPlatforms(res.platforms)
+          setScopeNote(res.scopeNote ?? null)
         })
         .catch((e: Error) => {
           if (seq === reqSeq.current) message.error(e.message)
@@ -621,6 +626,13 @@ export default function HistoryPanel() {
             {sourceView.data.source}
           </pre>
         </Modal>
+      )}
+
+      {/* 比赛筛选无法归属时说明原因（issue #70）：让「这场没有提交」与「筛不出来」可区分 */}
+      {scopeNote && (
+        <Typography.Text type="warning" style={{ display: 'block', margin: '4px 0 8px' }} role="status">
+          {scopeNote}
+        </Typography.Text>
       )}
 
       <Table<HistoryItem>

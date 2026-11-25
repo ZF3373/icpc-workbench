@@ -495,7 +495,9 @@ function rebuildSubmissionsForMultiAccount(db: Db): void {
   );
   const rows = db
     .prepare(
-      'SELECT id, user_id, platform, problem_id, verdict, language, submitted_at, external_id, context FROM submissions',
+      `SELECT id, user_id, platform, problem_id, verdict, language, submitted_at, external_id, context,
+              submission_url
+         FROM submissions`,
     )
     .all() as Array<{
     id: number;
@@ -507,6 +509,12 @@ function rebuildSubmissionsForMultiAccount(db: Db): void {
     submitted_at: string;
     external_id: string | null;
     context: string | null;
+    /**
+     * 重建只发生在「还没有 account 列」的老库上（v0.8 之前），那时还没有 submission_url，
+     * 这一列刚由上面的 ALTER 补出、全为 NULL。仍然照原样搬过去：rebuid 的语义是
+     * 「换表结构但不丢数据」，多带一列比事后猜有没有值更安全。
+     */
+    submission_url: string | null;
   }>;
   // 建表 → 拷数据 → 换名 → 重建索引，整段收进**同一个事务**。SQLite 的 DDL 本身是事务性的，
   // 而原实现把 CREATE TABLE 放在 BEGIN 之前、把 DROP/RENAME 放在 COMMIT 之后，于是：
@@ -527,12 +535,16 @@ function rebuildSubmissionsForMultiAccount(db: Db): void {
         submitted_at TEXT NOT NULL,
         external_id  TEXT,
         context      TEXT,
+        -- issue #69：重建表必须带上后加的列，否则迁移完成后 submissions 里根本没有这一列，
+        -- 引用 s.submission_url 的历史查询与写入会整片报 "no such column"。
+        submission_url TEXT,
         UNIQUE (user_id, platform, account, external_id)
       )`);
     const ins = db.prepare(
       `INSERT INTO submissions_new
-         (id, user_id, platform, account, problem_id, verdict, language, submitted_at, external_id, context)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, user_id, platform, account, problem_id, verdict, language, submitted_at, external_id, context,
+          submission_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const r of rows) {
       ins.run(
@@ -546,6 +558,7 @@ function rebuildSubmissionsForMultiAccount(db: Db): void {
         r.submitted_at,
         r.external_id,
         r.context,
+        r.submission_url,
       );
     }
     db.exec('DROP TABLE submissions');

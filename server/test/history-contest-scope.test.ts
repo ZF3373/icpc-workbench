@@ -10,13 +10,18 @@ import { contestScopeSql, type ContestScope } from '../src/history/contestScope.
 /**
  * 按比赛 / 参赛阶段筛选提交（issue #70）。
  *
- * 重点是口径而不是 SQL 文本：虚拟赛必须靠平台自报的 context 判（时间窗会全错），
- * 无可靠窗口的平台不猜（返回「全部」而不是空）。
+ * 这里钉住三条容易被写错的口径（都是评审意见指出的）：
+ * 1. 必须限制在**比赛所属平台**上，否则没有可靠窗口的场次会返回全平台提交；
+ * 2. Codeforces 的 context 只说明「比赛中/虚拟赛/练习」，**不含哪一场**，
+ *    必须与「这场比赛里的题」取交集，否则选 A 场会把 B 场的赛时提交算进来；
+ * 3. 归属证据与窗口都拿不到时不猜（回空 + 说明），而不是把该平台全部提交当成这一场。
  */
 
 const scope = (over: Partial<ContestScope> = {}): ContestScope => ({
   contestKey: 'codeforces:1877',
   platform: 'codeforces',
+  contestId: '1877',
+  problemKeys: null,
   startMs: Date.parse('2026-09-10T14:35:00.000Z'),
   endMs: Date.parse('2026-09-10T16:35:00.000Z'),
   reliableWindow: true,
@@ -24,37 +29,60 @@ const scope = (over: Partial<ContestScope> = {}): ContestScope => ({
   ...over,
 });
 
-test('Codeforces 赛时：平台语境优先于时间窗（虚拟赛不会被时间窗判错）', () => {
-  const { sql, params } = contestScopeSql(scope(), 'during');
-  assert.match(sql, /s\.context IN \('contest','virtual'\)/);
-  assert.equal(params.length, 2);
-  assert.equal(params[0], '2026-09-10T14:35:00.000Z');
+test('永远带平台约束：别的平台的提交不属于这场比赛', () => {
+  for (const phase of ['during', 'after', 'all'] as const) {
+    const { sql, params } = contestScopeSql(scope(), phase);
+    assert.match(sql, /s\.platform = \?/);
+    assert.equal(params[0], 'codeforces');
+  }
 });
 
-test('Codeforces 赛后：practice 或（无语境且晚于结束）', () => {
+test('Codeforces：赛时 = context(contest/virtual) 且属于本场（URL 段匹配）', () => {
+  const { sql, params } = contestScopeSql(scope(), 'during');
+  assert.match(sql, /s\.platform = \?/);
+  // 归属：/contest/1877/ 或 /gym/1877/ —— 不能只按题号前缀（1877 与 187 会撞）
+  assert.match(sql, /p\.url LIKE \? ESCAPE/);
+  assert.deepEqual(params.slice(1, 3), ['%/contest/1877/%', '%/gym/1877/%']);
+  assert.match(sql, /s\.context IN \('contest','virtual'\)/);
+});
+
+test('有官方题目集时按题号集合精确归属（比 URL 更准）', () => {
+  const { sql, params } = contestScopeSql(scope({ problemKeys: ['1877A', '1877B'] }), 'during');
+  assert.match(sql, /p\.problem_key IN \(\?,\?\)/);
+  assert.deepEqual(params.slice(1, 3), ['1877A', '1877B']);
+  assert.doesNotMatch(sql, /p\.url LIKE/);
+});
+
+test('赛后 = practice 或（无语境且晚于结束），仍然限制在本场', () => {
   const { sql, params } = contestScopeSql(scope(), 'after');
   assert.match(sql, /s\.context = 'practice'/);
-  assert.match(sql, /s\.submitted_at >= \?/);
-  assert.deepEqual(params, ['2026-09-10T16:35:00.000Z']);
+  assert.ok(params.includes('2026-09-10T16:35:00.000Z'));
+  assert.match(sql, /p\.url LIKE \? ESCAPE/);
 });
 
-test('无可靠时间窗的平台：不猜，返回全部而不是空', () => {
-  // 洛谷：平台不下发 context，也没有可靠窗口 → 无法判定阶段
-  const nonCf = scope({ platform: 'luogu', reliableWindow: false });
-  for (const phase of ['during', 'after', 'all'] as const) {
-    assert.deepEqual(contestScopeSql(nonCf, phase), { sql: '', params: [] });
-  }
-  // 洛谷但窗口可靠：能按时间窗判
-  const nonCfWithWindow = scope({ platform: 'luogu', reliableWindow: true });
-  const during = contestScopeSql(nonCfWithWindow, 'during');
-  assert.match(during.sql, /s\.submitted_at >= \? AND s\.submitted_at < \?/);
-  assert.doesNotMatch(during.sql, /context/);
+test('无可靠窗口的非 CF 平台：靠题号归属判定，而不是返回全平台', () => {
+  // 洛谷：题号与链接都不带比赛信息 → 无法归属
+  const luogu = contestScopeSql(scope({ platform: 'luogu', contestKey: 'luogu:353129', contestId: '353129', reliableWindow: false }), 'all');
+  assert.equal(luogu.sql, ' AND 1 = 0');
+  assert.match(luogu.note ?? '', /无法归属|缺少/);
+  // QOJ：比赛题键 {contestId}-{problemId} 可判归属，即使没有窗口
+  const qoj = contestScopeSql(scope({ platform: 'qoj', contestKey: 'qoj:1234', contestId: '1234', reliableWindow: false }), 'all');
+  assert.match(qoj.sql, /p\.problem_key LIKE \? ESCAPE/);
+  assert.ok(qoj.params.includes('1234-%'));
+  assert.equal(qoj.note, null);
 });
 
-test('Codeforces 无可靠窗口：仍能靠 context 判定（老行已由同步回填）', () => {
-  const cfNoWindow = scope({ reliableWindow: false });
-  assert.match(contestScopeSql(cfNoWindow, 'during').sql, /context IN \('contest','virtual'\)/);
-  assert.match(contestScopeSql(cfNoWindow, 'after').sql, /context = 'practice'/);
+test('AtCoder 无窗口：按 /contests/slug/ 归属', () => {
+  const { sql, params } = contestScopeSql(scope({ platform: 'atcoder', contestKey: 'atcoder:abc380', contestId: 'abc380', reliableWindow: false }), 'all');
+  assert.match(sql, /s\.platform = \?/);
+  assert.ok(params.includes('%/contests/abc380/%'));
+  // 平台不下发 context：不应出现 context 条件
+  assert.doesNotMatch(sql, /context/);
+});
+
+test('题号里的下划线被 LIKE 转义（AtCoder 的 abc321_a 不能当通配符）', () => {
+  const { params } = contestScopeSql(scope({ platform: 'qoj', contestKey: 'qoj:12_3', contestId: '12_3', reliableWindow: false }), 'all');
+  assert.ok(params.includes('12\\_3-%'));
 });
 
 async function withServer<T>(db: Db, run: (base: string) => Promise<T>): Promise<T> {
@@ -69,16 +97,22 @@ async function withServer<T>(db: Db, run: (base: string) => Promise<T>): Promise
 }
 
 function seed(db: Db): void {
-  const pid = Number(
-    db.prepare('INSERT INTO problems (platform, problem_key, title) VALUES (?, ?, ?)')
-      .run('codeforces', '1877B', 'Two Binary Strings').lastInsertRowid,
+  const insertProblem = db.prepare(
+    'INSERT INTO problems (platform, problem_key, title, url) VALUES (?, ?, ?, ?)',
   );
+  const pid = Number(insertProblem.run('codeforces', '1877B', 'Two Binary Strings', 'https://codeforces.com/contest/1877/problem/B').lastInsertRowid);
+  // 另一场比赛的同平台提交：选 1877 时**不该**出现
+  const other = Number(insertProblem.run('codeforces', '1900A', 'Another Round', 'https://codeforces.com/contest/1900/problem/A').lastInsertRowid);
+  // 另一个平台的提交：同样不该出现
+  const luogu = Number(insertProblem.run('luogu', 'P1001', 'A+B', 'https://www.luogu.com.cn/problem/P1001').lastInsertRowid);
   const insert = db.prepare(
     `INSERT INTO submissions (user_id, platform, account, problem_id, verdict, submitted_at, external_id, context, submission_url)
-     VALUES (1, 'codeforces', 'alice', ?, ?, ?, ?, ?, ?)`,
+     VALUES (1, ?, 'alice', ?, ?, ?, ?, ?, ?)`,
   );
-  insert.run(pid, 'WA', '2026-09-10T15:00:00.000Z', '11', 'contest', 'https://codeforces.com/contest/1877/submission/11');
-  insert.run(pid, 'AC', '2026-09-12T09:00:00.000Z', '12', 'practice', null);
+  insert.run('codeforces', pid, 'WA', '2026-09-10T15:00:00.000Z', '11', 'contest', 'https://codeforces.com/contest/1877/submission/11');
+  insert.run('codeforces', pid, 'AC', '2026-09-12T09:00:00.000Z', '12', 'practice', null);
+  insert.run('codeforces', other, 'AC', '2026-09-11T10:00:00.000Z', '13', 'contest', null);
+  insert.run('luogu', luogu, 'AC', '2026-09-10T15:30:00.000Z', '21', null, null);
 }
 
 test('逐条视图带 submissionUrl：库内有值直接用，为 NULL 时按平台模板现算', async () => {
@@ -89,11 +123,9 @@ test('逐条视图带 submissionUrl：库内有值直接用，为 NULL 时按平
       items: Array<Record<string, unknown>>;
     };
     const byId = new Map(res.items.map((it) => [it.externalId, it]));
-    // 库内有值 → 原样返回
     assert.equal(byId.get('11')?.submissionUrl, 'https://codeforces.com/contest/1877/submission/11');
-    // 老行为 NULL → 现算（CF 需要 contestId，单靠提交号算不出，故为空）
+    // CF 需要 contestId，单靠提交号算不出 → null（前端据此不渲染链接）
     assert.equal(byId.get('12')?.submissionUrl, null);
-    // 语境与账号一并下发（前端标注 + 按次参赛筛选）
     assert.equal(byId.get('11')?.context, 'contest');
     assert.equal(byId.get('11')?.account, 'alice');
   });
@@ -103,24 +135,22 @@ test('按账号筛选：只回该账号的提交', async () => {
   const db = createDb(':memory:');
   seed(db);
   await withServer(db, async (base) => {
-    const res = (await (await fetch(`${base}/submissions?view=submission&account=bob`)).json()) as {
-      total: number;
-    };
-    assert.equal(res.total, 0);
-    const own = (await (await fetch(`${base}/submissions?view=submission&account=alice`)).json()) as {
-      total: number;
-    };
-    assert.equal(own.total, 2);
+    const bob = (await (await fetch(`${base}/submissions?view=submission&account=bob`)).json()) as { total: number };
+    assert.equal(bob.total, 0);
+    const alice = (await (await fetch(`${base}/submissions?view=submission&account=alice`)).json()) as { total: number };
+    assert.equal(alice.total, 4);
   });
 });
 
-test('无法解析的比赛 key：明确回空（而不是静默忽略筛选）', async () => {
+test('无法解析的比赛 key：明确回空并给出说明（而不是静默忽略筛选）', async () => {
   const db = createDb(':memory:');
   seed(db);
   await withServer(db, async (base) => {
     const res = (await (await fetch(`${base}/submissions?view=submission&contestKey=codeforces:999999`)).json()) as {
       total: number;
+      scopeNote?: string;
     };
     assert.equal(res.total, 0);
+    assert.match(res.scopeNote ?? '', /未找到比赛/);
   });
 });
