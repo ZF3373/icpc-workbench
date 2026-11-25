@@ -53,7 +53,7 @@ A **local web app** that analyzes your competitive programming weaknesses from s
 - **Check-in Reminders**: Configure a daily reminder time in Settings; while the app is open, if there are unchecked tasks for the day at the reminder time, a browser system notification + in-page notification appears—click to jump to the calendar; pre-contest reminders configurable N minutes before start (once per contest, click to jump to Contest Center)
 - **Software Update**: Dual-channel detection (stable release + GitHub latest commit build) + in-app one-click self-update (update driver is on a global Provider; switching modules after initiating an update won't interrupt download/replacement; refreshing the page auto-resumes update progress)
 - **Web Widget**: `http://localhost:3001/widget` is a zero-dependency single page (served directly by Express) for a always-on mini-window showing today's tasks, streak badge, with direct check-in/problem-jump
-- **MCP Interface (External AI Agent Access)**: A built-in MCP server (`http://127.0.0.1:3001/mcp`, Streamable HTTP) lets external agent apps — Claude Desktop, Cursor, Claude Code, etc. — operate the workbench directly: query stats profiles, search problems, manage training plans and problem lists, check in, trigger syncs, export summaries. 40 tools mapped 1:1 onto the REST API (see the "MCP Interface" section)
+- **MCP Interface (Generic, External Agent Access)**: A built-in MCP server (`http://127.0.0.1:3001/mcp`, stateless Streamable HTTP) lets **any** MCP-capable client — desktop LLM apps, IDE / editor plugins, command-line agents, or your own scripts — operate the workbench directly: query stats profiles, search problems, read and write problem and contest notes, manage training plans and problem lists, check in, fetch submission source code, trigger syncs, export summaries. 45 tools mapped onto the REST API (endpoint, transport, client setup and troubleshooting are covered in the "MCP Interface" section)
 
 ## Tech Stack
 
@@ -349,58 +349,274 @@ GET  /api/update/check            # Update check (stable + nightly commit build 
 GET  /api/update/progress         # One-click update download progress (phase/received/total)
 POST /api/update/download         # Start download and SHA256 verify | POST /api/update/apply in-place replace
 GET  /widget                      # Web widget single page (today's tasks + check-in)
-POST /mcp                         # MCP endpoint (Streamable HTTP, external AI agent access, see next section)
+POST /mcp                         # MCP endpoint (stateless Streamable HTTP, generic external agent access, see next section; GET/DELETE return 405)
 ```
 
-## MCP Interface (External AI Agent Access)
+## MCP Interface (External Agent Access)
 
-The workbench embeds an MCP (Model Context Protocol) server. External agent applications — Claude Desktop, Cursor, Claude Code, Cline, etc. — can connect and operate the workbench directly: query practice profiles, search and pick problems, manage training plans and problem lists, check in, trigger syncs, export summaries — no manual clicking required.
+The workbench embeds an MCP (Model Context Protocol) server that exposes its capabilities as standard tools to **any MCP-capable client** — desktop LLM apps, editor / IDE plugins, command-line agents, or your own scripts: query practice profiles, search problems, read and write problem and contest notes, manage training plans and problem lists, check in, fetch submission source code, trigger syncs, export summaries. No manual clicking required.
 
-- **Endpoint**: `http://127.0.0.1:3001/mcp` (Streamable HTTP transport, stateless; the port follows your deployment — for the desktop build use the port shown in the startup banner)
-  - If 3001 is taken the core drifts to the next free port. The **actual** port is written to `runtime.json` in the data directory (e.g. `{"port":3002,...}`); the desktop shell reads it on startup
-  - Tool calls run **synchronously in one process**: more than 2 concurrent calls get `503` + `Retry-After`, so call them one at a time (concurrent heavy queries stall the whole app, including the shell's health probe)
-- **Tools**: 40 in total; each tool is a loopback call to an existing `/api/*` endpoint, defined in `server/src/mcp/tools.ts`
-- **Prerequisite**: the workbench must be running (the MCP endpoint shares the server's process and port)
+MCP is a general protocol, and nothing here is tailored to one particular client: the endpoint, transport and tool definitions all follow the spec, so any client that can speak the **HTTP (Streamable HTTP) transport** works. Clients that only launch subprocesses over stdio can be used through a local stdio↔HTTP bridge.
 
-### Client Configuration Examples
+### Endpoint
 
-Claude Desktop (`claude_desktop_config.json`) / Cursor (`.cursor/mcp.json`):
+- **Address**: `http://127.0.0.1:3001/mcp` (same process and port as the server)
+- **Whether the port drifts depends on how it runs** (this is the easiest thing to misconfigure)
+
+  | Form | Port behaviour | Endpoint |
+  |---|---|---|
+  | Desktop build / single-file exe (real SEA) | When 3001 is taken it tries the next ports — 20 in total (3001–3020). The actual port is written to `runtime.json` in the data directory (`{"port": 3002, "pid": …, "startedAt": …, "dataDir": …}`) and removed on exit | Use the port from `runtime.json` or the startup banner |
+  | Docker (`node dist/sea.cjs`) | **No drift**: a port conflict is a hard error and the deployer decides between changing `PORT` and freeing the port (drift would leave `-p 3080:3001` pointing at nothing, which is harder to diagnose than a failed start) | Follow the mapped port: `-p 127.0.0.1:3080:3001` → `http://127.0.0.1:3080/mcp` |
+  | Source dev (`npm run dev`, `tsx src/index.ts`) | **No drift** — a port conflict fails fast, and no `runtime.json` is written | `http://127.0.0.1:3001/mcp` (or whatever `PORT` says) |
+
+  So a `runtime.json` saying 3002 can only come from the desktop build or the exe; Docker and dev mode are single fixed ports, and pinning the config is enough
+- **Prerequisite**: the workbench must be running (the MCP endpoint and the REST API are the same process, so when the server stops the endpoint is gone too)
+- **Prerequisite**: the workbench must be running (the MCP endpoint and the REST API are the same process, so when the server stops the endpoint is gone too)
+
+### Transport and Protocol Behaviour
+
+Stateless Streamable HTTP — every POST is handled independently and the server keeps no session, so client reconnects, concurrent clients and server restarts need no keep-alive or cleanup.
+
+| Item | Behaviour |
+|---|---|
+| Methods | Only `POST /mcp`. `GET` → `405` (no SSE stream per spec), `DELETE` → `405` (no session to terminate) |
+| Headers | `Content-Type: application/json` required, and `Accept` must contain **both** `application/json` and `text/event-stream`; otherwise `406` |
+| Response | Plain JSON (`application/json`), not an SSE stream — just `JSON.parse` it in a script |
+| Session | No `Mcp-Session-Id` is returned. `initialize` → `notifications/initialized` (202) still works, but because the endpoint is stateless you can also **skip the handshake and call `tools/call` directly** |
+| Protocol version | The server **echoes** the version the client requests; for a version it does not know (e.g. `9999-99-99`) it answers with its own. `2024-11-05` / `2025-03-26` / `2025-06-18` were all verified working |
+| Capabilities | Only `tools` is declared. `resources/list` and `prompts/list` return `-32601 Method not found` — this server has no resources or prompts, so clients need not probe for them |
+| Handshake validation | `clientInfo` is required by `initialize`; omitting it returns `-32603` with the missing path in the message (the text is the raw English zod JSON) |
+| Other methods | JSON-RPC version `1.0` → `400` + `-32700 Parse error`; an array body (the older batching semantics) is handled as a single message and answered with a single object |
+
+Shape of a tool result:
+
+- **Success**: `result.content[0].text` is compact JSON (token-efficient). Results over 80,000 characters are truncated from the tail with a hint telling the agent to narrow the query with paging / filter parameters
+- **Failure**: `result.isError === true`, with text starting with “工具执行失败：”. Missing required arguments, unknown tools and upstream non-2xx responses all land here — this is an **in-protocol tool error**, not a JSON-RPC error, so the model can read the reason and retry with corrected arguments
+- **Concurrency limit 2**: more than 2 in-flight `tools/call` requests get `503` + `Retry-After: 2`. The reason is `node:sqlite` being fully synchronous on Node's single event loop: two or three “fetch problem bank / export summary” queries stacked up can saturate the loop for a dozen seconds and even time out the desktop shell's health probe, which then reports a healthy-but-busy core as offline. Protocol handshakes (`initialize` / `tools/list`) are exempt — blocking those would just make clients think the server is gone, which is worse
+- **Timeouts**: loopback calls default to 30 s; sync, problem-bank fetch, submission-source fetch and bulk import get 10 min, backup creation 5 min, and the full profile / participation records / summary export 60 s. A timeout returns “回环请求失败” (with method and path), not “tool not found”
+
+### Client Setup
+
+Clients differ in config key names and transport spelling (some use `mcpServers`, some `servers`; some require an explicit transport type), but **only two things matter**: give the server a name, and point the address at the `/mcp` URL above. The most common JSON shape:
 
 ```json
 {
   "mcpServers": {
-    "icpc-workbench": { "url": "http://127.0.0.1:3001/mcp" }
+    "icpc-workbench": {
+      "url": "http://127.0.0.1:3001/mcp"
+    }
   }
 }
 ```
 
-Claude Code:
+Adjust per client:
+
+- Some clients want an extra `"type": "http"` (or `"streamable-http"`) to pin the transport — add it per their docs
+- If the outer key differs (VS Code-family `mcp.json` uses `servers`), just rename the outer key
+- CLI clients usually offer a subcommand shaped like `… mcp add --transport http <name> <url>`; use the same URL
+
+You can also verify without any MCP client at all — anything that can send HTTP (curl, a script, Postman) is a valid MCP client:
 
 ```bash
-claude mcp add --transport http icpc-workbench http://127.0.0.1:3001/mcp
+# Liveness: list all tools (note both headers — a missing accept yields 406)
+curl -s -X POST http://127.0.0.1:3001/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+# Call a tool (the response sample below is this command's output)
+curl -s -X POST http://127.0.0.1:3001/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_app_status","arguments":{}}}'
 ```
+
+The reply is a plain JSON-RPC response. **It takes two parses**: the HTTP body is a JSON-RPC object, and the tool result sits in `result.content[0].text`, which is itself a JSON **string**. The real output of that second command — verbatim, with only `dataDir` replaced by a placeholder (note the envelope's field order is `result` / `jsonrpc` / `id`; the inner object is the tool's own result):
+
+```json
+{
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"ok\":true,\"time\":\"2026-11-25T05:08:30.797Z\",\"platforms\":[\"codeforces\",\"atcoder\",\"luogu\",\"nowcoder\",\"daimayuan\",\"leetcode\",\"jisuanke\",\"qoj\",\"dashoj\",\"pta\",\"vjudge\"],\"dataDir\":\"<data dir>\",\"version\":\"v0.6.2\",\"sea\":true}"
+      }
+    ]
+  },
+  "jsonrpc": "2.0",
+  "id": 2
+}
+```
+
+So read it as `JSON.parse(body).result.content[0].text` and then parse again; with `jq` that is `.result.content[0].text | fromjson`. Field notes: `sea` is `true` only when the process really runs as a Node SEA single-file binary (desktop build / single-file exe); it is `false` for ordinary JS entries — **including the Docker image**, which executes an esbuild-produced `dist/sea.cjs` despite the file name. So the field tells desktop apart from Docker/dev mode, which helps when several instances might be running on one machine.
 
 ### Tool Overview
 
-| Group | Tools |
-|---|---|
-| Status & settings | `get_app_status` · `get_sync_status` · `get_settings_overview` · `sync_platform` |
-| Stats profiles | `get_stats_overview` · `get_weakness_analysis` · `get_mastery_map` · `get_practice_heatmap` · `get_practice_summary` |
-| Problems & submissions | `search_problems` · `list_submission_history` · `get_submission_source` · `fetch_problem_bank` |
-| Problem / contest notes | `get_problem_notes` · `save_problem_notes` · `get_contest_notes` · `save_contest_notes` |
-| Today & plans | `get_today_training` · `list_plans` · `get_plan` · `import_ai_plan` · `export_plan_package` · `shift_plan` · `update_plan_task` · `delete_plan_task` · `delete_plan` |
-| Problem lists | `list_problem_lists` · `get_problem_list` · `import_problem_list` · `add_problems_to_list` · `classify_problem_list` |
-| Check-ins | `get_checkin_calendar` · `checkin_task` · `cancel_checkin` · `auto_checkin_today` |
-| Review queue | `list_review_queue` · `add_to_review_queue` · `review_feedback` · `remove_from_review_queue` |
-| Contests | `list_contests` · `list_participated_contests` |
-| Templates | `list_templates` |
-| Backup / import & export | `create_backup` · `export_summary_markdown` · `import_submissions` |
+**45** tools in total, each a loopback call to an existing `/api/*` endpoint — business validation, backup triggering and rate limiting all run in the route layer, so a capability behaves identically on the page, over REST and over MCP, and the MCP channel never bypasses a check. Argument names mostly match the REST query parameters (a few tools narrow or merge them: `sync_platform` takes `platform` + `handle` + `days`, and `get_checkin_calendar` merges the calendar and the streak into one result). The table follows `server/src/mcp/tools.ts`; **the live `tools/list` response is the single authority for names, fields and required arguments** — this table is a quick reference only.
+
+**25 tools are read-only and 20 mutate data.** The write tools are concentrated in the groups below; if you let an agent run unattended, gate these 20 behind confirmation or call `create_backup` first:
+
+- Sync and problem banks: `sync_platform` · `fetch_problem_bank`
+- Notes: `save_problem_notes` · `save_contest_notes`
+- Plans: `import_ai_plan` · `shift_plan` · `update_plan_task` · `delete_plan_task` · `delete_plan`
+- Problem lists: `import_problem_list` · `add_problems_to_list` · `classify_problem_list`
+- Check-ins and reviews: `checkin_task` · `cancel_checkin` · `auto_checkin_today` · `add_to_review_queue` · `review_feedback` · `remove_from_review_queue`
+- Backup and import: `create_backup` · `import_submissions`
+
+(One caveat: `get_today_training` is a GET but still writes recommendation cooldowns — read-only by classification, state-changing in effect.)
+
+#### System and status
+
+| Tool | Purpose | Main arguments |
+|---|---|---|
+| `get_app_status` | Version, data directory, supported platforms. First liveness call after connecting | — |
+| `get_sync_status` | Bound accounts per platform, credential status, last sync result and summary, background continuation state | — |
+| `sync_platform` | Trigger a submission sync | `platform` (platform id or `all`), `handle`, `days` (1–365) |
+| `get_settings_overview` | Config overview (secrets masked, never raw) | — |
+
+#### Stats and profiles
+
+| Tool | Purpose | Main arguments |
+|---|---|---|
+| `get_stats_overview` | Total submissions / AC, deduplicated solved count, platform and difficulty distribution | `from` `to` `platform` `account` |
+| `get_weakness_analysis` | Real AC rate by topic / tag with reinforcement priorities | `minAttempts` (default 5), `topN` (default 10) + the filters above |
+| `get_mastery_map` | Five-tier topic mastery (not started → proficient) | `minSolved` |
+| `get_practice_heatmap` | Daily deduplicated AC count (same local-day basis as check-ins) | `days` (default 365) |
+| `get_practice_summary` | Full personal profile in one call (large) | — |
+
+#### Problems and submissions
+
+| Tool | Purpose | Main arguments |
+|---|---|---|
+| `search_problems` | Search problems (offline bundled bank + imported problems); the main entry for finding problems | `q` `platform` `difficulty` `diffMin` `diffMax` `tag` `status` `page` `pageSize` `sort` `order` |
+| `list_submission_history` | Submission history: deduplicated-by-problem view or raw submission stream | `view` `result` `q` `from` `to` `contestKey` `phase` `account` `page` `pageSize` |
+| `get_submission_source` | Fetch the source of one submission (first call scrapes the OJ detail page and caches it) | `submissionId` `refresh` |
+| `fetch_problem_bank` | Pull a public problem bank into the local database (existing rows deduplicated) | `platform` `max` `luoguMinDifficulty` `full` |
+
+Two arguments exist specifically for post-contest review: `list_submission_history` with `contestKey` (e.g. `codeforces:1877`) filters by contest, and `phase` selects `during` (in-contest, virtual participation included) or `after` (post-contest practice), so a contest-time WA and a later AC on the same problem can be pulled separately and each fetched with `get_submission_source` for comparison.
+
+#### Problem and contest notes
+
+Notes are independent of the review queue: removing an item from the queue keeps its notes. Problems are located by problem identity, so a Luogu mirror of a CF / AtCoder problem is the same problem as the original.
+
+| Tool | Purpose | Main arguments |
+|---|---|---|
+| `get_problem_notes` | Read a problem's note; `text` is an empty string when nothing was written (not an error) | `platform` `problemKey` |
+| `save_problem_notes` | Create or overwrite a problem note (Markdown, ≤20000 chars; empty `text` deletes) | `platform` `problemKey` `text` |
+| `get_contest_notes` | Read a contest-wide note | `contestKey` |
+| `save_contest_notes` | Create or overwrite a contest note (empty string deletes) | `contestKey` `text` |
+
+#### Today's training and plans
+
+| Tool | Purpose | Main arguments |
+|---|---|---|
+| `get_today_training` | Three-tier recommendations (consolidate / core / challenge), due reviews, today's tasks and progress. **Has a write side effect**: recommendations are recorded in the cooldown list for tomorrow's rotation | `consolidation` `core` `challenge` `rotate` |
+| `list_plans` | Plan list with task counts and check-in progress | — |
+| `get_plan` | Plan detail: every task (date / title / kind / link / check-in state) | `id` |
+| `import_ai_plan` | Import plan JSON (strips code fences and prose; missing links are backfilled from the problem bank) | `raw` `startDate` `days` |
+| `export_plan_package` | Export the plan data package: full profile + prompt | `days` `startDate` `dailyTasks` |
+| `shift_plan` | Shift unfinished practice / topic tasks (completed tasks, contests and reviews keep their dates) | `id` `days` `skipWeekends` `dailyLimit` |
+| `update_plan_task` | Edit one task (date / title / kind / link / note; give at least one field) | `taskId` + fields to change |
+| `delete_plan_task` | Delete one task (irreversible) | `taskId` |
+| `delete_plan` | Delete a whole plan including all tasks (cascading, irreversible) | `id` |
+
+`export_plan_package` → external composition → `import_ai_plan` forms a closed loop: the package carries the full profile and prompt, and the composed result can be fed straight back without the external agent guessing any schema.
+
+#### Problem lists
+
+| Tool | Purpose | Main arguments |
+|---|---|---|
+| `list_problem_lists` | List with problem / category / completed counts | — |
+| `get_problem_list` | Detail: items, categories, completion state, cached AI advice | `id` |
+| `import_problem_list` | Create a list by pasting raw text (one problem per line; unrecognized lines are reported) | `title` `raw` `sourceUrl` |
+| `add_problems_to_list` | Append problems to an existing list (duplicates and unrecognized lines reported separately) | `id` `raw` |
+| `classify_problem_list` | Classify by local rules (no AI call, idempotent) | `id` |
+
+#### Check-ins
+
+| Tool | Purpose | Main arguments |
+|---|---|---|
+| `get_checkin_calendar` | One month of daily task / check-in counts plus current, longest and total streaks (two loopback calls merged) | `month` (default current) |
+| `checkin_task` | Check in one of today's plan tasks | `taskId` |
+| `cancel_checkin` | Cancel a check-in (idempotent) | `taskId` |
+| `auto_checkin_today` | Auto check-in today's already-AC practice tasks. Omit `taskIds` = preview only; pass the previewed ids = confirm | `taskIds` |
+
+`auto_checkin_today` is deliberately two-phase (preview, then confirm): old ACs, reviews and mock contests are never auto-checked-in, and the agent can read the list back to the user before writing.
+
+#### Review queue
+
+| Tool | Purpose | Main arguments |
+|---|---|---|
+| `list_review_queue` | Whole queue; `due=true` for due items only, `date` for one day | `due` `date` |
+| `add_to_review_queue` | Add a problem (idempotent — returns the current due date if already queued) | `platform` `problemKey` |
+| `review_feedback` | Submit review feedback and reschedule (`hard` back two tiers / `ok` up one / `easy` up two) | `id` `feedback` |
+| `remove_from_review_queue` | Remove an item including its review events | `id` |
+
+#### Contests
+
+| Tool | Purpose | Main arguments |
+|---|---|---|
+| `list_contests` | Contest calendar (multi-platform aggregation, single-source failure degrades gracefully) | `type` (`upcoming` default / `running` / `finished`), `platform` `q` `limit` `offset` |
+| `list_participated_contests` | Contests I took part in (local submission inference + platform participation records, with rank and rating change; the first call triggers a background incremental refresh) | — |
+
+#### Template courses
+
+| Tool | Purpose | Main arguments |
+|---|---|---|
+| `list_templates` | Whole template course library: built-in and custom, learning state, example completion and progress | — |
+
+#### Backup and import / export
+
+| Tool | Purpose | Main arguments |
+|---|---|---|
+| `create_backup` | Create a database restore point (`VACUUM INTO` consistent snapshot) | — |
+| `export_summary_markdown` | Export the full practice summary as Markdown | — |
+| `import_submissions` | Import submission rows manually (no platform credentials needed); a backup is taken automatically at ≥20 rows | `platform` `rows` |
+
+### Practical Advice
+
+**The most common “cannot connect” is a client pinned to 3001 while the core drifted to 3002**: the two are independent — the MCP config holds one fixed URL, and the port may drift. Three fixes, easiest first:
+
+1. Start the workbench before the agent — most clients read their config once at startup, so a running server is enough
+2. Pin the port: set `port` in `server/config.json` to a value nothing else takes (and fix `PORT` plus the port mapping in Docker) — no drift, no mismatch
+3. On the desktop build, if it already drifted, edit the client config using the `port` in `data/runtime.json` (Docker and dev mode never drift — see the table above)
+
+**Desktop build deserves a note**: the shell first looks for an already-running core before spawning one (`runtime.json` + liveness probe + same-install check), so normally you never end up with two instances. But if you also start a `tsx` process by hand, 3001 may be held by the **dev instance** and the MCP config will talk to the dev database — the `sea` field from `get_app_status` (`false` = tsx) tells you instantly.
+
+**Prompting an agent**: tell it to probe with `get_app_status` first, to call tools one at a time (concurrency limit 2), to call `create_backup` before writes, and to restate plan/list changes before executing them — that last one stops it from treating `delete_plan` as a preview endpoint.
+
+### Typical Workflows
+
+1. **Connect and probe**: `get_app_status` for version and platform list, `get_sync_status` to see which accounts are still healthy
+2. **Fill in data**: `sync_platform` (pass `days` to sync only the last N days for a faster first run); pull problem banks with `fetch_problem_bank`
+3. **Read the profile**: `get_practice_summary` for everything at once, or `get_weakness_analysis` / `get_mastery_map` / `get_practice_heatmap` piecemeal
+4. **Pick problems**: `search_problems` filtered by topic / difficulty range / status; `status=none` for unsolved ones
+5. **Plan the day**: `get_today_training` for the three tiers and due reviews → `checkin_task` or `auto_checkin_today`
+6. **Review a contest**: `list_participated_contests` → `list_submission_history` with `contestKey` + `phase` for in-contest / post-contest submissions → `get_submission_source` to compare source code → write conclusions back with `save_problem_notes` / `save_contest_notes`
+7. **Compose a plan**: `export_plan_package` → external composition → `import_ai_plan` → `shift_plan` to adjust the rhythm
 
 ### Security Boundary
 
-- MCP tool capabilities are a **subset** of the REST API: every tool is a loopback call to an existing endpoint, and sensitive operations — credential writes, Cookie / API key plaintext retrieval, full-database download and restore-point restore, account deletion — are **never exposed via MCP**
-- Consistent with the whole app, the server listens on `127.0.0.1` only (with Docker `HOST=0.0.0.0` the MCP endpoint is exposed exactly like the REST API — put a reverse proxy with auth in front); the Host header guard (anti DNS-rebinding) applies, and no CORS headers are added (cross-site POSTs from malicious web pages are blocked by the content-type preflight)
-- Sync and bank-fetch tools (`sync_platform` / `fetch_problem_bank`) can take minutes due to upstream rate limits; `get_today_training` has the same recommendation-cooldown write side effect as the web page
+- **Capabilities are a subset of the REST API**: every tool is one loopback call, and sensitive operations are deliberately excluded — saving or reading back Cookies / AI keys, backup file download, restore-point restore and process restart, account bind / rename / delete, adapter toggles. AI chat (SSE streaming) is not proxied either: MCP tools are a request/response model, so streaming does not fit
+- **Secrets only ever appear masked**: `get_settings_overview`, the one tool that does read settings, returns values masked pair by pair — `_uid=••••••••; __client_id=ykpm••••••y3qk` (values under 12 chars are masked entirely), so an agent can confirm what is configured without ever seeing the original
+- **Same listening surface as the rest of the app**: bound to `127.0.0.1` by default; with Docker `HOST=0.0.0.0` the MCP endpoint is exposed exactly like the REST API (the app itself has no authentication), so put a reverse proxy with auth and TLS in front
+- **The global Host header guard applies** (anti DNS-rebinding), and no CORS headers are added — cross-site POSTs from malicious web pages are stopped by the content-type preflight, and the transport additionally enforces `Content-Type: application/json`
+- **Treat tools with side effects as writes**: `get_today_training` records recommendation cooldowns, `sync_platform` / `fetch_problem_bank` hit upstream and are rate-limited (possibly for minutes), and `delete_plan` / `delete_plan_task` are irreversible — call `create_backup` before bulk changes
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `406 Not Acceptable: Client must accept both application/json and text/event-stream` | `Accept` lists only one type | Send `application/json, text/event-stream` (the easiest thing to miss in your own scripts) |
+| `GET` or `DELETE` returns `405` | The stateless endpoint only accepts POST | Use POST; this endpoint offers no SSE stream and has no session to terminate |
+| `503` + `Retry-After: 2` | More than 2 in-flight tool calls | Call them one at a time, or wait and retry |
+| Connection refused / `ECONNREFUSED` | The workbench is not running, or the port drifted | Confirm the server runs; use the real port from `runtime.json` |
+| `工具执行失败：未知工具 …` | The client cached an old tool list | Re-fetch `tools/list` (reconnecting or restarting the client session usually does it) |
+| `-32601 Method not found` (e.g. `resources/list`, `prompts/list`) | This server implements tools only — no resources or prompts | Do not probe those capabilities; use `tools/list` and `tools/call` |
+| `-32603` plus a chunk of English zod JSON | `initialize` is missing `clientInfo` (or another required handshake field) | Supply `clientInfo: { name, version }` as the message says; this is a client-side issue, not a server rejection |
+| `工具执行失败：上游接口返回 HTTP 404` | The argument points at something that does not exist (problem not in the bank, plan deleted) | Confirm the id with `search_problems` / `list_plans` first |
+| `工具执行失败：上游接口返回 HTTP 429` | `get_submission_source` has a per-platform minimum interval; rapid calls on one platform hit it | Fetch one at a time and wait for the `Retry-After` (0.8–2 s per platform; 2 s for CF / QOJ) |
+| Tool calls are slow or time out | Sync / bank fetch is rate-limited upstream, or the query is heavy on a large database | Narrow with `days` / `page` / `pageSize`; allow long timeouts for long tasks |
 
 ## Testing
 
@@ -409,7 +625,7 @@ npm test            # Server unit tests (schema/config/adapters/import/sync/anal
 npm run typecheck   # Type check (server + client)
 ```
 
-Test coverage: database schema and constraints, config validation, CF/AtCoder/Nowcoder contest adapter normalization (mock + real network verification), CSV parsing, import dedup, incremental sync, stats/weakness/trends consistency with manual calculation, AI generation three paths (success/failure/unconfigured), review scheduling (interval ladder / retention factor / per-date and monthly due queries including the overdue convention / review items surfaced by Today's Training / review-bank scheduling inside generated plans), post-contest review participation derivation (per-platform signals/calendar-window matching/review context rendering), update dual-channel logic and SHA256 verification parsing, document converters (Word/Excel/PPT/HTML/CSV/JSON/XML/EPub), Markdown math formula preprocessing pipeline, session-level attachment content caching.
+Test coverage: database schema and constraints, config validation, CF/AtCoder/Nowcoder contest adapter normalization (mock + real network verification), CSV parsing, import dedup, incremental sync, stats/weakness/trends consistency with manual calculation, AI generation three paths (success/failure/unconfigured), review scheduling (interval ladder / retention factor / per-date and monthly due queries including the overdue convention / review items surfaced by Today's Training / review-bank scheduling inside generated plans), post-contest review participation derivation (per-platform signals/calendar-window matching/review context rendering), update dual-channel logic and SHA256 verification parsing, document converters (Word/Excel/PPT/HTML/CSV/JSON/XML/EPub), Markdown math formula preprocessing pipeline, session-level attachment content caching, the MCP endpoint (a real client handshake initialize → tools/list → tools/call over HTTP, tool list matching the registry one-to-one, write tools landing in SQLite through the loopback REST call, unknown tools / missing args / upstream 4xx mapped to isError, and the stateless endpoint returning 405 for GET/DELETE).
 
 ## Sponsor
 

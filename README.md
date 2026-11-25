@@ -65,7 +65,7 @@
 - **打卡提醒**：设置页配置每日提醒时间，应用打开期间到点若当天仍有未打卡任务，弹浏览器系统通知 + 页面内通知，点击直达日历；赛前提醒可配置开赛前 N 分钟通知（每场一次，点击直达赛事中心）
 - **软件更新**：双通道检测（正式版 + GitHub 最新提交构建）+ 应用内一键自更新（更新驱动挂在全局 Provider，发起更新后切到别的模块也不会中断下载/替换流程；刷新页面自动恢复更新进度）
 - **Web 挂件**：`http://localhost:3001/widget` 零依赖单页（Express 直接服务），常驻小窗展示当天任务、连续打卡徽标，可直接打卡/跳转做题
-- **MCP 接口（外部 AI Agent 接入）**：内置 MCP 服务器（`http://127.0.0.1:3001/mcp`，Streamable HTTP），Claude Desktop / Cursor / Claude Code 等外部 agent 应用可直连工作台——查统计画像、搜题、管理训练计划与题单、打卡、触发同步、导出汇总，40 个工具与 REST API 一一映射（见「MCP 接口」章节）
+- **MCP 接口（通用，外部 Agent 接入）**：内置 MCP 服务器（`http://127.0.0.1:3001/mcp`，Streamable HTTP、无状态），**任何**支持 MCP 的客户端——桌面 LLM 应用、IDE / 编辑器插件、命令行 agent、自写脚本——都能直连工作台：查统计画像、搜题、读写题目与比赛笔记、管理训练计划与题单、打卡、取提交源码、触发同步、导出汇总，45 个工具与 REST API 一一映射（端点、传输、客户端配置与排障详见「MCP 接口」章节）
 
 ## 技术架构
 
@@ -379,58 +379,273 @@ GET  /api/update/check            # 更新检查（稳定版 + nightly 提交构
 GET  /api/update/progress         # 一键更新下载进度（phase/received/total）
 POST /api/update/download         # 开始下载并 SHA256 校验 | POST /api/update/apply 原位替换
 GET  /widget                      # Web 挂件单页（当天任务 + 打卡）
-POST /mcp                         # MCP 端点（Streamable HTTP，外部 AI Agent 接入，见下节）
+POST /mcp                         # MCP 端点（Streamable HTTP、无状态，通用外部 Agent 接入，见下节；GET/DELETE 回 405）
 ```
 
-## MCP 接口（外部 AI Agent 接入）
+## MCP 接口（外部 Agent 接入）
 
-本软件内置一个 MCP（Model Context Protocol）服务器，Claude Desktop、Cursor、Claude Code、Cline 等外部 agent 应用可以直接连接并操作工作台：查统计画像、搜题选题、管理训练计划与题单、打卡、触发同步、导出汇总——全程无需人工点页面。
+本软件内置一个 MCP（Model Context Protocol）服务器，把工作台的能力以标准工具形式暴露给**任何支持 MCP 的客户端**——桌面 LLM 应用、编辑器 / IDE 插件、命令行 agent，或者你自己写的脚本，都能直连：查统计画像、搜题选题、读写题目与比赛笔记、管理训练计划与题单、打卡、取提交源码、触发同步、导出汇总，全程无需人工点页面。
 
-- **端点**：`http://127.0.0.1:3001/mcp`（Streamable HTTP 传输、无状态；端口随部署而变，桌面版以启动横幅里的端口为准）
-  - 默认端口 3001 被占用时核心会自动往后漂移。**实际端口**写在数据目录的 `runtime.json`（形如 `{"port":3002,...}`），桌面版启动时会优先读它，也可以用启动横幅里打印的地址
-  - 工具调用是**单进程同步执行**的：同时发起超过 2 个工具调用会收到 `503` + `Retry-After`，请串行调用（并发大查询会拖慢整个应用，连桌面壳的健康探测都会超时）
-- **工具**：40 个，每个工具即一次对既有 `/api/*` 端点的回环调用，定义见 `server/src/mcp/tools.ts`
-- **接入前提**：工作台处于运行状态（MCP 端点与服务同进程同端口）
+MCP 是通用协议，本软件不针对任何一家客户端做适配：端点、传输与工具定义都按规范实现，客户端只要能连 **HTTP（Streamable HTTP）传输**就能用。只支持以 stdio 方式启动子进程的客户端，配一个本地 stdio↔HTTP 桥接器转发即可。
 
-### 客户端接入示例
+### 端点
 
-Claude Desktop（`claude_desktop_config.json`）/ Cursor（`.cursor/mcp.json`）：
+- **地址**：`http://127.0.0.1:3001/mcp`（与服务同进程、同端口）
+- **端口是否漂移，看运行形态**（这一点最容易配错）
+
+  | 形态 | 端口行为 | 端点 |
+  |---|---|---|
+  | 桌面版 / 单文件 exe（真 SEA） | 3001 被占则自动往后试，共 20 个（3001–3020）；实际端口写进数据目录的 `runtime.json`（`{"port": 3002, "pid": …, "startedAt": …, "dataDir": …}`），进程退出时删除 | 按 `runtime.json` 或启动横幅里的端口 |
+  | Docker（`node dist/sea.cjs`） | **不漂移**：端口冲突直接报错退出，由部署者决定改 `PORT` 还是释放端口（换端口会让 `-p 3080:3001` 指向没人监听的地方，比启动失败更难排查） | 按映射端口：`-p 127.0.0.1:3080:3001` → `http://127.0.0.1:3080/mcp` |
+  | 源码开发（`npm run dev`，`tsx src/index.ts`） | **不漂移**，端口冲突直接失败；也不写 `runtime.json` | `http://127.0.0.1:3001/mcp`（或 `PORT` 环境变量的值） |
+
+  所以「`runtime.json` 里是 3002」只可能出现在桌面版/exe 上；Docker 和开发模式都是固定单端口，配置写死即可
+- **前提**：工作台正在运行（MCP 端点与 REST API 同一个进程，服务停了端点也就没了）
+
+### 传输与协议行为
+
+无状态 Streamable HTTP——每个 POST 独立处理，服务端不保存会话；客户端断线重连、多个客户端并发、服务重启都不需要保活或清理逻辑。
+
+| 项 | 行为 |
+|---|---|
+| 方法 | 只接受 `POST /mcp`。`GET` → `405`（按规范不提供 SSE 流），`DELETE` → `405`（无会话可终止） |
+| 请求头 | 必须带 `Content-Type: application/json`，且 `Accept` **同时**包含 `application/json` 与 `text/event-stream`；缺任一项回 `406` |
+| 回包 | 普通 JSON（`application/json`），不是 SSE 流——脚本里直接 `JSON.parse` 即可 |
+| 会话 | 不返回 `Mcp-Session-Id`。`initialize` → `notifications/initialized`（202）照常可用，但因为无状态，**跳过握手直接发 `tools/call` 也能成功** |
+| 协议版本 | 服务端**回显**客户端请求的版本；客户端给一个不认识的版本（如 `9999-99-99`）时回服务端自身版本。`2024-11-05` / `2025-03-26` / `2025-06-18` 均实测可用 |
+| 能力声明 | 只声明 `tools`。`resources/list` 与 `prompts/list` 回 `-32601 Method not found`——本服务器没有资源和提示词，客户端不必去探测 |
+| 握手校验 | `initialize` 的 `clientInfo` 是必填项，缺了会回 `-32603` 并在 message 里指出缺失路径（错误文案是 zod 原样透出的英文 JSON） |
+| 其它方法 | JSON-RPC 版本写成 `1.0` → `400` + `-32700 Parse error`；请求体是数组（旧版批量语义）→ 正常按单条处理并回单个对象 |
+
+工具调用结果的形态：
+
+- **成功**：`result.content[0].text` 是一段紧凑 JSON（省 token）。单次结果超过 80,000 字符会从尾部截断并附提示，引导 agent 用分页 / 过滤参数缩小范围重取
+- **失败**：`result.isError === true`，文本以「工具执行失败：」开头。缺必填参数、未知工具、上游非 2xx 都走这里——这是**协议内的工具错误**而不是 JSON-RPC error，模型看得到原因，可以自己改参数重试
+- **并发上限 2**：同时在飞的 `tools/call` 超过 2 个回 `503` + `Retry-After: 2`。原因是 `node:sqlite` 全同步 + Node 单事件循环，两三个「拉题库 / 导出汇总」级查询叠在一起就能把事件循环占满十几秒，连桌面壳的健康探测都会超时、把正常但忙碌的核心判成掉线。协议握手（`initialize` / `tools/list`）不受此限——卡住它们只会让客户端以为服务不存在，反而更糟
+- **超时**：单次回环默认 30 秒；同步、拉题库、取提交源码、批量导入放宽到 10 分钟，创建恢复点 5 分钟，完整画像 / 参赛记录 / 汇总导出 60 秒。超时回「回环请求失败」（带方法与路径），不是工具不存在
+
+### 客户端接入
+
+各家客户端的配置字段名与传输写法不同（有的用 `mcpServers`，有的用 `servers`；有的要求显式写传输类型），但**共同点只有两个**：给这个服务器起个名字，把地址指向上面的 `/mcp`。最常见的 JSON 形态：
 
 ```json
 {
   "mcpServers": {
-    "icpc-workbench": { "url": "http://127.0.0.1:3001/mcp" }
+    "icpc-workbench": {
+      "url": "http://127.0.0.1:3001/mcp"
+    }
   }
 }
 ```
 
-Claude Code：
+按客户端微调：
+
+- 有的客户端要求额外写 `"type": "http"`（或 `"streamable-http"`）来明确传输类型，按它的文档加上
+- 外层键名不同的（如 VS Code 系的 `mcp.json` 用 `servers`），换掉外层键名即可
+- 命令行型客户端通常提供 `… mcp add --transport http <名字> <地址>` 之类的子命令，地址填上面的 URL
+
+不依赖任何客户端也能验证——任何能发 HTTP 的东西（curl、脚本、Postman）都是合法的 MCP 客户端：
 
 ```bash
-claude mcp add --transport http icpc-workbench http://127.0.0.1:3001/mcp
+# 探活：列出全部工具（注意两个请求头，缺 accept 会被 406 挡掉）
+curl -s -X POST http://127.0.0.1:3001/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+# 调一个工具（下面这个响应示例就是这条命令的输出）
+curl -s -X POST http://127.0.0.1:3001/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_app_status","arguments":{}}}'
 ```
+
+返回值是普通 JSON-RPC 应答。**注意要解析两层**：HTTP 响应体是 JSON-RPC 对象，工具结果在 `result.content[0].text` 里，而它本身又是一段 JSON **字符串**。上面第二条命令的真实返回如下——原样照录，只把 `dataDir` 换成了占位（注意外层 JSON-RPC 信封的字段顺序是 `result` / `jsonrpc` / `id`，内层才是工具的业务结果）：
+
+```json
+{
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"ok\":true,\"time\":\"2026-11-25T05:08:30.797Z\",\"platforms\":[\"codeforces\",\"atcoder\",\"luogu\",\"nowcoder\",\"daimayuan\",\"leetcode\",\"jisuanke\",\"qoj\",\"dashoj\",\"pta\",\"vjudge\"],\"dataDir\":\"<数据目录>\",\"version\":\"v0.6.2\",\"sea\":true}"
+      }
+    ]
+  },
+  "jsonrpc": "2.0",
+  "id": 2
+}
+```
+
+所以取值是 `JSON.parse(body).result.content[0].text` 再 `JSON.parse` 一次；用 `jq` 时对应 `.result.content[0].text | fromjson`。字段含义：`sea` 为 `true` 表示进程跑在真正的 Node SEA 单文件里（桌面版 / 单文件 exe），`false` 则是普通的 JS 入口——**Docker 镜像里也是 `false`**（它执行的是 esbuild 打出的 `dist/sea.cjs`，只是文件名如此，并非 SEA 运行时）。所以这个字段用来分辨「连的是桌面版还是 Docker/开发模式」，排查同机多实例时很有用。
 
 ### 工具一览
 
-| 分组 | 工具 |
-|---|---|
-| 状态与设置 | `get_app_status` · `get_sync_status` · `get_settings_overview` · `sync_platform` |
-| 统计画像 | `get_stats_overview` · `get_weakness_analysis` · `get_mastery_map` · `get_practice_heatmap` · `get_practice_summary` |
-| 题目与提交 | `search_problems` · `list_submission_history` · `get_submission_source` · `fetch_problem_bank` |
-| 题目 / 比赛笔记 | `get_problem_notes` · `save_problem_notes` · `get_contest_notes` · `save_contest_notes` |
-| 今日训练与计划 | `get_today_training` · `list_plans` · `get_plan` · `import_ai_plan` · `export_plan_package` · `shift_plan` · `update_plan_task` · `delete_plan_task` · `delete_plan` |
-| 题单 | `list_problem_lists` · `get_problem_list` · `import_problem_list` · `add_problems_to_list` · `classify_problem_list` |
-| 打卡 | `get_checkin_calendar` · `checkin_task` · `cancel_checkin` · `auto_checkin_today` |
-| 复习队列 | `list_review_queue` · `add_to_review_queue` · `review_feedback` · `remove_from_review_queue` |
-| 比赛 | `list_contests` · `list_participated_contests` |
-| 模板课程 | `list_templates` |
-| 备份 / 导入导出 | `create_backup` · `export_summary_markdown` · `import_submissions` |
+共 **45 个**工具，每个都是一次对既有 `/api/*` 端点的回环调用——业务校验、备份触发、频率限制全在路由层执行，因此同一份能力在页面、REST、MCP 三处的语义一致，MCP 通道不会绕过任何校验。参数名大多与 REST 查询参数同名（少量工具做了收窄或合并，例如 `sync_platform` 收 `platform` + `handle` + `days`、`get_checkin_calendar` 把日历与连续天数合并成一个结果）。下表按 `server/src/mcp/tools.ts` 整理，**字段名与必填项以运行中 `tools/list` 的实时返回为准**——它是唯一权威，本表只作速查。
+
+**25 个只读、20 个会改数据**。写操作都集中在下面几组，接入方若要自主运行，建议对这 20 个工具设人工确认或先 `create_backup`：
+
+- 同步与题库：`sync_platform` · `fetch_problem_bank`
+- 笔记：`save_problem_notes` · `save_contest_notes`
+- 计划：`import_ai_plan` · `shift_plan` · `update_plan_task` · `delete_plan_task` · `delete_plan`
+- 题单：`import_problem_list` · `add_problems_to_list` · `classify_problem_list`
+- 打卡与复习：`checkin_task` · `cancel_checkin` · `auto_checkin_today` · `add_to_review_queue` · `review_feedback` · `remove_from_review_queue`
+- 备份与导入：`create_backup` · `import_submissions`
+
+（另有 `get_today_training` 虽是 GET，也会写推荐冷却记录——归类上算只读，效果上会落库。）
+
+#### 系统与状态
+
+| 工具 | 作用 | 主要参数 |
+|---|---|---|
+| `get_app_status` | 版本号、数据目录、支持的平台清单。接入后第一个探活调用 | — |
+| `get_sync_status` | 各平台已绑定账号、凭据是否配置、上次同步成败与摘要、后台续拉状态 | — |
+| `sync_platform` | 触发刷题记录同步（拉最新提交入库） | `platform`（平台 id 或 `all`）、`handle`、`days`（1–365） |
+| `get_settings_overview` | 配置总览（密钥打码，不返回原文） | — |
+
+#### 统计与画像
+
+| 工具 | 作用 | 主要参数 |
+|---|---|---|
+| `get_stats_overview` | 总提交 / AC 量、去重解题数、平台与难度分布 | `from` `to` `platform` `account` |
+| `get_weakness_analysis` | 按知识点 / 标签的真实 AC 率与补强优先级 | `minAttempts`（默认 5）、`topN`（默认 10）+ 上列过滤 |
+| `get_mastery_map` | 知识点掌握度五档（未开始 → 熟练） | `minSolved` |
+| `get_practice_heatmap` | 逐日 AC 去重题数（与打卡同一本地日口径） | `days`（默认 365） |
+| `get_practice_summary` | 完整个人画像，一次拿全（体积较大） | — |
+
+#### 题目与提交
+
+| 工具 | 作用 | 主要参数 |
+|---|---|---|
+| `search_problems` | 搜题（离线内置题库 + 已入库题目），给 agent 找题的主入口 | `q` `platform` `difficulty` `diffMin` `diffMax` `tag` `status` `page` `pageSize` `sort` `order` |
+| `list_submission_history` | 写题历史：按题去重视图或逐条提交流 | `view` `result` `q` `from` `to` `contestKey` `phase` `account` `page` `pageSize` |
+| `get_submission_source` | 取某次提交的源码（首次访问 OJ 详情页抓取并缓存） | `submissionId` `refresh` |
+| `fetch_problem_bank` | 从平台拉公开题库入库（已有题去重更新） | `platform` `max` `luoguMinDifficulty` `full` |
+
+其中两个参数专为复盘设计：`list_submission_history` 的 `contestKey`（如 `codeforces:1877`）按比赛筛选、`phase` 取 `during`（赛时，含虚拟赛）或 `after`（赛后补题），于是「同一道题的赛时 WA」与「赛后 AC」可以分别取出，再各调一次 `get_submission_source` 拿到两份源码做对比。
+
+#### 题目与比赛笔记
+
+笔记是独立于复习队列的：移出复习队列，笔记依然在。题目按「题目身份」定位，洛谷的 CF / AtCoder 镜像与原站视为同一道题。
+
+| 工具 | 作用 | 主要参数 |
+|---|---|---|
+| `get_problem_notes` | 读某道题的笔记；没写过时 `text` 是空串（不是错误） | `platform` `problemKey` |
+| `save_problem_notes` | 新建或覆盖题目笔记（Markdown，≤20000 字符；`text` 传空串 = 删除） | `platform` `problemKey` `text` |
+| `get_contest_notes` | 读整场比赛的笔记 | `contestKey` |
+| `save_contest_notes` | 新建或覆盖比赛笔记（空串 = 删除） | `contestKey` `text` |
+
+#### 今日训练与计划
+
+| 工具 | 作用 | 主要参数 |
+|---|---|---|
+| `get_today_training` | 三档推荐题（巩固 / 核心 / 挑战）、到期复习、当日计划与进度。**有写副作用**：推荐题写入冷却记录供次日轮换 | `consolidation` `core` `challenge` `rotate` |
+| `list_plans` | 计划列表（含任务数与打卡进度） | — |
+| `get_plan` | 计划详情：全部任务（日期 / 标题 / 类型 / 链接 / 打卡状态） | `id` |
+| `import_ai_plan` | 导入计划 JSON 文本（自动清洗代码围栏与解释文字；缺链接时按题库回退补链） | `raw` `startDate` `days` |
+| `export_plan_package` | 导出计划数据包：完整画像 + 提示词 | `days` `startDate` `dailyTasks` |
+| `shift_plan` | 未完成的练习 / 专题任务整体顺延（已完成、比赛、复习保持原日期） | `id` `days` `skipWeekends` `dailyLimit` |
+| `update_plan_task` | 改单条任务（日期 / 标题 / 类型 / 链接 / 备注，至少给一个字段） | `taskId` + 要改的字段 |
+| `delete_plan_task` | 删除单条任务（不可恢复） | `taskId` |
+| `delete_plan` | 删除整个计划（含全部任务，级联不可恢复） | `id` |
+
+`export_plan_package` → 外部编排 → `import_ai_plan` 构成一个闭环：数据包里有完整画像与提示词，把编排结果原样喂回来即可入库，不需要外部 agent 猜表结构。
+
+#### 题单
+
+| 工具 | 作用 | 主要参数 |
+|---|---|---|
+| `list_problem_lists` | 题单列表（题数 / 分类数 / 完成数） | — |
+| `get_problem_list` | 题单详情：条目、分类、完成状态、AI 建议缓存 | `id` |
+| `import_problem_list` | 新建题单（粘贴原文，每行一题；识别不了的会明确列出） | `title` `raw` `sourceUrl` |
+| `add_problems_to_list` | 向已有题单追加题目（重复与无法识别的分别列出） | `id` `raw` |
+| `classify_problem_list` | 按本地规则分类（不调 AI，幂等可重跑） | `id` |
+
+#### 打卡
+
+| 工具 | 作用 | 主要参数 |
+|---|---|---|
+| `get_checkin_calendar` | 某月每日任务量与打卡数 + 连续 / 最长 / 累计天数（两次回环合并成一个结果） | `month`（默认本月） |
+| `checkin_task` | 给某条当日计划任务打卡 | `taskId` |
+| `cancel_checkin` | 取消打卡（幂等） | `taskId` |
+| `auto_checkin_today` | 自动打卡今天已 AC 的计划练习任务。不传 `taskIds` = 只预览；传入预览结果 = 确认写库 | `taskIds` |
+
+`auto_checkin_today` 刻意做成两段式（先预览再确认）：旧 AC、回顾和模拟赛不会被自动打卡，写库前 agent 也能把清单念给用户确认。
+
+#### 复习队列
+
+| 工具 | 作用 | 主要参数 |
+|---|---|---|
+| `list_review_queue` | 复习队列全量；`due=true` 只看到期，`date` 看某天到期 | `due` `date` |
+| `add_to_review_queue` | 加入复习队列（已在队列则幂等返回当前到期日） | `platform` `problemKey` |
+| `review_feedback` | 提交复习反馈并重排下次到期（`hard` 退两档 / `ok` 进一档 / `easy` 进两档） | `id` `feedback` |
+| `remove_from_review_queue` | 移出复习队列（连带复习事件记录） | `id` |
+
+#### 比赛
+
+| 工具 | 作用 | 主要参数 |
+|---|---|---|
+| `list_contests` | 赛事日历（多平台聚合，单源失败自动降级） | `type`（`upcoming` 默认 / `running` / `finished`）`platform` `q` `limit` `offset` |
+| `list_participated_contests` | 我参加过的比赛（本地提交推导 + 平台参赛记录，含排名与 Rating 变化；首次查询触发后台增量刷新） | — |
+
+#### 模板课程
+
+| 工具 | 作用 | 主要参数 |
+|---|---|---|
+| `list_templates` | 模板课程库全量：内置与自建、学习状态、例题完成情况与进度 | — |
+
+#### 备份与导入导出
+
+| 工具 | 作用 | 主要参数 |
+|---|---|---|
+| `create_backup` | 手动创建数据库恢复点（`VACUUM INTO` 一致快照） | — |
+| `export_summary_markdown` | 导出完整练习数据汇总 Markdown | — |
+| `import_submissions` | 手动导入提交行（无需平台凭据）；≥20 行自动先建备份 | `platform` `rows` |
+
+### 接入建议
+
+**客户端配置写死 3001、核心又漂到了 3002** 是最常见的一类「连不上」，原因是两边各自独立：MCP 配置里只有一个固定 URL，而端口可能漂移。三种应对，按省事程度排：
+
+1. 先启动工作台再启动 agent——大多数客户端只在启动时读一次配置，服务在跑就能连上
+2. 固化端口：在 `server/config.json` 里把 `port` 指定成某个不会被占用的值（Docker 里固定 `PORT` 与端口映射），端口不漂就永远对得上
+3. 桌面版实在漂了，按 `data/runtime.json` 里的 `port` 改客户端配置（Docker / 开发模式不会漂，见上表）
+
+**桌面版尤其要注意**：壳会先找已在运行的核心再决定是否新拉一个（`runtime.json` + 探活 + 同安装校验），所以正常情况不会同时有两份实例；但如果你手动又跑了一份 `tsx`，那 3001 上可能蹲着**开发实例**，MCP 配置就会打到开发库上——`get_app_status` 的 `sea` 字段（`false` = tsx 直跑）可以立刻分辨。
+
+**给 agent 的提示词建议**：告诉它先 `get_app_status` 探活、串行调用（并发上限 2）、写操作前 `create_backup`，并约定「改动计划 / 题单前先复述一遍再执行」——这能避免它把 `delete_plan` 当成预览接口。
+
+### 典型工作流
+
+1. **接入探活**：`get_app_status` 确认版本与平台清单，`get_sync_status` 看哪些账号还健康
+2. **补齐数据**：`sync_platform`（可传 `days` 只同步最近 N 天加快首轮）；抓题库用 `fetch_problem_bank`
+3. **读画像**：`get_practice_summary` 一次拿全，或按需 `get_weakness_analysis` / `get_mastery_map` / `get_practice_heatmap`
+4. **选题**：`search_problems` 按知识点 / 难度区间 / 做题状态过滤，`status=none` 挑没做过的
+5. **今天做什么**：`get_today_training` 拿三档推荐与到期复习 → `checkin_task` 或 `auto_checkin_today` 打卡
+6. **复盘一场比赛**：`list_participated_contests` → `list_submission_history` 带 `contestKey` + `phase` 取赛时 / 赛后提交 → `get_submission_source` 取源码对比 → 结论写回 `save_problem_notes` / `save_contest_notes`
+7. **编排计划**：`export_plan_package` 导出数据包 → 外部编排 → `import_ai_plan` 导回 → `shift_plan` 调整节奏
 
 ### 安全边界
 
-- MCP 工具能力是 REST API 的**子集**：每个工具只是回环调用一个已有端点，且凭据读写、Cookie / API Key 原文取回、整库下载与恢复点恢复、账号删除等敏感操作**不经 MCP 暴露**
-- 与全站一致只监听 `127.0.0.1`（Docker `HOST=0.0.0.0` 部署时与 REST API 同等暴露，请自行加反向代理与认证）；沿用 Host 头校验（防 DNS rebinding），不加 CORS 头（浏览器恶意页面的跨域 POST 会被 content-type 预检挡住）
-- 同步与拉题库类工具（`sync_platform` / `fetch_problem_bank`）受平台限速影响可能持续数分钟；`get_today_training` 与页面一致有推荐冷却写副作用
+- **能力是 REST API 的子集**：每个工具只是一次回环调用，且刻意不暴露敏感操作——Cookie / AI Key 的保存与原文取回、备份文件下载、恢复点恢复与进程重启、账号绑定 / 改名 / 删除、适配器开关，都不在 MCP 面上。AI 对话（SSE 流式）也不代理：MCP tools 是请求 / 响应模型，流式语义不匹配
+- **密钥只以打码形态出现**：仍需读取设置的 `get_settings_overview` 拿到的是 `_uid=••••••••; __client_id=ykpm••••••y3qk` 这种逐对打码值（少于 12 字符的值整体遮掉），agent 能确认「填了什么」但拿不到原文
+- **监听面与全站一致**：默认只绑 `127.0.0.1`；Docker 用 `HOST=0.0.0.0` 显式暴露时，MCP 端点与 REST API **同等暴露**（应用本身无认证），务必自行加反向代理 + 认证 + TLS
+- **沿用全局 Host 头校验**（防 DNS rebinding）；不加 CORS 头——浏览器恶意页面发起的跨域 POST 会被 content-type 预检挡住，传输层还会强制校验 `Content-Type: application/json`
+- **有副作用的工具要当写操作看**：`get_today_training` 会写推荐冷却，`sync_platform` / `fetch_problem_bank` 会打上游并受平台限速（可能持续数分钟），`delete_plan` / `delete_plan_task` 不可恢复——批量改动前先 `create_backup` 留恢复点
+
+### 排障
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `406 Not Acceptable: Client must accept both application/json and text/event-stream` | `Accept` 头只写了一种类型 | 补成 `application/json, text/event-stream`（自己写脚本时最容易漏） |
+| `GET` 或 `DELETE` 回 `405` | 无状态端点只收 POST | 改 POST；本端点不提供 SSE 流，也没有会话可终止 |
+| `503` + `Retry-After: 2` | 同时在飞的工具调用超过 2 个 | 串行调用，或等重试 |
+| 连接被拒 / `ECONNREFUSED` | 工作台没在运行，或端口漂移了 | 确认服务在跑；按 `runtime.json` 里的真实端口改配置 |
+| `工具执行失败：未知工具 …` | 客户端缓存了旧的工具清单 | 重新拉一次 `tools/list`（通常重连或重启该客户端会话即可） |
+| `-32601 Method not found`（如 `resources/list`、`prompts/list`） | 本服务器只实现 tools，没有 resources / prompts | 不要探测这两类能力，只用 `tools/list` 与 `tools/call` |
+| `-32603` + 一段 zod 英文 JSON | `initialize` 缺 `clientInfo`（或其他必填握手字段） | 按提示补上 `clientInfo: { name, version }`；这是客户端实现问题，不是服务端拒绝 |
+| `工具执行失败：上游接口返回 HTTP 404` | 参数指向的对象不存在（如题不在题库、计划已删） | 先用 `search_problems` / `list_plans` 确认 id |
+| `工具执行失败：上游接口返回 HTTP 429` | 取提交源码（`get_submission_source`）按平台有最小请求间隔，连着调同一平台就打满了 | 逐个取，按响应里的 `Retry-After` 等几秒重试（间隔 0.8–2 秒，CF / QOJ 为 2 秒） |
+| 工具调用很慢甚至超时 | 同步 / 拉题库受平台限速，或大库上的统计查询 | 用 `days` / `page` / `pageSize` 缩小范围；长任务给足超时 |
 
 ## 测试
 
@@ -439,7 +654,7 @@ npm test            # server 单元测试（schema/配置/适配器/导入/同�
 npm run typecheck   # 双端类型检查
 ```
 
-测试覆盖：数据库 schema 与约束、配置校验、CF/AtCoder/牛客赛事适配器归一化（mock + 真实网络验证）、CSV 解析、导入去重、增量同步、统计/弱项/趋势与手工计算一致性、AI 生成三路径（成功/失败/未配置）、复习排期（间隔阶梯/留存系数/按日与按月取数含逾期口径/今日训练带出到期复习条目/生成计划内的复习库排期）、赛后复盘参赛推导（各平台判定信号/时间窗匹配/复盘上下文渲染）、更新双通道判定与 SHA256 校验解析、文档转换器（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）、Markdown 数学公式预处理管线、会话级附件内容缓存。
+测试覆盖：数据库 schema 与约束、配置校验、CF/AtCoder/牛客赛事适配器归一化（mock + 真实网络验证）、CSV 解析、导入去重、增量同步、统计/弱项/趋势与手工计算一致性、AI 生成三路径（成功/失败/未配置）、复习排期（间隔阶梯/留存系数/按日与按月取数含逾期口径/今日训练带出到期复习条目/生成计划内的复习库排期）、赛后复盘参赛推导（各平台判定信号/时间窗匹配/复盘上下文渲染）、更新双通道判定与 SHA256 校验解析、文档转换器（Word/Excel/PPT/HTML/CSV/JSON/XML/EPub）、Markdown 数学公式预处理管线、会话级附件内容缓存、MCP 端点（按真实客户端行为走 initialize → tools/list → tools/call 全链路，工具清单与注册表一一对应，写工具经回环 REST 真实落库，未知工具/缺参/上游 4xx 映射为 isError，无状态端点 GET/DELETE 回 405）。
 
 ## 赞助
 
