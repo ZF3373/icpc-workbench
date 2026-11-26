@@ -24,6 +24,7 @@ export const SEARCH_ENGINE_IDS = [
   'serpapi',
   'jina',
   'serpingapi',
+  'keenable',
 ] as const;
 
 export type SearchEngineId = (typeof SEARCH_ENGINE_IDS)[number];
@@ -141,6 +142,14 @@ export const SEARCH_ENGINES: readonly SearchEngineMeta[] = [
     allowsKeyless: false,
     quota: '1000 次（一次性，无需绑卡）',
     registerUrl: 'https://serpingapi.com/signup',
+  },
+  {
+    id: 'keenable',
+    label: 'Keenable',
+    supportsFetch: true,
+    allowsKeyless: true,
+    quota: '标准账号有 Key 100,000 次/月免费（部分账号初始 1,000 次）；无 Key 1,000 次/时；查询词、URL 与返回内容默认会被记录',
+    registerUrl: 'https://docs.keenable.ai/api-keys',
   },
 ];
 

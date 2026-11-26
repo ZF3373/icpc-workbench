@@ -1,5 +1,5 @@
 /**
- * 联网搜索引擎适配层：12 引擎 × (搜索 | 抓取) + fallback 编排原语。
+ * 联网搜索引擎适配层：13 引擎 × (搜索 | 抓取) + fallback 编排原语。
  *
  * 设计对齐 dsh-web-search-free（多渠道免费搜索聚合）：
  * - 每个引擎一个适配器，搜索/抓取结果为空一律**抛错**而非返回空——否则空成功会终止
@@ -17,9 +17,9 @@ import { searchEngineMeta, type SearchEngineId } from '../../../shared/src/index
 
 // ---------- 错误类型与通用工具 ----------
 
-/** 引擎级失败。status 为 HTTP 状态码；信封式错误（200 里 code != 0）可能没有。 */
+/** 引擎级失败。status 为 HTTP 状态码；retryable 为上游显式给出的可重试标记。 */
 export class SearchEngineError extends Error {
-  constructor(message: string, readonly status?: number) {
+  constructor(message: string, readonly status?: number, readonly retryable?: boolean) {
     super(message);
     this.name = 'SearchEngineError';
   }
@@ -526,6 +526,80 @@ const engSerpingapi: SearchEngineAdapter = {
   },
 };
 
+async function assertKeenableOk(res: Response): Promise<void> {
+  if (res.ok) return;
+  const detail = await res.text().catch(() => '');
+  let reason = detail;
+  let retryable: boolean | undefined;
+  try {
+    const body = JSON.parse(detail) as { message?: unknown; retryable?: unknown };
+    if (typeof body.message === 'string' && body.message) reason = body.message;
+    if (typeof body.retryable === 'boolean') retryable = body.retryable;
+  } catch {
+    // 非 JSON 错误体保留原文
+  }
+  const suffix = reason ? `：${reason.slice(0, 200)}` : '';
+  throw new SearchEngineError(`Keenable HTTP ${res.status}${suffix}`, res.status, retryable);
+}
+
+const engKeenable: SearchEngineAdapter = {
+  id: 'keenable',
+  label: 'Keenable',
+  supportsFetch: true,
+  async search(query, key, signal) {
+    const endpoint = key ? 'https://api.keenable.ai/v1/search' : 'https://api.keenable.ai/v1/search/public';
+    const headers: Record<string, string> = key
+      ? { 'Content-Type': 'application/json', 'X-API-Key': key }
+      : { 'Content-Type': 'application/json', 'X-Keenable-Title': 'icpc-workbench' };
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ query, max_results: 5, disable_cards: true }),
+      signal,
+    });
+    await assertKeenableOk(res);
+    const data = (await res.json()) as {
+      results?: Array<{ url?: string; title?: string; snippet?: string; description?: string }>;
+    };
+    const rows = (data.results ?? []).map((r) => resultOf(r.url, r.title, r.snippet || r.description));
+    return assertResults(rows.filter((r): r is EngineSearchResult => r !== undefined), this.label);
+  },
+  async fetch(url, key, signal) {
+    const endpoint = key ? 'https://api.keenable.ai/v1/fetch' : 'https://api.keenable.ai/v1/fetch/public';
+    const headers: Record<string, string> = key
+      ? { 'Content-Type': 'application/json', 'X-API-Key': key }
+      : { 'Content-Type': 'application/json', 'X-Keenable-Title': 'icpc-workbench' };
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ urls: [url], content: { max_chars: 50000 }, retrieval: { max_age_hours: 0 } }),
+      signal,
+    });
+    await assertKeenableOk(res);
+    const data = (await res.json()) as {
+      results?: Array<{
+        url?: string;
+        title?: string;
+        content?: string;
+        error?: { status?: number; code?: string; message?: string; retryable?: boolean };
+      }>;
+    };
+    const first = data.results?.[0];
+    if (first?.error) {
+      const reason = first.error.message || first.error.code;
+      throw new SearchEngineError(
+        reason ? `Keenable 抓取失败：${reason}` : 'Keenable 抓取失败',
+        first.error.status,
+        first.error.retryable,
+      );
+    }
+    if (typeof first?.content !== 'string' || !first.content.trim()) {
+      throw new SearchEngineError('Keenable 抓取返回空内容');
+    }
+    return { content: first.content, title: first.title?.trim() || undefined };
+  },
+};
+
 /** 全部引擎适配器（顺序无关：调用顺序由用户配置决定） */
 export const SEARCH_ENGINE_ADAPTERS: readonly SearchEngineAdapter[] = [
   engTinyfish,
@@ -540,6 +614,7 @@ export const SEARCH_ENGINE_ADAPTERS: readonly SearchEngineAdapter[] = [
   engSerpapi,
   engJina,
   engSerpingapi,
+  engKeenable,
 ];
 
 const ENGINE_BY_ID: Record<string, SearchEngineAdapter> = Object.fromEntries(
@@ -575,7 +650,10 @@ export function cooldownFor(err: unknown, kind: EngineKind): number | undefined 
   // 这个 Key 对所有其他 URL 一起失效
   if (status === 401 || (status === 403 && kind === 'search')) return COOLDOWN_MS.auth;
   if (status === 402) return COOLDOWN_MS.quota;
-  if (status === 429) return QUOTA_MESSAGE.test(String((err as Error).message)) ? COOLDOWN_MS.quota : COOLDOWN_MS.rate;
+  if (status === 429) {
+    if (err instanceof SearchEngineError && err.retryable === false) return undefined;
+    return QUOTA_MESSAGE.test(String((err as Error).message)) ? COOLDOWN_MS.quota : COOLDOWN_MS.rate;
+  }
   // 信封式错误（AnySearch code、SerpApi error）没有状态码，靠报文判断配额
   if (status === undefined && err instanceof SearchEngineError && QUOTA_MESSAGE.test(err.message)) {
     return COOLDOWN_MS.quota;
@@ -631,15 +709,20 @@ export function describeEngineFailure(err: unknown, key?: string): string {
       msg = msg.split(value).join(maskKey(key));
     }
   }
-  if (status === 401 || status === 403) msg += '（密钥无效或无权限，请检查 API Key）';
-  else if (status === 429) msg += '（配额已用尽或请求过频，可稍后重试）';
-  else if (status !== undefined && status >= 500) msg += '（服务端错误）';
+  if (status === 401) msg += '（密钥无效或无权限，请检查 API Key）';
+  else if (status === 403) msg += '（请求被拒绝，可能是密钥权限或目标站点限制）';
+  else if (status === 429) {
+    msg += err instanceof SearchEngineError && err.retryable === false
+      ? '（上游标记为不可重试）'
+      : '（配额已用尽或请求过频，可稍后重试）';
+  } else if (status !== undefined && status >= 500) msg += '（服务端错误）';
   return msg;
 }
 
 /** 瞬时失败判定：值得对同一 (引擎, Key) 原地重试一次（网络异常/超时/5xx/429/408/425） */
 export function isRetryableEngineError(err: unknown): boolean {
   if (!(err instanceof SearchEngineError)) return true; // fetch 网络层异常
+  if (err.retryable !== undefined) return err.retryable;
   const status = err.status;
   if (status === undefined) return !QUOTA_MESSAGE.test(err.message); // 信封式错误：配额类不重试
   return status === 408 || status === 425 || status === 429 || status >= 500;
