@@ -709,7 +709,8 @@ export function describeEngineFailure(err: unknown, key?: string): string {
       msg = msg.split(value).join(maskKey(key));
     }
   }
-  if (status === 401 || status === 403) msg += '（密钥无效或无权限，请检查 API Key）';
+  if (status === 401) msg += '（密钥无效或无权限，请检查 API Key）';
+  else if (status === 403) msg += '（请求被拒绝，可能是密钥权限或目标站点限制）';
   else if (status === 429) {
     msg += err instanceof SearchEngineError && err.retryable === false
       ? '（上游标记为不可重试）'

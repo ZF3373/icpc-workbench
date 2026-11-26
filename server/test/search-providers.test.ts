@@ -288,4 +288,7 @@ test('Keenable 整包不可重试 429 不重试，也不冷却无 Key 渠道', a
     ['keenable', 'anysearch'],
   );
   assert.match(describeEngineFailure(new SearchEngineError('API key required', 429, false)), /不可重试/);
+  const forbidden = describeEngineFailure(new SearchEngineError('Upstream forbidden', 403, false));
+  assert.doesNotMatch(forbidden, /检查 API Key/);
+  assert.match(forbidden, /目标站点/);
 });
