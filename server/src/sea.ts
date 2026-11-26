@@ -28,7 +28,7 @@ import { migratePlatformCookieToAccounts } from './adapters/accountCreds.ts';
 import { setRequestIntervalScale } from './net/hostThrottle.ts';
 import { backupsRoutes } from './routes/backups.ts';
 import { initAdapters } from './adapters/index.ts';
-import { compressionMiddleware, errorHandler, hostGuard, securityHeaders } from './middleware.ts';
+import { compressionMiddleware, csrfGuard, errorHandler, hostGuard, securityHeaders } from './middleware.ts';
 import { spaStaticRoutes } from './spa-static.ts';
 import { checkinsRoutes } from './routes/checkins.ts';
 import { contestsRoutes } from './routes/contests.ts';
@@ -165,6 +165,7 @@ export function startServer(
   // 判定与 index.ts 一致：仅绑定回环时启用；显式绑 0.0.0.0（Docker 的 HOST）时不校验——
   // 那是操作者主动选择的暴露，Host 会是任意域名，校验只会误伤。
   app.use(hostGuard(boundHost));
+app.use(csrfGuard());
   // gzip/br 压缩：必须在所有路由与 express.static 之前——compression 在响应头写出时才
   // 决定是否压缩，挂到静态资源后面就只对之后注册的中间件生效。远程访问时前端产物
   // （约 6 MB JS/CSS）与 JSON 响应都能小一个数量级。SSE（/api/ai/chat）由 filter 显式排除，

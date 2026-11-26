@@ -14,6 +14,8 @@ import {
 } from './search-engines.ts';
 import { extractPdfText, truncatePdfText, isPdfContentType } from './pdf.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
+import { Agent, type Dispatcher } from 'undici';
+import { isIP, type LookupFunction } from 'node:net';
 import dns from 'node:dns/promises';
 
 /**
@@ -45,6 +47,7 @@ export const FETCH_URL_TOOL: ToolDefinition = {
 
 /** 正文最大字符数，超出截断。现代模型上下文窗口已达 128K-1M token，放宽至 50K 字符（约 12K token） */
 const MAX_TEXT_CHARS = 50000;
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 /** 浏览器 User-Agent：避免部分站点对默认 fetch UA 返回 403 */
 const BROWSER_UA =
@@ -80,7 +83,8 @@ export function isPrivateIp(ip: string): boolean {
   if (!expanded) return addr === '::' || addr === '::1';
   if (expanded === '0'.repeat(32)) return true; // ::
   if (expanded.startsWith('0'.repeat(31) + '1')) return true; // ::1
-  if (expanded.startsWith('fe80')) return true; // 链路本地 fe80::/10
+  const firstHextet = Number.parseInt(expanded.slice(0, 4), 16);
+  if (firstHextet >= 0xfe80 && firstHextet <= 0xfebf) return true; // 链路本地 fe80::/10
   if (expanded.startsWith('fc') || expanded.startsWith('fd')) return true; // 唯一本地 fc00::/7
   // IPv4 映射地址的十六进制形式（::ffff:7f00:1 ↔ ::ffff:127.0.0.1）
   if (expanded.startsWith('0'.repeat(20) + 'ffff')) {
@@ -119,24 +123,52 @@ export function setDnsLookupForTest(fn: DnsLookup | null): void {
   dnsLookup = fn ?? ((hostname) => dns.lookup(hostname, { all: true, verbatim: true }) as never);
 }
 
+type ResolvedPublicHost =
+  | { ok: true; addresses: Array<{ address: string }> }
+  | { ok: false; error: string };
+
+async function resolvePublicHost(hostname: string): Promise<ResolvedPublicHost> {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  let addresses: Array<{ address: string }>;
+  try {
+    addresses = await dnsLookup(host);
+  } catch {
+    return { ok: false, error: '域名解析失败（无法访问该主机）' };
+  }
+  if (!addresses?.length) return { ok: false, error: '域名解析失败（无可用地址）' };
+  for (const { address } of addresses) {
+    if (isPrivateIp(address)) return { ok: false, error: '该域名解析到本机或内网地址，禁止访问' };
+  }
+  return { ok: true, addresses };
+}
+
 /**
  * 解析主机名并校验所有结果地址都不指向本机/内网。
  * 返回 null 表示可访问；否则返回给用户的错误说明。
  * 同时封堵字面量形式的非常规 IP（十六进制/十进制整数等，DNS 解析失败即拒绝）。
  */
 export async function resolveAndValidateHost(hostname: string): Promise<string | null> {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  let addresses: Array<{ address: string }>;
-  try {
-    addresses = await dnsLookup(host);
-  } catch {
-    return '域名解析失败（无法访问该主机）';
-  }
-  if (!addresses?.length) return '域名解析失败（无可用地址）';
-  for (const { address } of addresses) {
-    if (isPrivateIp(address)) return '该域名解析到本机或内网地址，禁止访问';
-  }
-  return null;
+  const resolved = await resolvePublicHost(hostname);
+  return resolved.ok ? null : resolved.error;
+}
+
+function pinnedLookup(addresses: Array<{ address: string }>): LookupFunction {
+  const candidates = addresses.map(({ address }) => ({ address, family: isIP(address) }))
+    .filter((entry) => entry.family !== 0);
+  return (_hostname, options, callback) => {
+    const family = options.family ?? 0;
+    const matches = candidates.filter((entry) => family === 0 || entry.family === family);
+    if (matches.length === 0) {
+      callback(Object.assign(new Error('已验证地址没有适用的 IP 协议族'), { code: 'ENOTFOUND' }), '');
+      return;
+    }
+    if (options.all) callback(null, matches);
+    else callback(null, matches[0].address, matches[0].family);
+  };
+}
+
+function createPinnedDispatcher(addresses: Array<{ address: string }>): Dispatcher {
+  return new Agent({ connect: { lookup: pinnedLookup(addresses), keepAlive: false } });
 }
 
 /**
@@ -242,6 +274,35 @@ function findCookie(url: string, cookies?: PlatformCookies): { cookie?: string; 
 const MAX_REDIRECT_HOPS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
+async function readResponseBytes(res: Response): Promise<Uint8Array> {
+  if (!res.body) return new Uint8Array();
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new Error(`响应超过 ${MAX_RESPONSE_BYTES / 1024 / 1024} MiB 上限`);
+      }
+      chunks.push(value);
+    }
+  } catch (e) {
+    await reader.cancel().catch(() => undefined);
+    throw e;
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
 async function directFetch(
   url: string,
   cookies?: PlatformCookies,
@@ -255,8 +316,12 @@ async function directFetch(
   let cookie = cookieStr;
   try {
     for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop += 1) {
-      const invalid = validatePublicFetchUrl(currentUrl) ?? await resolveAndValidateHost(new URL(currentUrl).hostname);
+      const target = new URL(currentUrl);
+      const invalid = validatePublicFetchUrl(currentUrl);
       if (invalid) return { content: '', title: url, error: invalid };
+      const resolved = await resolvePublicHost(target.hostname);
+      if (!resolved.ok) return { content: '', title: url, error: resolved.error };
+      const dispatcher = createPinnedDispatcher(resolved.addresses);
 
       const headers: Record<string, string> = {
         'User-Agent': BROWSER_UA,
@@ -264,62 +329,71 @@ async function directFetch(
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
       };
       // 仅原始主机（洛谷 C3VK 场景）携带平台 Cookie，防止凭据经重定向泄露到第三方
-      if (cookie && new URL(currentUrl).hostname.toLowerCase() === initialHost) {
+      if (cookie && target.hostname.toLowerCase() === initialHost) {
         headers['Cookie'] = cookie;
       }
 
-      const res = await fetchFn(currentUrl, {
-        headers,
-        redirect: 'manual',
-        signal: AbortSignal.timeout(20_000),
-      });
-
-      // C3VK 反爬验证：洛谷 302 后需从 Set-Cookie 提取 C3VK，原地重试（不跟随该跳）
-      if (res.status === 302 && new URL(currentUrl).hostname.toLowerCase() === initialHost) {
-        const setCookies = res.headers.getSetCookie?.() ?? [];
-        let c3vk = '';
-        for (const c of setCookies) {
-          const m = c.match(/C3VK=([^;]+)/);
-          if (m) c3vk = m[1];
+      try {
+        const res = await fetchFn(currentUrl, {
+          headers,
+          redirect: 'manual',
+          signal: AbortSignal.timeout(20_000),
+          dispatcher,
+        } as RequestInit & { dispatcher: Dispatcher });
+        const declaredLength = Number(res.headers.get('content-length') ?? 0);
+        if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+          return { content: '', title: url, error: `响应超过 ${MAX_RESPONSE_BYTES / 1024 / 1024} MiB 上限` };
         }
-        if (c3vk) {
-          cookie = (cookieStr ? cookieStr + '; ' : '') + 'C3VK=' + c3vk;
-          continue; // 原地重试，Cookie 附加逻辑由下一轮 headers 组装完成
-        }
-      }
 
-      // 逐跳重定向：校验目标 URL 与其 DNS 解析结果后再跟随
-      if (REDIRECT_STATUSES.has(res.status)) {
-        const location = res.headers.get('location');
-        if (!location) return { content: '', title: url, error: `HTTP ${res.status}（缺少重定向目标）` };
-        if (hop === MAX_REDIRECT_HOPS) return { content: '', title: url, error: '重定向次数过多（>5 跳）' };
-        currentUrl = new URL(location, currentUrl).toString();
-        continue;
-      }
-
-      if (!res.ok) return { content: '', title: url, error: `HTTP ${res.status}` };
-      const ct = res.headers.get('content-type') ?? '';
-      // PDF：以字节读取后调用 unpdf 提取文本
-      if (isPdfContentType(ct)) {
-        const buf = new Uint8Array(await res.arrayBuffer());
-        try {
-          const { text } = await extractPdfText(buf);
-          if (!text.trim()) return { content: '', title: url, error: 'PDF 未提取到文本（可能是扫描型 PDF）' };
-          // 标题取 URL 末段（如 contest/4071 → 4071），无法提取时回退 url
-          const seg = url.split('/').filter(Boolean).pop() || url;
-          return { content: truncatePdfText(text), title: seg };
-        } catch (e) {
-          return { content: '', title: url, error: `PDF 提取失败：${(e as Error).message}` };
+        // C3VK 反爬验证：洛谷 302 后需从 Set-Cookie 提取 C3VK，原地重试（不跟随该跳）
+        if (res.status === 302 && target.hostname.toLowerCase() === initialHost) {
+          const setCookies = res.headers.getSetCookie?.() ?? [];
+          let c3vk = '';
+          for (const c of setCookies) {
+            const m = c.match(/C3VK=([^;]+)/);
+            if (m) c3vk = m[1];
+          }
+          if (c3vk) {
+            cookie = (cookieStr ? cookieStr + '; ' : '') + 'C3VK=' + c3vk;
+            continue; // 原地重试，Cookie 附加逻辑由下一轮 headers 组装完成
+          }
         }
+
+        // 逐跳重定向：校验目标 URL 与其 DNS 解析结果后再跟随
+        if (REDIRECT_STATUSES.has(res.status)) {
+          const location = res.headers.get('location');
+          if (!location) return { content: '', title: url, error: `HTTP ${res.status}（缺少重定向目标）` };
+          if (hop === MAX_REDIRECT_HOPS) return { content: '', title: url, error: '重定向次数过多（>5 跳）' };
+          currentUrl = new URL(location, currentUrl).toString();
+          continue;
+        }
+
+        if (!res.ok) return { content: '', title: url, error: `HTTP ${res.status}` };
+        const ct = res.headers.get('content-type') ?? '';
+        // PDF：以字节读取后调用 unpdf 提取文本
+        if (isPdfContentType(ct)) {
+          const buf = await readResponseBytes(res);
+          try {
+            const { text } = await extractPdfText(buf);
+            if (!text.trim()) return { content: '', title: url, error: 'PDF 未提取到文本（可能是扫描型 PDF）' };
+            // 标题取 URL 末段（如 contest/4071 → 4071），无法提取时回退 url
+            const seg = url.split('/').filter(Boolean).pop() || url;
+            return { content: truncatePdfText(text), title: seg };
+          } catch (e) {
+            return { content: '', title: url, error: `PDF 提取失败：${(e as Error).message}` };
+          }
+        }
+        if (!/text\/(html|plain)|application\/xhtml/i.test(ct)) {
+          return { content: '', title: url, error: `非文本内容类型：${ct || '未知'}` };
+        }
+        const html = new TextDecoder().decode(await readResponseBytes(res));
+        const title = extractTitle(html) || url;
+        const content = sanitizeFetchedText(htmlToText(html, { truncate: false }), url);
+        if (!content.trim()) return { content: '', title: url, error: '页面正文为空（可能是 JS 渲染页面）' };
+        return { content: truncate(content), title };
+      } finally {
+        await dispatcher.close().catch(() => undefined);
       }
-      if (!/text\/(html|plain)|application\/xhtml/i.test(ct)) {
-        return { content: '', title: url, error: `非文本内容类型：${ct || '未知'}` };
-      }
-      const html = await res.text();
-      const title = extractTitle(html) || url;
-      const content = sanitizeFetchedText(htmlToText(html, { truncate: false }), url);
-      if (!content.trim()) return { content: '', title: url, error: '页面正文为空（可能是 JS 渲染页面）' };
-      return { content: truncate(content), title };
     }
     return { content: '', title: url, error: '重定向次数过多（>5 跳）' };
   } catch (e) {

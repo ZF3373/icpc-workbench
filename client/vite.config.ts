@@ -223,7 +223,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': `http://localhost:${apiPort}`,
+      '/api': {
+        target: `http://localhost:${apiPort}`,
+        // 保留浏览器 Host，服务端才能把 Origin 与 localhost:5173 正确配对。
+        changeOrigin: false,
+      },
     },
   },
   build: {

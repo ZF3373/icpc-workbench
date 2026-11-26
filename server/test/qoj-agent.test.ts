@@ -138,7 +138,21 @@ async function startAgentEndpoint(): Promise<{ url: string; close: () => Promise
   app.use('/api/qoj-agent', qojAgentRoutes());
   const srv: Server = await listenForTest(app);
   const { port } = srv.address() as AddressInfo;
-  return { url: `http://127.0.0.1:${port}/api/qoj-agent`, close: () => new Promise<void>((r) => srv.close(() => r())) };
+  return { url: `http://127.0.0.1:${port}/api/qoj-agent`, close: () => new Promise<void>((r) => {
+    srv.closeAllConnections();
+    srv.close(() => r());
+  }) };
+}
+
+function postNext(url: string, platform: string, origin?: string): Promise<Response> {
+  return fetch(`${url}/next?platform=${platform}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(origin ? { Origin: origin } : {}),
+    },
+    body: '{}',
+  });
 }
 
 test('qoj-agent 端点：CORS 放行 qoj.ac + PNA 预检 + 任务回路', async () => {
@@ -154,8 +168,8 @@ test('qoj-agent 端点：CORS 放行 qoj.ac + PNA 预检 + 任务回路', async 
     assert.equal(pre.headers.get('access-control-allow-origin'), 'https://qoj.ac');
     assert.equal(pre.headers.get('access-control-allow-private-network'), 'true');
 
-    // 领任务
-    const next = await (await fetch(`${b.url}/next`)).json() as { job: { id: number; url: string } | null };
+    // 领取：POST + JSON，跨站简单 GET 不再能消费任务
+    const next = await (await postNext(b.url, 'qoj', 'https://qoj.ac')).json() as { job: { id: number; url: string } | null };
     assert.ok(next.job);
     assert.match(next.job.url, /submitter=hieZF123/);
 
@@ -165,6 +179,31 @@ test('qoj-agent 端点：CORS 放行 qoj.ac + PNA 预检 + 任务回路', async 
     resetAgentForTests();
   popJob(); // 点亮活跃：fetchPageViaAgent 先等守护脚本上线
   } finally {
+    await b.close();
+  }
+});
+
+test('qoj-agent 端点：GET 和错误 Origin 不能消费任务或伪造在线', async () => {
+  const b = await startAgentEndpoint();
+  try {
+    resetAgentForTests();
+    const legacy = await fetch(`${b.url}/next?platform=qoj`);
+    assert.equal(legacy.status, 404);
+    assert.equal((await (await fetch(`${b.url}/alive?platform=qoj`)).json() as { alive: boolean }).alive, false);
+
+    const cross = await postNext(b.url, 'qoj', 'https://evil.example');
+    assert.equal(cross.status, 403);
+    assert.equal((await (await fetch(`${b.url}/alive?platform=qoj`)).json() as { alive: boolean }).alive, false);
+
+    popJob('qoj');
+    const pending = fetchPageViaAgent('https://qoj.ac/submissions?submitter=x', 5000);
+    assert.equal((await postNext(b.url, 'qoj', 'https://evil.example')).status, 403);
+    const next = await (await postNext(b.url, 'qoj')).json() as { job: { id: number; url: string } };
+    assert.ok(next.job);
+    resolveJob(next.job.id, 200, '<html>ok</html>');
+    assert.equal((await pending).body, '<html>ok</html>');
+  } finally {
+    resetAgentForTests();
     await b.close();
   }
 });
@@ -341,11 +380,11 @@ test('qoj-agent 端点：platform 路由 + CORS 反射 vjudge.net + 回传源校
     assert.equal(pre.headers.get('access-control-allow-origin'), 'https://vjudge.net');
 
     // qoj 守护脚本领不到 vjudge 任务
-    const wrongPlatform = await (await fetch(`${b.url}/next?platform=qoj`)).json() as { job: unknown };
+    const wrongPlatform = await (await postNext(b.url, 'qoj', 'https://qoj.ac')).json() as { job: unknown };
     assert.equal(wrongPlatform.job, null);
 
     // vjudge 守护脚本领到自己的任务
-    const next = await (await fetch(`${b.url}/next?platform=vjudge`, { headers: { Origin: 'https://vjudge.net' } })).json() as { job: { id: number; url: string } | null };
+    const next = await (await postNext(b.url, 'vjudge', 'https://vjudge.net')).json() as { job: { id: number; url: string } | null };
     assert.ok(next.job);
     assert.match(next.job.url, /un=hieZF123/);
 
@@ -359,7 +398,7 @@ test('qoj-agent 端点：platform 路由 + CORS 反射 vjudge.net + 回传源校
     assert.equal((await pending).body, '{"data":[]}');
 
     // 非法 platform → 400
-    const bad = await fetch(`${b.url}/next?platform=evil`);
+    const bad = await postNext(b.url, 'evil', 'https://qoj.ac');
     assert.equal(bad.status, 400);
     resetAgentForTests();
   } finally {

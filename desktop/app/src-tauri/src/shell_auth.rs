@@ -16,7 +16,7 @@
 //!
 //! ```text
 //! 前端设置页 --POST /api/settings/shell-auth/request--> 核心（action+platform+handle）
-//! 本壳(3s轮询) --GET  /api/settings/shell-auth/pending--> 核心   （pop 语义）
+//! 本壳(3s轮询) --POST /api/settings/shell-auth/pending--> 核心   （pop 语义）
 //! 本壳 --开窗/读 Cookie --POST /api/settings/cookies--> 核心    （推送新凭据）
 //! 本壳 --POST /api/settings/shell-auth/status----------> 核心    （结果/心跳）
 //! 前端 --GET  /api/settings/shell-auth/status----------> 核心    （按 id 轮询结果）
@@ -203,7 +203,11 @@ const AGENT_DAEMON_SCRIPT: &str = r#"(function () {
     var PORT = "__PORT__";
     for (;;) {
       try {
-        var r = await fetch('http://127.0.0.1:' + PORT + '/api/qoj-agent/next?platform=__PLATFORM__');
+        var r = await fetch('http://127.0.0.1:' + PORT + '/api/qoj-agent/next?platform=__PLATFORM__', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}'
+        });
         var j = await r.json();
         if (j && j.job) {
           var res = await fetch(j.job.url, { credentials: 'include' });
@@ -642,7 +646,7 @@ const AGENT_OFFSCREEN: f64 = 20_000.0;
 /// 函数（文档没加载完 / 注入丢失），调用方下轮补注入后重试。
 #[cfg(not(windows))]
 async fn mac_agent_tick(app: &AppHandle, port: u16, platform: &str, worker: &str) -> Option<bool> {
-    let job = get_json(port, &format!("/api/qoj-agent/next?platform={platform}")).await?;
+    let job = post_json(port, &format!("/api/qoj-agent/next?platform={platform}"), &json!({})).await?;
     let job = job.get("job")?.clone();
     if job.is_null() {
         return Some(false);
@@ -1075,7 +1079,7 @@ async fn platform_configured(port: u16, platform: &str) -> bool {
 
 // ---------- 基础设施 ----------
 
-/// pending 请求（GET /pending 的 request 字段）
+/// pending 请求（POST /pending 的 request 字段）
 struct PendingRequest {
     id: u64,
     action: String,
@@ -1084,7 +1088,7 @@ struct PendingRequest {
 }
 
 async fn pop_pending(port: u16) -> Option<PendingRequest> {
-    let v = get_json(port, "/api/settings/shell-auth/pending").await?;
+    let v = post_json(port, "/api/settings/shell-auth/pending", &json!({})).await?;
     let req = v.get("request")?;
     let id = req.get("id")?.as_u64()?;
     let action = req.get("action")?.as_str()?.to_string();

@@ -19,7 +19,7 @@ import { DEFAULT_USER_ID } from '../constants.ts';
  *     → POST /request          交一个动作（login = 弹该平台登录窗；pull = QOJ 后台静默续签）
  *     ← { id }
  *   桌面壳（本桥的唯一消费方，3s 轮询）
- *     → GET  /pending          取走请求（pop 语义，取走即清除）
+ *     → POST /pending          取走请求（pop 语义，取走即清除）
  *     → 开窗/读 Cookie → POST /api/settings/cookies 推送（带 handle = 只写该账号槽位）
  *     → POST /status           回报执行结果（带同一 id）
  *   前端
@@ -105,9 +105,9 @@ export function shellAuthRoutes(db: Db): Router {
     res.json({ ok: true, id });
   });
 
-  // GET /api/settings/shell-auth/pending
+  // POST /api/settings/shell-auth/pending
   // 壳轮询取走请求（pop 语义）。无请求时 request 为 null——壳按「没有新动作」处理。
-  r.get('/pending', (_req, res) => {
+  r.post('/pending', (_req, res) => {
     const request = pending;
     pending = null;
     res.json({ request });
