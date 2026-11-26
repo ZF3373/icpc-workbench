@@ -399,14 +399,17 @@ export function recommendProblems(
   const [lo, hi] = level?.suggestedRange ?? [null, null];
 
   // 难度区间与「未 AC」全部下推 SQL：候选集从全表 2 万题缩到实际可用范围，
-  // 避免把整库取回内存后再 filter（P1-1）
+  // 避免把整库取回内存后再 filter（P1-1）。
+  // AC 集合先预聚合成派生表再反连接：裸 LEFT JOIN / NOT EXISTS 在无统计信息时
+  // 会被 planner 翻转为逐题扫全用户提交（实测 9s+），派生表计划恒定。
   const all = db
     .prepare(
       `SELECT p.platform, p.problem_key, p.title, p.difficulty, p.url, p.tags
          FROM problems p
-         LEFT JOIN submissions s
-           ON s.problem_id = p.id AND s.user_id = ? AND s.verdict = 'AC'
-        WHERE s.id IS NULL
+         LEFT JOIN (
+           SELECT DISTINCT problem_id FROM submissions WHERE user_id = ? AND verdict = 'AC'
+         ) s ON s.problem_id = p.id
+        WHERE s.problem_id IS NULL
           AND p.url IS NOT NULL
           AND (? IS NULL OR p.difficulty >= ?)
           AND (? IS NULL OR p.difficulty <= ?)`,
@@ -473,19 +476,24 @@ export function recommendProblemsByWeakTag(
   const minNew = opts.minNewProblems ?? 0;
   const level = opts.level === undefined ? computeUserLevel(db, DEFAULT_USER_ID) : opts.level;
 
-  // 单次 JOIN 聚合取回 AC 状态与最近 AC 时间：原实现对每道题各跑 2 次子查询
-  // （EXISTS + MAX），题库 2 万题即 4 万次子查询（P1-1）。这里 LEFT JOIN 后聚合一次。
-  // 注意 accepted_at 对应 is_ac，与 EXISTS/MAX 的判定集合一致（同一 user_id + verdict='AC'）。
+  // 单次 JOIN 取回 AC 状态与最近 AC 时间：原实现对每道题各跑 2 次子查询
+  // （EXISTS + MAX），题库 2 万题即 4 万次子查询（P1-1）。这里把 AC 提交预聚合成
+  // 派生表（每用户一次）再 1:1 JOIN —— 裸 LEFT JOIN 在无统计信息时会被 planner
+  // 翻转为逐题扫全用户提交（实测 9s+），派生表计划恒定。
+  // 注意 last_ac_at 对应 is_ac，与 EXISTS/MAX 的判定集合一致（同一 user_id + verdict='AC'）。
   const all = db
     .prepare(
       `SELECT p.platform, p.problem_key, p.title, p.difficulty, p.url, p.tags,
-              MAX(CASE WHEN s.id IS NOT NULL THEN 1 ELSE 0 END) AS aced,
-              MAX(s.submitted_at) AS last_ac_at
+              CASE WHEN s.problem_id IS NOT NULL THEN 1 ELSE 0 END AS aced,
+              s.last_ac_at
          FROM problems p
-         LEFT JOIN submissions s
-           ON s.problem_id = p.id AND s.user_id = ? AND s.verdict = 'AC'
-        WHERE p.url IS NOT NULL
-        GROUP BY p.id`,
+         LEFT JOIN (
+           SELECT problem_id, MAX(submitted_at) AS last_ac_at
+             FROM submissions
+            WHERE user_id = ? AND verdict = 'AC'
+            GROUP BY problem_id
+         ) s ON s.problem_id = p.id
+        WHERE p.url IS NOT NULL`,
     )
     .all(DEFAULT_USER_ID) as Array<{
     platform: PlatformId;
@@ -1126,9 +1134,10 @@ export function practicePool(db: Db, weakTags: string[]): RecommendProblem[] {
     .prepare(
       `SELECT p.platform, p.problem_key, p.title, p.difficulty, p.url, p.tags
        FROM problems p
-       LEFT JOIN submissions s
-         ON s.problem_id = p.id AND s.user_id = ? AND s.verdict = 'AC'
-       WHERE s.id IS NULL AND p.url IS NOT NULL
+       LEFT JOIN (
+         SELECT DISTINCT problem_id FROM submissions WHERE user_id = ? AND verdict = 'AC'
+       ) s ON s.problem_id = p.id
+       WHERE s.problem_id IS NULL AND p.url IS NOT NULL
          AND (? IS NULL OR p.difficulty >= ?)
          AND (? IS NULL OR p.difficulty <= ?)
        ORDER BY p.difficulty IS NULL, p.difficulty

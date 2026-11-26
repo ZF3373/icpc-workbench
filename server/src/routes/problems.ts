@@ -297,10 +297,28 @@ function parseFilters(query: Record<string, unknown>): ProblemFilters {
 export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): Router {
   const r = Router();
 
-  /** 共享的 SELECT/GROUP BY 骨架：标注侧先聚合成 pk 派生表，再 LEFT JOIN（消逐行子查询） */
+  /**
+   * 共享的 SELECT/GROUP BY 骨架：标注侧与提交侧都先聚合成派生表再 LEFT JOIN。
+   *
+   * submissions 刻意**不裸 JOIN**：无 sqlite_stat1 时 planner 会放弃
+   * idx_submissions_problem 点查、改走 idx_submissions_user_time —— 每道题扫一遍
+   * 该用户全部提交（2.5 万题 × 1509 提交 ≈ 3900 万行访问，实测单条 9s+），
+   * 同步 SQLite 阻塞事件循环超过壳看护容差即被 kill_core 重拉（「自动重启」）。
+   * 预聚合派生表 MATERIALIZE 一次 + 自动覆盖索引，计划不随数据量/统计翻转。
+   * 派生列带 sub_ 前缀：若与外层别名 attempts/ac_count 同名，HAVING 会解析到
+   * 派生表原列（无提交题为 NULL）而非 COALESCE 别名，status=none 过滤整组丢失。
+   */
   const coreFrom = `
       FROM problems p
-      LEFT JOIN submissions s ON s.problem_id = p.id AND s.user_id = ?
+      LEFT JOIN (
+        SELECT problem_id,
+               COUNT(*) AS sub_attempts,
+               SUM(CASE WHEN verdict = 'AC' THEN 1 ELSE 0 END) AS sub_ac_count,
+               MAX(CASE WHEN verdict = 'AC' THEN submitted_at END) AS sub_last_ac_at
+          FROM submissions
+         WHERE user_id = ?
+         GROUP BY problem_id
+      ) s ON s.problem_id = p.id
       ${knowledgeTagsJoinSql()}
       LEFT JOIN review_items ri ON ri.problem_id = p.id AND ri.user_id = ${DEFAULT_USER_ID}
       WHERE 1 = 1
@@ -309,9 +327,9 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
       SELECT p.id, p.platform, p.problem_key, p.title, p.difficulty, p.url,
              p.native_difficulty, p.difficulty_scale, p.difficulty_source, p.gap_state, p.gap_checked_at,
              ${knowledgeTagsCoalesceSql()},
-             COUNT(s.id) AS attempts,
-             COALESCE(SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END), 0) AS ac_count,
-             MAX(CASE WHEN s.verdict = 'AC' THEN s.submitted_at END) AS last_ac_at,
+             COALESCE(s.sub_attempts, 0) AS attempts,
+             COALESCE(s.sub_ac_count, 0) AS ac_count,
+             s.sub_last_ac_at AS last_ac_at,
              MAX(ri.id) AS review_item_id
   `;
   /** 分页查询与计数查询共用的 FROM/WHERE（含未知难度分支），保证两者口径完全一致 */
@@ -420,8 +438,8 @@ export function problemsRoutes(db: Db, fetchFn: typeof fetch = throttledFetch): 
     const countSql =
       `WITH ${problemKeypointsCte(db)} ` +
       `SELECT COUNT(*) AS c FROM (SELECT p.id,` +
-      ' COUNT(s.id) AS attempts,' +
-      " COALESCE(SUM(CASE WHEN s.verdict = 'AC' THEN 1 ELSE 0 END), 0) AS ac_count" +
+      ' COALESCE(s.sub_attempts, 0) AS attempts,' +
+      ' COALESCE(s.sub_ac_count, 0) AS ac_count' +
       from +
       ' GROUP BY p.id' +
       statusHavingSql(filters.status) +
