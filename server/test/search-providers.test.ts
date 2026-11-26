@@ -5,7 +5,7 @@ import { aiConfigFromDb, DEFAULT_CONFIG } from '../src/config.ts';
 import { createDb } from '../src/db/index.ts';
 import { executeWebSearch, hasSearchChannel, resolveSearchProviders } from '../src/ai/search.ts';
 import { executeFetchUrl, setDnsLookupForTest } from '../src/ai/fetch-url.ts';
-import { benchEngineKey, buildAttempts, cooldownFor, engineAdapter, SearchEngineError, resetEngineCooldownsForTest, type SearchProviderEntry } from '../src/ai/search-engines.ts';
+import { benchEngineKey, buildAttempts, cooldownFor, describeEngineFailure, engineAdapter, SearchEngineError, resetEngineCooldownsForTest, type SearchProviderEntry } from '../src/ai/search-engines.ts';
 
 const originalFetch = globalThis.fetch;
 const originalEnv = process.env.SEARCH_API_KEY;
@@ -200,7 +200,7 @@ test('AnySearch 抓取 401 不重复尝试，继续直连兜底', async () => {
   assert.equal(engineCalls, 1);
 });
 
-test('Keenable 搜索与抓取支持无 Key 公共路径与有 Key 路径，并检查 results[0].error', async () => {
+test('Keenable 搜索禁用临时卡片，抓取强制实时，并支持有/无 Key 路径', async () => {
   const seen: Array<{ url: string; headers: HeadersInit | undefined; body: unknown }> = [];
   globalThis.fetch = async (url, init) => {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -217,8 +217,11 @@ test('Keenable 搜索与抓取支持无 Key 公共路径与有 Key 路径，并�
   const searchRes = await executeWebSearch('segment tree', { searchProviders: [{ engine: 'keenable', keys: [] }] });
   assert.equal(searchRes.error, undefined);
   assert.deepEqual(searchRes.results, [{ url: 'https://example.com/a', title: 'A', snippet: 'Snippet A' }]);
-  assert.equal(seen[0]?.url, 'https://api.keenable.ai/v1/search/public');
-  assert.equal((seen[0]?.headers as Record<string, string>)['X-Keenable-Title'], 'icpc-workbench');
+  const searchCall = seen[0];
+  assert.ok(searchCall);
+  assert.equal(searchCall.url, 'https://api.keenable.ai/v1/search/public');
+  assert.equal((searchCall.headers as Record<string, string>)['X-Keenable-Title'], 'icpc-workbench');
+  assert.deepEqual(searchCall.body, { query: 'segment tree', max_results: 5, disable_cards: true });
 
   setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
   const fetchRes = await executeFetchUrl('https://example.com/a', { searchProviders: [{ engine: 'keenable', keys: ['keen_k'] }] }, undefined,
@@ -226,12 +229,63 @@ test('Keenable 搜索与抓取支持无 Key 公共路径与有 Key 路径，并�
   assert.equal(fetchRes.error, undefined);
   assert.equal(fetchRes.title, 'Page A');
   assert.equal(fetchRes.content, 'Full text');
-  assert.equal(seen[1]?.url, 'https://api.keenable.ai/v1/fetch');
-  assert.equal((seen[1]?.headers as Record<string, string>)['X-API-Key'], 'keen_k');
-
-  globalThis.fetch = async () => Response.json({
-    results: [{ url: 'https://example.com/fail', error: { code: 'fetch_failed', message: 'timeout' } }],
+  const fetchCall = seen[1];
+  assert.ok(fetchCall);
+  assert.equal(fetchCall.url, 'https://api.keenable.ai/v1/fetch');
+  assert.equal((fetchCall.headers as Record<string, string>)['X-API-Key'], 'keen_k');
+  assert.deepEqual(fetchCall.body, {
+    urls: ['https://example.com/a'],
+    content: { max_chars: 50000 },
+    retrieval: { max_age_hours: 0 },
   });
-  const adapter = engineAdapter('keenable')!;
-  await assert.rejects(() => adapter.fetch!('https://example.com/fail', '', new AbortController().signal), /timeout/);
+});
+
+test('Keenable 逐页永久错误不重试，直接继续兜底', async () => {
+  let engineCalls = 0;
+  globalThis.fetch = async () => {
+    engineCalls++;
+    return Response.json({
+      results: [{
+        url: 'https://example.com/missing',
+        error: {
+          status: 404,
+          error: 'Not found',
+          message: 'The page does not exist at this URL',
+          code: 'page_not_found',
+          type: 'target_error',
+          retryable: false,
+        },
+      }],
+    });
+  };
+  setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
+  const result = await executeFetchUrl('https://example.com/missing', { searchProviders: [{ engine: 'keenable', keys: [] }] }, undefined,
+    async () => new Response('<head><title>Direct</title></head><p>Direct content</p>', { headers: { 'content-type': 'text/html' } }));
+  assert.equal(engineCalls, 1);
+  assert.equal(result.title, 'Direct');
+  assert.equal(result.content, 'Direct content');
+});
+
+test('Keenable 整包不可重试 429 不重试，也不冷却无 Key 渠道', async () => {
+  let engineCalls = 0;
+  globalThis.fetch = async () => {
+    engineCalls++;
+    return Response.json({
+      error: 'Rate limit exceeded',
+      message: 'API key required for this site',
+      code: 'public_domain_requires_api_key',
+      type: 'rate_limit_error',
+      retryable: false,
+    }, { status: 429 });
+  };
+  setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
+  const result = await executeFetchUrl('https://example.com/a', { searchProviders: [{ engine: 'keenable', keys: [] }] }, undefined,
+    async () => new Response('<head><title>Direct</title></head><p>Direct content</p>', { headers: { 'content-type': 'text/html' } }));
+  assert.equal(engineCalls, 1);
+  assert.equal(result.content, 'Direct content');
+  assert.deepEqual(
+    buildAttempts([{ engine: 'keenable', keys: [] }, { engine: 'anysearch', keys: [] }], 'fetch').map(({ engine }) => engine.id),
+    ['keenable', 'anysearch'],
+  );
+  assert.match(describeEngineFailure(new SearchEngineError('API key required', 429, false)), /不可重试/);
 });
