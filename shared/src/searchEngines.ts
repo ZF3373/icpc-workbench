@@ -148,7 +148,7 @@ export const SEARCH_ENGINES: readonly SearchEngineMeta[] = [
     label: 'Keenable',
     supportsFetch: true,
     allowsKeyless: true,
-    quota: '有 Key 100,000 次/月免费；无 Key 1,000 次/时（默认策略下有/无 Key 均记录请求）',
+    quota: '标准账号有 Key 100,000 次/月免费（部分账号初始 1,000 次）；无 Key 1,000 次/时；查询词、URL 与返回内容默认会被记录',
     registerUrl: 'https://docs.keenable.ai/api-keys',
   },
 ];
