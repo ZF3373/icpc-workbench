@@ -45,6 +45,7 @@ import { AiSettingsCard, type AiSettingsCardHandle, type SettingsAiData } from '
 import { ImportPlanModal } from './settings/ImportPlanModal'
 import { KnowledgePipelineCard } from './settings/KnowledgePipelineCard'
 import { BackupCard } from './settings/BackupCard'
+import { WebDavSyncCard } from './settings/WebDavSyncCard'
 import { ClistCard, type ClistSettingsView } from './settings/ClistCard'
 import { ProblemVisibilityCard } from './settings/ProblemVisibilityCard'
 
@@ -1400,6 +1401,9 @@ export default function Settings() {
       </Col>
 
       <ImportPlanModal open={importOpen} onClose={() => setImportOpen(false)} />
+      <Col span={24}>
+        <WebDavSyncCard />
+      </Col>
       <Col span={24}>
         <BackupCard refreshKey={backupRefresh} />
       </Col>

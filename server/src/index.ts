@@ -11,6 +11,8 @@ import { configureSyncScheduler } from './adapters/syncScheduler.ts';
 import { setRequestIntervalScale } from './net/hostThrottle.ts';
 import { compressionMiddleware, csrfGuard, errorHandler, hostGuard, securityHeaders } from './middleware.ts';
 import { backupsRoutes } from './routes/backups.ts';
+import { webDavSyncRoutes } from './routes/webdavSync.ts';
+import { WebDavSync } from './data-sync/service.ts';
 import { checkinsRoutes } from './routes/checkins.ts';
 import { contestsRoutes } from './routes/contests.ts';
 import { aiRoutes } from './routes/ai.ts';
@@ -41,8 +43,10 @@ import { initKnowledgeStore, loadAnnotationsIntoDb, purgeAiAnnotations } from '.
 
 const config = loadConfig();
 // 恢复点回滚：必须在 createDb 之前应用（覆盖数据库文件）
-applyPendingRestore(config.dbPath);
+const restored = applyPendingRestore(config.dbPath, config.dataDir);
 const db = createDb(config.dbPath);
+const webDavSync = new WebDavSync(db, config.dataDir);
+if (restored) webDavSync.resetBaseline();
 seedBuiltinBank(db); // 内置题库播种：版本变化时 upsert 一次，日常启动零开销
 // 账号级凭据迁移（幂等）：旧版平台级 Cookie 复制给每个尚无自己槽位的绑定账号。
 // v0.9 起各账号同步只用自己卡片里配置的 Cookie，平台级值降级为非账号功能的影子值。
@@ -113,6 +117,7 @@ app.use('/api/settings/shell-auth', shellAuthRoutes(db));
 // QOJ WebView 同源代理：壳注入到 qoj.ac 页面的守护脚本经此领任务/回传 HTML（CORS 限定 qoj.ac）
 app.use('/api/qoj-agent', qojAgentRoutes());
 app.use('/api/backups', backupsRoutes(db));
+app.use('/api/webdav-sync', webDavSyncRoutes(webDavSync));
 app.use('/api/update', updateRoutes(config, () => createBackup(db, 'pre-upgrade')));
 // MCP 端点：外部 agent（Claude Desktop / Cursor / Claude Code 等）经
 // http://127.0.0.1:<port>/mcp 以 MCP 协议操控本软件；工具层是 /api/* 的回环代理（见 src/mcp/）。
@@ -170,21 +175,23 @@ server.on('error', (e: NodeJS.ErrnoException) => {
 
 // 知识点管线：JSONL 源真相 → SQLite 索引幂等重建（无 JSONL 时零开销）。
 // 放在 listen 之后：端口提前打开，这几百毫秒里的请求排队等初始化结束（不会连接失败）。
-try {
-  const purged = purgeAiAnnotations(db, { dataDir: config.dataDir });
-  if (purged.deleted > 0 || purged.tombstones > 0) {
-    console.log(`[knowledge] 已清理 AI 标注: 删除 ${purged.deleted} 条，写入 ${purged.tombstones} 个 tombstone`);
+if (webDavSync.recoverAnnotations()) {
+  try {
+    const purged = purgeAiAnnotations(db, { dataDir: config.dataDir });
+    if (purged.deleted > 0 || purged.tombstones > 0) {
+      console.log(`[knowledge] 已清理 AI 标注: 删除 ${purged.deleted} 条，写入 ${purged.tombstones} 个 tombstone`);
+    }
+  } catch (e) {
+    console.error(`[knowledge] AI 标注清理失败（不影响启动）: ${(e as Error).message}`);
   }
-} catch (e) {
-  console.error(`[knowledge] AI 标注清理失败（不影响启动）: ${(e as Error).message}`);
-}
-try {
-  const loaded = loadAnnotationsIntoDb(db, config.dataDir);
-  if (loaded.lines > 0) {
-    console.log(`[knowledge] 已从 JSONL 重建索引: ${loaded.inserted} 条标注 / ${loaded.problems} 题（跳过未知 code ${loaded.skippedUnknownCode}）`);
+  try {
+    const loaded = loadAnnotationsIntoDb(db, config.dataDir);
+    if (loaded.lines > 0) {
+      console.log(`[knowledge] 已从 JSONL 重建索引: ${loaded.inserted} 条标注 / ${loaded.problems} 题（跳过未知 code ${loaded.skippedUnknownCode}）`);
+    }
+  } catch (e) {
+    console.error(`[knowledge] JSONL 索引重建失败（不影响启动）: ${(e as Error).message}`);
   }
-} catch (e) {
-  console.error(`[knowledge] JSONL 索引重建失败（不影响启动）: ${(e as Error).message}`);
 }
 
 // Graceful shutdown：收到信号时关闭 HTTP 连接与数据库，避免 WAL 写入中途被强制终止
@@ -200,5 +207,6 @@ function shutdown(): void {
   // 兜底：5 秒后仍未退出则强制退出
   setTimeout(() => process.exit(1), 5000).unref();
 }
+webDavSync.start();
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
