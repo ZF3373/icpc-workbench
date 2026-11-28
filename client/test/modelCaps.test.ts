@@ -80,6 +80,9 @@ describe('guessModelCaps（内置参数表口径：2026-10 官方文档）', () 
 
   it('建议档位内部自洽：输出上限不超过上下文窗口', () => {
     for (const preset of AI_PROVIDER_PRESETS) {
+      // 无密钥类预设（本地 Codex / ChatGPT 登录）刻意不写死模型：前者跟随本机 CLI
+      // 配置、后者由登录后的套餐目录实时带出——写死反而会随官方换代而过期
+      if (preset.protocol === 'codex' || preset.protocol === 'chatgpt') continue
       for (const id of [...preset.defaultModels, preset.defaultModel]) {
         const caps = guessModelCaps(id)
         assert.ok(caps, `预设 ${preset.key} 的模型 ${id} 应能被参数表认出`)
