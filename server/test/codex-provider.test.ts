@@ -181,6 +181,28 @@ test('调用方中断：abort 掐断子进程并抛 AbortError', async () => {
   assert.equal(calls, 2);
 });
 
+// 回归（2026-11-28 实机故障）：prompt 先 end 进死掉的第一个子进程，回退子进程若拿不到
+// 重写的 prompt，codex 读到空 stdin，「未登录」等真实错误全部退化成含糊的「进程提前退出」。
+// 同时死子的 stdout end/close 会立即关闭流——事件屏蔽缺失时本用例直接超时/报错。
+(process.platform === 'win32' ? test : test.skip)('Windows 回退：重写 prompt 到回退子进程并屏蔽死子进程事件', async () => {
+  let calls = 0;
+  const deps: CodexDeps = {
+    spawnFn: (cmd, args, opts) => {
+      calls += 1;
+      if (calls === 1) return enoentChild();
+      return realSpawn(process.execPath, ['-e', FAKE_CODEX_SCRIPT], {
+        ...opts,
+        shell: false,
+        env: { ...(opts?.env ?? process.env), FAKE_CODEX_MODE: 'echo-prompt' },
+      });
+    },
+  };
+  const text = await codexChat(codexCfg(), [{ role: 'user', content: 'PROMPT-MARKER' }], {}, deps);
+  // 回退子进程收到的 stdin 里带完整 prompt（echo-prompt 模式会把它嵌进回复）
+  assert.match(text, /PROMPT-MARKER/);
+  assert.equal(calls, 2);
+});
+
 test('AiProvider 按 protocol 分派：enabled 不再要求 apiKey，chat/chatStream 走 codex，uploadFile 明确拒绝', async () => {
   const provider = new AiProvider(codexCfg(), fetch, { spawnFn: fakeCodex('ok') });
   assert.equal(provider.enabled, true);

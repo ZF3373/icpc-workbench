@@ -17,10 +17,17 @@
  * thread.started / turn.started / item.started / item.updated / item.completed /
  * turn.completed / turn.failed / error；item.type ∈ agent_message / reasoning /
  * command_execution / ... / error。致命失败 = turn.failed；顶层 error 是
- * 「Reconnecting...」之类的瞬态通知，不算失败。
+ * 「Reconnecting...」之类的瞬态通知，不算失败（但最终失败时会拼进错误上下文，
+ * 因为上游网关的 403/限流文案只出现在这里）。
  */
 
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import type { AiConfig } from '../config.ts';
+import { STREAM_STALL_TIMEOUT_MS } from './provider.ts';
+import type { ChatMessage, ChatOptions, TokenUsage } from './provider.ts';
 
 /**
  * 测试可注入的 spawn。不用 `typeof spawn`（其重载族要求返回 WithoutNullStreams 等具体
@@ -31,14 +38,7 @@ export type CodexSpawnFn = (
   args?: readonly string[],
   options?: SpawnOptions,
 ) => ChildProcess;
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import type { AiConfig } from '../config.ts';
-import { STREAM_STALL_TIMEOUT_MS } from './provider.ts';
-import type { ChatMessage, ChatOptions, TokenUsage } from './provider.ts';
 
-/** 测试可注入的 spawn（真实实现默认 node:child_process.spawn） */
 export interface CodexDeps {
   spawnFn?: CodexSpawnFn;
 }
@@ -69,7 +69,7 @@ function friendlyCodexError(raw: unknown): Error {
 
 /**
  * 模型名白名单校验：模型名只进 -m 参数，但 Windows 上 npm 安装的 codex 需要 cmd.exe
- * 包装启动（见 spawnCodex），shell 拼接下未净化的值就是命令注入面。codex 官方模型 ID
+ * 包装启动（见 spawnCodexForTurn），shell 拼接下未净化的值就是命令注入面。codex 官方模型 ID
  * 全部落在字母/数字/点/横线/斜杠内，超出即拒绝。
  */
 function sanitizeCodexModel(model: string): string | null {
@@ -100,7 +100,7 @@ function buildExecArgs(cfg: AiConfig, imagePaths: string[], workDir: string): st
  * 永远等不到通知。这里改为 spawn 返回后**同步**挂全部监听并把事件缓冲进本对象，
  * 消费方启动时从缓冲读取——不存在丢事件/竞态窗口。
  */
-interface CodexTurnSpawn {
+export interface CodexTurnSpawn {
   /** 当前生效的子进程（Windows shell 回退后会被替换成第二个） */
   child: ChildProcess;
   /** stdout 已按行切好的完整行（消费方 shift 取用） */
@@ -127,7 +127,18 @@ interface CodexTurnSpawn {
   markClosed(err: Error | null): void;
 }
 
-async function spawnCodexForTurn(args: string[], deps: CodexDeps): Promise<CodexTurnSpawn> {
+/**
+ * 启动 codex 子进程并写入 instructions（prompt）。
+ *
+ * Windows 兼容：npm 全局安装的 codex 只有 codex.cmd shim（libuv 的 PATH 搜索只认
+ * .exe），直接 spawn 报 ENOENT —— 首个 'error' 事件触发时回退 `shell: true` 包装
+ * （cmd.exe 按 PATHEXT 能解析 codex.cmd）。回退有两个必须跟上的动作：
+ * 1. prompt 已经 end 进死掉的第一个子进程 —— 必须给回退子进程**重写**一份；
+ * 2. 第一个子进程的 stdout end/close 会立即把流标成「已终止」—— 所有事件回调都按
+ *    `stream.child !== child` 屏蔽已废弃子进程，否则主循环会在回退子进程产出任何
+ *    内容之前就以「进程提前退出」收场。
+ */
+async function spawnCodexForTurn(args: string[], prompt: string, deps: CodexDeps): Promise<CodexTurnSpawn> {
   const spawnFn = deps.spawnFn ?? spawn;
   const baseOpts: SpawnOptions = { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true };
   let doneResolve: (() => void) | null = null;
@@ -157,10 +168,19 @@ async function spawnCodexForTurn(args: string[], deps: CodexDeps): Promise<Codex
       doneResolve?.();
     },
   };
+  const writeStdin = (child: ChildProcess): void => {
+    // codex 提前退出（未登录等）时 stdin 写入会 EPIPE，吞掉写错误由退出码路径统一报错
+    child.stdin?.on('error', () => {});
+    child.stdin?.end(prompt);
+  };
   let retried = false;
   const attach = (child: ChildProcess): void => {
+    // 已被 shell 回退废弃的子进程：其事件一律忽略（死子的 stdout end/close 若不屏蔽，
+    // 会在回退子进程产出任何内容之前就把整个流标成「已终止」）
+    const superseded = (): boolean => stream.child !== child;
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => {
+      if (superseded()) return;
       stream.partial += chunk;
       let idx: number;
       while ((idx = stream.partial.indexOf('\n')) !== -1) {
@@ -169,26 +189,34 @@ async function spawnCodexForTurn(args: string[], deps: CodexDeps): Promise<Codex
       }
       stream.notify?.();
     });
-    child.stdout?.on('end', () => stream.markClosed(null));
-    child.stdout?.on('close', () => stream.markClosed(null));
+    child.stdout?.on('end', () => {
+      if (!superseded()) stream.markClosed(null);
+    });
+    child.stdout?.on('close', () => {
+      if (!superseded()) stream.markClosed(null);
+    });
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk: string) => {
+      if (superseded()) return;
       stream.stderrTail = (stream.stderrTail + chunk).slice(-2000);
     });
     child.on('exit', (code, signal) => {
+      if (superseded()) return;
       stream.exitCode = code;
       stream.exitSignal = signal;
       stream.exited = true;
       exitDoneResolve?.();
       stream.markClosed(null); // 进程退出 = stdout 不会再有数据（有的话已先 end）
     });
-    // 晚期 spawn 错误必须有人监听（无人监听的 'error' 事件会直接抛出打崩进程）
-    child.on('error', (e) => handleFatal(e));
+    // spawn 失败必须有人监听（无人监听的 'error' 事件会直接抛出打崩进程）
+    child.on('error', (e) => {
+      if (superseded()) return;
+      handleFatal(e);
+    });
   };
   const handleFatal = (e: Error): void => {
-    // Windows：npm 全局安装的 codex 是 codex.cmd shim，libuv 的 PATH 搜索只认 .exe，
-    // 直接 spawn 报 ENOENT —— 回退 shell:true 包装（cmd.exe 按 PATHEXT 能解析 codex.cmd）
-    if (!retried && (e as NodeJS.ErrnoException).code === 'ENOENT' && process.platform === 'win32') {
+    const enoent = (e as NodeJS.ErrnoException).code === 'ENOENT';
+    if (!retried && enoent && process.platform === 'win32') {
       retried = true;
       // 参数全部受控（flag 常量 + 白名单模型 + 本应用生成的路径），prompt 走 stdin 不进
       // 命令行，这里逐段加引号仅防路径空格
@@ -196,13 +224,15 @@ async function spawnCodexForTurn(args: string[], deps: CodexDeps): Promise<Codex
       const second = spawnFn(cmdLine, [], { ...baseOpts, shell: true });
       stream.child = second;
       attach(second);
+      writeStdin(second); // prompt 已随死掉的第一个子进程 end，必须重写
       return;
     }
-    stream.markClosed((e as NodeJS.ErrnoException).code === 'ENOENT' ? new Error(CODEX_INSTALL_HINT) : e);
+    stream.markClosed(enoent ? new Error(CODEX_INSTALL_HINT) : e);
   };
   const child = spawnFn('codex', args, baseOpts);
   stream.child = child;
   attach(child);
+  writeStdin(child);
   return stream;
 }
 
@@ -370,8 +400,8 @@ async function* codexContentStream(
   // 图片转 -i 临时文件 + codex 工作目录：用一次建、用完即删的独立 tmp 目录，
   // 避免在用户项目或工作台数据目录里留痕/被 codex 读到无关文件
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'icpc-codex-'));
-  const spawnedRef: { current: ChildProcess | null } = { current: null };
-  const onCallerAbort = (): void => killCodexTree(spawnedRef.current);
+  const procRef: { current: CodexTurnSpawn | null } = { current: null };
+  const onCallerAbort = (): void => killCodexTree(procRef.current?.child ?? null);
   if (opts.signal) {
     if (opts.signal.aborted) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -382,19 +412,16 @@ async function* codexContentStream(
   try {
     const { prompt, imagePaths } = buildCodexPrompt(messages, tmpDir);
     const args = buildExecArgs(cfg, imagePaths, tmpDir);
-    // spawn 层的事件监听在其内部同步挂载（含 Windows shell 回退），这里拿到的是
-    // 已在缓冲事件的流对象；spawn 不会 reject（失败经 spawn.closeErr 上报）
-    const proc = await spawnCodexForTurn(args, deps);
-    spawnedRef.current = proc.child;
+    // spawn 层的事件监听在其内部同步挂载（含 Windows shell 回退 + prompt 重写），这里
+    // 拿到的是已在缓冲事件的流对象；spawn 不会 reject（失败经 proc.closeErr 上报）
+    const proc = await spawnCodexForTurn(args, prompt, deps);
+    procRef.current = proc;
     // 竞态守卫：spawn 期间调用方可能已经 abort——onCallerAbort 还杀不到尚未登记的
     // 子进程，就地补杀并按中断收尾
     if (opts.signal?.aborted) {
       killCodexTree(proc.child);
       throw abortError();
     }
-    // codex 提前退出（未登录等）时 stdin 写入会 EPIPE，吞掉写错误由退出码路径统一报错
-    proc.child.stdin?.on('error', () => {});
-    proc.child.stdin?.end(prompt);
 
     // 空闲看门狗：与 HTTP 流式路径同一阈值口径——codex「连上了却不再输出任何事件」
     // （模型挂住、进程僵死）时掐断，正常生成长思考也不会误杀。
@@ -407,7 +434,7 @@ async function* codexContentStream(
         if (proc.closeErr === null) {
           proc.closeErr = new Error(`Codex CLI 无响应（${Math.ceil(stallMs / 1000)}s 内没有新事件），已终止`);
         }
-        killCodexTree(spawnedRef.current);
+        killCodexTree(procRef.current?.child ?? null);
         proc.markClosed(null);
       }, stallMs);
     };
@@ -492,18 +519,33 @@ async function* codexContentStream(
       }
     } finally {
       if (stallTimer !== null) clearTimeout(stallTimer);
-      killCodexTree(spawnedRef.current);
+      killCodexTree(procRef.current?.child ?? null);
       opts.signal?.removeEventListener('abort', onCallerAbort);
     }
 
     if (opts.signal?.aborted) throw abortError();
     if (failed) throw failed;
     if (done) return;
-    // 未收到 turn.completed 就结束：按退出码/错误来源拼可读错误
     if (proc.closeErr !== null) {
-      throw proc.closeErr; // 空闲看门狗或 spawn 层错误
+      throw proc.closeErr; // 空闲看门狗或 spawn 层错误（含安装指引）
     }
-    const exitNote = proc.exitCode !== null ? `退出码 ${proc.exitCode}` : proc.exitSignal ? `被信号 ${proc.exitSignal} 终止` : '进程提前退出';
+    // stdout 可能先于 exit 事件关闭（codex 把 JSONL 写完就关流）：给退出事件最多 2s
+    // 宽限，否则退出码与 stderr 还在路上，错误会被拼成含糊的「进程提前退出」
+    if (!proc.exited) {
+      await new Promise<void>((resolve) => {
+        const grace = setTimeout(resolve, 2_000);
+        proc.exitDone.then(() => {
+          clearTimeout(grace);
+          resolve();
+        });
+      });
+    }
+    // 未收到 turn.completed 就结束：按退出码/错误来源拼可读错误
+    const exitNote = proc.exitCode !== null
+      ? `退出码 ${proc.exitCode}`
+      : proc.exitSignal
+        ? `被信号 ${proc.exitSignal} 终止`
+        : '进程提前退出';
     const combined = `${proc.stderrTail.trim()}${lastNotice ? ` ${lastNotice}` : ''}`.trim();
     if (/not logged in|请先.*登录|unauthorized|401/i.test(combined)) {
       throw new Error(`Codex CLI ${exitNote}：未登录或凭据失效（${CODEX_LOGIN_HINT}）`);
@@ -568,10 +610,8 @@ async function runCodexCommand(
   deps: CodexDeps = {},
   signal?: AbortSignal,
 ): Promise<CodexCommandResult> {
-  const proc = await spawnCodexForTurn(args, deps);
-  // 子命令不需要指令输入：立刻关 stdin，避免 codex 等待输入
-  proc.child.stdin?.on('error', () => {});
-  proc.child.stdin?.end();
+  // 子命令不需要指令输入：prompt 传空串，stdin 立即关闭，避免 codex 等待输入
+  const proc = await spawnCodexForTurn(args, '', deps);
   return new Promise<CodexCommandResult>((resolve, reject) => {
     let settled = false;
     const finish = (fn: () => void): void => {
@@ -590,26 +630,26 @@ async function runCodexCommand(
       finish(() => reject(abortError()));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
-    const settleResult = (): void => {
-      // stdout 由 spawn 层同步缓冲重建：完整行 + 尾碎片，杜绝「close 先于监听」丢输出
-      const stdout = [...proc.lines].join('\n') + proc.partial;
-      finish(() => resolve({ code: proc.exitCode, stdout, stderr: proc.stderrTail }));
-    };
-    // 流终止统一经 markClosed → done（含致命 spawn 错误与 shell 回退换子进程后的失败）。
-    // 子命令需要真实退出码：stdout 可能先于进程退出终止（done 先 resolve），此时再等 exit。
+    // 流终止统一经 markClosed → done（含致命 spawn 错误与 shell 回退换子进程后的失败）
     proc.done.then(() => {
       if (proc.closeErr !== null) {
         finish(() => reject(proc.closeErr));
         return;
       }
-      if (proc.exited) {
-        settleResult();
+      if (!proc.exited) {
+        // stdout 可能先于 exit 事件关闭：等真实退出码（上限 2s，超时按当前状态收尾）
+        proc.exitDone.then(() => {
+          if (!settled) settleResult();
+        });
         return;
       }
-      proc.exitDone.then(() => {
-        if (!settled) settleResult();
-      });
+      settleResult();
     });
+    const settleResult = (): void => {
+      // stdout 由 spawn 层同步缓冲重建：完整行 + 尾碎片，杜绝「close 先于监听」丢输出
+      const stdout = [...proc.lines].join('\n') + proc.partial;
+      finish(() => resolve({ code: proc.exitCode, stdout, stderr: proc.stderrTail }));
+    };
   });
 }
 
