@@ -11,6 +11,11 @@
   --app-zoom: 1;
   --app-viewport-height: calc(100vh / var(--app-zoom));
   --app-viewport-width: calc(100vw / var(--app-zoom));
+  /* 笔记「全屏沉浸阅读」的占屏比例（issue #52 后续反馈：铺满整屏太大）。
+     真源只有这一个数：JS 侧 noteCardWidth 引变量、窄屏档在媒体查询里就地改比例。 */
+  --note-fs-ratio: 0.8;
+  --note-fs-width: calc(var(--app-viewport-width) * var(--note-fs-ratio));
+  --note-fs-height: calc(var(--app-viewport-height) * var(--note-fs-ratio));
   color-scheme: dark;
   /* ============================================================
      极简现代扁平化 · 暗色基底（本块同时是暗色主题的唯一色值来源）
@@ -6012,23 +6017,27 @@ html.app-hidden *::after {
   margin: 0;
   white-space: pre-wrap;
   color: var(--text-2);
-  font-size: calc(13px * var(--note-text-zoom, 1));
+  font-size: calc(13px * var(--note-text-zoom, 1) * var(--note-fs-font-scale, 1));
   line-height: 1.7;
   word-break: break-word;
 }
 
 /* 复习/模板笔记：沿用 .markdown-body 排版，字号按缩放系数放大。
    基准值对齐上面 .markdown-body（13px / h1 17 / h2 15.5 / h3 14 / h4 13 /
-   code+table 12 / pre code 12.5）。 */
-[data-note-zoom] .markdown-body { font-size: calc(13px * var(--note-text-zoom, 1)); }
-[data-note-zoom] .markdown-body h1 { font-size: calc(17px * var(--note-text-zoom, 1)); }
-[data-note-zoom] .markdown-body h2 { font-size: calc(15.5px * var(--note-text-zoom, 1)); }
-[data-note-zoom] .markdown-body h3 { font-size: calc(14px * var(--note-text-zoom, 1)); }
-[data-note-zoom] .markdown-body h4 { font-size: calc(13px * var(--note-text-zoom, 1)); }
+   code+table 12 / pre code 12.5）。
+   两个系数各管一件事，叠乘而不是二选一：
+     · --note-text-zoom   用户手动调的「笔记文字」缩放（50%–200%，顶栏 ZoomControl）
+     · --note-fs-font-scale 全屏沉浸阅读的默认放大（只有 .note-card-modal.is-fullscreen 设值，
+                          卡片态与写作弹窗里它是缺省的 1，所以那两处的排版不受影响） */
+[data-note-zoom] .markdown-body { font-size: calc(13px * var(--note-text-zoom, 1) * var(--note-fs-font-scale, 1)); }
+[data-note-zoom] .markdown-body h1 { font-size: calc(17px * var(--note-text-zoom, 1) * var(--note-fs-font-scale, 1)); }
+[data-note-zoom] .markdown-body h2 { font-size: calc(15.5px * var(--note-text-zoom, 1) * var(--note-fs-font-scale, 1)); }
+[data-note-zoom] .markdown-body h3 { font-size: calc(14px * var(--note-text-zoom, 1) * var(--note-fs-font-scale, 1)); }
+[data-note-zoom] .markdown-body h4 { font-size: calc(13px * var(--note-text-zoom, 1) * var(--note-fs-font-scale, 1)); }
 [data-note-zoom] .markdown-body code,
-[data-note-zoom] .markdown-body table { font-size: calc(12px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .markdown-body table { font-size: calc(12px * var(--note-text-zoom, 1) * var(--note-fs-font-scale, 1)); }
 [data-note-zoom] .markdown-body pre code,
-[data-note-zoom] .md-code-pre code { font-size: calc(12.5px * var(--note-text-zoom, 1)); }
+[data-note-zoom] .md-code-pre code { font-size: calc(12.5px * var(--note-text-zoom, 1) * var(--note-fs-font-scale, 1)); }
 
 /* 笔记内的图片撑满不超界（与 note-editor-preview 同款描边） */
 .note-card-body img {
@@ -6038,18 +6047,24 @@ html.app-hidden *::after {
 }
 
 /* ---------- 全屏沉浸阅读（issue #52 方案 B：隐藏标题栏，仅正文 + Esc 退出） ----------
-   与上面卡片态共用同一个 .note-card-body，只改外层容器：铺满整个应用窗口，
-   去掉标题栏 / meta / 编辑入口，只留一条「退出全屏」通道。
-   宽度取 --app-viewport-width 而不是 100vw：整页缩放（--app-zoom）后 100vw 会溢出。
-   复用模板全屏写作（.template-writer-modal.is-fullscreen）的同一套做法。 */
+   与上面卡片态共用同一个 .note-card-body，只改外层容器：去掉标题栏 / meta / 编辑入口，
+   只留一条「退出全屏」通道。
+   尺寸走 --note-fs-width / --note-fs-height（视口的 ~80%）而不是铺满：
+   反馈是「全屏查看有点大了」—— 铺满时正文四周空出一大圈同色底，读起来像页面坏了。
+   也不写 100vw/100vh：整页缩放（--app-zoom）后会溢出。 */
 
 .note-card-modal.is-fullscreen {
-  top: 0 !important;
-  width: var(--app-viewport-width) !important;
-  max-width: var(--app-viewport-width) !important;
-  margin: 0 !important;
+  /* 居中悬浮：上下各留 (1 - ratio) / 2 的空白，横向仍靠 antd 默认的 margin: 0 auto */
+  top: calc((var(--app-viewport-height) - var(--note-fs-height)) / 2) !important;
+  width: var(--note-fs-width) !important;
+  max-width: var(--note-fs-width) !important;
+  margin: 0 auto !important;
   padding-bottom: 0;
-  height: var(--app-viewport-height);
+  height: var(--note-fs-height);
+  /* 正文字号在全屏态放大一档（见上面 [data-note-zoom] 那组规则乘的系数）：
+     13px 是卡片里的密度，铺到近满屏时按 Typora 的 16px 才读得下去。
+     只放大正文 —— 退出按钮与栏头不参与，控件不该跟着变大。 */
+  --note-fs-font-scale: 1.25;
 }
 
 .note-card-modal.is-fullscreen .ant-modal-content {
@@ -6057,11 +6072,13 @@ html.app-hidden *::after {
   flex-direction: column;
   height: 100%;
   padding: 0;
-  /* 沉浸阅读面用最底层底色（不是卡片色）：整屏就是一张"纸"，
-     卡片态那层描边/圆角在铺满屏幕时反而割裂 */
+  /* 沉浸阅读面仍用最底层底色（不是卡片色）：整块就是一张"纸"。
+     但不再贴边，所以描边与圆角要留回来，否则看不出这是一张可退出的浮层。 */
   background: var(--bg);
-  border: none;
-  border-radius: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  /* 正文自带滚动条，裁在圆角内 */
+  overflow: hidden;
 }
 
 /* antd 在 .ant-modal 与 .ant-modal-content 之间还有一层无类名的焦点容器；
@@ -6163,8 +6180,14 @@ html.app-hidden *::after {
   overflow: auto;
 }
 
-/* 窄屏：全屏阅读的左右留白再收一档，正文宽度全部让给文字 */
+/* 窄屏：全屏阅读的左右留白再收一档，正文宽度全部让给文字。
+   同时把占屏比例放回 1 —— 700px 宽的窗口里再打八折，正文只剩 500 出头，
+   「全屏」就失去意义了；小窗本来就是贴着读的。 */
 @media (max-width: 640px) {
+  :root {
+    --note-fs-ratio: 1;
+  }
+
   .note-card-modal.is-fullscreen .ant-modal-body {
     padding: 16px 12px;
   }
