@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AiConfig } from '../config.ts';
+import { resolveProxyUrl } from './proxyFetch.ts';
 import { STREAM_STALL_TIMEOUT_MS } from './provider.ts';
 import type { ChatMessage, ChatOptions, TokenUsage } from './provider.ts';
 
@@ -41,6 +42,8 @@ export type CodexSpawnFn = (
 
 export interface CodexDeps {
   spawnFn?: CodexSpawnFn;
+  /** OpenAI 系网络代理（显式值；缺省回退 HTTPS_PROXY 环境变量）——以 HTTPS_PROXY/HTTP_PROXY 注入 codex 子进程环境 */
+  proxyUrl?: string;
 }
 
 // 测试注入点：settings 路由的「测试连接」探测用（进程内全局，与 setRequestIntervalScale 同款模式）
@@ -138,9 +141,31 @@ export interface CodexTurnSpawn {
  *    `stream.child !== child` 屏蔽已废弃子进程，否则主循环会在回退子进程产出任何
  *    内容之前就以「进程提前退出」收场。
  */
+/**
+ * 代理 → codex 子进程环境：Codex CLI（reqwest 实现）读标准 HTTPS_PROXY/HTTP_PROXY。
+ * 注入为「父环境 + 代理覆盖」而不是裸环境，避免把 PATH 等丢掉；无代理（含环境变量
+ * 回退也没有）返回 undefined = 不覆盖 env，完全继承父进程（测试桩不受影响）。
+ */
+function codexProxyEnv(proxyUrl?: string): NodeJS.ProcessEnv | undefined {
+  const resolved = resolveProxyUrl(proxyUrl);
+  if (!resolved) return undefined;
+  return {
+    ...process.env,
+    HTTPS_PROXY: resolved,
+    https_proxy: resolved,
+    HTTP_PROXY: resolved,
+    http_proxy: resolved,
+  };
+}
+
 async function spawnCodexForTurn(args: string[], prompt: string, deps: CodexDeps): Promise<CodexTurnSpawn> {
   const spawnFn = deps.spawnFn ?? spawn;
-  const baseOpts: SpawnOptions = { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true };
+  const proxyEnv = codexProxyEnv(deps.proxyUrl);
+  const baseOpts: SpawnOptions = {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    ...(proxyEnv ? { env: proxyEnv } : {}),
+  };
   let doneResolve: (() => void) | null = null;
   let exitDoneResolve: (() => void) | null = null;
   const stream: CodexTurnSpawn = {

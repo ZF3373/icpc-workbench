@@ -36,6 +36,7 @@ import path from 'node:path';
 import type { AppConfig } from '../config.ts';
 import type { Db } from '../db/index.ts';
 import type { SettingLookup } from '../db/settings.ts';
+import { proxyFetch, resolveProxyUrl } from './proxyFetch.ts';
 
 const DEFAULT_ISSUER = 'https://auth.openai.com';
 export const CHATGPT_RESOURCE = 'https://api.openai.com/v1';
@@ -89,9 +90,32 @@ export function setChatgptAuthDepsForTest(deps: ChatgptAuthDeps | null): void {
   authDeps = deps ?? {};
 }
 
-const authFetch = (): typeof fetch => authDeps.fetchFn ?? fetch;
+/**
+ * 代理感知的授权请求 fetch：显式代理 → HTTPS_PROXY 环境变量回退（Node fetch 不读系统
+ * 代理，OpenAI 又按出口 IP 封锁不支持地区——不显式装配代理，登录/刷新在受控网络必被拒）。
+ * 测试注入的 fetchFn 优先（桩不走真实代理）。
+ */
+const authFetch = (proxyUrl?: string): typeof fetch => proxyFetch(resolveProxyUrl(proxyUrl), authDeps.fetchFn);
 const issuerOrigin = (): string => authDeps.issuerOrigin ?? DEFAULT_ISSUER;
 const resource = (): string => authDeps.resource ?? CHATGPT_RESOURCE;
+
+/** undici 网络层错误的真实原因在 error.cause 里（fetch failed 只有一句话），拼上才可定位 */
+function netErrText(e: unknown): string {
+  const err = e as Error & { cause?: unknown };
+  const main = err?.message || String(e);
+  const cause = err?.cause;
+  const causeMsg = cause instanceof Error ? cause.message : cause === undefined ? '' : String(cause);
+  if (!causeMsg || main.includes(causeMsg)) return main;
+  return `${main}（${causeMsg}）`;
+}
+
+/** OpenAI 地区封锁（unsupported_country_region_territory）的可操作提示 */
+export function chatgptRegionBlockedHint(): string {
+  return 'OpenAI 拒绝了当前网络出口所在的地区（unsupported_country_region_territory）。请在'
+    + '「设置 → AI 配置」该提供商的「网络代理」里填写代理地址（如 http://127.0.0.1:7890，'
+    + '出口需位于 OpenAI 支持的地区），或将代理软件切到全局/TUN 模式后重试；浏览器打开'
+    + '授权页同样需要能访问 OpenAI。';
+}
 
 // ---------- 凭据加解密（AES-256-GCM，密钥文件在 dataDir，不进 DB/备份） ----------
 
@@ -217,7 +241,9 @@ export class ChatgptAuthError extends Error {
   readonly terminal: boolean;
 
   constructor(status: number, code: string, message: string) {
-    super(`ChatGPT 登录接口错误（HTTP ${status}${code ? ` ${code}` : ''}）：${message}`);
+    // 地区封锁直接给出代理配置指引（token 端点同受出口 IP 封锁，轮换刷新也可能撞上）
+    const suffix = code === 'unsupported_country_region_territory' ? `。${chatgptRegionBlockedHint()}` : '';
+    super(`ChatGPT 登录接口错误（HTTP ${status}${code ? ` ${code}` : ''}）：${message}${suffix}`);
     this.name = 'ChatgptAuthError';
     this.status = status;
     this.code = code;
@@ -225,8 +251,8 @@ export class ChatgptAuthError extends Error {
   }
 }
 
-async function requestToken(form: URLSearchParams, signal?: AbortSignal): Promise<TokenRequestResult> {
-  const res = await authFetch()(`${issuerOrigin()}/api/accounts/oauth/token`, {
+async function requestToken(form: URLSearchParams, signal?: AbortSignal, proxyUrl?: string): Promise<TokenRequestResult> {
+  const res = await authFetch(proxyUrl)(`${issuerOrigin()}/api/accounts/oauth/token`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: form,
@@ -237,9 +263,19 @@ async function requestToken(form: URLSearchParams, signal?: AbortSignal): Promis
     let code = '';
     let message = text.slice(0, 300);
     try {
-      const parsed = JSON.parse(text) as { error?: string; error_description?: string };
-      code = String(parsed.error ?? '');
-      message = String(parsed.error_description ?? parsed.error ?? message);
+      // token 端点是扁平 OAuth 形态（error/error_description）；网关层（如地区封锁）是
+      // 嵌套 {error:{code,message}}（authorize 实测）——两种都认
+      const parsed = JSON.parse(text) as {
+        error?: string | { code?: string; message?: string };
+        error_description?: string;
+      };
+      if (typeof parsed.error === 'string') {
+        code = parsed.error;
+        message = String(parsed.error_description ?? parsed.error ?? message);
+      } else if (parsed.error && typeof parsed.error === 'object') {
+        code = String(parsed.error.code ?? '');
+        message = String(parsed.error.message ?? message);
+      }
     } catch {
       // 非 JSON 错误体：保留原文
     }
@@ -293,10 +329,10 @@ interface Discovery {
 let discoveryCache: { origin: string; value: Discovery } | null = null;
 
 /** OIDC 发现文档：jwks/撤销端点受同源守卫（发现的端点不能改写凭据发送边界） */
-async function fetchDiscovery(signal?: AbortSignal): Promise<Discovery> {
+async function fetchDiscovery(signal?: AbortSignal, proxyUrl?: string): Promise<Discovery> {
   const origin = issuerOrigin();
   if (discoveryCache?.origin === origin) return discoveryCache.value;
-  const res = await authFetch()(  `${origin}/.well-known/openid-configuration`, { signal });
+  const res = await authFetch(proxyUrl)(  `${origin}/.well-known/openid-configuration`, { signal });
   if (!res.ok) throw new Error(`获取 ChatGPT 认证元数据失败（HTTP ${res.status}）`);
   const data = (await res.json()) as { issuer?: string; jwks_uri?: string; revocation_endpoint?: string };
   if (data.issuer !== origin) throw new Error('ChatGPT 认证元数据签发者不匹配');
@@ -316,6 +352,8 @@ interface TokenVerifyOptions {
   audience: string;
   nonce?: string;
   signal?: AbortSignal;
+  /** 与 token 交换同路径的网络代理（JWKS 也在 auth.openai.com，同受地区封锁） */
+  proxyUrl?: string;
 }
 
 /**
@@ -339,8 +377,8 @@ async function verifyIdToken(idToken: string, opts: TokenVerifyOptions): Promise
     throw new Error('ChatGPT 身份令牌 nonce 不匹配（可能的授权重放）');
   }
 
-  const metadata = await fetchDiscovery(opts.signal);
-  const jwks = await authFetch()(metadata.jwksUri, { signal: opts.signal });
+  const metadata = await fetchDiscovery(opts.signal, opts.proxyUrl);
+  const jwks = await authFetch(opts.proxyUrl)(metadata.jwksUri, { signal: opts.signal });
   if (!jwks.ok) throw new Error(`获取 ChatGPT 公钥失败（HTTP ${jwks.status}）`);
   const jwksBody = (await jwks.json()) as { keys?: Array<Record<string, unknown>> };
   const jwk = jwksBody.keys?.find((k) => k.kid === header.kid || (!header.kid && k.kty === 'RSA'));
@@ -380,8 +418,34 @@ function pruneLoginSessions(): void {
 export interface StartChatgptLoginOptions {
   appName: string;
   hostId: string;
+  /** OpenAI 系请求的网络代理（显式值；缺省回退 HTTPS_PROXY 环境变量，再回退直连） */
+  proxyUrl?: string;
   /** 登录成功后的落库动作（由路由层注入，避免本模块反向依赖 config.ts） */
   onSuccess: (cred: ChatgptCredential, planModels: string[]) => Promise<void>;
+}
+
+/**
+ * 登录前预检（issue 67 用户实测：auth.openai.com 按出口 IP 拒绝不支持地区）。
+ * 用与后续 token 交换**相同的网络路径** GET 一次授权端点：响应体带
+ * unsupported_country_region_territory = 地区封锁，在用户打开浏览器**之前**就给出
+ * 可操作提示，而不是等 5 分钟轮询超时；「连不上 OpenAI」同理提前报。其余 4xx/5xx
+ * 只说明「可达、参数层面另有问题」，放行真实流程（预检 URL 与真实 authorize 一致，
+ * 参数合法，正常路径返回 200 登录页 HTML）。
+ */
+async function preflightChatgptAuthorize(authorizeUrl: URL, proxyUrl: string | undefined): Promise<void> {
+  let res: Response;
+  try {
+    res = await authFetch(proxyUrl)(authorizeUrl, { signal: AbortSignal.timeout(15_000) });
+  } catch (e) {
+    throw new Error(
+      `无法连接 OpenAI 授权服务（${netErrText(e)}）。若本机需要代理才能访问 OpenAI，`
+        + '请先在该提供商的「网络代理」里填写代理地址（如 http://127.0.0.1:7890）后重试。',
+    );
+  }
+  const text = await res.text().catch(() => '');
+  if (text.includes('unsupported_country_region_territory')) {
+    throw new Error(chatgptRegionBlockedHint());
+  }
 }
 
 /**
@@ -485,6 +549,17 @@ export async function startChatgptLogin(opts: StartChatgptLoginOptions): Promise
     code_challenge: challenge,
   }).toString();
 
+  // 登录前预检：地区封锁/网络不可达在打开浏览器之前就报出来（失败即清理回调服务器与
+  // 登录会话，不留悬挂的 pending 会话让前端白轮询 5 分钟）
+  try {
+    await preflightChatgptAuthorize(authorizeUrl, opts.proxyUrl);
+  } catch (e) {
+    server.close();
+    server.closeAllConnections();
+    loginSessions.delete(loginId);
+    throw e;
+  }
+
   // 完成链：code 交换 → 身份验证 → 拉套餐模型 → 落库回调；任何失败都转为 failed 快照
   void (async (): Promise<void> => {
     try {
@@ -498,8 +573,10 @@ export async function startChatgptLogin(opts: StartChatgptLoginOptions): Promise
           redirect_uri: redirectUri,
           resource: resource(),
         }),
+        undefined,
+        opts.proxyUrl,
       );
-      const identity = await verifyIdToken(idToken, { audience: clientId, nonce });
+      const identity = await verifyIdToken(idToken, { audience: clientId, nonce, proxyUrl: opts.proxyUrl });
       const full: ChatgptCredential = {
         clientId,
         ...cred,
@@ -507,7 +584,7 @@ export async function startChatgptLogin(opts: StartChatgptLoginOptions): Promise
         email: identity.email,
         sessionId: randomUUID(),
       };
-      const models = await listChatgptPlanModels(full.accessToken);
+      const models = await listChatgptPlanModels(full.accessToken, undefined, opts.proxyUrl);
       await opts.onSuccess(full, models);
       session.snapshot = { loginId, status: 'ok', email: full.email };
     } catch (e) {
@@ -536,7 +613,10 @@ export function pollChatgptLogin(loginId: string): ChatgptLoginSnapshot {
 
 // ---------- 刷新（轮换）与撤销 ----------
 
-export type ChatgptCredentialRefresher = (stale: ChatgptCredential) => Promise<ChatgptCredential>;
+export type ChatgptCredentialRefresher = (
+  stale: ChatgptCredential,
+  opts?: { proxyUrl?: string },
+) => Promise<ChatgptCredential>;
 
 let credentialRefresher: ChatgptCredentialRefresher | null = null;
 let refreshChain: Promise<unknown> = Promise.resolve();
@@ -553,13 +633,13 @@ export function setChatgptCredentialRefresher(fn: ChatgptCredentialRefresher): v
  */
 export async function ensureFreshChatgptCredential(
   cred: ChatgptCredential,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; proxyUrl?: string } = {},
 ): Promise<ChatgptCredential> {
   if (!opts.force && Date.now() < cred.expiresAt - REFRESH_MARGIN_MS) return cred;
   if (!credentialRefresher) throw new Error('ChatGPT 凭据刷新器未就绪，请重启工作台后重试');
   const run = refreshChain.then(
-    () => credentialRefresher!(cred),
-    () => credentialRefresher!(cred),
+    () => credentialRefresher!(cred, { proxyUrl: opts.proxyUrl }),
+    () => credentialRefresher!(cred, { proxyUrl: opts.proxyUrl }),
   );
   refreshChain = run.then(
     () => undefined,
@@ -569,7 +649,7 @@ export async function ensureFreshChatgptCredential(
 }
 
 /** 刷新凭据（网络 + 官方契约）；terminal 失败抛 ChatgptAuthError（terminal=true） */
-export async function refreshChatgptCredential(cred: ChatgptCredential): Promise<ChatgptCredential> {
+export async function refreshChatgptCredential(cred: ChatgptCredential, proxyUrl?: string): Promise<ChatgptCredential> {
   const { cred: fields, idToken } = await requestToken(
     new URLSearchParams({
       grant_type: 'refresh_token',
@@ -577,16 +657,18 @@ export async function refreshChatgptCredential(cred: ChatgptCredential): Promise
       refresh_token: cred.refreshToken,
       resource: resource(),
     }),
+    undefined,
+    proxyUrl,
   );
   // 刷新响应同样带 id_token（同一身份）：无 nonce 绑定，验签名/iss/aud/exp
-  await verifyIdToken(idToken, { audience: cred.clientId });
+  await verifyIdToken(idToken, { audience: cred.clientId, proxyUrl });
   return { ...cred, ...fields };
 }
 
 /** 撤销会话（登出）：best-effort，失败不阻断本地清理 */
-export async function revokeChatgptCredential(cred: ChatgptCredential): Promise<void> {
-  const metadata = await fetchDiscovery();
-  await authFetch()(metadata.revocationEndpoint, {
+export async function revokeChatgptCredential(cred: ChatgptCredential, proxyUrl?: string): Promise<void> {
+  const metadata = await fetchDiscovery(undefined, proxyUrl);
+  await authFetch(proxyUrl)(metadata.revocationEndpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -600,8 +682,8 @@ export async function revokeChatgptCredential(cred: ChatgptCredential): Promise<
 // ---------- 套餐模型目录 ----------
 
 /** GET /v1/models（Bearer）：ChatGPT 套餐可用模型（visibility==='list' 的 slug） */
-export async function listChatgptPlanModels(accessToken: string, signal?: AbortSignal): Promise<string[]> {
-  const res = await authFetch()(`${resource()}/models`, {
+export async function listChatgptPlanModels(accessToken: string, signal?: AbortSignal, proxyUrl?: string): Promise<string[]> {
+  const res = await authFetch(proxyUrl)(`${resource()}/models`, {
     headers: { authorization: `Bearer ${accessToken}` },
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
   });

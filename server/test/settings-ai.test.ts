@@ -1128,7 +1128,7 @@ test('本地 Codex 与 ChatGPT 提供商的 protocol 落库与视图回传（多
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         providers: [
-          { id: 'pc1', name: 'ChatGPT 订阅', baseURL: 'https://api.openai.com/v1', model: '', protocol: 'chatgpt' },
+          { id: 'pc1', name: 'ChatGPT 订阅', baseURL: 'https://api.openai.com/v1', model: '', protocol: 'chatgpt', proxy: 'http://127.0.0.1:7890' },
         ],
         activeProviderId: 'pc1',
       }),
@@ -1138,8 +1138,37 @@ test('本地 Codex 与 ChatGPT 提供商的 protocol 落库与视图回传（多
     assert.equal(stored[0].protocol, 'chatgpt');
     assert.equal(stored[0].baseURL, 'https://api.openai.com/v1');
     assert.equal(stored[0].apiKey, '');
-    const view = (await (await fetch(base)).json()) as { ai: { providers: Array<{ protocol?: string }> } };
+    assert.equal(stored[0].proxy, 'http://127.0.0.1:7890', '网络代理必须落库（OpenAI 按出口 IP 封锁，服务端 fetch 不读系统代理）');
+    // 显式空串 = 清除已存代理（前端「保存」总回传该字段）
+    const clear = await fetch(`${base}/ai`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providers: [
+          { id: 'pc1', name: 'ChatGPT 订阅', baseURL: 'https://api.openai.com/v1', model: '', protocol: 'chatgpt', proxy: '' },
+        ],
+        activeProviderId: 'pc1',
+      }),
+    });
+    assert.equal(clear.status, 200);
+    const cleared = JSON.parse((db.prepare("SELECT value FROM settings WHERE key = 'ai.providers'").get() as { value: string }).value);
+    assert.equal(cleared[0].proxy, undefined, '显式空串必须清除已存代理');
+    // 非法代理（非 http(s)）拒绝保存并给出可读原因
+    const bad = await fetch(`${base}/ai`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providers: [
+          { id: 'pc1', name: 'ChatGPT 订阅', baseURL: 'https://api.openai.com/v1', model: '', protocol: 'chatgpt', proxy: 'socks5://127.0.0.1:1080' },
+        ],
+        activeProviderId: 'pc1',
+      }),
+    });
+    assert.equal(bad.status, 400);
+    assert.match(((await bad.json()) as { error: string }).error, /http\(s\)/);
+    const view = (await (await fetch(base)).json()) as { ai: { providers: Array<{ protocol?: string; proxy?: string }> } };
     assert.equal(view.ai.providers[0]?.protocol, 'chatgpt');
+    assert.equal(view.ai.providers[0]?.proxy, undefined, '清除后的代理不再回传');
   });
 });
 
@@ -1151,6 +1180,8 @@ test('ChatGPT 登录端到端：授权 URL 参数 → 回环回调 → code 交�
   let refreshCount = 0;
   const revokedTokens: string[] = [];
   let modelsAuth: string | undefined;
+  /** 打开后 authorize 返回官方地区封锁形态（嵌套 error 对象）——登录预检测试用 */
+  let regionBlock = false;
   const srv = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on('data', (c) => chunks.push(c as Buffer));
@@ -1162,6 +1193,23 @@ test('ChatGPT 登录端到端：授权 URL 参数 → 回环回调 → code 交�
       const pathname = (req.url ?? '').split('?')[0];
       if (pathname === '/.well-known/openid-configuration') {
         respond(200, { issuer: ISSUER_BASE, jwks_uri: `${ISSUER_BASE}/jwks`, revocation_endpoint: `${ISSUER_BASE}/revoke` });
+        return;
+      }
+      if (pathname === '/api/accounts/authorize') {
+        // 登录预检（preflightChatgptAuthorize）打这里：默认 200 放行；regionBlock 打开时
+        // 返回 auth.openai.com 的实测封锁形态（HTTP 403 + 嵌套 error.code）
+        if (regionBlock) {
+          respond(403, {
+            error: {
+              code: 'unsupported_country_region_territory',
+              message: 'Country, region, or territory not supported',
+              param: null,
+              type: 'request_forbidden',
+            },
+          });
+          return;
+        }
+        respond(200, { ok: 'authorize-reachable' });
         return;
       }
       if (pathname === '/jwks') {
@@ -1325,6 +1373,23 @@ test('ChatGPT 登录端到端：授权 URL 参数 → 回环回调 → code 交�
     assert.equal(readChatgptCredential(db, cfg), null);
     const status = (await (await fetch(`${base}/ai/chatgpt/status`)).json()) as { loggedIn: boolean };
     assert.equal(status.loggedIn, false);
+
+    // 8. 地区封锁预检（issue 67 用户实测）：authorize 返回 unsupported_country_region_territory
+    //    时，登录在打开浏览器**之前**就失败并给出代理配置指引，不再让用户白等 5 分钟轮询超时
+    regionBlock = true;
+    try {
+      const blockedRes = await fetch(`${base}/ai/chatgpt/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerId: 'pc1' }),
+      });
+      assert.equal(blockedRes.status, 502);
+      const blocked = (await blockedRes.json()) as { error?: string };
+      assert.match(blocked.error ?? '', /unsupported_country_region_territory/);
+      assert.match(blocked.error ?? '', /网络代理/, '提示必须包含代理配置指引');
+    } finally {
+      regionBlock = false;
+    }
   } finally {
     server.close();
     db.close();

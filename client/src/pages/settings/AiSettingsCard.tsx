@@ -138,6 +138,8 @@ type ProviderDraft = {
   maxTokens?: number
   /** 该提供商单独设置的上下文窗口（token）；undefined = 留空，运行时回退全局默认 */
   contextWindow?: number
+  /** 网络代理（仅 codex/chatgpt 类使用）：OpenAI 按出口 IP 封锁，服务端 fetch 不读系统代理，需显式指定；'' = 直连/读环境变量 */
+  proxy: string
   /** 自动填写已生效的模型名：同一模型不重复覆盖（用户改过的数值得以保留） */
   capsModel?: string
   /** 模型目录（对齐 dsh 的模型管理）：候选清单 + 条目级参数；条目参数优先于提供商级生效 */
@@ -193,6 +195,7 @@ function draftOf(p: AiProviderView): ProviderDraft {
     apiKeyMasked: p.apiKeyMasked,
     maxTokens: p.maxTokens,
     contextWindow: p.contextWindow,
+    proxy: p.proxy ?? '',
     // 服务端已带参数 → 标记「该模型已填过」，失焦不重填（保住用户已调的值）
     capsModel: p.maxTokens !== undefined || p.contextWindow !== undefined ? p.model : undefined,
     models: p.models ? p.models.map((m) => ({ ...m, uiKey: newModelUiKey() })) : [],
@@ -570,6 +573,7 @@ export const AiSettingsCard = ({
       apiKey: isCodexPreset || isChatgptPreset ? '' : addModal.apiKey.trim(),
       hasApiKey: false,
       apiKeyMasked: '',
+      proxy: '',
       // 预设提供商：目录带默认清单（含 defaultModel），无需提供商级档位；
       // 自定义网关：目录留空，默认模型走「目录外」行（档位能认出就先垫上）
       models:
@@ -672,6 +676,8 @@ export const AiSettingsCard = ({
           name: preset.name,
           baseURL: preset.baseURL,
           model: preset.defaultModel,
+          // 代理只对 keyless 类（codex/chatgpt）有意义：切到 chat 类预设时清掉，避免残留脏值
+          ...(preset.protocol ? {} : { proxy: '' }),
           // 换预设 = 换模型 → 参数档位跟随重填（内置参数表口径）
           ...(caps ? { capsModel: preset.defaultModel, ...capsPatch(caps) } : { capsModel: undefined }),
         }
@@ -695,7 +701,7 @@ export const AiSettingsCard = ({
       const r = await post<{ ok: boolean; message: string; models?: string[] }>('/api/settings/ai/test', {
         providerId: storedIds.has(p.id) ? p.id : undefined,
         ...(keylessProtocol
-          ? { protocol: keylessProtocol }
+          ? { protocol: keylessProtocol, proxy: p.proxy.trim() || undefined }
           : { baseURL: p.baseURL.trim(), apiKey: p.apiKey.trim() || undefined }),
         model: p.model.trim(),
       })
@@ -751,12 +757,16 @@ export const AiSettingsCard = ({
   }
 
   /** ChatGPT 登录（Sign in with ChatGPT 官方开源流程）：后端起回环回调 + PKCE，
-   *  前端用系统浏览器打开授权 URL，随后轮询登录结果；成功后 onReload 刷新目录与状态 */
-  const startChatgptLoginFlow = async (pid: string) => {
+   *  前端用系统浏览器打开授权 URL，随后轮询登录结果；成功后 onReload 刷新目录与状态。
+   *  草稿里的代理随请求带上（先填代理后登录，不必先保存）——服务端登录/换 token 请求
+   *  都走它，OpenAI 按出口 IP 拒绝不支持地区。 */
+  const startChatgptLoginFlow = async (p: ProviderDraft) => {
+    const pid = p.id
     setChatgptLoginBy((m) => ({ ...m, [pid]: true }))
     try {
       const r = await post<{ loginId: string; authorizeUrl: string }>('/api/settings/ai/chatgpt/login', {
         providerId: storedIds.has(pid) ? pid : undefined,
+        proxy: p.proxy.trim() || undefined,
       })
       openExternal(r.authorizeUrl)
       message.info('已在系统浏览器打开 ChatGPT 授权页，完成登录后自动返回…')
@@ -796,6 +806,26 @@ export const AiSettingsCard = ({
       message.error((e as Error).message)
     }
   }
+
+  /** 网络代理输入（keyless 类专用）：OpenAI 按「出口 IP 所在地区」放行请求，而工作台
+   *  服务端的 fetch 不读系统代理/HTTP(S)_PROXY 环境变量——必须在此显式指定 */
+  const proxyField = (p: ProviderDraft, tooltip: string) => (
+    <Form.Item label="网络代理（可选）" style={{ marginBottom: 12 }} tooltip={tooltip}>
+      <Input
+        value={p.proxy}
+        onChange={(e) => patchProvider(p.id, { proxy: e.target.value })}
+        placeholder="http://127.0.0.1:7890（留空 = 读 HTTPS_PROXY 环境变量）"
+        allowClear
+      />
+    </Form.Item>
+  )
+  const CHATGPT_PROXY_HINT =
+    'OpenAI 按「出口 IP 所在地区」放行请求，而服务端请求不会自动走系统代理。填一个出口位于 '
+      + 'OpenAI 支持地区的 http(s) 代理（如 Clash / v2rayN 的本地端口），登录与对话请求都会经它发出；'
+      + '留空则读环境变量 HTTPS_PROXY。'
+  const CODEX_PROXY_HINT =
+    '填写的代理会以 HTTPS_PROXY 传给本机 Codex CLI 子进程（出口需位于 OpenAI 支持地区）；'
+      + '留空则继承工作台进程的环境变量。'
 
   // 反向 ref：把表单实例交给父组件（React 19 里 ref 可以直接作为普通 prop 传递）
   useImperativeHandle(ref, () => ({
@@ -840,6 +870,8 @@ export const AiSettingsCard = ({
           baseURL: p.presetKey === 'codex' ? '' : p.baseURL.trim(),
           model: p.model.trim(),
           ...(p.presetKey !== 'codex' && p.presetKey !== 'chatgpt' && p.apiKey.trim() ? { apiKey: p.apiKey.trim() } : {}),
+          // 代理只对 keyless 类回传（显式空串 = 清除）；chat 类不传 = 服务端保持已存值
+          ...(p.presetKey === 'codex' || p.presetKey === 'chatgpt' ? { proxy: p.proxy.trim() } : {}),
           maxTokens: p.maxTokens ?? null,
           contextWindow: p.contextWindow ?? null,
           models: p.models
@@ -992,23 +1024,29 @@ export const AiSettingsCard = ({
                       </p>
                     )}
                     {p.presetKey === 'codex' ? (
-                      <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 12px' }}>
-                        选中后由工作台调用本机已安装并通过 <code>codex login</code> 登录 ChatGPT 的 Codex CLI，
-                        无需 API Key；登录与凭据刷新由 Codex 自身处理（需较新版本的 Codex CLI）。
-                        未登录时请先在终端运行 <code>codex login</code>。
-                      </p>
+                      <>
+                        <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 12px' }}>
+                          选中后由工作台调用本机已安装并通过 <code>codex login</code> 登录 ChatGPT 的 Codex CLI，
+                          无需 API Key；登录与凭据刷新由 Codex 自身处理（需较新版本的 Codex CLI）。
+                          未登录时请先在终端运行 <code>codex login</code>。
+                        </p>
+                        {proxyField(p, CODEX_PROXY_HINT)}
+                      </>
                     ) : p.presetKey === 'chatgpt' ? (
                       <div style={{ marginBottom: 12 }}>
                         <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 8px' }}>
                           官方 Sign in with ChatGPT 开源接入：点击登录后在系统浏览器完成 ChatGPT 授权
                           （OAuth，无需 API Key），工作台用你的 ChatGPT 订阅额度直连 Responses API。
                           登录成功后套餐模型自动写入下方目录；access token 每小时自动续期。
+                          OpenAI 按出口 IP 放行请求——若授权页显示 unsupported_country_region_territory，
+                          请先在下方「网络代理」填入代理再登录。
                         </p>
+                        {proxyField(p, CHATGPT_PROXY_HINT)}
                         <Space wrap>
                           <Button
                             type="primary"
                             loading={!!chatgptLoginBy[p.id]}
-                            onClick={() => void startChatgptLoginFlow(p.id)}
+                            onClick={() => void startChatgptLoginFlow(p)}
                           >
                             {ai.chatgptLoggedIn ? '重新登录 ChatGPT' : '使用 ChatGPT 账号登录'}
                           </Button>

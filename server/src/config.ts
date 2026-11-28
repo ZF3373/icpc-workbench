@@ -35,6 +35,13 @@ export interface AiConfig {
   /** 活跃提供商的接入口径；缺省 'chat'（OpenAI 兼容 HTTP），'codex' = 本机 Codex CLI 子进程，'chatgpt' = Sign in with ChatGPT */
   protocol?: AiProviderProtocol;
   /**
+   * keyless 类提供商（chatgpt/codex）的 OpenAI 系网络代理（http(s) 地址）。
+   * OpenAI 按出口 IP 拒绝不支持地区，而 Node fetch 不读系统代理/HTTP(S)_PROXY 环境
+   * 变量——不显式装配代理，登录与对话在受控网络必被 unsupported_country_region_territory
+   * 拒绝。空 = 回退环境变量（proxyFetch 内处理），再回退直连。
+   */
+  proxy?: string;
+  /**
    * ChatGPT 登录（protocol='chatgpt'）的运行时凭据：由 aiConfigFromDb 从 settings 解密装配，
    * 只在内存与 provider 内部流转，绝不落盘、绝不随 aiSettingsView 下发前端。
    */
@@ -244,6 +251,9 @@ function sanitizeProviders(list: unknown[]): AiProviderConfig[] {
       baseURL: protocolValue === 'codex' ? '' : baseURL,
       apiKey: keyless ? '' : typeof o.apiKey === 'string' ? o.apiKey.trim() : '',
       model: typeof o.model === 'string' ? o.model.trim() : '',
+      // 网络代理（keyless 类使用，OpenAI 按出口 IP 封锁不支持地区）：合法 http(s) 才收，
+      // 非法形态直接丢弃该字段（不整条丢弃提供商，避免一个错代理地址清掉整份配置）
+      ...(typeof o.proxy === 'string' && /^https?:\/\//.test(o.proxy.trim()) ? { proxy: o.proxy.trim() } : {}),
       // 参数档位是可选覆盖：只在为正数时保留（防 0/负数/字符串混进存储）
       ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { maxTokens } : {}),
       ...(Number.isFinite(contextWindow) && contextWindow > 0 ? { contextWindow } : {}),
@@ -326,12 +336,12 @@ const chatgptWiredDbs = new WeakMap<Db, true>();
 function wireChatgptCredentialStore(db: Db, cfg: AppConfig): void {
   if (chatgptWiredDbs.has(db)) return;
   chatgptWiredDbs.set(db, true);
-  setChatgptCredentialRefresher(async (stale) => {
+  setChatgptCredentialRefresher(async (stale, opts) => {
     const latest = readChatgptCredential(db, cfg);
     if (!latest) throw new Error('ChatGPT 未登录：请到设置 → AI 配置重新登录');
     if (latest.refreshToken !== stale.refreshToken) return latest; // 已被其他路径轮换，直接复用
     try {
-      const fresh = await refreshChatgptCredential(latest);
+      const fresh = await refreshChatgptCredential(latest, opts?.proxyUrl);
       saveChatgptCredential(db, cfg, fresh);
       return fresh;
     } catch (e) {
@@ -382,6 +392,7 @@ export function aiConfigFromDb(db: Db, cfg: AppConfig, read?: SettingLookup): Ai
       : isCodexProtocol(active.protocol)
         ? { protocol: 'codex' as const }
         : {}),
+    ...(active.proxy?.trim() ? { proxy: active.proxy.trim() } : {}),
     ...(chatgpt ? { chatgpt } : {}),
     ...(Number.isFinite(timeoutMs) && timeoutMs! > 0 ? { timeoutMs: timeoutMs! } : {}),
     ...(entry?.maxTokens ?? active.maxTokens ?? global.maxTokens

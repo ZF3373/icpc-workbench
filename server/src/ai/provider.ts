@@ -431,10 +431,10 @@ export class AiProvider {
   async chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<string> {
     this.ensureEnabled();
     if (this.cfg.protocol === 'codex') {
-      return codexChat(this.cfg, messages, opts, this.codexDeps);
+      return codexChat(this.cfg, messages, opts, { ...this.codexDeps, proxyUrl: this.cfg.proxy });
     }
     if (this.cfg.protocol === 'chatgpt') {
-      return chatgptChat(this.cfg, messages, opts, { fetchFn: this.fetchFn });
+      return chatgptChat(this.cfg, messages, opts, { fetchFn: this.fetchFn, proxyUrl: this.cfg.proxy });
     }
     const timeoutMs = this.cfg.timeoutMs ?? 120000;
     const maxTokens = opts.maxTokens ?? 393216;
@@ -535,11 +535,11 @@ export class AiProvider {
   async *chatStream(messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<string, void, void> {
     this.ensureEnabled();
     if (this.cfg.protocol === 'codex') {
-      yield* codexChatStream(this.cfg, messages, opts, this.codexDeps);
+      yield* codexChatStream(this.cfg, messages, opts, { ...this.codexDeps, proxyUrl: this.cfg.proxy });
       return;
     }
     if (this.cfg.protocol === 'chatgpt') {
-      yield* chatgptChatStream(this.cfg, messages, opts, { fetchFn: this.fetchFn });
+      yield* chatgptChatStream(this.cfg, messages, opts, { fetchFn: this.fetchFn, proxyUrl: this.cfg.proxy });
       return;
     }
     const timeoutMs = this.cfg.timeoutMs ?? 120000;

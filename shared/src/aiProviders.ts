@@ -59,6 +59,12 @@ export interface AiProviderConfig {
   models?: AiProviderModelEntry[];
   /** 接入口径；缺省 'chat'（OpenAI 兼容 HTTP）。'codex' = 本机 Codex CLI 子进程 */
   protocol?: AiProviderProtocol;
+  /**
+   * 网络代理（http(s) 地址，如 http://127.0.0.1:7890）；仅 keyless 类（chatgpt/codex）
+   * 使用：OpenAI 按**出口 IP** 拒绝不支持地区的访问，而 Node fetch 不读系统代理/
+   * HTTP(S)_PROXY 环境变量，必须显式装配。空 = 回退环境变量，再回退直连。
+   */
+  proxy?: string;
 }
 
 /** 设置页回传给前端的提供商视图（apiKey 已剥离，只带打码版供回显） */
@@ -76,6 +82,8 @@ export interface AiProviderView {
   models?: AiProviderModelEntry[];
   /** 接入口径；缺省 'chat'。前端据此切换表单形态（codex 无密钥/地址输入） */
   protocol?: AiProviderProtocol;
+  /** 网络代理（无秘密，原样回显）；仅 keyless 类使用，见 AiProviderConfig.proxy */
+  proxy?: string;
 }
 
 /** 内置提供商预设：选预设自动填名称与 Base URL，用户只需填 API Key（codex 预设除外） */

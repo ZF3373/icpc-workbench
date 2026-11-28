@@ -23,7 +23,8 @@
  */
 
 import type { AiConfig } from '../config.ts';
-import { ensureFreshChatgptCredential } from './chatgptAuth.ts';
+import { chatgptRegionBlockedHint, ensureFreshChatgptCredential } from './chatgptAuth.ts';
+import { proxyFetch, resolveProxyUrl } from './proxyFetch.ts';
 import { STREAM_STALL_TIMEOUT_MS, describeError } from './provider.ts';
 import type { ChatMessage, ChatOptions, TokenUsage, ToolCall, ToolDefinition } from './provider.ts';
 
@@ -33,6 +34,8 @@ const TOOL_NAMESPACE_NAME = 'icpc-workbench';
 
 export interface ChatgptDeps {
   fetchFn?: typeof fetch;
+  /** OpenAI 系网络代理（显式值；缺省回退 HTTPS_PROXY 环境变量，再回退直连） */
+  proxyUrl?: string;
 }
 
 /** Responses API 事件的最小类型面（只声明适配器消费的字段） */
@@ -182,8 +185,11 @@ function mapResponsesUsage(u: NonNullable<ResponsesEvent['response']>['usage']):
   };
 }
 
-/** ChatGPT 侧错误 → 可读文案（订阅额度用尽给出用量页指引） */
+/** ChatGPT 侧错误 → 可读文案（订阅额度用尽给出用量页指引；地区封锁给代理指引） */
 function friendlyChatgptError(code: string, message: string): Error {
+  if (code.includes('unsupported_country_region_territory') || message.includes('unsupported_country_region_territory')) {
+    return new Error(chatgptRegionBlockedHint());
+  }
   if (code.includes('subscription_sharing_usage_limit_exceeded')) {
     return new Error(`ChatGPT 套餐额度已用尽（与其他应用共享订阅额度），用量明细见 ${CHATGPT_USAGE_URL}`);
   }
@@ -236,8 +242,11 @@ async function* chatgptContentStream(
   if (!cfg.model.trim()) {
     throw new Error('未选择模型：请登录 ChatGPT 后在模型目录中选用套餐内模型');
   }
-  // 临期刷新（轮换语义在 chatgptAuth 内串行化并落库）；失效（terminal）抛可读错误
-  let cred = await ensureFreshChatgptCredential(cfg.chatgpt);
+  // 临期刷新（轮换语义在 chatgptAuth 内串行化并落库）；失效（terminal）抛可读错误。
+  // 刷新请求与对话请求走同一代理（refresh_token 交换也在 OpenAI 侧，同样受出口 IP 封锁）
+  let cred = await ensureFreshChatgptCredential(cfg.chatgpt, { proxyUrl: deps.proxyUrl });
+  // 代理感知 fetch：显式代理 → HTTPS_PROXY 环境变量 → 直连；测试注入的 fetchFn 优先
+  const doFetch = proxyFetch(resolveProxyUrl(deps.proxyUrl), deps.fetchFn);
   const payload = buildResponsesPayload(cfg, messages, opts);
 
   // 连接超时 + 调用方中断：控制器只在「等响应头」阶段受 timeoutMs 约束，
@@ -261,7 +270,7 @@ async function* chatgptContentStream(
     armConnect();
     for (;;) {
       try {
-        res = await (deps.fetchFn ?? fetch)(responsesUrl(cfg.baseURL), {
+        res = await doFetch(responsesUrl(cfg.baseURL), {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
@@ -273,7 +282,9 @@ async function* chatgptContentStream(
         });
       } catch (e) {
         if (opts.signal?.aborted) throw abortError();
-        throw new Error(describeError(e));
+        const detail = describeError(e);
+        // 显式代理下连不上：大概率代理没在运行/端口不对，指回设置页
+        throw new Error(deps.proxyUrl ? `无法通过代理 ${deps.proxyUrl} 连接 ChatGPT API：${detail}` : detail);
       }
       if (res.ok) {
         // 响应头已到达：连接超时下钟，正文读取只受调用方中断与空闲看门狗控制
@@ -283,16 +294,20 @@ async function* chatgptContentStream(
         }
         break;
       }
-      await res.text().catch(() => '');
+      // 错误体只消费一次（body 读尽后第二次 text() 恒为空串，之前因此丢掉上游错误详情）
+      const text = await res.text().catch(() => '');
       // 401：access_token 在余量内被撤销等场景 —— 强制刷新一次后单次重试
       if (res.status === 401 && !retried401) {
         retried401 = true;
-        cred = await ensureFreshChatgptCredential(cfg.chatgpt, { force: true });
+        cred = await ensureFreshChatgptCredential(cfg.chatgpt, { force: true, proxyUrl: deps.proxyUrl });
         armConnect();
         continue;
       }
       if (opts.signal?.aborted) throw abortError();
-      const text = await res.text().catch(() => '');
+      // 地区封锁同样可能出现在 Responses API 层（与登录端点同一出口 IP 判定）
+      if (text.includes('unsupported_country_region_territory')) {
+        throw new Error(chatgptRegionBlockedHint());
+      }
       throw new Error(`ChatGPT API HTTP ${res.status}: ${text.slice(0, 200)}`);
     }
   } finally {

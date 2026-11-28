@@ -253,3 +253,38 @@ test('codexProviderTest：未安装 codex → 安装指引（不尝试对话）'
   assert.equal(r.ok, false);
   assert.match(r.message, /未找到 codex CLI/);
 });
+
+test('代理注入：deps.proxyUrl 以 HTTPS_PROXY/HTTP_PROXY 写进 codex 子进程环境（出口需在 OpenAI 支持地区）', async () => {
+  const seen: Array<SpawnOptions | undefined> = [];
+  const spawnFn: CodexSpawnFn = (_cmd, _args, opts) => {
+    seen.push(opts);
+    return realSpawn(process.execPath, ['-e', FAKE_CODEX_SCRIPT], {
+      ...opts,
+      env: { ...(opts?.env ?? process.env), FAKE_CODEX_MODE: 'ok' },
+    });
+  };
+  const text = await codexChat(codexCfg(), [{ role: 'user', content: 'hi' }], {}, { spawnFn, proxyUrl: 'http://127.0.0.1:7890' });
+  assert.equal(text, 'pong');
+  const env = seen[0]?.env as NodeJS.ProcessEnv | undefined;
+  assert.equal(env?.HTTPS_PROXY, 'http://127.0.0.1:7890');
+  assert.equal(env?.https_proxy, 'http://127.0.0.1:7890');
+  assert.equal(env?.HTTP_PROXY, 'http://127.0.0.1:7890');
+
+  // 未配置代理（且环境变量也没有）时不覆盖 env：完全继承父进程，测试桩行为不变
+  const prev = { ...process.env };
+  for (const k of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy']) delete process.env[k];
+  try {
+    const seen2: Array<SpawnOptions | undefined> = [];
+    const spawnFn2: CodexSpawnFn = (_cmd, _args, opts) => {
+      seen2.push(opts);
+      return realSpawn(process.execPath, ['-e', FAKE_CODEX_SCRIPT], {
+        ...opts,
+        env: { ...(opts?.env ?? process.env), FAKE_CODEX_MODE: 'ok' },
+      });
+    };
+    await codexChat(codexCfg(), [{ role: 'user', content: 'hi' }], {}, { spawnFn: spawnFn2 });
+    assert.equal(seen2[0]?.env, undefined, '无代理时不得注入 env');
+  } finally {
+    process.env = prev;
+  }
+});

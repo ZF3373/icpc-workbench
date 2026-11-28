@@ -54,10 +54,32 @@ OAuth PKCE 授权（无 client secret / partner key）后，用 ChatGPT 订阅�
 `protocol='codex'` 走本机 Codex CLI 子进程（登录态由 Codex 自管）。都不依赖第三方
 API Key，可随时用「当前使用」下拉切换。
 
-## 四、测试
+## 四、地区限制与网络代理（issue 67 用户实测）
+
+OpenAI 按**出口 IP 所在地区**放行请求：出口位于不支持地区时，授权页直接返回
+`{"error":{"code":"unsupported_country_region_territory",...}}`（HTTP 403）。而 Node 的
+全局 fetch **不读系统代理也不读 HTTP(S)_PROXY 环境变量**——浏览器能打开 OpenAI 不代表
+服务端能连上，token 交换与对话请求都会被地区封锁。
+
+- **网络代理**：codex/chatgpt 提供商新增 `proxy` 配置（设置页「网络代理」输入框，
+  http(s) 地址如 `http://127.0.0.1:7890`）。`server/src/ai/proxyFetch.ts` 统一装配：
+  显式代理 → `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` 环境变量回退 → 直连；undici
+  ProxyAgent（CONNECT 隧道）按 URI 缓存复用。登录/换 token/刷新/撤销/套餐目录/对话
+  全部经同一代理；codex 路线则以 `HTTPS_PROXY`/`HTTP_PROXY` 注入 CLI 子进程环境。
+- **登录预检**：发起登录时先用与 token 交换**相同的网络路径** GET 一次授权端点，
+  响应体带 `unsupported_country_region_territory` 或连不上 OpenAI 时，在打开浏览器
+  **之前**就给出可操作的中文提示（不再让用户白等 5 分钟轮询超时）。
+- 错误友好化：地区封锁（含 Responses API 层与刷新轮换）统一指向代理配置指引；
+  代理不可达时指回设置页。token 端点的嵌套 `{error:{code,message}}` 形态（网关层）
+  与扁平 OAuth 形态都能解析。
+
+## 五、测试
 
 - `server/test/chatgpt-provider.test.ts`：预览期约束（store/stream/禁用字段/instructions/
   developer 角色/namespace 工具）、SSE 事件解析（delta/reasoning/function_call/usage）、
-  额度错误友好化、临期刷新与 401 重试、多模态映射。
+  额度错误友好化、临期刷新与 401 重试、多模态映射、地区封锁 403 → 代理指引。
 - `server/test/settings-ai.test.ts`：OAuth 登录端到端（fake 授权服务器 + 真 RSA/JWKS 验签，
-  校验授权 URL 契约参数、凭据密文落库、套餐模型写入目录、刷新轮换立即落库、登出撤销）。
+  校验授权 URL 契约参数、凭据密文落库、套餐模型写入目录、刷新轮换立即落库、登出撤销、
+  地区封锁预检快速失败）、代理落库/清除/非法值 400。
+- `server/test/proxyFetch.test.ts`：代理解析优先级与本地假代理（CONNECT 隧道）端到端。
+- `server/test/codex-provider.test.ts`：代理以 HTTPS_PROXY 注入 codex 子进程环境。

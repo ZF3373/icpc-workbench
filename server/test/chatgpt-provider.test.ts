@@ -310,3 +310,33 @@ test('多模态：image_url data URL 映射 input_image，file 块占位说明',
   assert.match(String(parts[2]!.text), /file-api-123/);
   assert.match(String(parts[2]!.text), /不支持 Files API/);
 });
+
+test('Responses API 层的地区封锁（HTTP 403 unsupported_country_region_territory）→ 代理配置指引', async () => {
+  const { deps } = fetchStub([
+    new Response(
+      JSON.stringify({
+        error: {
+          code: 'unsupported_country_region_territory',
+          message: 'Country, region, or territory not supported',
+          param: null,
+          type: 'request_forbidden',
+        },
+      }),
+      { status: 403, headers: { 'content-type': 'application/json' } },
+    ),
+  ]);
+  await assert.rejects(
+    () => chatgptChat(cfg(), [{ role: 'user', content: 'hi' }], {}, deps),
+    (e: Error) => /unsupported_country_region_territory/.test(e.message) && /网络代理/.test(e.message),
+  );
+});
+
+test('HTTP 错误体一次性消费：非 2xx 响应的错误详情进入错误消息（不再恒为空）', async () => {
+  const { deps } = fetchStub([
+    new Response('{"error":{"message":"upstream boom detail"}}', { status: 429, headers: { 'content-type': 'application/json' } }),
+  ]);
+  await assert.rejects(
+    () => chatgptChat(cfg(), [{ role: 'user', content: 'hi' }], {}, deps),
+    (e: Error) => /HTTP 429/.test(e.message) && /upstream boom detail/.test(e.message),
+  );
+});
