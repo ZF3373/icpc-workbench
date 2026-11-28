@@ -20,7 +20,7 @@ import { localToday } from './dates.ts';
  *   audit.jsonl 有意不纳入：它是追加型审计日志而非状态，回滚它只会白丢排查线索。
  */
 
-export type BackupReason = 'manual' | 'daily' | 'pre-upgrade' | 'pre-import' | 'pre-reset' | 'pre-account-delete';
+export type BackupReason = 'manual' | 'daily' | 'pre-upgrade' | 'pre-import' | 'pre-reset' | 'pre-account-delete' | 'pre-webdav-sync';
 
 /** 各 reason 的保留份数：超出后从最旧开始清理 */
 const KEEP_PER_REASON: Record<BackupReason, number> = {
@@ -30,6 +30,7 @@ const KEEP_PER_REASON: Record<BackupReason, number> = {
   'pre-import': 3,
   'pre-reset': 3,
   'pre-account-delete': 3,
+  'pre-webdav-sync': 3,
 };
 /** 所有备份的总上限（兜底，防止磁盘无限膨胀） */
 const KEEP_TOTAL = 30;
@@ -75,14 +76,15 @@ function knowledgeSnapshotPath(backupDir: string, dbFile: string): string {
 }
 
 /** 写出标注 JSONL 的伴生快照；源文件不存在时返回 false（新库尚无标注） */
-function writeKnowledgeSnapshot(backupDir: string, dbFile: string): boolean {
-  const source = path.join(path.dirname(backupDir), ANNOTATIONS_REL);
-  if (!fs.existsSync(source)) return false;
+function writeKnowledgeSnapshot(backupDir: string, dbFile: string, dataDir: string, includeEmpty: boolean): boolean {
+  const source = path.join(dataDir, ANNOTATIONS_REL);
+  const exists = fs.existsSync(source);
+  if (!exists && !includeEmpty) return false;
   const payload = {
     version: 1,
     createdAt: new Date().toISOString(),
     file: 'annotations.jsonl',
-    content: fs.readFileSync(source, 'utf8'),
+    content: exists ? fs.readFileSync(source, 'utf8') : null,
   };
   fs.writeFileSync(knowledgeSnapshotPath(backupDir, dbFile), JSON.stringify(payload), 'utf8');
   return true;
@@ -113,7 +115,7 @@ function timestampFor(d = new Date()): string {
 }
 
 /** 创建备份（VACUUM INTO 一致快照），随后按保留策略清理旧备份。失败时抛错由调用方决定如何呈现。 */
-export function createBackup(db: Db, reason: BackupReason, dir?: string): { file: string; size: number } {
+export function createBackup(db: Db, reason: BackupReason, dir?: string, dataDir?: string): { file: string; size: number } {
   const backupDir = backupDirFor(db, dir);
   fs.mkdirSync(backupDir, { recursive: true });
   // 同一秒内可能创建多个备份（如连续手动点击）：文件已存在时退避到带毫秒后缀。
@@ -149,8 +151,12 @@ export function createBackup(db: Db, reason: BackupReason, dir?: string): { file
   // 伴生快照：把标注源真相与数据库锁在同一时间点。失败不阻塞主备份（数据库快照仍有效），
   // 但要明确告警——这种备份恢复后知识点会从更晚的 JSONL 重建，恢复点对标注无效。
   try {
-    writeKnowledgeSnapshot(backupDir, file);
+    writeKnowledgeSnapshot(backupDir, file, dataDir ?? path.dirname(backupDir), reason === 'pre-webdav-sync');
   } catch (e) {
+    if (reason === 'pre-webdav-sync') {
+      deleteBackup(db, file, dir);
+      throw e;
+    }
     console.error(`[backup] 知识点快照写入失败（数据库备份仍有效，但恢复点不含标注回滚）: ${(e as Error).message}`);
   }
   pruneBackups(db, reason, dir);
@@ -263,7 +269,7 @@ export function requestRestore(db: Db, file: string, dir?: string): { file: stri
  * 永久性失败（标记非法 / 备份缺失）与恢复成功都清除标记；复制中途失败则保留标记，下次启动重试。
  * 返回已恢复的备份文件名；无标记或恢复未执行时返回 null。
  */
-export function applyPendingRestore(dbPath: string, _dataDir?: string): string | null {
+export function applyPendingRestore(dbPath: string, dataDir?: string): string | null {
   const markerPath = path.join(path.dirname(dbPath), RESTORE_MARKER);
   if (!fs.existsSync(markerPath)) return null;
   let file: string | null = null;
@@ -303,12 +309,16 @@ export function applyPendingRestore(dbPath: string, _dataDir?: string): string |
     const snapshot = knowledgeSnapshotPath(backupDir, file);
     if (fs.existsSync(snapshot)) {
       try {
-        const payload = JSON.parse(fs.readFileSync(snapshot, 'utf8')) as { file?: string; content?: string };
+        const payload = JSON.parse(fs.readFileSync(snapshot, 'utf8')) as { file?: string; content?: string | null };
+        const webDavBackup = FILE_RE.exec(file)?.[2] === 'pre-webdav-sync';
+        const targetAnnotations = path.join((webDavBackup ? dataDir : undefined) ?? path.dirname(dbPath), ANNOTATIONS_REL);
         if (payload.file === 'annotations.jsonl' && typeof payload.content === 'string') {
-          const targetAnnotations = path.join(path.dirname(dbPath), ANNOTATIONS_REL);
           fs.mkdirSync(path.dirname(targetAnnotations), { recursive: true });
           fs.writeFileSync(targetAnnotations, payload.content, 'utf8');
           console.log('[backup] 已同步回滚知识点源真相 knowledge/annotations.jsonl（与数据库同一时间点）');
+        }
+        if (payload.file === 'annotations.jsonl' && webDavBackup && payload.content === null) {
+          fs.rmSync(targetAnnotations, { force: true });
         }
       } catch (e) {
         console.error(

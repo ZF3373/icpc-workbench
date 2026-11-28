@@ -44,6 +44,7 @@ const BACKUP_REASON_LABEL: Record<string, string> = {
   'pre-upgrade': '升级前',
   'pre-import': '导入前',
   'pre-reset': '重置前',
+  'pre-webdav-sync': 'WebDAV 同步前',
 }
 
 /** 备份与恢复点：每日首次启动 / 升级前 / 大批量导入前 / 换账号重置前自动创建；恢复重启后生效。

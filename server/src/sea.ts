@@ -27,6 +27,8 @@ import { configureSyncScheduler } from './adapters/syncScheduler.ts';
 import { migratePlatformCookieToAccounts } from './adapters/accountCreds.ts';
 import { setRequestIntervalScale } from './net/hostThrottle.ts';
 import { backupsRoutes } from './routes/backups.ts';
+import { webDavSyncRoutes } from './routes/webdavSync.ts';
+import { WebDavSync } from './data-sync/service.ts';
 import { initAdapters } from './adapters/index.ts';
 import { compressionMiddleware, csrfGuard, errorHandler, hostGuard, securityHeaders } from './middleware.ts';
 import { spaStaticRoutes } from './spa-static.ts';
@@ -103,8 +105,10 @@ export function startServer(
 
   // 恢复点回滚：必须在 createDb 之前应用（覆盖数据库文件）——与 index.ts 同序，
   // 漏了它 SEA 版「设置 → 备份 → 恢复」的重启生效永远不发生，且 pending 标记残留导致该备份无法删除
-  applyPendingRestore(config.dbPath);
+  const restored = applyPendingRestore(config.dbPath, config.dataDir);
   const db = createDb(config.dbPath);
+  const webDavSync = new WebDavSync(db, config.dataDir);
+  if (restored) webDavSync.resetBaseline();
   seedBuiltinBank(db); // 内置题库播种：版本变化时 upsert 一次，日常启动零开销
   // 账号级凭据迁移（幂等）：与 index.ts 同序——漏了它，pre-0.9 升级的打包版/Docker 用户
   // 的平台级旧 Cookie 永远不会播种到账号槽位，所有账号同步报「未配置 Cookie」
@@ -135,21 +139,23 @@ export function startServer(
   } catch (e) {
     console.error(`[backup] 每日备份失败（不影响启动）: ${(e as Error).message}`);
   }
-  try {
-    const purged = purgeAiAnnotations(db, { dataDir: config.dataDir });
-    if (purged.deleted > 0 || purged.tombstones > 0) {
-      console.log(`[knowledge] 已清理 AI 标注: 删除 ${purged.deleted} 条，写入 ${purged.tombstones} 个 tombstone`);
+  if (webDavSync.recoverAnnotations()) {
+    try {
+      const purged = purgeAiAnnotations(db, { dataDir: config.dataDir });
+      if (purged.deleted > 0 || purged.tombstones > 0) {
+        console.log(`[knowledge] 已清理 AI 标注: 删除 ${purged.deleted} 条，写入 ${purged.tombstones} 个 tombstone`);
+      }
+    } catch (e) {
+      console.error(`[knowledge] AI 标注清理失败（不影响启动）: ${(e as Error).message}`);
     }
-  } catch (e) {
-    console.error(`[knowledge] AI 标注清理失败（不影响启动）: ${(e as Error).message}`);
-  }
-  try {
-    const loaded = loadAnnotationsIntoDb(db, config.dataDir);
-    if (loaded.lines > 0) {
-      console.log(`[knowledge] 已从 JSONL 重建索引: ${loaded.inserted} 条标注 / ${loaded.problems} 题`);
+    try {
+      const loaded = loadAnnotationsIntoDb(db, config.dataDir);
+      if (loaded.lines > 0) {
+        console.log(`[knowledge] 已从 JSONL 重建索引: ${loaded.inserted} 条标注 / ${loaded.problems} 题`);
+      }
+    } catch (e) {
+      console.error(`[knowledge] JSONL 索引重建失败（不影响启动）: ${(e as Error).message}`);
     }
-  } catch (e) {
-    console.error(`[knowledge] JSONL 索引重建失败（不影响启动）: ${(e as Error).message}`);
   }
 
   const app = express();
@@ -203,6 +209,8 @@ app.use(csrfGuard());
   // QOJ WebView 同源代理：壳注入到 qoj.ac 页面的守护脚本经此领任务/回传 HTML（与 index.ts 同口径）
   app.use('/api/qoj-agent', qojAgentRoutes());
   app.use('/api/backups', backupsRoutes(db));
+  app.use('/api/webdav-sync', webDavSyncRoutes(webDavSync));
+  webDavSync.start();
   app.use('/api/update', updateRoutes(config, () => createBackup(db, 'pre-upgrade')));
   // MCP 端点：外部 agent 经 http://127.0.0.1:<port>/mcp 操控本软件（工具层 = /api/* 回环代理，
   // 见 src/mcp/）。⚠ 与 index.ts（tsx dev）双入口同步——漏装则桌面版/Docker 上外部 agent 连不上
