@@ -2,14 +2,25 @@ import { listenForTest } from './test-listen.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import { spawn as codexRealSpawn } from 'node:child_process';
 import { createDb, type Db } from '../src/db/index.ts';
 import { settingsRoutes } from '../src/routes/settings.ts';
-import { DEFAULT_CONFIG } from '../src/config.ts';
+import { DEFAULT_CONFIG, type AppConfig } from '../src/config.ts';
 import { aiConfigFromDb, saveAiConfig } from '../src/config.ts';
 import { setCodexTestDeps, type CodexSpawnFn } from '../src/ai/codexProvider.ts';
+import {
+  ensureFreshChatgptCredential,
+  generateTestSigningKey,
+  readChatgptCredential,
+  setChatgptAuthDepsForTest,
+  signTestJwt,
+  type TestSigningKey,
+} from '../src/ai/chatgptAuth.ts';
 
 /** mock OpenAI 兼容上游：可配置是否提供 /models、是否校验 Bearer key */
 interface Upstream {
@@ -1106,4 +1117,219 @@ test('本地 Codex：/ai/test 走 codex 探测（版本 → 登录态 → 最小
       setCodexTestDeps(null);
     }
   });
+});
+
+// ---------- Sign in with ChatGPT：OAuth 登录端到端（fake 授权服务器 + 真 RSA/JWKS 验证） ----------
+
+test('本地 Codex 与 ChatGPT 提供商的 protocol 落库与视图回传（多口径共存）', async () => {
+  await withServer(async (db, base) => {
+    const save = await fetch(`${base}/ai`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providers: [
+          { id: 'pc1', name: 'ChatGPT 订阅', baseURL: 'https://api.openai.com/v1', model: '', protocol: 'chatgpt' },
+        ],
+        activeProviderId: 'pc1',
+      }),
+    });
+    assert.equal(save.status, 200);
+    const stored = JSON.parse((db.prepare("SELECT value FROM settings WHERE key = 'ai.providers'").get() as { value: string }).value);
+    assert.equal(stored[0].protocol, 'chatgpt');
+    assert.equal(stored[0].baseURL, 'https://api.openai.com/v1');
+    assert.equal(stored[0].apiKey, '');
+    const view = (await (await fetch(base)).json()) as { ai: { providers: Array<{ protocol?: string }> } };
+    assert.equal(view.ai.providers[0]?.protocol, 'chatgpt');
+  });
+});
+
+test('ChatGPT 登录端到端：授权 URL 参数 → 回环回调 → code 交换 → 加密落库 → 套餐模型写入目录 → 登出撤销', async () => {
+  // fake 授权服务器：token/metadata/jwks/models/revoke；id_token 用真 RSA 密钥签发
+  const signer: TestSigningKey = generateTestSigningKey();
+  let expectedNonce = '';
+  let lastRefreshToken = '';
+  let refreshCount = 0;
+  const revokedTokens: string[] = [];
+  let modelsAuth: string | undefined;
+  const srv = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c as Buffer));
+    req.on('end', () => {
+      const respond = (status: number, body: unknown): void => {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+      };
+      const pathname = (req.url ?? '').split('?')[0];
+      if (pathname === '/.well-known/openid-configuration') {
+        respond(200, { issuer: ISSUER_BASE, jwks_uri: `${ISSUER_BASE}/jwks`, revocation_endpoint: `${ISSUER_BASE}/revoke` });
+        return;
+      }
+      if (pathname === '/jwks') {
+        respond(200, { keys: [signer.publicJwk] });
+        return;
+      }
+      if (pathname === '/api/accounts/oauth/token') {
+        const form = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+        const grant = form.get('grant_type');
+        const clientId = form.get('client_id') ?? '';
+        if (grant === 'authorization_code') {
+          assert.equal(form.get('code'), 'auth-code-1');
+          assert.equal((form.get('code_verifier') ?? '').length >= 43, true, 'PKCE verifier 必须足够长');
+          assert.equal(form.get('resource'), `${ISSUER_BASE}/v1`, 'resource 与测试覆盖的资源标识一致');
+          const now = Math.floor(Date.now() / 1000);
+          const idToken = signTestJwt(signer.privateKey,
+            { alg: 'RS256', kid: 'test-key', typ: 'JWT' },
+            { iss: ISSUER_BASE, aud: clientId, sub: 'acc-123', email: 'user@example.com', exp: now + 3600, nonce: expectedNonce });
+          lastRefreshToken = 'rt-1';
+          respond(200, {
+            access_token: 'at-1', refresh_token: 'rt-1', expires_in: 3600,
+            scope: 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct',
+            id_token: idToken,
+          });
+          return;
+        }
+        if (grant === 'refresh_token') {
+          assert.equal(form.get('refresh_token'), lastRefreshToken, '刷新必须用最新一轮的 refresh_token（轮换语义）');
+          refreshCount += 1;
+          const now = Math.floor(Date.now() / 1000);
+          const idToken = signTestJwt(signer.privateKey,
+            { alg: 'RS256', kid: 'test-key', typ: 'JWT' },
+            { iss: ISSUER_BASE, aud: clientId, sub: 'acc-123', email: 'user@example.com', exp: now + 3600 });
+          lastRefreshToken = `rt-2-${refreshCount}`;
+          respond(200, {
+            access_token: `at-2-${refreshCount}`, refresh_token: lastRefreshToken, expires_in: 3600,
+            scope: 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct',
+            id_token: idToken,
+          });
+          return;
+        }
+        respond(400, { error: 'unsupported_grant_type' });
+        return;
+      }
+      if (pathname === '/v1/models') {
+        modelsAuth = req.headers.authorization;
+        respond(200, {
+          models: [
+            { slug: 'gpt-5.1-codex', display_name: 'Codex', visibility: 'list' },
+            { slug: 'internal-only', display_name: '内部', visibility: 'hidden' },
+          ],
+        });
+        return;
+      }
+      if (pathname === '/revoke') {
+        const form = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+        revokedTokens.push(form.get('token') ?? '');
+        respond(200, {});
+        return;
+      }
+      respond(404, {});
+    });
+  });
+  srv.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => srv.once('listening', resolve));
+  const addr = srv.address() as AddressInfo;
+  const ISSUER_BASE = `http://127.0.0.1:${addr.port}`;
+  setChatgptAuthDepsForTest({ issuerOrigin: ISSUER_BASE, resource: `${ISSUER_BASE}/v1` });
+
+  // ChatGPT 测试用独立 dataDir（加密密钥文件不写进仓库 data/ 目录）
+  const cfg: AppConfig = { ...DEFAULT_CONFIG, dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'icpc-chatgpt-test-')) };
+  const db = createDb(':memory:');
+  const app = express();
+  app.use(express.json());
+  app.use('/api/settings', settingsRoutes(db, cfg));
+  const server = await listenForTest(app);
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/settings`;
+
+  try {
+    // 1. 建 ChatGPT 提供商
+    const save = await fetch(`${base}/ai`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providers: [{ id: 'pc1', name: 'ChatGPT 订阅', baseURL: 'https://api.openai.com/v1', model: '', protocol: 'chatgpt' }],
+        activeProviderId: 'pc1',
+      }),
+    });
+    assert.equal(save.status, 200);
+
+    // 2. 发起登录 → 校验授权 URL 的官方契约参数
+    const loginRes = await fetch(`${base}/ai/chatgpt/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ providerId: 'pc1' }),
+    });
+    assert.equal(loginRes.status, 200);
+    const login = (await loginRes.json()) as { loginId: string; authorizeUrl: string };
+    const authorizeUrl = new URL(login.authorizeUrl);
+    assert.equal(authorizeUrl.origin, ISSUER_BASE);
+    assert.equal(authorizeUrl.pathname, '/api/accounts/authorize');
+    assert.equal(authorizeUrl.searchParams.get('client_id'), 'dynamic_agent_client');
+    assert.equal(authorizeUrl.searchParams.get('agent_name_hint'), 'ICPC Workbench');
+    assert.ok(authorizeUrl.searchParams.get('ext_agent_host_id'));
+    assert.equal(authorizeUrl.searchParams.get('response_type'), 'code');
+    assert.equal(authorizeUrl.searchParams.get('code_challenge_method'), 'S256');
+    assert.ok((authorizeUrl.searchParams.get('scope') ?? '').includes('chatgpt.tokens.use.direct'));
+    assert.match(authorizeUrl.searchParams.get('redirect_uri') ?? '', /^http:\/\/127\.0\.0\.1:\d+\/auth\/callback$/);
+    expectedNonce = authorizeUrl.searchParams.get('nonce') ?? '';
+    console.error(`[CHATGPT-DBG] step2 ok redirect=${authorizeUrl.searchParams.get('redirect_uri')}`);
+
+    // 3. 模拟浏览器回调（state 归属 + code + 签发的 client_id）
+    const redirectUri = new URL(authorizeUrl.searchParams.get('redirect_uri')!);
+    const state = authorizeUrl.searchParams.get('state') ?? '';
+    const cb = await fetch(`${redirectUri.origin}${redirectUri.pathname}?code=auth-code-1&client_id=client_issued_123&state=${encodeURIComponent(state)}`);
+    assert.equal(cb.status, 200);
+
+    // 4. 轮询到 ok；凭据已加密落库（settings 原文不含 token 明文）
+    let pollBody: { status: string; email?: string; message?: string } | null = null;
+    for (let i = 0; i < 40; i++) {
+      const poll = await fetch(`${base}/ai/chatgpt/login/poll?loginId=${encodeURIComponent(login.loginId)}`);
+      pollBody = (await poll.json()) as { status: string; email?: string; message?: string };
+      if (pollBody.status !== 'pending') break;
+      await new Promise((s) => setTimeout(s, 100));
+    }
+    assert.equal(pollBody?.status, 'ok', pollBody?.message);
+    assert.equal(pollBody?.email, 'user@example.com');
+    const rawBlob = (db.prepare("SELECT value FROM settings WHERE key = 'ai.chatgptAuth'").get() as { value: string }).value;
+    assert.doesNotMatch(rawBlob, /at-1|rt-1|user@example\.com/, '凭据必须密文落库');
+    const parsedBlob = JSON.parse(rawBlob) as { enc?: string };
+    assert.match(parsedBlob.enc ?? '', /^\S+\.\S+\.\S+$/, '密文形态 iv.tag.data');
+
+    // 5. 运行时解析携带解密凭据；/v1/models 用 Bearer 调用；套餐模型写入目录（hidden 过滤）
+    const runtime = aiConfigFromDb(db, cfg);
+    assert.equal(runtime.protocol, 'chatgpt');
+    assert.equal(runtime.chatgpt?.accessToken, 'at-1');
+    assert.equal(runtime.chatgpt?.clientId, 'client_issued_123');
+    assert.equal(runtime.chatgpt?.accountId, 'acc-123');
+    assert.match(modelsAuth ?? '', /^Bearer at-1$/);
+    const view = (await (await fetch(base)).json()) as { ai: { chatgptLoggedIn?: boolean; chatgptEmail?: string; chatgpt?: unknown; providers: Array<{ id: string; model: string; models: Array<{ id: string }> }> } };
+    assert.equal(view.ai.chatgptLoggedIn, true);
+    assert.equal(view.ai.chatgptEmail, 'user@example.com');
+    assert.equal(view.ai.chatgpt, undefined, '凭据原文绝不随视图下发');
+    const pc1 = view.ai.providers.find((p) => p.id === 'pc1');
+    assert.deepEqual(pc1?.models.map((m) => m.id), ['gpt-5.1-codex'], 'hidden 模型被过滤');
+    assert.equal(pc1?.model, 'gpt-5.1-codex', '目录首个模型自动选用');
+
+    // 6. 刷新（轮换）：走接线后的刷新器（强制刷新）——网络交换 + 新凭据立即落库
+    const before = readChatgptCredential(db, cfg);
+    assert.ok(before);
+    const fresh = await ensureFreshChatgptCredential(before, { force: true });
+    assert.equal(fresh.accessToken, 'at-2-1');
+    assert.equal(fresh.refreshToken, 'rt-2-1');
+    const after = readChatgptCredential(db, cfg);
+    assert.equal(after?.refreshToken, 'rt-2-1', '轮换后的凭据必须立即落库');
+
+    // 7. 登出：撤销 + 本地清除
+    const logout = await fetch(`${base}/ai/chatgpt/logout`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(logout.status, 200);
+    assert.deepEqual(revokedTokens, ['rt-2-1']);
+    assert.equal(readChatgptCredential(db, cfg), null);
+    const status = (await (await fetch(`${base}/ai/chatgpt/status`)).json()) as { loggedIn: boolean };
+    assert.equal(status.loggedIn, false);
+  } finally {
+    server.close();
+    db.close();
+    setChatgptAuthDepsForTest(null);
+    srv.close();
+    fs.rmSync(cfg.dataDir, { recursive: true, force: true });
+  }
 });

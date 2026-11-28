@@ -44,7 +44,7 @@ import {
   type ModelCaps,
 } from '../../../../shared/src/index.ts'
 import { mergePickedModels } from '../../aiModelPicker'
-import { post } from '../../api'
+import { get, post } from '../../api'
 import { openExternal } from '../../externalLinks'
 
 /** 设置页 AI 配置块的数据形状（SettingsData.ai 的原始定义随本卡片迁入，类型单源在这里） */
@@ -66,6 +66,9 @@ export interface SettingsAiData {
   activeProviderId?: string
   /** 多提供商列表（密钥已打码，原文不下发；旧版服务端无此字段） */
   providers?: AiProviderView[]
+  /** ChatGPT 登录状态（Sign in with ChatGPT 凭据的脱敏展示，token 不下发） */
+  chatgptLoggedIn?: boolean
+  chatgptEmail?: string
   /** 全局兜底档位（不含提供商覆盖）：提供商参数留空时回退到这里 */
   globalMaxTokens?: number
   globalContextWindow?: number
@@ -170,12 +173,15 @@ function withModelUiKey(m: AiProviderModelEntry & { uiKey?: string }): ModelDraf
 
 /** 服务端已存提供商视图 → 编辑草稿（密钥原文不下发，草稿里 apiKey 恒从空开始） */
 function draftOf(p: AiProviderView): ProviderDraft {
-  // 预设回显：本地 Codex 按 protocol 识别；其余 baseURL 命中内置预设就显示该预设
-  //（用户改名不影响），否则归为「自定义」
+  // 预设回显：无密钥类（codex/chatgpt）按 protocol 识别（chatgpt 的 baseURL 与 OpenAI
+  // 预设相同，必须先看 protocol 再按 baseURL 匹配，否则会被误归成 OpenAI 预设）；
+  // 其余 baseURL 命中内置预设就显示该预设（用户改名不影响），否则归为「自定义」
   const presetKey =
     p.protocol === 'codex'
       ? 'codex'
-      : (AI_PROVIDER_PRESETS.find((x) => x.baseURL === p.baseURL)?.key ?? 'custom')
+      : p.protocol === 'chatgpt'
+        ? 'chatgpt'
+        : (AI_PROVIDER_PRESETS.find((x) => x.baseURL === p.baseURL)?.key ?? 'custom')
   return {
     id: p.id,
     presetKey,
@@ -213,10 +219,13 @@ export const AiSettingsCard = ({
   ref,
   ai,
   onSave,
+  onReload,
 }: {
   ref: Ref<AiSettingsCardHandle>
   ai: SettingsAiData
   onSave: () => void
+  /** 重新拉取服务端设置（ChatGPT 登录成功后刷新目录与登录状态；不传则只本地提示） */
+  onReload?: () => void
 }) => {
   const { message } = AntdApp.useApp()
   const [form] = Form.useForm<AiFormValues>()
@@ -239,6 +248,8 @@ export const AiSettingsCard = ({
   const [testingBy, setTestingBy] = useState<Record<string, boolean>>({})
   const [testResultBy, setTestResultBy] = useState<Record<string, { ok: boolean; message: string } | undefined>>({})
   const [fetchingBy, setFetchingBy] = useState<Record<string, boolean>>({})
+  /** ChatGPT 登录进行中（providerId → true）：轮询期间按钮转圈并提示去浏览器完成授权 */
+  const [chatgptLoginBy, setChatgptLoginBy] = useState<Record<string, boolean>>({})
   const [searchOrder, setSearchOrder] = useState<string[]>([])
   const [searchKeysDraft, setSearchKeysDraft] = useState<Record<string, string>>({})
   const [searchClearDraft, setSearchClearDraft] = useState<Set<string>>(() => new Set())
@@ -347,9 +358,10 @@ export const AiSettingsCard = ({
       label: groupLabel,
       options:
         ids.length === 0
-          ? p.presetKey === 'codex'
-            // 本地 Codex 模型可留空：给一个可选的「跟随默认」项（选中 = 仅切换提供商，模型不动）
-            ? [{ value: `${p.id}${ACTIVE_PICKER_SEP}`, label: '跟随本机 Codex 默认模型', display: groupLabel, searchText: p.name }]
+          ? p.presetKey === 'codex' || p.presetKey === 'chatgpt'
+            // Codex 模型可留空（跟随 CLI 配置）；ChatGPT 登录后目录自动带出：
+            // 给一个可选的「跟随默认」项（选中 = 仅切换提供商，模型不动）
+            ? [{ value: `${p.id}${ACTIVE_PICKER_SEP}`, label: p.presetKey === 'codex' ? '跟随本机 Codex 默认模型' : '登录后自动带出套餐模型', display: groupLabel, searchText: p.name }]
             : [{ value: `${p.id}${ACTIVE_PICKER_SEP}`, label: '还没有可选模型', display: groupLabel, disabled: true }]
           : ids.map((id) => ({
               value: `${p.id}${ACTIVE_PICKER_SEP}${id}`,
@@ -529,12 +541,14 @@ export const AiSettingsCard = ({
       return
     }
     const isCodexPreset = isPreset && addModal.presetKey === 'codex'
+    const isChatgptPreset = isPreset && addModal.presetKey === 'chatgpt'
     const baseURL = addModal.baseURL.trim()
     if (!addModal.name.trim()) {
       message.error('请填写提供商名称')
       return
     }
-    // 本地 Codex 无 Base URL / API Key 概念（登录态由本机 codex 自管），跳过 http(s) 校验
+    // 本地 Codex 无 Base URL / API Key 概念（登录态由本机 codex 自管），跳过 http(s) 校验；
+    // ChatGPT 登录的 baseURL 是预设官方地址，照常校验
     if (!isCodexPreset && !/^https?:\/\//.test(baseURL)) {
       message.error(`API 地址需为 http(s) 地址，当前：${baseURL || '（空）'}`)
       return
@@ -553,7 +567,7 @@ export const AiSettingsCard = ({
       name,
       baseURL: isCodexPreset ? '' : baseURL,
       model,
-      apiKey: isCodexPreset ? '' : addModal.apiKey.trim(),
+      apiKey: isCodexPreset || isChatgptPreset ? '' : addModal.apiKey.trim(),
       hasApiKey: false,
       apiKeyMasked: '',
       // 预设提供商：目录带默认清单（含 defaultModel），无需提供商级档位；
@@ -667,10 +681,11 @@ export const AiSettingsCard = ({
 
   /** 测试单个提供商：已存的传 providerId（服务端用已存密钥兜底），未存的全靠表单值；
    *  本地 Codex 走服务端 codex 探测分支（--version → login status → 最小 exec 实测），
-   *  未保存的草稿带 protocol 提示让服务端识别（codex 测试不涉及任何密钥复用，安全无虞） */
+   *  ChatGPT 登录走 Responses API 实测（凭据全局单例，服务端自动携带）；
+   *  未保存的草稿带 protocol 提示让服务端识别（两者都不涉及 HTTP 密钥复用，安全无虞） */
   const testProvider = async (p: ProviderDraft) => {
-    const isCodex = p.presetKey === 'codex'
-    if (!isCodex && !/^https?:\/\//.test(p.baseURL.trim())) {
+    const keylessProtocol = p.presetKey === 'codex' ? 'codex' : p.presetKey === 'chatgpt' ? 'chatgpt' : undefined
+    if (!keylessProtocol && !/^https?:\/\//.test(p.baseURL.trim())) {
       setTestResultBy((m) => ({ ...m, [p.id]: { ok: false, message: 'Base URL 需为 http(s) 地址' } }))
       return
     }
@@ -679,8 +694,8 @@ export const AiSettingsCard = ({
     try {
       const r = await post<{ ok: boolean; message: string; models?: string[] }>('/api/settings/ai/test', {
         providerId: storedIds.has(p.id) ? p.id : undefined,
-        ...(isCodex
-          ? { protocol: 'codex' }
+        ...(keylessProtocol
+          ? { protocol: keylessProtocol }
           : { baseURL: p.baseURL.trim(), apiKey: p.apiKey.trim() || undefined }),
         model: p.model.trim(),
       })
@@ -696,6 +711,10 @@ export const AiSettingsCard = ({
   const fetchProviderModels = async (p: ProviderDraft) => {
     if (p.presetKey === 'codex') {
       message.info('本地 Codex 的模型跟随本机 CLI 配置，无需获取列表')
+      return
+    }
+    if (p.presetKey === 'chatgpt' && !ai.chatgptLoggedIn) {
+      message.info('请先完成 ChatGPT 登录，套餐模型会自动写入目录')
       return
     }
     if (!/^https?:\/\//.test(p.baseURL.trim())) {
@@ -728,6 +747,53 @@ export const AiSettingsCard = ({
       message.error((e as Error).message)
     } finally {
       setFetchingBy((m) => ({ ...m, [p.id]: false }))
+    }
+  }
+
+  /** ChatGPT 登录（Sign in with ChatGPT 官方开源流程）：后端起回环回调 + PKCE，
+   *  前端用系统浏览器打开授权 URL，随后轮询登录结果；成功后 onReload 刷新目录与状态 */
+  const startChatgptLoginFlow = async (pid: string) => {
+    setChatgptLoginBy((m) => ({ ...m, [pid]: true }))
+    try {
+      const r = await post<{ loginId: string; authorizeUrl: string }>('/api/settings/ai/chatgpt/login', {
+        providerId: storedIds.has(pid) ? pid : undefined,
+      })
+      openExternal(r.authorizeUrl)
+      message.info('已在系统浏览器打开 ChatGPT 授权页，完成登录后自动返回…')
+      const deadline = Date.now() + 5 * 60_000
+      for (;;) {
+        if (Date.now() > deadline) {
+          message.error('登录超时（5 分钟未完成授权），请重试')
+          break
+        }
+        await new Promise((s) => setTimeout(s, 1500))
+        const s = await get<{ status: string; email?: string; message?: string }>(
+          `/api/settings/ai/chatgpt/login/poll?loginId=${encodeURIComponent(r.loginId)}`,
+        )
+        if (s.status === 'ok') {
+          message.success(`ChatGPT 已登录${s.email ? `：${s.email}` : ''}，套餐模型已写入目录`)
+          onReload?.()
+          break
+        }
+        if (s.status === 'failed' || s.status === 'expired') {
+          message.error(s.message ?? '登录未完成')
+          break
+        }
+      }
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setChatgptLoginBy((m) => ({ ...m, [pid]: false }))
+    }
+  }
+
+  const logoutChatgpt = async () => {
+    try {
+      await post('/api/settings/ai/chatgpt/logout', {})
+      message.success('已退出 ChatGPT 登录')
+      onReload?.()
+    } catch (e) {
+      message.error((e as Error).message)
     }
   }
 
@@ -766,14 +832,14 @@ export const AiSettingsCard = ({
         // apiKey 只在本次输入了新值时下发：缺省 = 服务端保持该提供商已存密钥；
         // maxTokens/contextWindow 显式下发（null = 清除该提供商的单独设置，回退全局默认）；
         // 模型目录总是全量下发（空数组 = 明确清空目录），id 为空的半填行丢弃；
-        // protocol 总是显式下发（codex ↔ chat 预设互切时清掉旧口径，不给「缺省=保持」留歧义）
+        // protocol 总是显式下发（codex/chatgpt ↔ chat 预设互切时清掉旧口径，不给「缺省=保持」留歧义）
         providers: providers.map((p) => ({
           id: p.id,
           name: p.name.trim(),
-          protocol: p.presetKey === 'codex' ? 'codex' : 'chat',
+          protocol: p.presetKey === 'codex' ? 'codex' : p.presetKey === 'chatgpt' ? 'chatgpt' : 'chat',
           baseURL: p.presetKey === 'codex' ? '' : p.baseURL.trim(),
           model: p.model.trim(),
-          ...(p.presetKey !== 'codex' && p.apiKey.trim() ? { apiKey: p.apiKey.trim() } : {}),
+          ...(p.presetKey !== 'codex' && p.presetKey !== 'chatgpt' && p.apiKey.trim() ? { apiKey: p.apiKey.trim() } : {}),
           maxTokens: p.maxTokens ?? null,
           contextWindow: p.contextWindow ?? null,
           models: p.models
@@ -866,11 +932,15 @@ export const AiSettingsCard = ({
                     <span style={{ fontWeight: 600 }}>{p.name}</span>
                     {p.id === activeId && <Tag color="success">当前使用</Tag>}
                     {!storedIds.has(p.id) && <Tag color="warning">未保存</Tag>}
-                    {p.presetKey === 'codex'
-                      ? <Tag color="processing">本机 Codex CLI</Tag>
-                      : !p.hasApiKey && !p.apiKey && (ai.apiKeyFromEnv
+                    {p.presetKey === 'codex' ? (
+                      <Tag color="processing">本机 Codex CLI</Tag>
+                    ) : p.presetKey === 'chatgpt' ? (
+                      ai.chatgptLoggedIn ? <Tag color="success">ChatGPT 已登录</Tag> : <Tag color="warning">未登录</Tag>
+                    ) : (
+                      !p.hasApiKey && !p.apiKey && (ai.apiKeyFromEnv
                         ? <Tag color="processing">密钥来自环境变量</Tag>
-                        : <Tag color="error">未配密钥</Tag>)}
+                        : <Tag color="error">未配密钥</Tag>)
+                    )}
                     <span
                       style={{
                         fontSize: 12, color: 'var(--text-3)', overflow: 'hidden',
@@ -879,7 +949,9 @@ export const AiSettingsCard = ({
                     >
                       {p.presetKey === 'codex'
                         ? (p.model.trim() ? `模型 ${p.model.trim()}（跟随 Codex 配置可留空）` : '本机 Codex CLI · 无需密钥')
-                        : p.baseURL}
+                        : p.presetKey === 'chatgpt'
+                          ? (ai.chatgptLoggedIn ? `ChatGPT 订阅额度${ai.chatgptEmail ? ` · ${ai.chatgptEmail}` : ''}` : 'ChatGPT 登录后使用订阅额度')
+                          : p.baseURL}
                     </span>
                   </span>
                 ),
@@ -925,6 +997,31 @@ export const AiSettingsCard = ({
                         无需 API Key；登录与凭据刷新由 Codex 自身处理（需较新版本的 Codex CLI）。
                         未登录时请先在终端运行 <code>codex login</code>。
                       </p>
+                    ) : p.presetKey === 'chatgpt' ? (
+                      <div style={{ marginBottom: 12 }}>
+                        <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 8px' }}>
+                          官方 Sign in with ChatGPT 开源接入：点击登录后在系统浏览器完成 ChatGPT 授权
+                          （OAuth，无需 API Key），工作台用你的 ChatGPT 订阅额度直连 Responses API。
+                          登录成功后套餐模型自动写入下方目录；access token 每小时自动续期。
+                        </p>
+                        <Space wrap>
+                          <Button
+                            type="primary"
+                            loading={!!chatgptLoginBy[p.id]}
+                            onClick={() => void startChatgptLoginFlow(p.id)}
+                          >
+                            {ai.chatgptLoggedIn ? '重新登录 ChatGPT' : '使用 ChatGPT 账号登录'}
+                          </Button>
+                          {ai.chatgptLoggedIn && (
+                            <Button onClick={() => void logoutChatgpt()}>退出登录{ai.chatgptEmail ? `（${ai.chatgptEmail}）` : ''}</Button>
+                          )}
+                        </Space>
+                        {ai.chatgptLoggedIn && (
+                          <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '8px 0 0' }}>
+                            已登录{ai.chatgptEmail ? `：${ai.chatgptEmail}` : ''}。切换模型用下方目录的 radio 点选。
+                          </p>
+                        )}
+                      </div>
                     ) : (
                       <Form.Item label="API 密钥" style={{ marginBottom: 12 }}>
                         <Input.Password
@@ -953,7 +1050,7 @@ export const AiSettingsCard = ({
                         label: '自定义设置',
                         children: (
                           <>
-                            {p.presetKey !== 'codex' && (
+                            {p.presetKey !== 'codex' && p.presetKey !== 'chatgpt' && (
                               <Form.Item label="API 地址（Base URL）" style={{ marginBottom: 12 }}>
                                 <Input
                                   value={p.baseURL}
@@ -966,7 +1063,11 @@ export const AiSettingsCard = ({
                               <Input
                                 value={p.name}
                                 onChange={(e) => patchProvider(p.id, { name: e.target.value })}
-                                placeholder={p.presetKey === 'codex' ? '如：本地 Codex / 我的 Codex' : '如：DeepSeek / 公司网关 / 本地 Ollama'}
+                                placeholder={p.presetKey === 'codex'
+                                  ? '如：本地 Codex / 我的 Codex'
+                                  : p.presetKey === 'chatgpt'
+                                    ? '如：ChatGPT 订阅 / 我的 ChatGPT'
+                                    : '如：DeepSeek / 公司网关 / 本地 Ollama'}
                               />
                             </Form.Item>
                           </>
@@ -1373,18 +1474,28 @@ export const AiSettingsCard = ({
                     options={AI_PROVIDER_PRESETS.map((x) => ({ value: x.key, label: x.name }))}
                   />
                 </div>
-                {addModal.presetKey === 'codex' ? (
+                {addModal.presetKey === 'codex' || addModal.presetKey === 'chatgpt' ? (
                   <>
-                    <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 12px' }}>
-                      选中后由工作台调用本机已安装并通过 <code>codex login</code> 登录 ChatGPT 的 Codex CLI，
-                      无需 API Key；登录与凭据刷新由 Codex 自身处理。
-                    </p>
+                    {addModal.presetKey === 'codex' ? (
+                      <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 12px' }}>
+                        选中后由工作台调用本机已安装并通过 <code>codex login</code> 登录 ChatGPT 的 Codex CLI，
+                        无需 API Key；登录与凭据刷新由 Codex 自身处理。
+                      </p>
+                    ) : (
+                      <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 12px' }}>
+                        官方 Sign in with ChatGPT 开源接入：保存提供商后点「使用 ChatGPT 账号登录」，
+                        在系统浏览器完成授权即可用订阅额度直连，无需 API Key。
+                        登录成功后套餐模型自动写入目录。
+                      </p>
+                    )}
                     <div style={{ marginBottom: 12 }}>
                       <div style={{ fontSize: 13, marginBottom: 6 }}>默认模型（可留空）</div>
                       <Input
                         value={addModal.model}
                         onChange={(e) => setAddModal({ ...addModal, model: e.target.value })}
-                        placeholder="留空 = 跟随本机 Codex CLI 默认模型"
+                        placeholder={addModal.presetKey === 'codex'
+                          ? '留空 = 跟随本机 Codex CLI 默认模型'
+                          : '留空 = 登录后自动选用套餐首个模型'}
                       />
                     </div>
                   </>

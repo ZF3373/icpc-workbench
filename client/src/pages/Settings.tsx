@@ -951,6 +951,7 @@ export default function Settings() {
           ref={aiForm}
           ai={data.ai}
           onSave={saveAi}
+          onReload={load}
         />
         <AiCustomPromptsCard />
       </Col>

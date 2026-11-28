@@ -7,8 +7,11 @@ import {
   cookieFieldsOf,
   cookieFieldValue,
   cookieOnlyFieldsOf,
+  AI_PROVIDER_MODELS_MAX,
+  guessModelCaps,
   mergeCookieFields,
   isCodexProtocol,
+  isChatgptProtocol,
   isSearchEngineId,
   normalizeEngineKeys,
   SEARCH_ENGINE_IDS,
@@ -59,6 +62,17 @@ import {
 } from '../net/hostThrottle.ts';
 import { chatUrl } from '../ai/provider.ts';
 import { codexProviderTest } from '../ai/codexProvider.ts';
+import {
+  clearChatgptCredential,
+  ensureChatgptHostId,
+  listChatgptPlanModels,
+  pollChatgptLogin,
+  readChatgptCredential,
+  revokeChatgptCredential,
+  saveChatgptCredential,
+  startChatgptLogin,
+} from '../ai/chatgptAuth.ts';
+import { chatgptChat } from '../ai/chatgptProvider.ts';
 import { CUSTOM_PROMPTS_KEY, readCustomPrompts } from '../ai/customPrompts.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
 import {
@@ -630,16 +644,18 @@ export function settingsRoutes(
         const name = typeof o.name === 'string' ? o.name.trim() : '';
         const baseURL = typeof o.baseURL === 'string' ? o.baseURL.trim() : '';
         const model = typeof o.model === 'string' ? o.model.trim() : '';
-        // 接入口径：'codex' = 本地 Codex CLI（issue 67），缺省/其余值一律按 chat HTTP。
-        // codex 无 baseURL/apiKey 概念（登录态由 codex 自管），地址校验随之放宽
+        // 接入口径：'codex' = 本地 Codex CLI；'chatgpt' = Sign in with ChatGPT（OAuth，
+        // 无 apiKey 概念，凭据由服务端持有）；缺省/其余值一律按 chat HTTP。
+        // codex 无 baseURL 概念（地址允许为空），地址校验随之放宽
         const codex = o.protocol === 'codex';
+        const chatgpt = o.protocol === 'chatgpt';
         if (!id) return res.status(400).json({ error: 'providers[].id 必填' });
         if (!name) return res.status(400).json({ error: `提供商 ${id} 缺少名称` });
         if (!codex && !/^https?:\/\//.test(baseURL)) {
           return res.status(400).json({ error: `提供商「${name}」的 Base URL 需为 http(s) 地址，当前：${baseURL || '（空）'}` });
         }
         const prev = stored.find((p) => p.id === id);
-        const apiKey = codex ? '' : typeof o.apiKey === 'string' ? o.apiKey.trim() : (prev?.apiKey ?? '');
+        const apiKey = codex || chatgpt ? '' : typeof o.apiKey === 'string' ? o.apiKey.trim() : (prev?.apiKey ?? '');
         // 输出/上下文档位透传（正数才收，见 sanitizeProviders）；字段缺省 = 保持已存值，
         // 显式 null/0 = 清除该覆盖（回退全局默认）
         const mt = o.maxTokens === undefined ? prev?.maxTokens : Number(o.maxTokens);
@@ -655,7 +671,7 @@ export function settingsRoutes(
           ...(mt !== undefined && Number.isFinite(mt) && mt > 0 ? { maxTokens: mt } : {}),
           ...(cw !== undefined && Number.isFinite(cw) && cw > 0 ? { contextWindow: cw } : {}),
           ...(models !== undefined ? { models } : {}),
-          ...(codex ? { protocol: 'codex' as const } : {}),
+          ...(codex ? { protocol: 'codex' as const } : chatgpt ? { protocol: 'chatgpt' as const } : {}),
         });
       }
       /**
@@ -780,6 +796,26 @@ export function settingsRoutes(
     if (cfg.protocol === 'codex') {
       return res.json(await codexProviderTest());
     }
+    // ChatGPT 登录：凭据在 settings（全局单例），测试 = 用当前凭据真实调一次最小 Responses 请求
+    if (cfg.protocol === 'chatgpt') {
+      if (!cfg.chatgpt?.accessToken) {
+        return res.json({ ok: false, message: '尚未登录 ChatGPT：请先在设置页完成登录' });
+      }
+      const started = Date.now();
+      try {
+        await chatgptChat(
+          cfg,
+          [
+            { role: 'system', content: '这是一次连通性测试。只输出两个字：正常' },
+            { role: 'user', content: 'ping' },
+          ],
+          { signal: AbortSignal.timeout(60_000) },
+        );
+        return res.json({ ok: true, message: `连接成功（${Date.now() - started}ms，经 Responses API 实测）` });
+      } catch (e) {
+        return res.json({ ok: false, message: `连接失败：${(e as Error).message}` });
+      }
+    }
     if (!/^https?:\/\//.test(cfg.baseURL)) {
       return res.json({ ok: false, message: `Base URL 需为 http(s) 地址，当前：${cfg.baseURL || '（空）'}` });
     }
@@ -827,6 +863,19 @@ export function settingsRoutes(
     if (cfg.protocol === 'codex') {
       return res.json({ models: [] });
     }
+    // ChatGPT 登录：套餐模型目录来自官方 /v1/models（Bearer access_token）
+    if (cfg.protocol === 'chatgpt') {
+      if (!cfg.chatgpt?.accessToken) {
+        return res.status(400).json({ error: '尚未登录 ChatGPT：请先在设置页完成登录' });
+      }
+      try {
+        const models = await listChatgptPlanModels(cfg.chatgpt.accessToken, undefined);
+        res.json({ models });
+      } catch (e) {
+        sendRouteError(res, 502, e, '获取 ChatGPT 套餐模型失败');
+      }
+      return;
+    }
     if (!/^https?:\/\//.test(cfg.baseURL)) {
       return res.status(400).json({ error: `Base URL 需为 http(s) 地址，当前：${cfg.baseURL || '（空）'}` });
     }
@@ -839,6 +888,80 @@ export function settingsRoutes(
       sendRouteError(res, 502, e, '获取模型列表失败');
     }
   }));
+
+  // POST /api/settings/ai/chatgpt/login  body: { providerId? }
+  // 发起 Sign in with ChatGPT（官方开源接入流程）：服务端起 127.0.0.1 回环回调服务器 +
+  // PKCE，返回授权 URL 由前端用系统浏览器打开；凭据在回调完成 code 交换后加密落库。
+  // providerId 指向已存的 ChatGPT 提供商时，登录成功后把套餐模型写入其模型目录并选首个模型。
+  r.post('/ai/chatgpt/login', asyncHandler(async (req, res) => {
+    const b = req.body ?? {};
+    const providerId = typeof b.providerId === 'string' ? b.providerId.trim() : '';
+    if (providerId) {
+      const target = readAiProviders(db, config).find((p) => p.id === providerId);
+      if (!target) {
+        return res.status(404).json({ error: `提供商不存在: ${providerId}` });
+      }
+    }
+    const { loginId, authorizeUrl } = await startChatgptLogin({
+      appName: 'ICPC Workbench',
+      hostId: ensureChatgptHostId(db),
+      onSuccess: async (cred, models) => {
+        saveChatgptCredential(db, config, cred);
+        if (!providerId) return;
+        const providers = readAiProviders(db, config);
+        const target = providers.find((p) => p.id === providerId);
+        if (!target) return;
+        // 套餐模型写入目录（带参数档位智能填写），当前模型留空时选首个
+        const catalog = models.slice(0, AI_PROVIDER_MODELS_MAX).map((slug) => ({
+          id: slug,
+          ...(guessModelCaps(slug) ?? {}),
+        }));
+        const next = providers.map((p) =>
+          p.id === providerId
+            ? { ...p, model: p.model.trim() || models[0] || p.model, models: catalog }
+            : p,
+        );
+        saveAiProviders(db, next, activeProviderIdOf(db, next));
+      },
+    });
+    res.json({ loginId, authorizeUrl });
+  }));
+
+  // GET /api/settings/ai/chatgpt/login/poll?loginId=…
+  // 轮询一次登录会话状态（前端 1.5s 间隔；ok 时带 email，failed 时带可读原因）。
+  r.get('/ai/chatgpt/login/poll', (req, res) => {
+    const loginId = String(req.query.loginId ?? '').trim();
+    if (!loginId) {
+      return res.status(400).json({ error: 'loginId 必填' });
+    }
+    res.json(pollChatgptLogin(loginId));
+  });
+
+  // POST /api/settings/ai/chatgpt/logout
+  // 退出登录：向官方撤销端点注销 refresh_token（best-effort），并清除本地凭据。
+  r.post('/ai/chatgpt/logout', asyncHandler(async (req, res) => {
+    const cred = readChatgptCredential(db, config);
+    if (cred) {
+      try {
+        await revokeChatgptCredential(cred);
+      } catch {
+        // 撤销失败（网络/已失效）不阻断本地清理：凭据已不可信
+      }
+      clearChatgptCredential(db, config);
+    }
+    res.json({ ok: true });
+  }));
+
+  // GET /api/settings/ai/chatgpt/status
+  // 登录状态（前端卡片标签用）：只回传邮箱与过期时间，不回传任何 token。
+  r.get('/ai/chatgpt/status', (req, res) => {
+    const cred = readChatgptCredential(db, config);
+    res.json({
+      loggedIn: Boolean(cred?.accessToken),
+      ...(cred?.email ? { email: cred.email } : {}),
+      ...(cred ? { expiresAt: cred.expiresAt } : {}),
+    });
+  });
 
   // POST /api/settings/accounts  body: { platform, handle }
   // 多账号（v0.8）：同一平台可绑定多个账号，各账号提交按 submissions.account 隔离共存。
@@ -1133,6 +1256,8 @@ function aiSettingsView(db: Db, config: AppConfig, read?: SettingLookup): { ai: 
   const providers = readAiProviders(db, config, read);
   const global = globalAiTuning(db, config, read);
   const search = readSearchProvidersConfig(db, config, read);
+  // ChatGPT 登录凭据（含 access/refresh token 原文）绝不随视图下发；只给登录态与脱敏信息
+  const chatgptStatus = readChatgptCredential(db, config, read);
   return {
     ai: {
       ...savedAi,
@@ -1140,6 +1265,10 @@ function aiSettingsView(db: Db, config: AppConfig, read?: SettingLookup): { ai: 
       searchApiKey: '',
       // 运行时渠道含原文密钥，禁止随 savedAi 展开下发；界面仅使用打码视图。
       searchProviders: undefined,
+      chatgpt: undefined,
+      chatgptLoggedIn: Boolean(chatgptStatus?.accessToken),
+      ...(chatgptStatus?.email ? { chatgptEmail: chatgptStatus.email } : {}),
+      ...(chatgptStatus ? { chatgptExpiresAt: chatgptStatus.expiresAt } : {}),
       searchOrder: search?.order ?? [],
       searchKeyStats: SEARCH_ENGINE_IDS.flatMap((engine) => {
         const keys = search?.keys[engine] ?? [];
@@ -1203,12 +1332,14 @@ function effectiveAiConfig(
       baseURL = p.baseURL;
       apiKey = (process.env.AI_API_KEY ?? p.apiKey).trim();
       model = p.model;
-      protocol = isCodexProtocol(p.protocol) ? 'codex' : undefined;
+      protocol = isCodexProtocol(p.protocol) ? 'codex' : isChatgptProtocol(p.protocol) ? 'chatgpt' : undefined;
     }
   }
-  // 未保存的草稿没有 providerId 可查：前端显式带 protocol 提示（codex 探测不涉及密钥
-  // 复用，无「换源送 Key」风险面，故可信任请求体的口径声明）
-  if (!pidMatched && b.protocol === 'codex') protocol = 'codex';
+  // 未保存的草稿没有 providerId 可查：前端显式带 protocol 提示（codex/chatgpt 探测不涉及
+  // HTTP 密钥复用，无「换源送 Key」风险面，故可信任请求体的口径声明）
+  if (!pidMatched && (b.protocol === 'codex' || b.protocol === 'chatgpt')) {
+    protocol = b.protocol;
+  }
   const pick = (v: unknown, fallback: string): string =>
     typeof v === 'string' && v.trim() !== '' ? v.trim() : fallback;
   const effectiveBaseURL = pick(b.baseURL, baseURL);
@@ -1216,13 +1347,16 @@ function effectiveAiConfig(
   const origin = baseUrlOrigin(effectiveBaseURL);
   const sameOrigin = origin !== null && origin === baseUrlOrigin(baseURL);
   const providedKey = pick(b.apiKey, '');
+  // ChatGPT 登录：凭据是全局单例（settings 解密），与 providerId 无关，测试时直接带上
+  const chatgpt = protocol === 'chatgpt' ? readChatgptCredential(db, config) ?? undefined : undefined;
   return {
     cfg: {
       enabled: saved.enabled,
       baseURL: effectiveBaseURL,
       apiKey: providedKey !== '' ? providedKey : sameOrigin ? apiKey : '',
       model: pick(b.model, model),
-      ...(protocol === 'codex' ? { protocol: 'codex' as const } : {}),
+      ...(protocol ? { protocol } : {}),
+      ...(chatgpt ? { chatgpt } : {}),
     },
     blockedSavedKeyReuse: providedKey === '' && !sameOrigin && apiKey !== '',
   };

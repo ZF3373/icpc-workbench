@@ -18,8 +18,12 @@
  * - `'codex'`：本机 Codex CLI 子进程（issue 67）。无 baseURL/apiKey 概念——
  *   工作台调用已通过 `codex login` 登录 ChatGPT 的 Codex CLI，登录与凭据刷新
  *   完全由 Codex 处理，工作台不存任何凭据；model 留空 = 跟随 Codex 自身配置。
+ * - `'chatgpt'`：Sign in with ChatGPT 官方开源接入（issue 67）。OAuth PKCE 登录
+ *   （auth.openai.com，无 client secret），用 ChatGPT 订阅额度直连 Responses API
+ *   （api.openai.com/v1/responses）；access_token 1h / refresh_token 30d 轮换，
+ *   由工作台持有并加密存储。预览期限制见 chatgptProvider.ts 头注。
  */
-export type AiProviderProtocol = 'chat' | 'codex';
+export type AiProviderProtocol = 'chat' | 'codex' | 'chatgpt';
 
 /**
  * 模型目录条目（对齐 deepseek-harness 的模型管理）：一个提供商可登记多个可用模型，
@@ -169,6 +173,18 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     consoleUrl: '',
     protocol: 'codex',
   },
+  {
+    // ChatGPT 登录（issue 67 原始诉求）：官方 Sign in with ChatGPT 开源接入流程，
+    // OAuth PKCE（无 client secret）+ ChatGPT 订阅额度直连 Responses API。
+    // 登录成功后套餐模型目录由 GET /v1/models 实时写入提供商目录，故预设不写死模型。
+    key: 'chatgpt',
+    name: 'ChatGPT 登录（订阅额度）',
+    baseURL: 'https://api.openai.com/v1',
+    defaultModel: '',
+    defaultModels: [],
+    consoleUrl: '',
+    protocol: 'chatgpt',
+  },
 ];
 
 /** 「自定义」选项（跟在预设后面渲染）：Base URL / 模型由用户手填 */
@@ -184,6 +200,16 @@ export const AI_PROVIDER_CUSTOM_PRESET: AiProviderPreset = {
 /** 是否为「本地 Codex」接入口径（缺省/未知值一律按 chat HTTP 口径处理） */
 export function isCodexProtocol(p: unknown): boolean {
   return p === 'codex';
+}
+
+/** 是否为「ChatGPT 登录」接入口径（Sign in with ChatGPT + Responses API） */
+export function isChatgptProtocol(p: unknown): boolean {
+  return p === 'chatgpt';
+}
+
+/** 无密钥类提供商（登录/凭据由 OAuth 或外部 CLI 管理）：前端据此隐藏密钥输入 */
+export function isKeylessProtocol(p: unknown): boolean {
+  return isCodexProtocol(p) || isChatgptProtocol(p);
 }
 
 /** 提供商数量上限：设置页防误操作批量粘贴（正常个人使用远用不到 20 个） */

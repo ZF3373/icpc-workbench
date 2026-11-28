@@ -1,5 +1,6 @@
 import type { AiConfig } from '../config.ts';
 import { codexChat, codexChatStream, type CodexDeps } from './codexProvider.ts';
+import { chatgptChat, chatgptChatStream } from './chatgptProvider.ts';
 
 export interface ToolCall {
   id: string;
@@ -357,8 +358,10 @@ export interface UploadFileOptions {
  * 通过 baseURL 可对接 DeepSeek / OpenAI / 智谱 / Ollama(OpenAI 兼容端口) 等。
  *
  * 接入口径分派（issue 67）：cfg.protocol === 'codex' 时 chat/chatStream 改走本机
- * Codex CLI 子进程（见 codexProvider.ts），消息与回调签名完全不变——路由层、
- * 标题/摘要/计划等非流式调用点零改动。'chat'（缺省）即 OpenAI 兼容 HTTP。
+ * Codex CLI 子进程（见 codexProvider.ts）；cfg.protocol === 'chatgpt' 时走
+ * Sign in with ChatGPT 的 OAuth 凭据直连官方 Responses API（见 chatgptProvider.ts）。
+ * 消息与回调签名完全不变——路由层、标题/摘要/计划等非流式调用点零改动。
+ * 'chat'（缺省）即 OpenAI 兼容 HTTP。
  */
 export class AiProvider {
   constructor(
@@ -370,6 +373,8 @@ export class AiProvider {
   get enabled(): boolean {
     // 本地 Codex：登录态由 codex 自管，工作台无密钥可查，只看启用开关
     if (this.cfg.protocol === 'codex') return this.cfg.enabled;
+    // ChatGPT 登录：凭据由工作台 OAuth 持有，未登录 = 不可用
+    if (this.cfg.protocol === 'chatgpt') return this.cfg.enabled && Boolean(this.cfg.chatgpt?.accessToken);
     return this.cfg.enabled && this.cfg.apiKey.trim() !== '';
   }
 
@@ -377,7 +382,9 @@ export class AiProvider {
     if (!this.enabled) {
       throw new Error(this.cfg.protocol === 'codex'
         ? 'AI 未配置：请在设置中启用 AI 生成，并确认本机已安装 codex CLI 且完成 codex login'
-        : 'AI 未配置：请在设置中填写 API Key 并开启（或导出数据包后手动喂给任意 AI）');
+        : this.cfg.protocol === 'chatgpt'
+          ? 'AI 未配置：请启用 AI 生成，并在设置 → AI 配置中完成 ChatGPT 登录'
+          : 'AI 未配置：请在设置中填写 API Key 并开启（或导出数据包后手动喂给任意 AI）');
     }
   }
 
@@ -407,6 +414,9 @@ export class AiProvider {
     if (this.cfg.protocol === 'codex') {
       throw new Error('本地 Codex 提供商不支持文件上传（Files API）：请切换到 OpenAI 兼容提供商上传文件，或直接把文本粘贴进对话');
     }
+    if (this.cfg.protocol === 'chatgpt') {
+      throw new Error('ChatGPT 登录模式（预览期）不支持文件上传（Files API）：请切换到 OpenAI 兼容提供商上传文件，或直接把文本粘贴进对话');
+    }
     this.ensureEnabled();
     const form = new FormData();
     form.append('purpose', 'user_data');
@@ -422,6 +432,9 @@ export class AiProvider {
     this.ensureEnabled();
     if (this.cfg.protocol === 'codex') {
       return codexChat(this.cfg, messages, opts, this.codexDeps);
+    }
+    if (this.cfg.protocol === 'chatgpt') {
+      return chatgptChat(this.cfg, messages, opts, { fetchFn: this.fetchFn });
     }
     const timeoutMs = this.cfg.timeoutMs ?? 120000;
     const maxTokens = opts.maxTokens ?? 393216;
@@ -523,6 +536,10 @@ export class AiProvider {
     this.ensureEnabled();
     if (this.cfg.protocol === 'codex') {
       yield* codexChatStream(this.cfg, messages, opts, this.codexDeps);
+      return;
+    }
+    if (this.cfg.protocol === 'chatgpt') {
+      yield* chatgptChatStream(this.cfg, messages, opts, { fetchFn: this.fetchFn });
       return;
     }
     const timeoutMs = this.cfg.timeoutMs ?? 120000;

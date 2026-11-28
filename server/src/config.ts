@@ -1,7 +1,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { AiProviderConfig, AiProviderProtocol, SearchProvidersConfig } from '../../shared/src/index.ts';
-import { AI_PROVIDERS_MAX, AI_PROVIDER_MODELS_MAX, isCodexProtocol, parseSearchProvidersConfig } from '../../shared/src/index.ts';
+import {
+  AI_PROVIDERS_MAX,
+  AI_PROVIDER_MODELS_MAX,
+  isChatgptProtocol,
+  isCodexProtocol,
+  parseSearchProvidersConfig,
+} from '../../shared/src/index.ts';
+import {
+  clearChatgptCredential,
+  readChatgptCredential,
+  refreshChatgptCredential,
+  saveChatgptCredential,
+  setChatgptCredentialRefresher,
+  ChatgptAuthError,
+  type ChatgptCredential,
+} from './ai/chatgptAuth.ts';
 import type { SearchProviderEntry } from './ai/search-engines.ts';
 import type { Db } from './db/index.ts';
 import type { SettingLookup } from './db/settings.ts';
@@ -17,8 +32,13 @@ export interface AiConfig {
   apiKey: string;
   /** 当前活跃提供商的模型 */
   model: string;
-  /** 活跃提供商的接入口径；缺省 'chat'（OpenAI 兼容 HTTP），'codex' = 本机 Codex CLI 子进程 */
+  /** 活跃提供商的接入口径；缺省 'chat'（OpenAI 兼容 HTTP），'codex' = 本机 Codex CLI 子进程，'chatgpt' = Sign in with ChatGPT */
   protocol?: AiProviderProtocol;
+  /**
+   * ChatGPT 登录（protocol='chatgpt'）的运行时凭据：由 aiConfigFromDb 从 settings 解密装配，
+   * 只在内存与 provider 内部流转，绝不落盘、绝不随 aiSettingsView 下发前端。
+   */
+  chatgpt?: ChatgptCredential;
   /** AI 对话超时（毫秒），用户可在设置页调整；缺省 120000（2 分钟） */
   timeoutMs?: number;
   /** AI 单次回复最大 token 数，用户可在设置页调整；缺省 393216（384K）。值越大越不易截断，但受模型上限约束 */
@@ -207,10 +227,13 @@ function sanitizeProviders(list: unknown[]): AiProviderConfig[] {
     const id = typeof o.id === 'string' ? o.id.trim() : '';
     const name = typeof o.name === 'string' ? o.name.trim() : '';
     const baseURL = typeof o.baseURL === 'string' ? o.baseURL.trim() : '';
-    // 本地 Codex（protocol='codex'）没有 baseURL/apiKey 概念：地址允许为空；
-    // 其余口径仍是 OpenAI 兼容 HTTP，baseURL 必须 http(s)（兼容旧数据缺省无 protocol 字段）
-    const codex = isCodexProtocol(o.protocol);
-    if (codex ? (!id || !name) : (!id || !name || !baseURL || !/^https?:\/\//.test(baseURL))) continue;
+    // 无密钥类口径：codex 无 baseURL/apiKey 概念（地址允许为空）；chatgpt 的 baseURL 是
+    // 官方 Responses API 地址（http(s)，正常校验）。其余口径仍是 OpenAI 兼容 HTTP。
+    const protocolValue = isCodexProtocol(o.protocol) || isChatgptProtocol(o.protocol)
+      ? (o.protocol as AiProviderProtocol)
+      : undefined;
+    const keyless = protocolValue !== undefined;
+    if (keyless ? (!id || !name) : (!id || !name || !baseURL || !/^https?:\/\//.test(baseURL))) continue;
     if (seen.has(id)) continue;
     seen.add(id);
     const maxTokens = Number(o.maxTokens);
@@ -218,15 +241,15 @@ function sanitizeProviders(list: unknown[]): AiProviderConfig[] {
     out.push({
       id,
       name,
-      baseURL: codex ? '' : baseURL,
-      apiKey: codex ? '' : typeof o.apiKey === 'string' ? o.apiKey.trim() : '',
+      baseURL: protocolValue === 'codex' ? '' : baseURL,
+      apiKey: keyless ? '' : typeof o.apiKey === 'string' ? o.apiKey.trim() : '',
       model: typeof o.model === 'string' ? o.model.trim() : '',
       // 参数档位是可选覆盖：只在为正数时保留（防 0/负数/字符串混进存储）
       ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { maxTokens } : {}),
       ...(Number.isFinite(contextWindow) && contextWindow > 0 ? { contextWindow } : {}),
       // 模型目录：仅接受数组形态，条目内部自行净化；空数组 = 明确清空目录
       ...(Array.isArray(o.models) ? { models: sanitizeModelEntries(o.models) } : {}),
-      ...(codex ? { protocol: 'codex' as const } : {}),
+      ...(protocolValue ? { protocol: protocolValue } : {}),
     });
     if (out.length >= AI_PROVIDERS_MAX) break;
   }
@@ -292,6 +315,35 @@ export function globalAiTuning(
   };
 }
 
+/**
+ * ChatGPT 登录（protocol='chatgpt'）凭据的刷新器接线：aiConfigFromDb 是全部调用点的
+ * 单一漏斗，用 WeakMap 按 Db 实例幂等接线。刷新器实现官方轮换语义的并发安全——
+ * 先查 DB 最新凭据（其他路径可能已轮换），再用网络刷新并立即落库；
+ * terminal 失效（refresh_token 作废）清除凭据并要求重新登录。
+ */
+const chatgptWiredDbs = new WeakMap<Db, true>();
+
+function wireChatgptCredentialStore(db: Db, cfg: AppConfig): void {
+  if (chatgptWiredDbs.has(db)) return;
+  chatgptWiredDbs.set(db, true);
+  setChatgptCredentialRefresher(async (stale) => {
+    const latest = readChatgptCredential(db, cfg);
+    if (!latest) throw new Error('ChatGPT 未登录：请到设置 → AI 配置重新登录');
+    if (latest.refreshToken !== stale.refreshToken) return latest; // 已被其他路径轮换，直接复用
+    try {
+      const fresh = await refreshChatgptCredential(latest);
+      saveChatgptCredential(db, cfg, fresh);
+      return fresh;
+    } catch (e) {
+      if (e instanceof ChatgptAuthError && e.terminal) {
+        clearChatgptCredential(db, cfg);
+        throw new Error('ChatGPT 登录已失效（refresh_token 已作废）：请到设置 → AI 配置重新登录');
+      }
+      throw e;
+    }
+  });
+}
+
 /** 读取运行时 AI 配置：全局项读 settings 表（缺省落 config.json），baseURL/apiKey/model 取当前活跃提供商。 */
 export function aiConfigFromDb(db: Db, cfg: AppConfig, read?: SettingLookup): AiConfig {
   const get = settingsGetter(db, read);
@@ -313,13 +365,24 @@ export function aiConfigFromDb(db: Db, cfg: AppConfig, read?: SettingLookup): Ai
     : cfg.ai.searchEngine;
   const searchApiKey = (process.env.SEARCH_API_KEY ?? get('ai.searchApiKey') ?? cfg.ai.searchApiKey)?.trim();
   const spBlob = parseSearchProvidersConfig(get('ai.searchProviders'));
+  // ChatGPT 登录：接线刷新器并解密凭据（密文在 settings 表，原文只进内存与 provider）
+  let chatgpt: ChatgptCredential | undefined;
+  if (isChatgptProtocol(active.protocol)) {
+    wireChatgptCredentialStore(db, cfg);
+    chatgpt = readChatgptCredential(db, cfg, read) ?? undefined;
+  }
   return {
     enabled: enabledRaw !== undefined ? enabledRaw === 'true' : cfg.ai.enabled,
     // trim：用户粘贴 baseURL/apiKey 时常带首尾空格/换行，会导致 URL 解析失败或鉴权头异常
     baseURL: active.baseURL.trim(),
     model: active.model.trim(),
     apiKey: (process.env.AI_API_KEY ?? active.apiKey).trim(),
-    ...(isCodexProtocol(active.protocol) ? { protocol: 'codex' as const } : {}),
+    ...(isChatgptProtocol(active.protocol)
+      ? { protocol: 'chatgpt' as const }
+      : isCodexProtocol(active.protocol)
+        ? { protocol: 'codex' as const }
+        : {}),
+    ...(chatgpt ? { chatgpt } : {}),
     ...(Number.isFinite(timeoutMs) && timeoutMs! > 0 ? { timeoutMs: timeoutMs! } : {}),
     ...(entry?.maxTokens ?? active.maxTokens ?? global.maxTokens
       ? { maxTokens: (entry?.maxTokens ?? active.maxTokens ?? global.maxTokens)! } : {}),
