@@ -1321,3 +1321,74 @@ describe('链接目的地不被当作数学（回归）', () => {
     assert.ok(out.includes('a_b'), `链接目的地被改写: ${out}`)
   })
 })
+
+// ---------- issue #18：嵌套列表 / 货币 $ / 代码区里的 $ ----------
+
+describe('issue #18：三级嵌套列表不再被当成公式续行', () => {
+  it('缩进 4+ 的子列表原样保留（曾被子项吃掉第三级）', () => {
+    for (const text of [
+      '- a\n  - b\n    - c\n- d',
+      '* a\n  * b\n    * c',
+      '+ a\n  + b\n    + c',
+      '1. a\n   2. b\n      3. c',
+      '- 外层\n   - 中层\n      - 内层',
+    ]) {
+      assert.equal(preprocessMath(text), text, `嵌套列表被改写:\n${text}\n→\n${preprocessMath(text)}`)
+    }
+  })
+
+  it('判据只认「列表标记」：上一行是列表项、本块以关系符开头时仍然回接成公式', () => {
+    const out = preprocessMath('- f = a_i\n      = max(0, n)')
+    assert.ok(!out.includes('\n      ='), `真正的续行被当成子列表: ${out}`)
+  })
+})
+
+describe('issue #18：货币 $ 不再把两句中文夹成行内公式', () => {
+  it('金额 + 中文说明的 $ 转义为字面量', () => {
+    assert.ok(preprocessMath('总花费 $1,000 元，约 $500 美元').includes('\\$1,000'))
+    assert.ok(preprocessMath('价格为 $5 和 $6').includes('\\$5'))
+    assert.ok(preprocessMath('买 A 要 $5 元，买 B 要 $7 元').includes('\\$7'))
+  })
+
+  it('真公式一律不受影响（开栏后不是数字，或这段里有数学特征）', () => {
+    for (const text of [
+      '复杂度 $O(n)$ 更优',
+      '答案对 $10^9+7$ 取模',
+      '$f_i$ 与 $g_i$ 相等的概率',
+      '区间 $[l, r]$ 内',
+      '上限 $1000$ 元',
+    ]) {
+      assert.equal(preprocessMath(text), text, `真公式被当成金额: ${text}`)
+    }
+  })
+
+  it('同一句里金额与公式混排时各归各：$5 元 转义，$O(n)$ 仍是公式', () => {
+    const out = preprocessMath('买 A 要 $5 元，复杂度 $O(n)$ 更优')
+    assert.ok(out.includes('\\$5 元'), out)
+    assert.ok(out.includes('$O(n)$'), `同段的真公式被牵连: ${out}`)
+  })
+
+  it('围栏与行内代码里的 $ 是内容，不碰', () => {
+    const fence = '```bash\ncost=$5\necho $HOME\n```'
+    assert.equal(preprocessMath(fence), fence)
+    assert.equal(preprocessMath('`$HOME` 目录'), '`$HOME` 目录')
+  })
+})
+
+describe('issue #18：行内代码里的 $ 不再把代码内容改写成公式源码', () => {
+  it('反引号包住的内容含 $ 时保持代码外观，内容本身也不被改写', () => {
+    for (const text of [
+      '`cost = $5 and $6`',
+      '`a = $b + $c` 求值',
+      '`if ($x) { return 1 }` 判空',
+    ]) {
+      assert.equal(preprocessMath(text), text, `行内代码被公式管线改写: ${text}`)
+    }
+  })
+
+  it('代码区之外的中文金额仍然正常转义（两段互不干扰）', () => {
+    const out = preprocessMath('`cost = $5 and $6` 与 $7 元')
+    assert.ok(out.startsWith('`cost = $5 and $6`'), out)
+    assert.ok(out.includes('\\$7 元'), out)
+  })
+})

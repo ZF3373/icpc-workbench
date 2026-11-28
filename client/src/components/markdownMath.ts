@@ -14,6 +14,7 @@
  */
 import { replaceMarkDelimiters, stripMarkSentinels, stripMarkSentinelsInMath } from './markdownMark.ts'
 import { codeOrMathSkip } from './markdownStream.ts'
+import { indentFencesInLists, isListItemLine } from './markdownList.ts'
 import {
   extractLineComments,
   isMarkdownishLang,
@@ -140,8 +141,11 @@ function protectInlineCode(text: string, ctx: ProtectionContext): string {
       // 显式写成 `$…$`：`r`、`0` 这类片段匹配不到数学种子，交给后面的裸数学包裹会漏渲染
       out += `$${t}$`
     } else if (asMath) {
-      // span 内自带 `$` 定界符：原样放出，避免拼出 `$$`
-      out += t
+      /* span 内**部分**带 `$`（`a = $b + $c`、`cost = $5 and $6`）：与上面「完整 $…$」
+         同一条判断 —— 反引号里有 `$`，作者是在展示源码或金额，不是 AI 手抖给公式加了
+         反引号，所以保持代码外观。原来这里只把内容原样放出、白丢掉反引号，放出的正文
+         再被 remark 配成 `$…$` 公式，等宽代码就变成了斜体公式（issue #18）。 */
+      out += mark(ctx, s.raw)
     } else {
       out += mark(ctx, s.raw)
     }
@@ -181,6 +185,15 @@ function protectFenceBlocks(text: string, ctx: ProtectionContext): string {
 /** 续行标志：以关系符/运算符开头（`= max(0, …)`、`+ n * min(a)`、`≤ …`） */
 const CONTINUATION_START = /^[=+\-*/·×÷−<>≤≥≠≈&|^%\\]/
 
+/** 一段文本的最后一个非空行（用于看缩进块的上文是什么） */
+function lastNonEmptyLine(text: string): string {
+  const lines = text.split('\n')
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i].trim()) return lines[i]
+  }
+  return ''
+}
+
 /**
  * 缩进代码块（4+ 空格）：AI 偶尔用缩进而非围栏表示代码块。
  *
@@ -195,6 +208,15 @@ function protectIndentedBlocks(text: string, ctx: ProtectionContext): string {
   return text.replace(
     /(?:^|\n)([ \t]{4,}[^\n]+(?:\n[ \t]{4,}[^\n]+)*)/g,
     (match, block: string, offset: number) => {
+      /*
+       * 但「嵌套列表」不是续行（issue #18）：CONTINUATION_START 里含 `-` `*` `+`，
+       * 于是三级列表 `- b` 下面那行 `    - c` 会被当成上一条式子的续写、拼到父项行尾，
+       * 屏幕上留下一句 `- b - c`，第三级整体消失。上一行本身也是列表项、且这一段同样
+       * 以列表标记开头时，这是 Markdown 的嵌套结构 —— 原样交回解析器。
+       * 只认这一种上下文：`= max(...)` 这类真正的续行（上一行是列表项但本块以关系符
+       * 开头）仍然走下面的回接分支，test/markdownMath.test.ts 钉过那条。
+       */
+      if (isListItemLine(block) && isListItemLine(lastNonEmptyLine(text.slice(0, offset)))) return match
       // 去掉每行缩进后的内容（续行判定与公式判定都用它）
       const stripped = stripLineComments(block)
       const lines = stripped.split('\n').map((l) => l.trim()).filter(Boolean)
@@ -289,6 +311,39 @@ const CODE_OR_MATH = new RegExp(
   `(\`\`\`[\\s\\S]*?\`\`\`|~~~[\\s\\S]*?~~~|\`+[^\`\\n]*\`+|\\$\\$[\\s\\S]*?\\$\\$|\\$[^$\\n]+\\$|${LINK_DEST.source})`,
   'g',
 )
+
+/**
+ * 只切「代码区」的分段表（= CODE_OR_MATH 的前三项）。
+ *
+ * 配合 hideDollarsInCode 使用：管线末尾那两步按 `$` 配对切公式区时，得先看这些 `$`
+ * 是不是落在代码里。公式区本身不在这里切，否则代码与公式重叠时无从判断谁优先。
+ */
+const CODE_REGION = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`+[^`\n]*`+)/g
+/** 公式区分段（`$…$` / `$$…$$`），与 CODE_REGION 配合使用 */
+const MATH_SEGMENT = /(\$\$[\s\S]*?\$\$|\$[^$\n]+\$)/g
+/** 代码区里 `$` 的临时替身：U+0001 与 MARK 同理，不可能出现在 Markdown 源文本里 */
+const DOLLAR_IN_CODE = '\u0001'
+
+/**
+ * 把代码区里的 `$` 临时藏起来（issue #18）。
+ *
+ * 需要这一步的原因：`normalizeMathSymbols` / `enhanceMathLayoutInText` 跑在管线**末尾**，
+ * 那时围栏与行内代码早就还原回正文了，而它们只看 `$` 配对。于是
+ * `` `cost = $5 and $6` `` 里的两个 `$` 被配成一对行内公式，代码内容被改写成
+ * `cost = $5 \operatorname{and} $6` —— 反引号保住了，里面却是脏的。
+ * 藏掉再分段，公式区判定就只在代码之外发生。
+ */
+function hideDollarsInCode(text: string): string {
+  if (!text.includes('$') || !text.includes('`')) return text
+  return text
+    .split(CODE_REGION)
+    .map((part, i) => (i % 2 === 1 ? part.replace(/\$/g, DOLLAR_IN_CODE) : part))
+    .join('')
+}
+
+function showDollarsInCode(text: string): string {
+  return text.includes(DOLLAR_IN_CODE) ? text.split(DOLLAR_IN_CODE).join('$') : text
+}
 
 /**
  * 对 Markdown 源文本中「普通文本区」（代码块/行内代码/已有公式之外的部分）做转换。
@@ -988,9 +1043,9 @@ function midSetBuilder(body: string): string {
  * 公式里已有的 `\text{…}` 说明文字保持原样（见 outsideMathText）。
  */
 export function normalizeMathSymbols(text: string): string {
-  // 按公式分段：只处理 $...$ / $$...$$ 内的内容
-  const segments = text.split(/(\$\$[\s\S]*?\$\$|\$[^$\n]+\$)/g)
-  return segments
+  // 按公式分段：只处理 $...$ / $$...$$ 内的内容（代码区先藏起 `$`，见 hideDollarsInCode）
+  const segments = hideDollarsInCode(text).split(MATH_SEGMENT)
+  const normalized = segments
     .map((seg, i) => {
       if (i % 2 === 0) return seg // 普通文本：不转换
       const isBlock = seg.startsWith('$$')
@@ -1120,12 +1175,13 @@ export function normalizeMathSymbols(text: string): string {
       return isBlock ? `$$${converted}$$` : `$${converted}$`
     })
     .join('')
+  return showDollarsInCode(normalized)
 }
 
 /** 对整段文本里的公式做排版增强（\limits、自适应定界符） */
 function enhanceMathLayoutInText(text: string): string {
-  const segments = text.split(/(\$\$[\s\S]*?\$\$|\$[^$\n]+\$)/g)
-  return segments
+  const segments = hideDollarsInCode(text).split(MATH_SEGMENT)
+  const enhanced = segments
     .map((seg, i) => {
       if (i % 2 === 0) return seg
       const isBlock = seg.startsWith('$$')
@@ -1133,9 +1189,98 @@ function enhanceMathLayoutInText(text: string): string {
       return isBlock ? `$$${enhanceMathLayout(body)}$$` : `$${enhanceMathLayout(body)}$`
     })
     .join('')
+  return showDollarsInCode(enhanced)
 }
 
 /* ============================ 4. 入口 ============================ */
+
+/* ============================ 货币 $ ============================ */
+
+/** 中日韩文字：金额后面跟着的「元 / 美元 / 与 / 和」这类说明文字 */
+const CJK_TEXT = /[\u3400-\u4DBF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/
+
+/**
+ * 强数学特征：出现任意一个就认定这对 `$` 真的是公式，不插手。
+ * 不含 `/`：`$5 元/题` 里的斜杠是「每」，不是除号（除号形态 `$5/2$` 没有 CJK，本来也不会命中）。
+ */
+const CURRENCY_MATH_FEATURE = /\\[a-zA-Z]|[_^{}⌈⌉⌊⌋]|[≤≥≠≈∈∉∪∩√∞→←↔×·±÷∑∏∂∇]|[=+*]\S/
+
+/** 这段 `$` 之后的内容是否「金额 + 中文说明」，而不是公式 */
+function isCurrencyRun(run: string): boolean {
+  // 只认「紧跟数字/千分位」的开栏 `$`：`$O(n)$`、`$f_i$` 这类开栏后是字母，一律不碰
+  if (!/^\d[\d,.]*/.test(run)) return false
+  // 必须带中文说明才动手。`costs $5 and $6` 这种纯英文写法不猜 —— 少了这条判据，
+  // `$10^9$` 之类被 remark 拆坏的配对与真正的金额就分不开了。
+  if (!CJK_TEXT.test(run)) return false
+  return !CURRENCY_MATH_FEATURE.test(run)
+}
+
+/** 行内代码区间：`` `cost = $5` `` 里的 `$` 是代码文本，不参与配对判定 */
+function inlineCodeMask(line: string): boolean[] {
+  const mask = new Array<boolean>(line.length).fill(false)
+  const re = /`[^`\n]*`+/g
+  for (let m = re.exec(line); m !== null; m = re.exec(line)) {
+    for (let i = m.index; i < m.index + m[0].length; i += 1) mask[i] = true
+  }
+  return mask
+}
+
+function escapeLineDollars(line: string): string {
+  if (!line.includes('$')) return line
+  const inCode = inlineCodeMask(line)
+  let out = ''
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i]!
+    if (ch !== '$' || inCode[i]) {
+      out += ch
+      continue
+    }
+    // `$$` 是块级定界符（两侧都跳过），`\$` 已经转义过
+    if (line[i + 1] === '$' || line[i - 1] === '$' || line[i - 1] === '\\') {
+      out += ch
+      continue
+    }
+    const next = line.indexOf('$', i + 1)
+    if (!isCurrencyRun(line.slice(i + 1, next === -1 ? line.length : next))) {
+      out += ch
+      continue
+    }
+    out += '\\$'
+  }
+  return out
+}
+
+/**
+ * 把正文里的**货币 `$`** 转义成字面量（issue #18）。
+ *
+ * 症状：`总花费 $1,000 元，约 $500 美元` 被 remark-math 配成一对行内公式，
+ * 屏幕上「$」消失、中间的散文「元，约」被当成公式排成斜体 —— 钱变成了式子。
+ * 流式路径里本来就有 `looksLikeMathTail` 挡这件事（只针对**未闭合**的单个 `$`），
+ * 但两个金额一起出现时是「已闭合」的合法配对，那道闸根本不会触发，所以这里补上。
+ *
+ * 只按行处理，围栏代码块整体跳过（`$` 在 shell 代码里是变量）。判定见 isCurrencyRun：
+ * 开栏 `$` 后必须直接跟数字、到下一个 `$`（或行尾）之间必须出现中文、且没有数学特征。
+ * 于是 `$O(n)$`、`$10^9+7$`、`$f_i$` 这些真公式完全不受影响。
+ */
+export function escapeCurrencyDollars(text: string): string {
+  if (!text.includes('$')) return text
+  const lines = text.split('\n')
+  let fenceChar: string | null = null
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!
+    const fence = /^([ \t]*)(`{3,}|~{3,})/.exec(line)
+    if (fence) {
+      const mark = fence[2]![0]!
+      // 只认「同类标记」的开合，围栏内容里的另一种三连不会误关
+      if (fenceChar === null) fenceChar = mark
+      else if (fenceChar === mark && !line.slice(fence[0].length).trim()) fenceChar = null
+      continue
+    }
+    if (fenceChar !== null) continue
+    lines[i] = escapeLineDollars(line)
+  }
+  return lines.join('\n')
+}
 
 /**
  * 完整预处理：按管线顺序归一化 AI 输出的代码 / 公式 / 文本。
@@ -1160,16 +1305,21 @@ export function preprocessMath(text: string): string {
     // LaTeX 间距命令里的分号/冒号会被裸数学的片段扩展当作"非数学字符"而截断公式
     // （`\max_{0 \le j < i,\; Y_j …}` 会在 `\;` 处裂开）。统一成等价的 `\,`。
     .replace(/\\[;:]/g, '\\,')
+  // 列表项下顶格的代码围栏先补缩进（issue #18）：必须排在其余步骤之前，
+  // 后面的「剥外层围栏 / 围栏保护」看到的才是同一个形态。
+  const listed = indentFencesInLists(cleaned)
   // `==…==` → 哨兵对。用 codeOrMathSkip 复用流式扫描器的字符级归属表：
   // 代码区（`` `x == y` ``、围栏）与公式区（`$a == b$`）里的 `==` 是内容，不动。
-  const marked = replaceMarkDelimiters(cleaned, codeOrMathSkip(cleaned))
+  const marked = replaceMarkDelimiters(listed, codeOrMathSkip(listed))
   // 表格行内公式的竖线先转写成 \vert：越早转写，后续所有步骤（定界符归一化、
   // 裸数学包裹、符号归一化）看到的都是不含竖线的公式，表格结构全程安全
   const tableSafe = escapePipesInTableMath(marked)
   const normalized = normalizeMathSymbols(wrapBareMath(normalizeMathDelimiters(stripOuterCodeFence(tableSafe))))
   // 最后一道闸：改写步骤（围栏转公式等）可能把哨兵塞进 $$ 里，KaTeX 遇私有区字符
   // 会解析失败，宁可丢掉一个高亮也不能让公式崩掉
-  return enhanceMathLayoutInText(stripMarkSentinelsInMath(normalized))
+  // 货币 $ 放在最末尾（issue #18）：此时 `$…$` 的配对关系就是 remark 将来看见的关系，
+  // 前面的改写步骤也不会再往刚转义的 `\$` 里塞东西。
+  return escapeCurrencyDollars(enhanceMathLayoutInText(stripMarkSentinelsInMath(normalized)))
 }
 
 /** 供测试/调试使用：语言标记归一化 */

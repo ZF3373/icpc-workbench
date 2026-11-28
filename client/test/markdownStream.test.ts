@@ -9,6 +9,9 @@
  */
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { repairStreamingMarkdown, findStableBlockSplit } from '../src/components/markdownStream.ts'
 import { preprocessMath } from '../src/components/markdownMath.ts'
 
@@ -347,5 +350,62 @@ describe('findStableBlockSplit（流式增量渲染切点）', () => {
       assert.ok(cut >= prev, `切点回退了: ${prev} → ${cut}`)
       prev = cut
     }
+  })
+})
+
+// ---------- issue #18：写了一半的表格分隔行 ----------
+
+describe('issue #18：流式里的半截表格分隔行', () => {
+  it('分隔行打到一半就按表头列数补全，表格立刻以「只有表头」的形态出现', () => {
+    assert.equal(repairStreamingMarkdown('| a | b |\n| ---'), '| a | b |\n| --- | --- |')
+    assert.equal(repairStreamingMarkdown('| a | b | c |\n|:--'), '| a | b | c |\n| --- | --- | --- |')
+  })
+
+  it('表头列数决定补出来的宽度，后续帧不会再横向跳动', () => {
+    for (const cells of [1, 2, 3, 5]) {
+      const header = `| ${Array.from({ length: cells }, (_, i) => `c${i}`).join(' |')} |`
+      const out = repairStreamingMarkdown(`${header}\n| ---`)
+      const delimiters = (out.match(/---/g) ?? []).length
+      assert.equal(delimiters, cells, out)
+    }
+  })
+
+  it('不该动的形态一律不动', () => {
+    for (const text of [
+      // 分隔行已经写完
+      '| a | b |\n| --- | --- |',
+      // 只有表头，还没有分隔行（列数无从判断）
+      '| a | b |',
+      // 上一行不是表格行
+      '普通说明\n| ---',
+      // 整行没有竖线，不是表格语法
+      'a - b',
+      // 已闭合围栏里的示例表格（代码内容不参与）
+      '```\n| a | b |\n| ---\n```',
+    ]) {
+      assertUnchanged(text)
+    }
+  })
+})
+
+// ---------- issue #18：增量渲染拆两段后的段间距 ----------
+
+describe('issue #18：流式拆成两个 .markdown-body 后必须补回段间距', () => {
+  const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../src/index.css'), 'utf8')
+
+  it('findStableBlockSplit 确实会把长回答拆成两个容器（这正是间距丢失的前提）', () => {
+    // 每段 35 字 × 20 段，推过 minPrefix(600) + 64 的长度门槛
+    const text = `${'这是一段已经写定、不会再改的回答正文，用来把长度推过增量渲染的门槛。\n\n'.repeat(20)}还在增长的尾段`
+    const cut = findStableBlockSplit(text)
+    assert.ok(cut > 0, `这条用例依赖切点真的生效（长度 ${text.length}）`)
+  })
+
+  it('index.css 里有 .markdown-body + .markdown-body 的间距补偿', () => {
+    const at = css.indexOf('.markdown-body + .markdown-body {')
+    assert.ok(at > 0, '缺少相邻两个 .markdown-body 的间距补偿：接缝处会变成 0px')
+    const gap = /margin-top:\s*(\d+)px/.exec(css.slice(at, css.indexOf('}', at)))?.[1]
+    // 与 .markdown-body p 的段间距同值，接缝才看不出来
+    const pGap = /\.markdown-body p \{[^}]*margin:\s*(\d+)px/.exec(css)?.[1]
+    assert.ok(gap && pGap && gap === pGap, `接缝 ${gap}px 与段间距 ${pGap}px 不一致`)
   })
 })

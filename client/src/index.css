@@ -2268,6 +2268,14 @@ button.dist-row:hover {
   margin-bottom: 0;
 }
 
+/* 流式增量渲染会把一条回答拆成两个 .markdown-body（已写定的前段 + 还在增长的尾段，
+   见 Markdown.tsx 的 MarkdownStreaming）。首尾外边距各自被上面两条清零之后，
+   接缝处两段正文之间就变成 0px —— 回答超过 ~660 字时段落会突然挤在一起。
+   这里把段间距补回来，取 .markdown-body p 的 10px 同一个值。 */
+.markdown-body + .markdown-body {
+  margin-top: 10px;
+}
+
 /* 章节间距：AI 输出常常在标题、正文、代码之间不写空行，只靠字号区分层级太弱，
    所以块与块之间用更大的上间距分层（首个子元素的上间距由上面的 :first-child 清零）。
    左侧色条是"分块"的主要视觉锚点：长回复里扫一眼色条就能数出有几节，

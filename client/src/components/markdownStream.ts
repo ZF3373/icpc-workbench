@@ -295,6 +295,33 @@ function repairIncompleteLinks(text: string, scan: ScanResult): string {
   return text
 }
 
+/**
+ * 补写了一半的表格分隔行（issue #18）。
+ *
+ * 症状：模型逐字符打 `| --- | --- |` 的中间态（`| ---`）不是合法分隔行，整张表会退回
+ * 成正文，屏幕上出现一串字面竖线 —— 而且这段时间和打字一样长，不是闪一下。
+ * 做法：按**表头行的列数**把这一行补成完整分隔行，表格立刻以「只有表头」的形态出现；
+ * 列数由表头决定，所以补出来的结构与最终形态一致，后续帧不会左右跳动。
+ *
+ * 只认最窄的形态：最后一行整行只有 `| : -` 与空白且没有收尾竖线，上一行是完整表头行。
+ * 代码区里的假表格（围栏内讲解语法）不动。
+ */
+function repairPartialTable(text: string, scan: ScanResult): string {
+  const nl = text.lastIndexOf('\n')
+  if (nl < 0) return text
+  const last = text.slice(nl + 1)
+  if (!/^[ \t]*\|[ :|-]*-[ :|-]*$/.test(last)) return text
+  // 已经打到收尾竖线了 —— 这一行本身就是完整分隔行
+  if (/[|]\s*$/.test(last)) return text
+  const prevStart = text.lastIndexOf('\n', nl - 1) + 1
+  const header = text.slice(prevStart, nl)
+  if (!/^[ \t]*\|.*\|\s*$/.test(header)) return text
+  if (scan.code[nl + 1] || scan.math[nl + 1]) return text
+  const cells = header.trim().replace(/^\|/, '').split('|').length - 1
+  if (cells < 1) return text
+  return `${text.slice(0, nl + 1)}|${' --- |'.repeat(cells)}`
+}
+
 /** 词内单个 `~` 转义：GFM 的单波浪线删除线会把 `20~25` 当成删除线定界符 */
 function escapeWordTildes(text: string, scan: ScanResult): string {
   return text.replace(/([\p{L}\p{N}_])~(?!~)(?=[\p{L}\p{N}_])/gu, (m, _p: string, offset: number) =>
@@ -397,8 +424,9 @@ function unclosedDelimiters(text: string, scan: ScanResult): string {
  */
 export function repairStreamingMarkdown(text: string): string {
   // 快速返回：没有任何可能未闭合的定界符字符时不必扫描
-  // （`[` 也要算进来：写了一半的链接同样需要修；`=` 覆盖 `==高亮==`）
-  if (!text || !/[*_~`$\\[=]/.test(text)) return text
+  // （`[` 也要算进来：写了一半的链接同样需要修；`=` 覆盖 `==高亮==`；
+  //  `|` 覆盖写了一半的表格分隔行）
+  if (!text || !/[*_~`$\\[=|]/.test(text)) return text
 
   let out = text
   let scan = scanStream(out)
@@ -461,6 +489,9 @@ export function repairStreamingMarkdown(text: string): string {
     if (run === 0) out += '=='
     else if (run === 1) out += '='
   }
+
+  // 9. 写了一半的表格分隔行（issue #18）：放在最后，前面的补符号都不影响竖线形态
+  out = repairPartialTable(out, scanStream(out))
 
   return out
 }

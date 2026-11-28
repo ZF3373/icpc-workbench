@@ -1087,6 +1087,54 @@ check('红线：强调语法没有被着色改动（斜体/删除线不受影响
   assert.ok(html.includes('<del>删除线</del>'), `删除线坏了: ${html}`)
 })
 
+/* ---------------------------- [13] issue #18：列表 / 货币 / 半截表格 ---------------------------- */
+
+check('issue #18：三级嵌套列表渲染成嵌套 <ul>，不再留下一句「- b - c」', () => {
+  // react-markdown 的输出里块级标签之间带换行，比对结构前先压成单行
+  const flat = render('- a\n  - b\n    - c\n- d', false).replace(/\s+/g, ' ')
+  assert.ok(flat.includes('<li>b <ul>'), `第三级没有被嵌套进去: ${flat}`)
+  assert.equal((flat.match(/<li>/g) ?? []).length, 4, flat)
+  assert.ok(!visibleText(flat).includes('- c'), `可见文本残留列表标记: ${visibleText(flat)}`)
+})
+
+check('issue #18：列表项下顶格的围栏归入该列表项，编号不另起一截', () => {
+  const html = render('1. 建栈\n```cpp\nint x;\n```\n2. 弹栈', false)
+  assert.equal((html.match(/<ol/g) ?? []).length, 1, `列表被代码块切成两截: ${html.slice(0, 400)}`)
+  assert.ok(!html.includes('start="2"'), `编号重新开始: ${html.slice(0, 400)}`)
+  // 代码卡必须落在 <li> 里面（而不是贴着列表左边界之外）
+  assert.ok(/<li>建栈[\s\S]{0,400}?md-code-card/.test(html), `代码卡不在列表项内: ${html.slice(0, 400)}`)
+})
+
+check('issue #18：两句中文金额不再被夹成行内公式（$ 保持字面量）', () => {
+  const html = render('总花费 $1,000 元，约 $500 美元', false)
+  assert.ok(!html.includes('katex'), `金额被当成公式排版: ${html.slice(0, 300)}`)
+  assert.ok(visibleText(html).includes('$1,000 元，约 $500'), visibleText(html))
+})
+
+check('issue #18：同段的真公式不受影响（$5 元 是钱，$O(n)$ 仍是公式）', () => {
+  const html = render('买 A 要 $5 元，复杂度 $O(n)$ 更优', false)
+  assert.ok(html.includes('katex'), `真公式没渲染: ${html.slice(0, 300)}`)
+  assert.ok(visibleText(html).includes('$5 元'), visibleText(html))
+  // 公式区里不能出现被吞进来的中文金额（KaTeX 的 <annotation> 回显源码，先看它）
+  const annotation = /<annotation[^>]*>([\s\S]*?)<\/annotation>/.exec(html)?.[1] ?? ''
+  assert.equal(annotation.trim(), 'O(n)', `公式区吞进了正文: ${annotation}`)
+})
+
+check('issue #18：行内代码里的 $ 保持代码外观，内容不被改写成公式源码', () => {
+  const html = render('`cost = $5 and $6` 与 $7 元', false)
+  assert.ok(html.includes('<code>cost = $5 and $6</code>'), `行内代码被破坏: ${html.slice(0, 300)}`)
+  assert.ok(!html.includes('operatorname'), `代码内容被公式化: ${html.slice(0, 300)}`)
+  assert.ok(!html.includes('katex'), '金额仍被当公式: ' + html.slice(0, 300))
+})
+
+check('issue #18：半截表格分隔行的那一帧渲染成表格，而不是字面竖线', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(Markdown, { text: '| a | b |\n| ---', streaming: true, breaks: true }),
+  )
+  assert.ok(html.includes('<table'), `仍然是一行字面竖线: ${html}`)
+  assert.ok(html.includes('<th>a</th>') && html.includes('<th>b</th>'), html)
+})
+
 /* ---------------------------- 收尾 ---------------------------- */
 
 console.log(`\n${failures === 0 ? '全部通过' : '存在失败'}：${checks - failures}/${checks} 项断言组通过\n`)
