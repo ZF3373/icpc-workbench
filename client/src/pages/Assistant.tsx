@@ -1050,6 +1050,7 @@ export default function Assistant() {
     const provider = aiInfo?.providers?.find((p) => p.id === aiInfo.activeProviderId)
     if (
       provider &&
+      provider.protocol !== 'codex' && // 本地 Codex 无网关目录概念（模型跟随本机 CLI 配置）
       !(provider.models?.length) &&
       !gwCatalog[provider.id] &&
       !(provider.id in gwErrors) &&
@@ -1108,7 +1109,7 @@ export default function Assistant() {
           key: 'model:none',
           disabled: true,
           icon: <CheckOutlined />,
-          label: provider.model || '（未设置模型）',
+          label: provider.model || (provider.protocol === 'codex' ? '跟随本机 Codex 默认模型' : '（未设置模型）'),
         })
       }
       if (gwHits.length > 0) {
@@ -1133,20 +1134,26 @@ export default function Assistant() {
       if (kw !== '' && catalogHits.length === 0 && gwHits.length === 0 && !currentVisible) {
         items.push({ key: 'model:nomatch', disabled: true, label: '没有匹配的模型' })
       }
-      items.push({ type: 'divider' })
-      items.push({
-        key: 'fetch-models',
-        icon: fetchingProviderId === provider.id ? <LoadingOutlined /> : <CloudDownloadOutlined />,
-        disabled: fetchingProviderId !== null,
-        label: gwError ? '拉取失败，点击重试' : gwCatalog[provider.id] ? '刷新网关模型列表' : '拉取网关模型列表',
-        ...(gwError ? { title: gwError } : {}),
-      })
+      if (provider.protocol === 'codex') {
+        // 本地 Codex：没有网关 /models 目录可拉，模型在 codex 自身配置里管理
+        items.push({ type: 'divider' })
+        items.push({ key: 'codex-no-catalog', disabled: true, label: '模型跟随本机 Codex CLI 配置（可留空）' })
+      } else {
+        items.push({ type: 'divider' })
+        items.push({
+          key: 'fetch-models',
+          icon: fetchingProviderId === provider.id ? <LoadingOutlined /> : <CloudDownloadOutlined />,
+          disabled: fetchingProviderId !== null,
+          label: gwError ? '拉取失败，点击重试' : gwCatalog[provider.id] ? '刷新网关模型列表' : '拉取网关模型列表',
+          ...(gwError ? { title: gwError } : {}),
+        })
+      }
       const others = (aiInfo?.providers ?? []).filter((p) => p.id !== provider.id)
       if (others.length > 0) {
         items.push({ type: 'divider' })
         items.push({ type: 'group', label: '切换提供商' })
         for (const p of others) {
-          items.push({ key: `provider:${p.id}`, label: `${p.name}（${p.model}）` })
+          items.push({ key: `provider:${p.id}`, label: `${p.name}（${p.model || (p.protocol === 'codex' ? '跟随默认' : '未设模型')}）` })
         }
       }
     } else if (aiInfo?.model) {

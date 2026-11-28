@@ -170,11 +170,15 @@ function withModelUiKey(m: AiProviderModelEntry & { uiKey?: string }): ModelDraf
 
 /** 服务端已存提供商视图 → 编辑草稿（密钥原文不下发，草稿里 apiKey 恒从空开始） */
 function draftOf(p: AiProviderView): ProviderDraft {
-  // 预设回显：baseURL 命中内置预设就显示该预设（用户改名不影响），否则归为「自定义」
-  const preset = AI_PROVIDER_PRESETS.find((x) => x.baseURL === p.baseURL)
+  // 预设回显：本地 Codex 按 protocol 识别；其余 baseURL 命中内置预设就显示该预设
+  //（用户改名不影响），否则归为「自定义」
+  const presetKey =
+    p.protocol === 'codex'
+      ? 'codex'
+      : (AI_PROVIDER_PRESETS.find((x) => x.baseURL === p.baseURL)?.key ?? 'custom')
   return {
     id: p.id,
-    presetKey: preset?.key ?? 'custom',
+    presetKey,
     name: p.name,
     baseURL: p.baseURL,
     model: p.model,
@@ -326,7 +330,8 @@ export const AiSettingsCard = ({
     }
     try {
       await post('/api/settings/ai/providers/active', { id, model })
-      message.success(`当前使用：${target.name} · ${model}`)
+      // codex 模型可留空（跟随本机 CLI 默认），提示语避免出现空尾巴
+      message.success(`当前使用：${target.name} · ${model || '跟随默认模型'}`)
     } catch (e) {
       message.error((e as Error).message)
     }
@@ -342,7 +347,10 @@ export const AiSettingsCard = ({
       label: groupLabel,
       options:
         ids.length === 0
-          ? [{ value: `${p.id}${ACTIVE_PICKER_SEP}`, label: '还没有可选模型', display: groupLabel, disabled: true }]
+          ? p.presetKey === 'codex'
+            // 本地 Codex 模型可留空：给一个可选的「跟随默认」项（选中 = 仅切换提供商，模型不动）
+            ? [{ value: `${p.id}${ACTIVE_PICKER_SEP}`, label: '跟随本机 Codex 默认模型', display: groupLabel, searchText: p.name }]
+            : [{ value: `${p.id}${ACTIVE_PICKER_SEP}`, label: '还没有可选模型', display: groupLabel, disabled: true }]
           : ids.map((id) => ({
               value: `${p.id}${ACTIVE_PICKER_SEP}${id}`,
               label: id,
@@ -520,12 +528,14 @@ export const AiSettingsCard = ({
       message.error('请先选择提供商')
       return
     }
+    const isCodexPreset = isPreset && addModal.presetKey === 'codex'
     const baseURL = addModal.baseURL.trim()
     if (!addModal.name.trim()) {
       message.error('请填写提供商名称')
       return
     }
-    if (!/^https?:\/\//.test(baseURL)) {
+    // 本地 Codex 无 Base URL / API Key 概念（登录态由本机 codex 自管），跳过 http(s) 校验
+    if (!isCodexPreset && !/^https?:\/\//.test(baseURL)) {
       message.error(`API 地址需为 http(s) 地址，当前：${baseURL || '（空）'}`)
       return
     }
@@ -541,9 +551,9 @@ export const AiSettingsCard = ({
       id: newProviderId(),
       presetKey,
       name,
-      baseURL,
+      baseURL: isCodexPreset ? '' : baseURL,
       model,
-      apiKey: addModal.apiKey.trim(),
+      apiKey: isCodexPreset ? '' : addModal.apiKey.trim(),
       hasApiKey: false,
       apiKeyMasked: '',
       // 预设提供商：目录带默认清单（含 defaultModel），无需提供商级档位；
@@ -655,9 +665,12 @@ export const AiSettingsCard = ({
     )
   }
 
-  /** 测试单个提供商：已存的传 providerId（服务端用已存密钥兜底），未存的全靠表单值 */
+  /** 测试单个提供商：已存的传 providerId（服务端用已存密钥兜底），未存的全靠表单值；
+   *  本地 Codex 走服务端 codex 探测分支（--version → login status → 最小 exec 实测），
+   *  未保存的草稿带 protocol 提示让服务端识别（codex 测试不涉及任何密钥复用，安全无虞） */
   const testProvider = async (p: ProviderDraft) => {
-    if (!/^https?:\/\//.test(p.baseURL.trim())) {
+    const isCodex = p.presetKey === 'codex'
+    if (!isCodex && !/^https?:\/\//.test(p.baseURL.trim())) {
       setTestResultBy((m) => ({ ...m, [p.id]: { ok: false, message: 'Base URL 需为 http(s) 地址' } }))
       return
     }
@@ -666,8 +679,9 @@ export const AiSettingsCard = ({
     try {
       const r = await post<{ ok: boolean; message: string; models?: string[] }>('/api/settings/ai/test', {
         providerId: storedIds.has(p.id) ? p.id : undefined,
-        baseURL: p.baseURL.trim(),
-        apiKey: p.apiKey.trim() || undefined,
+        ...(isCodex
+          ? { protocol: 'codex' }
+          : { baseURL: p.baseURL.trim(), apiKey: p.apiKey.trim() || undefined }),
         model: p.model.trim(),
       })
       setTestResultBy((m) => ({ ...m, [p.id]: r }))
@@ -680,6 +694,10 @@ export const AiSettingsCard = ({
   }
 
   const fetchProviderModels = async (p: ProviderDraft) => {
+    if (p.presetKey === 'codex') {
+      message.info('本地 Codex 的模型跟随本机 CLI 配置，无需获取列表')
+      return
+    }
     if (!/^https?:\/\//.test(p.baseURL.trim())) {
       message.error(`提供商「${p.name}」的 Base URL 需为 http(s) 地址`)
       return
@@ -729,7 +747,8 @@ export const AiSettingsCard = ({
           message.error(`第 ${i + 1} 个提供商缺少名称`)
           return null
         }
-        if (!/^https?:\/\//.test(p.baseURL.trim())) {
+        // 本地 Codex（presetKey='codex'）无 Base URL，跳过 http(s) 校验
+        if (p.presetKey !== 'codex' && !/^https?:\/\//.test(p.baseURL.trim())) {
           message.error(`提供商「${p.name}」的 Base URL 需为 http(s) 地址`)
           return null
         }
@@ -746,13 +765,15 @@ export const AiSettingsCard = ({
         },
         // apiKey 只在本次输入了新值时下发：缺省 = 服务端保持该提供商已存密钥；
         // maxTokens/contextWindow 显式下发（null = 清除该提供商的单独设置，回退全局默认）；
-        // 模型目录总是全量下发（空数组 = 明确清空目录），id 为空的半填行丢弃
+        // 模型目录总是全量下发（空数组 = 明确清空目录），id 为空的半填行丢弃；
+        // protocol 总是显式下发（codex ↔ chat 预设互切时清掉旧口径，不给「缺省=保持」留歧义）
         providers: providers.map((p) => ({
           id: p.id,
           name: p.name.trim(),
-          baseURL: p.baseURL.trim(),
+          protocol: p.presetKey === 'codex' ? 'codex' : 'chat',
+          baseURL: p.presetKey === 'codex' ? '' : p.baseURL.trim(),
           model: p.model.trim(),
-          ...(p.apiKey.trim() ? { apiKey: p.apiKey.trim() } : {}),
+          ...(p.presetKey !== 'codex' && p.apiKey.trim() ? { apiKey: p.apiKey.trim() } : {}),
           maxTokens: p.maxTokens ?? null,
           contextWindow: p.contextWindow ?? null,
           models: p.models
@@ -845,16 +866,20 @@ export const AiSettingsCard = ({
                     <span style={{ fontWeight: 600 }}>{p.name}</span>
                     {p.id === activeId && <Tag color="success">当前使用</Tag>}
                     {!storedIds.has(p.id) && <Tag color="warning">未保存</Tag>}
-                    {!p.hasApiKey && !p.apiKey && (ai.apiKeyFromEnv
-                      ? <Tag color="processing">密钥来自环境变量</Tag>
-                      : <Tag color="error">未配密钥</Tag>)}
+                    {p.presetKey === 'codex'
+                      ? <Tag color="processing">本机 Codex CLI</Tag>
+                      : !p.hasApiKey && !p.apiKey && (ai.apiKeyFromEnv
+                        ? <Tag color="processing">密钥来自环境变量</Tag>
+                        : <Tag color="error">未配密钥</Tag>)}
                     <span
                       style={{
                         fontSize: 12, color: 'var(--text-3)', overflow: 'hidden',
                         textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                       }}
                     >
-                      {p.baseURL}
+                      {p.presetKey === 'codex'
+                        ? (p.model.trim() ? `模型 ${p.model.trim()}（跟随 Codex 配置可留空）` : '本机 Codex CLI · 无需密钥')
+                        : p.baseURL}
                     </span>
                   </span>
                 ),
@@ -894,24 +919,32 @@ export const AiSettingsCard = ({
                         注册获取。
                       </p>
                     )}
-                    <Form.Item label="API 密钥" style={{ marginBottom: 12 }}>
-                      <Input.Password
-                        value={p.apiKey}
-                        onChange={(e) => patchProvider(p.id, { apiKey: e.target.value })}
-                        visibilityToggle={{
-                          onVisibleChange: (v) => {
-                            if (v && p.apiKey.trim() === '') void revealProviderKey(p)
-                          },
-                        }}
-                        placeholder={
-                          p.hasApiKey
-                            ? `已配置 ${p.apiKeyMasked || '••••••••'} · 留空保持不变，粘贴新值可覆盖`
-                            : ai.apiKeyFromEnv
-                              ? '留空则用环境变量 AI_API_KEY（不落库），粘贴新值可覆盖'
-                              : '粘贴该提供商的 API Key（可留空，如用环境变量 AI_API_KEY）'
-                        }
-                      />
-                    </Form.Item>
+                    {p.presetKey === 'codex' ? (
+                      <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 12px' }}>
+                        选中后由工作台调用本机已安装并通过 <code>codex login</code> 登录 ChatGPT 的 Codex CLI，
+                        无需 API Key；登录与凭据刷新由 Codex 自身处理（需较新版本的 Codex CLI）。
+                        未登录时请先在终端运行 <code>codex login</code>。
+                      </p>
+                    ) : (
+                      <Form.Item label="API 密钥" style={{ marginBottom: 12 }}>
+                        <Input.Password
+                          value={p.apiKey}
+                          onChange={(e) => patchProvider(p.id, { apiKey: e.target.value })}
+                          visibilityToggle={{
+                            onVisibleChange: (v) => {
+                              if (v && p.apiKey.trim() === '') void revealProviderKey(p)
+                            },
+                          }}
+                          placeholder={
+                            p.hasApiKey
+                              ? `已配置 ${p.apiKeyMasked || '••••••••'} · 留空保持不变，粘贴新值可覆盖`
+                              : ai.apiKeyFromEnv
+                                ? '留空则用环境变量 AI_API_KEY（不落库），粘贴新值可覆盖'
+                                : '粘贴该提供商的 API Key（可留空，如用环境变量 AI_API_KEY）'
+                          }
+                        />
+                      </Form.Item>
+                    )}
                     <Collapse
                       ghost
                       size="small"
@@ -920,28 +953,45 @@ export const AiSettingsCard = ({
                         label: '自定义设置',
                         children: (
                           <>
-                            <Form.Item label="API 地址（Base URL）" style={{ marginBottom: 12 }}>
-                              <Input
-                                value={p.baseURL}
-                                onChange={(e) => patchProvider(p.id, { baseURL: e.target.value })}
-                                placeholder="https://api.deepseek.com/v1"
-                              />
-                            </Form.Item>
+                            {p.presetKey !== 'codex' && (
+                              <Form.Item label="API 地址（Base URL）" style={{ marginBottom: 12 }}>
+                                <Input
+                                  value={p.baseURL}
+                                  onChange={(e) => patchProvider(p.id, { baseURL: e.target.value })}
+                                  placeholder="https://api.deepseek.com/v1"
+                                />
+                              </Form.Item>
+                            )}
                             <Form.Item label="提供商名称（用于列表展示）" style={{ marginBottom: 0 }}>
                               <Input
                                 value={p.name}
                                 onChange={(e) => patchProvider(p.id, { name: e.target.value })}
-                                placeholder="如：DeepSeek / 公司网关 / 本地 Ollama"
+                                placeholder={p.presetKey === 'codex' ? '如：本地 Codex / 我的 Codex' : '如：DeepSeek / 公司网关 / 本地 Ollama'}
                               />
                             </Form.Item>
                           </>
                         ),
                       }]}
                     />
-                    {/* ---- 模型目录（对齐 dsh 的模型管理）----
+                    {p.presetKey === 'codex' ? (
+                      /* 本地 Codex：模型跟随本机 CLI 配置，没有模型目录/档位/网关拉取的概念，
+                         只留一个可选的模型输入（留空 = 跟随 codex login 后的默认模型） */
+                      <Form.Item
+                        label="模型（可留空）"
+                        style={{ marginBottom: 12 }}
+                        tooltip="模型 ID 随本机 Codex 配置（~/.codex/config.toml）；留空 = 使用 Codex 自身的默认模型"
+                      >
+                        <Input
+                          value={p.model}
+                          onChange={(e) => patchProvider(p.id, { model: e.target.value })}
+                          placeholder="留空 = 跟随本机 Codex CLI 默认模型"
+                        />
+                      </Form.Item>
+                    ) : (
+                    /* ---- 模型目录（对齐 dsh 的模型管理）----
                         一个区块承载「该提供商使用的模型 + 各模型档位」：radio 点一下立即切过去用，
                         行内可改模型 ID 与参数；当前模型不在目录时以「使用模型」行呈现
-                        （其参数即提供商级默认档位，供目录内未填参数的模型兜底）。 */}
+                        （其参数即提供商级默认档位，供目录内未填参数的模型兜底）。 */
                     <div style={{ margin: '12px 0 12px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                         <span
@@ -1097,6 +1147,7 @@ export const AiSettingsCard = ({
                         添加模型
                       </Button>
                     </div>
+                    )}
 
                     <Space wrap style={{ marginBottom: 8 }}>
                       <Button icon={<ApiOutlined />} loading={!!testingBy[p.id]} onClick={() => void testProvider(p)}>
@@ -1322,43 +1373,62 @@ export const AiSettingsCard = ({
                     options={AI_PROVIDER_PRESETS.map((x) => ({ value: x.key, label: x.name }))}
                   />
                 </div>
-                {addModal.presetKey && AI_PROVIDER_PRESETS.find((x) => x.key === addModal.presetKey)?.consoleUrl && (
-                  <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 12px' }}>
-                    还没有 API Key？前往{' '}
-                    <a onClick={() => openExternal(AI_PROVIDER_PRESETS.find((x) => x.key === addModal.presetKey)!.consoleUrl)}>
-                      {AI_PROVIDER_PRESETS.find((x) => x.key === addModal.presetKey)!.name} 控制台 ↗
-                    </a>{' '}
-                    注册获取。
-                  </p>
+                {addModal.presetKey === 'codex' ? (
+                  <>
+                    <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 12px' }}>
+                      选中后由工作台调用本机已安装并通过 <code>codex login</code> 登录 ChatGPT 的 Codex CLI，
+                      无需 API Key；登录与凭据刷新由 Codex 自身处理。
+                    </p>
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: 13, marginBottom: 6 }}>默认模型（可留空）</div>
+                      <Input
+                        value={addModal.model}
+                        onChange={(e) => setAddModal({ ...addModal, model: e.target.value })}
+                        placeholder="留空 = 跟随本机 Codex CLI 默认模型"
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {addModal.presetKey && AI_PROVIDER_PRESETS.find((x) => x.key === addModal.presetKey)?.consoleUrl && (
+                      <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 12px' }}>
+                        还没有 API Key？前往{' '}
+                        <a onClick={() => openExternal(AI_PROVIDER_PRESETS.find((x) => x.key === addModal.presetKey)!.consoleUrl)}>
+                          {AI_PROVIDER_PRESETS.find((x) => x.key === addModal.presetKey)!.name} 控制台 ↗
+                        </a>{' '}
+                        注册获取。
+                      </p>
+                    )}
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: 13, marginBottom: 6 }}>API 密钥</div>
+                      <Input.Password
+                        value={addModal.apiKey}
+                        onChange={(e) => setAddModal({ ...addModal, apiKey: e.target.value })}
+                        placeholder="输入 API 密钥（可留空，如用环境变量 AI_API_KEY）"
+                        /* 弹窗里必然还没有已存密钥：空着时不挂眼睛，否则就是个点开没反应的死图标 */
+                        visibilityToggle={addModal.apiKey.trim() !== ''}
+                      />
+                    </div>
+                    <Collapse
+                      ghost
+                      size="small"
+                      items={[{
+                        key: 'adv',
+                        label: '自定义设置',
+                        children: (
+                          <div style={{ marginBottom: 12 }}>
+                            <div style={{ fontSize: 13, marginBottom: 6 }}>API 地址（Base URL）</div>
+                            <Input
+                              value={addModal.baseURL}
+                              onChange={(e) => setAddModal({ ...addModal, baseURL: e.target.value })}
+                              placeholder="提供商默认"
+                            />
+                          </div>
+                        ),
+                      }]}
+                    />
+                  </>
                 )}
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 13, marginBottom: 6 }}>API 密钥</div>
-                  <Input.Password
-                    value={addModal.apiKey}
-                    onChange={(e) => setAddModal({ ...addModal, apiKey: e.target.value })}
-                    placeholder="输入 API 密钥（可留空，如用环境变量 AI_API_KEY）"
-                    /* 弹窗里必然还没有已存密钥：空着时不挂眼睛，否则就是个点开没反应的死图标 */
-                    visibilityToggle={addModal.apiKey.trim() !== ''}
-                  />
-                </div>
-                <Collapse
-                  ghost
-                  size="small"
-                  items={[{
-                    key: 'adv',
-                    label: '自定义设置',
-                    children: (
-                      <div style={{ marginBottom: 12 }}>
-                        <div style={{ fontSize: 13, marginBottom: 6 }}>API 地址（Base URL）</div>
-                        <Input
-                          value={addModal.baseURL}
-                          onChange={(e) => setAddModal({ ...addModal, baseURL: e.target.value })}
-                          placeholder="提供商默认"
-                        />
-                      </div>
-                    ),
-                  }]}
-                />
               </>
             ) : (
               <>

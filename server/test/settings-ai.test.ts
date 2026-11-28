@@ -4,10 +4,12 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
+import { spawn as codexRealSpawn } from 'node:child_process';
 import { createDb, type Db } from '../src/db/index.ts';
 import { settingsRoutes } from '../src/routes/settings.ts';
 import { DEFAULT_CONFIG } from '../src/config.ts';
 import { aiConfigFromDb, saveAiConfig } from '../src/config.ts';
+import { setCodexTestDeps, type CodexSpawnFn } from '../src/ai/codexProvider.ts';
 
 /** mock OpenAI 兼容上游：可配置是否提供 /models、是否校验 Bearer key */
 interface Upstream {
@@ -950,4 +952,158 @@ test('POST /ai/test 多提供商形态：providerId 的密钥不得跟着被覆�
   });
   await own.close();
   await evil.close();
+});
+
+// ---------- 本地 Codex 提供商（issue 67） ----------
+
+/** 与 codex-provider.test.ts 同款假 codex：node -e 按 FAKE_CODEX_MODE 输出 JSONL 事件 */
+const SETTINGS_FAKE_CODEX_SCRIPT = `
+const mode = process.env.FAKE_CODEX_MODE;
+if (mode === 'exit-immediately') process.exit(0);
+if (mode === 'login-ok') { process.stdout.write('Logged in using ChatGPT\\n'); process.exit(0); }
+if (mode === 'login-missing') { process.stdout.write('Not logged in\\n'); process.exit(1); }
+const chunks = [];
+process.stdin.on('data', (d) => chunks.push(d));
+process.stdin.on('end', () => {
+  const emit = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+  emit({ type: 'item.completed', item: { id: 'a0', type: 'agent_message', text: 'pong' } });
+  emit({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } });
+  process.exit(0);
+});
+`;
+
+function fakeCodexSpawnFn(loginMode: 'login-ok' | 'login-missing'): CodexSpawnFn {
+  return (cmd, args, opts) => {
+    assert.equal(cmd, 'codex');
+    const a = args ?? [];
+    // login → 可控登录态；--version → 立即退出；其余（codex exec 探测对话）→ 正常事件流
+    const mode = a[0] === 'login' ? loginMode : a[0] === '--version' ? 'exit-immediately' : 'ok';
+    return codexRealSpawn(process.execPath, ['-e', SETTINGS_FAKE_CODEX_SCRIPT], {
+      ...opts,
+      env: { ...(opts?.env ?? process.env), FAKE_CODEX_MODE: mode },
+    });
+  };
+}
+
+test('本地 Codex 提供商：免 baseURL/apiKey 保存落库，视图回传 protocol，运行时解析携带 codex', async () => {
+  await withServer(async (db, base) => {
+    const save = await fetch(`${base}/ai`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providers: [
+          { id: 'pc1', name: '本地 Codex', baseURL: '', model: '', protocol: 'codex' },
+          { id: 'ph1', name: 'DeepSeek', baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-flash', apiKey: 'sk-x' },
+        ],
+        activeProviderId: 'pc1',
+      }),
+    });
+    assert.equal(save.status, 200);
+    const stored = JSON.parse((db.prepare("SELECT value FROM settings WHERE key = 'ai.providers'").get() as { value: string }).value);
+    const codex = stored.find((p: { id: string }) => p.id === 'pc1');
+    assert.equal(codex.protocol, 'codex');
+    assert.equal(codex.baseURL, '');
+    assert.equal(codex.apiKey, '');
+
+    const view = (await (await fetch(base)).json()) as { ai: { providers: Array<{ id: string; protocol?: string; hasApiKey: boolean }>; protocol?: string } };
+    const viewCodex = view.ai.providers.find((p) => p.id === 'pc1');
+    assert.equal(viewCodex?.protocol, 'codex');
+    assert.equal(viewCodex?.hasApiKey, false);
+
+    // 运行时解析：激活 codex 提供商时 protocol 随之下发
+    const cfg = aiConfigFromDb(db, DEFAULT_CONFIG);
+    assert.equal(cfg.protocol, 'codex');
+    assert.equal(cfg.baseURL, '');
+
+    // 非 codex 提供商仍强制 http(s) baseURL（口径未被放宽误伤）
+    const bad = await fetch(`${base}/ai`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providers: [{ id: 'pb1', name: '坏地址', baseURL: '', model: 'm' }],
+      }),
+    });
+    assert.equal(bad.status, 400);
+    assert.match(((await bad.json()) as { error: string }).error, /http\(s\)/);
+
+    // codex 提供商切回 chat 口径：显式 protocol 'chat' 覆盖旧值，空 baseURL 被拒
+    const back = await fetch(`${base}/ai`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providers: [{ id: 'pc1', name: '本地 Codex', baseURL: '', model: '', protocol: 'chat' }],
+      }),
+    });
+    assert.equal(back.status, 400);
+  });
+});
+
+test('本地 Codex：/ai/models 返回空目录（模型跟随 CLI 配置）', async () => {
+  await withServer(async (_db, base) => {
+    await fetch(`${base}/ai`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providers: [{ id: 'pc1', name: '本地 Codex', baseURL: '', model: '', protocol: 'codex' }],
+        activeProviderId: 'pc1',
+      }),
+    });
+    const res = await fetch(`${base}/ai/models`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ providerId: 'pc1' }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { models: [] });
+  });
+});
+
+test('本地 Codex：/ai/test 走 codex 探测（版本 → 登录态 → 最小对话）', async () => {
+  await withServer(async (_db, base) => {
+    setCodexTestDeps({ spawnFn: fakeCodexSpawnFn('login-ok') });
+    try {
+      const saved = await fetch(`${base}/ai`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          providers: [{ id: 'pc1', name: '本地 Codex', baseURL: '', model: '', protocol: 'codex' }],
+          activeProviderId: 'pc1',
+        }),
+      });
+      assert.equal(saved.status, 200);
+      const ok = await fetch(`${base}/ai/test`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerId: 'pc1' }),
+      });
+      const okBody = (await ok.json()) as { ok: boolean; message: string };
+      assert.equal(okBody.ok, true, okBody.message);
+      assert.match(okBody.message, /连接成功/);
+
+      // 未保存的 codex 草稿：靠请求体 protocol 提示识别
+      const draft = await fetch(`${base}/ai/test`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ protocol: 'codex' }),
+      });
+      assert.equal(((await draft.json()) as { ok: boolean }).ok, true);
+    } finally {
+      setCodexTestDeps(null);
+    }
+
+    // 未登录形态：ok:false + codex login 指引
+    setCodexTestDeps({ spawnFn: fakeCodexSpawnFn('login-missing') });
+    try {
+      const bad = await fetch(`${base}/ai/test`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerId: 'pc1' }),
+      });
+      const badBody = (await bad.json()) as { ok: boolean; message: string };
+      assert.equal(badBody.ok, false);
+      assert.match(badBody.message, /codex login/);
+    } finally {
+      setCodexTestDeps(null);
+    }
+  });
 });

@@ -935,10 +935,12 @@ export {
   guessModelCaps,
   capsFromModelNameHint,
   MODEL_CAPS_AS_OF,
+  isCodexProtocol,
   type AiProviderConfig,
   type AiProviderView,
   type AiProviderPreset,
   type AiProviderModelEntry,
+  type AiProviderProtocol,
   type ModelCaps,
 } from './aiProviders.ts';
 

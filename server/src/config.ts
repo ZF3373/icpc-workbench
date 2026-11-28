@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AiProviderConfig, SearchProvidersConfig } from '../../shared/src/index.ts';
-import { AI_PROVIDERS_MAX, AI_PROVIDER_MODELS_MAX, parseSearchProvidersConfig } from '../../shared/src/index.ts';
+import type { AiProviderConfig, AiProviderProtocol, SearchProvidersConfig } from '../../shared/src/index.ts';
+import { AI_PROVIDERS_MAX, AI_PROVIDER_MODELS_MAX, isCodexProtocol, parseSearchProvidersConfig } from '../../shared/src/index.ts';
 import type { SearchProviderEntry } from './ai/search-engines.ts';
 import type { Db } from './db/index.ts';
 import type { SettingLookup } from './db/settings.ts';
@@ -17,6 +17,8 @@ export interface AiConfig {
   apiKey: string;
   /** 当前活跃提供商的模型 */
   model: string;
+  /** 活跃提供商的接入口径；缺省 'chat'（OpenAI 兼容 HTTP），'codex' = 本机 Codex CLI 子进程 */
+  protocol?: AiProviderProtocol;
   /** AI 对话超时（毫秒），用户可在设置页调整；缺省 120000（2 分钟） */
   timeoutMs?: number;
   /** AI 单次回复最大 token 数，用户可在设置页调整；缺省 393216（384K）。值越大越不易截断，但受模型上限约束 */
@@ -205,7 +207,10 @@ function sanitizeProviders(list: unknown[]): AiProviderConfig[] {
     const id = typeof o.id === 'string' ? o.id.trim() : '';
     const name = typeof o.name === 'string' ? o.name.trim() : '';
     const baseURL = typeof o.baseURL === 'string' ? o.baseURL.trim() : '';
-    if (!id || !name || !baseURL || !/^https?:\/\//.test(baseURL)) continue;
+    // 本地 Codex（protocol='codex'）没有 baseURL/apiKey 概念：地址允许为空；
+    // 其余口径仍是 OpenAI 兼容 HTTP，baseURL 必须 http(s)（兼容旧数据缺省无 protocol 字段）
+    const codex = isCodexProtocol(o.protocol);
+    if (codex ? (!id || !name) : (!id || !name || !baseURL || !/^https?:\/\//.test(baseURL))) continue;
     if (seen.has(id)) continue;
     seen.add(id);
     const maxTokens = Number(o.maxTokens);
@@ -213,14 +218,15 @@ function sanitizeProviders(list: unknown[]): AiProviderConfig[] {
     out.push({
       id,
       name,
-      baseURL,
-      apiKey: typeof o.apiKey === 'string' ? o.apiKey.trim() : '',
+      baseURL: codex ? '' : baseURL,
+      apiKey: codex ? '' : typeof o.apiKey === 'string' ? o.apiKey.trim() : '',
       model: typeof o.model === 'string' ? o.model.trim() : '',
       // 参数档位是可选覆盖：只在为正数时保留（防 0/负数/字符串混进存储）
       ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { maxTokens } : {}),
       ...(Number.isFinite(contextWindow) && contextWindow > 0 ? { contextWindow } : {}),
       // 模型目录：仅接受数组形态，条目内部自行净化；空数组 = 明确清空目录
       ...(Array.isArray(o.models) ? { models: sanitizeModelEntries(o.models) } : {}),
+      ...(codex ? { protocol: 'codex' as const } : {}),
     });
     if (out.length >= AI_PROVIDERS_MAX) break;
   }
@@ -313,6 +319,7 @@ export function aiConfigFromDb(db: Db, cfg: AppConfig, read?: SettingLookup): Ai
     baseURL: active.baseURL.trim(),
     model: active.model.trim(),
     apiKey: (process.env.AI_API_KEY ?? active.apiKey).trim(),
+    ...(isCodexProtocol(active.protocol) ? { protocol: 'codex' as const } : {}),
     ...(Number.isFinite(timeoutMs) && timeoutMs! > 0 ? { timeoutMs: timeoutMs! } : {}),
     ...(entry?.maxTokens ?? active.maxTokens ?? global.maxTokens
       ? { maxTokens: (entry?.maxTokens ?? active.maxTokens ?? global.maxTokens)! } : {}),

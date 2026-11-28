@@ -8,6 +8,7 @@ import {
   cookieFieldValue,
   cookieOnlyFieldsOf,
   mergeCookieFields,
+  isCodexProtocol,
   isSearchEngineId,
   normalizeEngineKeys,
   SEARCH_ENGINE_IDS,
@@ -57,6 +58,7 @@ import {
   setRequestIntervalScale,
 } from '../net/hostThrottle.ts';
 import { chatUrl } from '../ai/provider.ts';
+import { codexProviderTest } from '../ai/codexProvider.ts';
 import { CUSTOM_PROMPTS_KEY, readCustomPrompts } from '../ai/customPrompts.ts';
 import { throttledFetch } from '../net/hostThrottle.ts';
 import {
@@ -628,13 +630,16 @@ export function settingsRoutes(
         const name = typeof o.name === 'string' ? o.name.trim() : '';
         const baseURL = typeof o.baseURL === 'string' ? o.baseURL.trim() : '';
         const model = typeof o.model === 'string' ? o.model.trim() : '';
+        // 接入口径：'codex' = 本地 Codex CLI（issue 67），缺省/其余值一律按 chat HTTP。
+        // codex 无 baseURL/apiKey 概念（登录态由 codex 自管），地址校验随之放宽
+        const codex = o.protocol === 'codex';
         if (!id) return res.status(400).json({ error: 'providers[].id 必填' });
         if (!name) return res.status(400).json({ error: `提供商 ${id} 缺少名称` });
-        if (!/^https?:\/\//.test(baseURL)) {
+        if (!codex && !/^https?:\/\//.test(baseURL)) {
           return res.status(400).json({ error: `提供商「${name}」的 Base URL 需为 http(s) 地址，当前：${baseURL || '（空）'}` });
         }
         const prev = stored.find((p) => p.id === id);
-        const apiKey = typeof o.apiKey === 'string' ? o.apiKey.trim() : (prev?.apiKey ?? '');
+        const apiKey = codex ? '' : typeof o.apiKey === 'string' ? o.apiKey.trim() : (prev?.apiKey ?? '');
         // 输出/上下文档位透传（正数才收，见 sanitizeProviders）；字段缺省 = 保持已存值，
         // 显式 null/0 = 清除该覆盖（回退全局默认）
         const mt = o.maxTokens === undefined ? prev?.maxTokens : Number(o.maxTokens);
@@ -644,12 +649,13 @@ export function settingsRoutes(
         drafts.push({
           id,
           name,
-          baseURL,
+          baseURL: codex ? '' : baseURL,
           model,
           apiKey,
           ...(mt !== undefined && Number.isFinite(mt) && mt > 0 ? { maxTokens: mt } : {}),
           ...(cw !== undefined && Number.isFinite(cw) && cw > 0 ? { contextWindow: cw } : {}),
           ...(models !== undefined ? { models } : {}),
+          ...(codex ? { protocol: 'codex' as const } : {}),
         });
       }
       /**
@@ -659,7 +665,7 @@ export function settingsRoutes(
        * 根本不会执行，用户的「启用/超时」等修改一并丢失。与 :464 同一口径回 400。
        */
       if (drafts.length === 0) {
-        return res.status(400).json({ error: '至少需要保留一个有效的提供商（每条需含 id/name/http(s) Base URL）' });
+        return res.status(400).json({ error: '至少需要保留一个有效的提供商（每条需含 id/name；HTTP 提供商还需 http(s) Base URL）' });
       }
       providerDrafts = drafts;
     }
@@ -770,6 +776,10 @@ export function settingsRoutes(
           '安全限制：测试地址与已保存的地址不同源，不会复用已保存的 API Key。请填入该地址对应的 Key，或先保存配置再测试。',
       });
     }
+    // 本地 Codex：不走 HTTP，测试 = codex --version → login status → 最小 codex exec 实测
+    if (cfg.protocol === 'codex') {
+      return res.json(await codexProviderTest());
+    }
     if (!/^https?:\/\//.test(cfg.baseURL)) {
       return res.json({ ok: false, message: `Base URL 需为 http(s) 地址，当前：${cfg.baseURL || '（空）'}` });
     }
@@ -812,6 +822,10 @@ export function settingsRoutes(
       return res.status(403).json({
         error: '安全限制：目标地址与已保存的地址不同源，不会复用已保存的 API Key。请一并传入该地址对应的 apiKey。',
       });
+    }
+    // 本地 Codex：没有 HTTP /models 目录，模型跟随 codex 自身配置（界面也隐藏该按钮）
+    if (cfg.protocol === 'codex') {
+      return res.json({ models: [] });
     }
     if (!/^https?:\/\//.test(cfg.baseURL)) {
       return res.status(400).json({ error: `Base URL 需为 http(s) 地址，当前：${cfg.baseURL || '（空）'}` });
@@ -1101,6 +1115,7 @@ function providerView(p: AiProviderConfig): AiProviderView {
     ...(p.contextWindow !== undefined ? { contextWindow: p.contextWindow } : {}),
     // 模型目录无秘密，原样下发（净化口径在 sanitizeProviders 已保证）
     ...(p.models !== undefined ? { models: p.models } : {}),
+    ...(p.protocol !== undefined ? { protocol: p.protocol } : {}),
   };
 }
 
@@ -1172,21 +1187,28 @@ function baseUrlOrigin(url: string): string | null {
 function effectiveAiConfig(
   db: Db,
   config: AppConfig,
-  b: { providerId?: unknown; baseURL?: unknown; apiKey?: unknown; model?: unknown },
+  b: { providerId?: unknown; baseURL?: unknown; apiKey?: unknown; model?: unknown; protocol?: unknown },
 ): { cfg: AiConfig; blockedSavedKeyReuse: boolean } {
   const saved = aiConfigFromDb(db, config);
   let baseURL = saved.baseURL;
   let apiKey = saved.apiKey;
   let model = saved.model;
+  let protocol: AiConfig['protocol'] = saved.protocol;
+  let pidMatched = false;
   const pid = typeof b.providerId === 'string' ? b.providerId.trim() : '';
   if (pid) {
     const p = readAiProviders(db, config).find((x) => x.id === pid);
     if (p) {
+      pidMatched = true;
       baseURL = p.baseURL;
       apiKey = (process.env.AI_API_KEY ?? p.apiKey).trim();
       model = p.model;
+      protocol = isCodexProtocol(p.protocol) ? 'codex' : undefined;
     }
   }
+  // 未保存的草稿没有 providerId 可查：前端显式带 protocol 提示（codex 探测不涉及密钥
+  // 复用，无「换源送 Key」风险面，故可信任请求体的口径声明）
+  if (!pidMatched && b.protocol === 'codex') protocol = 'codex';
   const pick = (v: unknown, fallback: string): string =>
     typeof v === 'string' && v.trim() !== '' ? v.trim() : fallback;
   const effectiveBaseURL = pick(b.baseURL, baseURL);
@@ -1200,6 +1222,7 @@ function effectiveAiConfig(
       baseURL: effectiveBaseURL,
       apiKey: providedKey !== '' ? providedKey : sameOrigin ? apiKey : '',
       model: pick(b.model, model),
+      ...(protocol === 'codex' ? { protocol: 'codex' as const } : {}),
     },
     blockedSavedKeyReuse: providedKey === '' && !sameOrigin && apiKey !== '',
   };

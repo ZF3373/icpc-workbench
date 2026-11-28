@@ -6,9 +6,20 @@
  * settings 路由）——两端必须用同一份类型与预设表，客户端预设改名/换地址而
  * 服务端不认，会静默写出错误配置。
  *
- * 所有预设都是 OpenAI 兼容接口（本应用唯一接入口径）；「自定义」= 用户手填
- * Base URL 的任意兼容网关（one-api / new-api / 本地 Ollama 等）。
+ * 除「本地 Codex」外所有预设都是 OpenAI 兼容接口（chat/completions 接入口径）；
+ * 「自定义」= 用户手填 Base URL 的任意兼容网关（one-api / new-api / 本地 Ollama 等）。
+ * 「本地 Codex」不走 HTTP，而是调用本机 Codex CLI（`codex exec`，登录态由 Codex 管理，
+ * 见 protocol 字段说明）。
  */
+
+/**
+ * 提供商的接入口径：
+ * - `'chat'`（缺省）：OpenAI 兼容 chat/completions，baseURL + apiKey 直连；
+ * - `'codex'`：本机 Codex CLI 子进程（issue 67）。无 baseURL/apiKey 概念——
+ *   工作台调用已通过 `codex login` 登录 ChatGPT 的 Codex CLI，登录与凭据刷新
+ *   完全由 Codex 处理，工作台不存任何凭据；model 留空 = 跟随 Codex 自身配置。
+ */
+export type AiProviderProtocol = 'chat' | 'codex';
 
 /**
  * 模型目录条目（对齐 deepseek-harness 的模型管理）：一个提供商可登记多个可用模型，
@@ -42,6 +53,8 @@ export interface AiProviderConfig {
   contextWindow?: number;
   /** 模型目录；缺省/空 = 未建目录（模型仍可自由输入），仅作为候选清单与条目级参数来源 */
   models?: AiProviderModelEntry[];
+  /** 接入口径；缺省 'chat'（OpenAI 兼容 HTTP）。'codex' = 本机 Codex CLI 子进程 */
+  protocol?: AiProviderProtocol;
 }
 
 /** 设置页回传给前端的提供商视图（apiKey 已剥离，只带打码版供回显） */
@@ -57,9 +70,11 @@ export interface AiProviderView {
   maxTokens?: number;
   contextWindow?: number;
   models?: AiProviderModelEntry[];
+  /** 接入口径；缺省 'chat'。前端据此切换表单形态（codex 无密钥/地址输入） */
+  protocol?: AiProviderProtocol;
 }
 
-/** 内置提供商预设：选预设自动填名称与 Base URL，用户只需填 API Key */
+/** 内置提供商预设：选预设自动填名称与 Base URL，用户只需填 API Key（codex 预设除外） */
 export interface AiProviderPreset {
   /** 预设键（自定义 = custom，不落库，仅表单初值用） */
   key: string;
@@ -73,6 +88,8 @@ export interface AiProviderPreset {
   defaultModels: string[];
   /** 「去获取 API Key」的官网地址（设置页可点击跳转） */
   consoleUrl: string;
+  /** 接入口径；缺省 'chat'（OpenAI 兼容 HTTP） */
+  protocol?: AiProviderProtocol;
 }
 
 /**
@@ -140,6 +157,18 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     defaultModels: ['openai/gpt-6.1-sol', 'anthropic/claude-sonnet-5.5', 'deepseek/deepseek-v4.1-flash'],
     consoleUrl: 'https://openrouter.ai/keys',
   },
+  {
+    // 本地 Codex（issue 67）：不走 HTTP API，调用本机 Codex CLI 子进程。
+    // 无 baseURL/apiKey/consoleUrl；defaultModel 留空 = 跟随 Codex 自身配置
+    // （codex 的模型随其 config.toml / 登录方式而定，工作台不猜型号，避免预设写死过期 ID）。
+    key: 'codex',
+    name: '本地 Codex',
+    baseURL: '',
+    defaultModel: '',
+    defaultModels: [],
+    consoleUrl: '',
+    protocol: 'codex',
+  },
 ];
 
 /** 「自定义」选项（跟在预设后面渲染）：Base URL / 模型由用户手填 */
@@ -151,6 +180,11 @@ export const AI_PROVIDER_CUSTOM_PRESET: AiProviderPreset = {
   defaultModels: [],
   consoleUrl: '',
 };
+
+/** 是否为「本地 Codex」接入口径（缺省/未知值一律按 chat HTTP 口径处理） */
+export function isCodexProtocol(p: unknown): boolean {
+  return p === 'codex';
+}
 
 /** 提供商数量上限：设置页防误操作批量粘贴（正常个人使用远用不到 20 个） */
 export const AI_PROVIDERS_MAX = 20;

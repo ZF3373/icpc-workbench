@@ -1,4 +1,5 @@
 import type { AiConfig } from '../config.ts';
+import { codexChat, codexChatStream, type CodexDeps } from './codexProvider.ts';
 
 export interface ToolCall {
   id: string;
@@ -354,20 +355,29 @@ export interface UploadFileOptions {
 /**
  * OpenAI 兼容 chat/completions 客户端。
  * 通过 baseURL 可对接 DeepSeek / OpenAI / 智谱 / Ollama(OpenAI 兼容端口) 等。
+ *
+ * 接入口径分派（issue 67）：cfg.protocol === 'codex' 时 chat/chatStream 改走本机
+ * Codex CLI 子进程（见 codexProvider.ts），消息与回调签名完全不变——路由层、
+ * 标题/摘要/计划等非流式调用点零改动。'chat'（缺省）即 OpenAI 兼容 HTTP。
  */
 export class AiProvider {
   constructor(
     private readonly cfg: AiConfig,
     private readonly fetchFn: typeof fetch = fetch,
+    private readonly codexDeps: CodexDeps = {},
   ) {}
 
   get enabled(): boolean {
+    // 本地 Codex：登录态由 codex 自管，工作台无密钥可查，只看启用开关
+    if (this.cfg.protocol === 'codex') return this.cfg.enabled;
     return this.cfg.enabled && this.cfg.apiKey.trim() !== '';
   }
 
   private ensureEnabled(): void {
     if (!this.enabled) {
-      throw new Error('AI 未配置：请在设置中填写 API Key 并开启（或导出数据包后手动喂给任意 AI）');
+      throw new Error(this.cfg.protocol === 'codex'
+        ? 'AI 未配置：请在设置中启用 AI 生成，并确认本机已安装 codex CLI 且完成 codex login'
+        : 'AI 未配置：请在设置中填写 API Key 并开启（或导出数据包后手动喂给任意 AI）');
     }
   }
 
@@ -394,6 +404,9 @@ export class AiProvider {
    * purpose 固定 user_data（DeepSeek 当前唯一取值）；file_id 可在对话补全中以 file 内容块引用。
    */
   async uploadFile(opts: UploadFileOptions): Promise<AiFileObject> {
+    if (this.cfg.protocol === 'codex') {
+      throw new Error('本地 Codex 提供商不支持文件上传（Files API）：请切换到 OpenAI 兼容提供商上传文件，或直接把文本粘贴进对话');
+    }
     this.ensureEnabled();
     const form = new FormData();
     form.append('purpose', 'user_data');
@@ -407,6 +420,9 @@ export class AiProvider {
 
   async chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<string> {
     this.ensureEnabled();
+    if (this.cfg.protocol === 'codex') {
+      return codexChat(this.cfg, messages, opts, this.codexDeps);
+    }
     const timeoutMs = this.cfg.timeoutMs ?? 120000;
     const maxTokens = opts.maxTokens ?? 393216;
     const buildInit = (limit: number): RequestInit => ({
@@ -505,6 +521,10 @@ export class AiProvider {
    */
   async *chatStream(messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<string, void, void> {
     this.ensureEnabled();
+    if (this.cfg.protocol === 'codex') {
+      yield* codexChatStream(this.cfg, messages, opts, this.codexDeps);
+      return;
+    }
     const timeoutMs = this.cfg.timeoutMs ?? 120000;
     // 流式请求：超时只约束「建立连接 + 等待响应头」；流式读取阶段不受 timeoutMs 限制
     // （AI 生成回复可能耗时数分钟，不应被超时中断；仅受调用方 signal 控制）
